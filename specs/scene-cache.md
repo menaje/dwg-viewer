@@ -1,4 +1,4 @@
-# Scene Cache v1.2
+# Scene Cache v1.3
 
 Status: minimal writer implemented; expansion tracked by GitHub issue #3.
 
@@ -68,8 +68,9 @@ Section kinds currently written:
 | 31 | interleaved GPU line vertices |
 
 Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
-Version 1.2 adds kinds 30–31. The validator continues to accept v1.0 and v1.1
-caches.
+Version 1.2 adds kinds 30–31 for straight and polyline GPU lines. Version 1.3
+extends those GPU sections with bounded curve chords without changing their
+binary record sizes. The validator continues to accept older v1 caches.
 
 ## Shared primitive prefix
 
@@ -89,7 +90,7 @@ Color uses the upper two bits as its kind: `00` ByLayer, `01` ByBlock, `10`
 ACI index and `11` 24-bit RGB.
 
 Source coordinates are stored as `f64` in v1 to avoid losing precision in large
-civil drawings. The v1.2 GPU sections contain derived, batch-local `f32`
+civil drawings. The v1.2+ GPU sections contain derived, batch-local `f32`
 coordinates without replacing these source-precision records.
 
 ## String-table sections
@@ -136,10 +137,18 @@ cache is accepted.
 
 ## Viewport and LOD GPU lines
 
-LINE and normalized polyline segments are also emitted as interleaved,
-GPU-ready line vertices. Model-space geometry and each block definition remain
-separate. A block's vertices are stored once regardless of how many INSERT
-entities reference it.
+LINE and normalized polyline segments are emitted as interleaved, GPU-ready
+line vertices. Scene Cache v1.3 also emits bounded first-pass chords for ARC,
+CIRCLE, ELLIPSE, polyline bulges and NURBS SPLINE entities. Model-space
+geometry and each block definition remain separate. A block's vertices are
+stored once regardless of how many INSERT entities reference it.
+
+Circular and bulge curves use no more than 16 segments per revolution. Valid
+splines use two segments per non-empty knot span and no more than 256 segments
+per entity. Invalid spline definitions fall back to their fit-point or
+control-point chords instead of being silently dropped. These limits bound
+conversion work and cache growth; source-precision curve records remain the
+authority for future view-adaptive refinement.
 
 The converter creates at most 65,536 overview segments across model space and
 all non-empty blocks. When the number of non-empty groups fits that budget,
@@ -173,7 +182,7 @@ Each kind-30 record is 128 bytes:
 | 40 | `f64[3]` | batch-local origin in source coordinates |
 | 64 | `f64[3]` | source-coordinate minimum bounds |
 | 88 | `f64[3]` | source-coordinate maximum bounds |
-| 112 | `f32` | maximum component error after local `f32` quantization |
+| 112 | `f32` | conservative maximum component error after local `f32` quantization |
 | 116 | `u8[12]` | reserved |
 
 Batch vertex ranges are contiguous, non-overlapping and cover the complete
@@ -196,14 +205,16 @@ vertex buffer:
 
 The packed style stores the signed line-weight bits in bits 0–15, invisibility
 in bit 16, source kind in bits 17–19 and the curved-chord approximation flag
-in bit 20. Precise bulges and OCS metadata remain available in the source
-polyline sections for later curve refinement.
+in bit 20. Source kinds are 0 LINE, 1 LWPOLYLINE, 2 2D POLYLINE, 3 3D
+POLYLINE, 4 ARC, 5 CIRCLE, 6 ELLIPSE and 7 SPLINE. Precise curve parameters,
+bulges and OCS metadata remain available in the source sections for later
+high-zoom refinement.
 
 ## Deferred v1 work
 
 - text runs and SHX glyph references;
 - linetype override table;
-- GPU refinement for ARC, CIRCLE, ELLIPSE, SPLINE and polyline bulges;
+- view-adaptive high-zoom refinement beyond the bounded v1.3 curve chords;
 - entity-selection index and source fingerprint.
 
 Cache files can contain project names and drawing text. They are local,

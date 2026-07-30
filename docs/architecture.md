@@ -46,19 +46,26 @@ batch around the camera before converting matrices to `f32`.
 
 ## Implemented cache slice
 
-Scene Cache v1.2 writes the drawing/layer/block tables and source-precision
+Scene Cache v1.3 writes the drawing/layer/block tables and source-precision
 LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE, ELLIPSE and SPLINE records.
 The records retain owner handles so block definitions remain shared instead of
 being expanded per insertion.
 
-The v1.2 display slice adds local-origin `f32` line buffers. It keeps model
+The v1.2 display slice added local-origin `f32` line buffers. It keeps model
 space and block definitions separate, assigns every non-empty block a bounded
 overview allocation within the global 65,536-segment budget, writes the
 complete first-frame vertex set as one
 contiguous prefix of at most 4 MiB and caps each spatial detail batch at
-512 KiB. Curved polylines are marked as coarse chords so the renderer can
-replace them from source-precision records during refinement. Text and curved
-GPU refinement are the next format increments.
+512 KiB.
+
+The v1.3 display slice adds bounded first-pass chords for ARC, CIRCLE, ELLIPSE,
+polyline bulges and NURBS SPLINE entities. Circular curves use at most 16
+segments per revolution. Valid splines use two segments per non-empty knot span
+with a 256-segment entity cap; malformed splines fall back to bounded fit-point
+or control-point chords. Approximation bits stay attached to the GPU vertices,
+and the source-precision records remain available for later view-adaptive
+high-zoom refinement. Batch-local position error is recorded as a conservative
+`f32` upper bound without a second geometry traversal.
 
 Detail ranges are independently capped at 512 KiB. The Webview includes a
 byte-budgeted least-recently-used cache so viewport refinement can release

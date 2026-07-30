@@ -232,7 +232,7 @@ function makeVertexSection() {
   };
 }
 
-export function makeFixtureCache() {
+export function makeFixtureCache({ minorVersion = 2 } = {}) {
   const sections = [
     makeDrawingSection(),
     makeLayerSection(),
@@ -253,7 +253,7 @@ export function makeFixtureCache() {
   const view = new DataView(buffer);
   new Uint8Array(buffer, 0, 8).set([68, 87, 71, 83, 67, 78, 49, 0]);
   view.setUint16(8, 1, true);
-  view.setUint16(10, 2, true);
+  view.setUint16(10, minorVersion, true);
   view.setUint32(12, HEADER_SIZE, true);
   view.setUint32(16, sections.length, true);
   view.setUint32(20, DIRECTORY_ENTRY_SIZE, true);

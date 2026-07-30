@@ -14,7 +14,7 @@ use crate::{duration_ms, peak_rss_bytes, Bounds3, BoundsAccumulator, InputSummar
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 2;
+pub const CACHE_VERSION_MINOR: u16 = 3;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -42,6 +42,11 @@ const GPU_BATCH_FLAG_APPROXIMATED_CURVE: u32 = 1;
 const GPU_STYLE_INVISIBLE: u32 = 1 << 16;
 const GPU_STYLE_SOURCE_KIND_SHIFT: u32 = 17;
 const GPU_STYLE_APPROXIMATED_CURVE: u32 = 1 << 20;
+const CURVE_MAX_ANGLE_RADIANS: f64 = std::f64::consts::PI / 8.0;
+const MAX_CURVE_SEGMENTS: usize = 256;
+const SPLINE_SEGMENTS_PER_SPAN: usize = 2;
+const MAX_SPLINE_DEGREE: usize = 15;
+const CURVE_EPSILON: f64 = 1.0e-12;
 
 #[derive(Debug, Clone, Default)]
 pub struct ConvertOptions {
@@ -2167,24 +2172,19 @@ fn append_gpu_line_batches(
         let chunk_end = (chunk_start + GPU_LINE_BATCH_SEGMENTS).min(segments.len());
         let chunk = &segments[chunk_start..chunk_end];
         let mut bounds = FiniteBounds3::empty();
+        let mut flags = 0_u32;
         for segment in chunk {
             let geometry = resolve_gpu_segment(entities, *segment)?;
             bounds.include(geometry.start);
             bounds.include(geometry.end);
-        }
-        let origin = bounds.center();
-        let mut flags = 0_u32;
-        let mut maximum_position_error = 0.0_f64;
-        for segment in chunk {
-            let geometry = resolve_gpu_segment(entities, *segment)?;
             if geometry.approximated_curve {
                 flags |= GPU_BATCH_FLAG_APPROXIMATED_CURVE;
             }
-            maximum_position_error =
-                maximum_position_error.max(rebased_position_error(geometry.start, origin)?);
-            maximum_position_error =
-                maximum_position_error.max(rebased_position_error(geometry.end, origin)?);
         }
+        let origin = bounds.center();
+        let maximum_position_error = rebased_position_error_bound(bounds, origin)?;
+        let encoded_maximum_position_error =
+            round_up_f32(maximum_position_error).context("GPU position error exceeds f32")?;
 
         let segment_count = u32::try_from(chunk.len())?;
         let vertex_count = u64::from(segment_count)
@@ -2233,10 +2233,11 @@ fn append_gpu_line_batches(
             segment_count,
             origin,
             bounds,
-            maximum_position_error: maximum_position_error as f32,
+            maximum_position_error: encoded_maximum_position_error,
         });
     }
     draw_segments.append(segments);
+    segments.shrink_to_fit();
     Ok(())
 }
 
@@ -2365,7 +2366,11 @@ fn gpu_source_kind(entity: &EntityType) -> u32 {
         EntityType::LwPolyline(_) => 1,
         EntityType::Polyline2D(_) => 2,
         EntityType::Polyline(_) => 3,
-        _ => unreachable!("only GPU line source entities reach the vertex writer"),
+        EntityType::Arc(_) => 4,
+        EntityType::Circle(_) => 5,
+        EntityType::Ellipse(_) => 6,
+        EntityType::Spline(_) => 7,
+        _ => unreachable!("only GPU line and curve entities reach the vertex writer"),
     }
 }
 
@@ -2385,14 +2390,41 @@ fn gpu_entity_segment_count(entity: &EntityType) -> usize {
     match entity {
         EntityType::Line(_) => 1,
         EntityType::LwPolyline(polyline) => {
-            polyline_segment_count(polyline.vertices.len(), polyline.is_closed)
+            refined_polyline_segment_count(polyline.vertices.len(), polyline.is_closed, |index| {
+                polyline.vertices[index].bulge
+            })
         }
         EntityType::Polyline2D(polyline) => {
-            polyline_segment_count(polyline.vertices.len(), polyline.is_closed())
+            refined_polyline_segment_count(polyline.vertices.len(), polyline.is_closed(), |index| {
+                polyline.vertices[index].bulge
+            })
         }
         EntityType::Polyline(polyline) => {
             polyline_segment_count(polyline.vertices.len(), polyline.is_closed())
         }
+        EntityType::Arc(arc) => normalized_curve_sweep(arc.start_angle, arc.end_angle)
+            .filter(|_| arc.radius.is_finite() && arc.radius.abs() > CURVE_EPSILON)
+            .map(curve_segment_count)
+            .unwrap_or(0),
+        EntityType::Circle(circle) => {
+            if circle.radius.is_finite() && circle.radius.abs() > CURVE_EPSILON {
+                curve_segment_count(std::f64::consts::TAU)
+            } else {
+                0
+            }
+        }
+        EntityType::Ellipse(ellipse) => {
+            if ellipse_axes(ellipse.major_axis, ellipse.normal, ellipse.minor_axis_ratio).is_none()
+            {
+                return 0;
+            }
+            normalized_curve_sweep(ellipse.start_parameter, ellipse.end_parameter)
+                .map(curve_segment_count)
+                .unwrap_or(0)
+        }
+        EntityType::Spline(spline) => spline_sampling(spline)
+            .map(|sampling| sampling.segment_count)
+            .unwrap_or_else(|| spline_fallback_segment_count(spline)),
         _ => 0,
     }
 }
@@ -2409,47 +2441,79 @@ fn gpu_segment_geometry(entity: &EntityType, segment_index: usize) -> Option<Gpu
             approximated_curve: false,
         }),
         EntityType::LwPolyline(polyline) => {
+            let (source_index, refined_index, subdivisions) = refined_polyline_segment(
+                segment_index,
+                polyline.vertices.len(),
+                polyline.is_closed,
+                |index| polyline.vertices[index].bulge,
+            )?;
             let next_index =
-                polyline_next_vertex(segment_index, polyline.vertices.len(), polyline.is_closed)?;
-            let start_vertex = polyline.vertices.get(segment_index)?;
+                polyline_next_vertex(source_index, polyline.vertices.len(), polyline.is_closed)?;
+            let start_vertex = polyline.vertices.get(source_index)?;
             let end_vertex = polyline.vertices.get(next_index)?;
             let ocs_to_wcs = safe_ocs_matrix(polyline.normal);
+            let start = bulge_point(
+                start_vertex.location.x,
+                start_vertex.location.y,
+                end_vertex.location.x,
+                end_vertex.location.y,
+                polyline.elevation,
+                start_vertex.bulge,
+                refined_index,
+                subdivisions,
+            )?;
+            let end = bulge_point(
+                start_vertex.location.x,
+                start_vertex.location.y,
+                end_vertex.location.x,
+                end_vertex.location.y,
+                polyline.elevation,
+                start_vertex.bulge,
+                refined_index + 1,
+                subdivisions,
+            )?;
             Some(GpuSegmentGeometry {
-                start: ocs_to_wcs
-                    * Vector3::new(
-                        start_vertex.location.x,
-                        start_vertex.location.y,
-                        polyline.elevation,
-                    ),
-                end: ocs_to_wcs
-                    * Vector3::new(
-                        end_vertex.location.x,
-                        end_vertex.location.y,
-                        polyline.elevation,
-                    ),
-                approximated_curve: start_vertex.bulge != 0.0,
+                start: ocs_to_wcs * start,
+                end: ocs_to_wcs * end,
+                approximated_curve: start_vertex.bulge.abs() > CURVE_EPSILON,
             })
         }
         EntityType::Polyline2D(polyline) => {
-            let next_index =
-                polyline_next_vertex(segment_index, polyline.vertices.len(), polyline.is_closed())?;
-            let start_vertex = polyline.vertices.get(segment_index)?;
+            let closed = polyline.is_closed();
+            let (source_index, refined_index, subdivisions) = refined_polyline_segment(
+                segment_index,
+                polyline.vertices.len(),
+                closed,
+                |index| polyline.vertices[index].bulge,
+            )?;
+            let next_index = polyline_next_vertex(source_index, polyline.vertices.len(), closed)?;
+            let start_vertex = polyline.vertices.get(source_index)?;
             let end_vertex = polyline.vertices.get(next_index)?;
             let ocs_to_wcs = safe_ocs_matrix(polyline.normal);
+            let start = bulge_point(
+                start_vertex.location.x,
+                start_vertex.location.y,
+                end_vertex.location.x,
+                end_vertex.location.y,
+                polyline.elevation,
+                start_vertex.bulge,
+                refined_index,
+                subdivisions,
+            )?;
+            let end = bulge_point(
+                start_vertex.location.x,
+                start_vertex.location.y,
+                end_vertex.location.x,
+                end_vertex.location.y,
+                polyline.elevation,
+                start_vertex.bulge,
+                refined_index + 1,
+                subdivisions,
+            )?;
             Some(GpuSegmentGeometry {
-                start: ocs_to_wcs
-                    * Vector3::new(
-                        start_vertex.location.x,
-                        start_vertex.location.y,
-                        polyline.elevation,
-                    ),
-                end: ocs_to_wcs
-                    * Vector3::new(
-                        end_vertex.location.x,
-                        end_vertex.location.y,
-                        polyline.elevation,
-                    ),
-                approximated_curve: start_vertex.bulge != 0.0,
+                start: ocs_to_wcs * start,
+                end: ocs_to_wcs * end,
+                approximated_curve: start_vertex.bulge.abs() > CURVE_EPSILON,
             })
         }
         EntityType::Polyline(polyline) => {
@@ -2461,8 +2525,408 @@ fn gpu_segment_geometry(entity: &EntityType, segment_index: usize) -> Option<Gpu
                 approximated_curve: false,
             })
         }
+        EntityType::Arc(arc) => {
+            let sweep = normalized_curve_sweep(arc.start_angle, arc.end_angle)?;
+            let segment_count = curve_segment_count(sweep);
+            if segment_index >= segment_count
+                || !arc.radius.is_finite()
+                || arc.radius.abs() <= CURVE_EPSILON
+            {
+                return None;
+            }
+            let ocs_to_wcs = safe_ocs_matrix(arc.normal);
+            let start_angle = arc.start_angle + sweep * segment_index as f64 / segment_count as f64;
+            let end_angle =
+                arc.start_angle + sweep * (segment_index + 1) as f64 / segment_count as f64;
+            Some(GpuSegmentGeometry {
+                start: circular_ocs_point(arc.center, arc.radius, start_angle, ocs_to_wcs),
+                end: circular_ocs_point(arc.center, arc.radius, end_angle, ocs_to_wcs),
+                approximated_curve: true,
+            })
+        }
+        EntityType::Circle(circle) => {
+            let segment_count = curve_segment_count(std::f64::consts::TAU);
+            if segment_index >= segment_count
+                || !circle.radius.is_finite()
+                || circle.radius.abs() <= CURVE_EPSILON
+            {
+                return None;
+            }
+            let ocs_to_wcs = safe_ocs_matrix(circle.normal);
+            let start_angle = std::f64::consts::TAU * segment_index as f64 / segment_count as f64;
+            let end_angle =
+                std::f64::consts::TAU * (segment_index + 1) as f64 / segment_count as f64;
+            Some(GpuSegmentGeometry {
+                start: circular_ocs_point(circle.center, circle.radius, start_angle, ocs_to_wcs),
+                end: circular_ocs_point(circle.center, circle.radius, end_angle, ocs_to_wcs),
+                approximated_curve: true,
+            })
+        }
+        EntityType::Ellipse(ellipse) => {
+            let (major_axis, minor_axis) =
+                ellipse_axes(ellipse.major_axis, ellipse.normal, ellipse.minor_axis_ratio)?;
+            let sweep = normalized_curve_sweep(ellipse.start_parameter, ellipse.end_parameter)?;
+            let segment_count = curve_segment_count(sweep);
+            if segment_index >= segment_count {
+                return None;
+            }
+            let start_parameter =
+                ellipse.start_parameter + sweep * segment_index as f64 / segment_count as f64;
+            let end_parameter =
+                ellipse.start_parameter + sweep * (segment_index + 1) as f64 / segment_count as f64;
+            Some(GpuSegmentGeometry {
+                start: ellipse_point(ellipse.center, major_axis, minor_axis, start_parameter),
+                end: ellipse_point(ellipse.center, major_axis, minor_axis, end_parameter),
+                approximated_curve: true,
+            })
+        }
+        EntityType::Spline(spline) => {
+            if let Some(sampling) = spline_sampling(spline) {
+                let (start_parameter, end_parameter) =
+                    spline_segment_parameters(spline, sampling, segment_index)?;
+                return Some(GpuSegmentGeometry {
+                    start: evaluate_spline(spline, sampling, start_parameter)?,
+                    end: evaluate_spline(spline, sampling, end_parameter)?,
+                    approximated_curve: spline.degree > 1 && !spline.flags.linear,
+                });
+            }
+            let (start, end) = spline_fallback_segment(spline, segment_index)?;
+            Some(GpuSegmentGeometry {
+                start,
+                end,
+                approximated_curve: true,
+            })
+        }
         _ => None,
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SplineSampling {
+    degree: usize,
+    nonzero_spans: usize,
+    segments_per_span: usize,
+    segment_count: usize,
+    domain_start: f64,
+    domain_end: f64,
+    uniform_domain: bool,
+}
+
+fn curve_segment_count(sweep: f64) -> usize {
+    if !sweep.is_finite() || sweep.abs() <= CURVE_EPSILON {
+        return 0;
+    }
+    ((sweep.abs() / CURVE_MAX_ANGLE_RADIANS).ceil() as usize).clamp(1, MAX_CURVE_SEGMENTS)
+}
+
+fn normalized_curve_sweep(start: f64, end: f64) -> Option<f64> {
+    if !start.is_finite() || !end.is_finite() {
+        return None;
+    }
+    let raw = end - start;
+    if raw.abs() >= std::f64::consts::TAU - CURVE_EPSILON {
+        return Some(std::f64::consts::TAU);
+    }
+    let sweep = raw.rem_euclid(std::f64::consts::TAU);
+    (sweep > CURVE_EPSILON).then_some(sweep)
+}
+
+fn refined_polyline_segment_count<F>(vertex_count: usize, closed: bool, bulge_at: F) -> usize
+where
+    F: Fn(usize) -> f64,
+{
+    (0..polyline_segment_count(vertex_count, closed))
+        .map(|index| bulge_segment_count(bulge_at(index)))
+        .fold(0_usize, usize::saturating_add)
+}
+
+fn refined_polyline_segment<F>(
+    segment_index: usize,
+    vertex_count: usize,
+    closed: bool,
+    bulge_at: F,
+) -> Option<(usize, usize, usize)>
+where
+    F: Fn(usize) -> f64,
+{
+    let mut remaining = segment_index;
+    for source_index in 0..polyline_segment_count(vertex_count, closed) {
+        let subdivisions = bulge_segment_count(bulge_at(source_index));
+        if remaining < subdivisions {
+            return Some((source_index, remaining, subdivisions));
+        }
+        remaining = remaining.checked_sub(subdivisions)?;
+    }
+    None
+}
+
+fn bulge_segment_count(bulge: f64) -> usize {
+    if !bulge.is_finite() || bulge.abs() <= CURVE_EPSILON {
+        return 1;
+    }
+    curve_segment_count(4.0 * bulge.atan().abs()).max(1)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn bulge_point(
+    start_x: f64,
+    start_y: f64,
+    end_x: f64,
+    end_y: f64,
+    elevation: f64,
+    bulge: f64,
+    subdivision_index: usize,
+    subdivisions: usize,
+) -> Option<Vector3> {
+    if subdivisions == 0 || subdivision_index > subdivisions {
+        return None;
+    }
+    let fraction = subdivision_index as f64 / subdivisions as f64;
+    if !bulge.is_finite() {
+        return None;
+    }
+    if bulge.abs() <= CURVE_EPSILON {
+        return Some(Vector3::new(
+            start_x + (end_x - start_x) * fraction,
+            start_y + (end_y - start_y) * fraction,
+            elevation,
+        ));
+    }
+
+    let delta_x = end_x - start_x;
+    let delta_y = end_y - start_y;
+    let chord = delta_x.hypot(delta_y);
+    if !chord.is_finite() || chord <= CURVE_EPSILON {
+        return Some(Vector3::new(start_x, start_y, elevation));
+    }
+    let center_offset = chord * (1.0 - bulge * bulge) / (4.0 * bulge);
+    let center_x = (start_x + end_x) * 0.5 - delta_y / chord * center_offset;
+    let center_y = (start_y + end_y) * 0.5 + delta_x / chord * center_offset;
+    let radius = (start_x - center_x).hypot(start_y - center_y);
+    let start_angle = (start_y - center_y).atan2(start_x - center_x);
+    let angle = start_angle + 4.0 * bulge.atan() * fraction;
+    Some(Vector3::new(
+        center_x + radius * angle.cos(),
+        center_y + radius * angle.sin(),
+        elevation,
+    ))
+}
+
+fn circular_ocs_point(center: Vector3, radius: f64, angle: f64, ocs_to_wcs: Matrix3) -> Vector3 {
+    ocs_to_wcs
+        * Vector3::new(
+            center.x + radius * angle.cos(),
+            center.y + radius * angle.sin(),
+            center.z,
+        )
+}
+
+fn ellipse_axes(
+    major_axis: Vector3,
+    normal: Vector3,
+    minor_axis_ratio: f64,
+) -> Option<(Vector3, Vector3)> {
+    let major_length = major_axis.length();
+    if !vector_is_finite(major_axis)
+        || !vector_is_finite(normal)
+        || !minor_axis_ratio.is_finite()
+        || major_length <= CURVE_EPSILON
+        || minor_axis_ratio.abs() <= CURVE_EPSILON
+        || normal.length_squared() <= CURVE_EPSILON
+    {
+        return None;
+    }
+    let minor_direction = normal.normalize().cross(&major_axis).normalize();
+    if minor_direction.length_squared() <= CURVE_EPSILON {
+        return None;
+    }
+    Some((
+        major_axis,
+        minor_direction * (major_length * minor_axis_ratio.abs()),
+    ))
+}
+
+fn ellipse_point(
+    center: Vector3,
+    major_axis: Vector3,
+    minor_axis: Vector3,
+    parameter: f64,
+) -> Vector3 {
+    center + major_axis * parameter.cos() + minor_axis * parameter.sin()
+}
+
+fn spline_sampling(spline: &acadrust::entities::Spline) -> Option<SplineSampling> {
+    let degree = usize::try_from(spline.degree).ok()?;
+    let control_count = spline.control_points.len();
+    if degree == 0
+        || degree > MAX_SPLINE_DEGREE
+        || control_count <= degree
+        || spline.knots.len() < control_count.checked_add(degree)?.checked_add(1)?
+        || spline.knots.iter().any(|value| !value.is_finite())
+        || spline.knots.windows(2).any(|values| values[0] > values[1])
+        || (!spline.weights.is_empty() && spline.weights.len() != control_count)
+        || spline.weights.iter().any(|value| !value.is_finite())
+        || (!spline.weights.is_empty()
+            && spline
+                .weights
+                .iter()
+                .all(|value| value.abs() <= CURVE_EPSILON))
+    {
+        return None;
+    }
+    let domain_start = spline.knots[degree];
+    let domain_end = spline.knots[control_count];
+    if !domain_start.is_finite()
+        || !domain_end.is_finite()
+        || domain_end - domain_start <= CURVE_EPSILON
+    {
+        return None;
+    }
+    let nonzero_spans = (degree..control_count)
+        .filter(|&index| spline.knots[index + 1] - spline.knots[index] > CURVE_EPSILON)
+        .count();
+    if nonzero_spans == 0 {
+        return None;
+    }
+    let segments_per_span = if spline.degree == 1 || spline.flags.linear {
+        1
+    } else {
+        SPLINE_SEGMENTS_PER_SPAN
+    };
+    let requested_segments = nonzero_spans.checked_mul(segments_per_span)?;
+    let segment_count = requested_segments.min(MAX_CURVE_SEGMENTS);
+    Some(SplineSampling {
+        degree,
+        nonzero_spans,
+        segments_per_span,
+        segment_count,
+        domain_start,
+        domain_end,
+        uniform_domain: requested_segments > MAX_CURVE_SEGMENTS,
+    })
+}
+
+fn spline_segment_parameters(
+    spline: &acadrust::entities::Spline,
+    sampling: SplineSampling,
+    segment_index: usize,
+) -> Option<(f64, f64)> {
+    if segment_index >= sampling.segment_count {
+        return None;
+    }
+    if sampling.uniform_domain {
+        let scale = (sampling.domain_end - sampling.domain_start) / sampling.segment_count as f64;
+        return Some((
+            sampling.domain_start + scale * segment_index as f64,
+            sampling.domain_start + scale * (segment_index + 1) as f64,
+        ));
+    }
+
+    let span_ordinal = segment_index / sampling.segments_per_span;
+    let subdivision = segment_index % sampling.segments_per_span;
+    if span_ordinal >= sampling.nonzero_spans {
+        return None;
+    }
+    let mut current_span = 0_usize;
+    for knot_index in sampling.degree..spline.control_points.len() {
+        let span_start = spline.knots[knot_index];
+        let span_end = spline.knots[knot_index + 1];
+        if span_end - span_start <= CURVE_EPSILON {
+            continue;
+        }
+        if current_span == span_ordinal {
+            let scale = (span_end - span_start) / sampling.segments_per_span as f64;
+            return Some((
+                span_start + scale * subdivision as f64,
+                span_start + scale * (subdivision + 1) as f64,
+            ));
+        }
+        current_span += 1;
+    }
+    None
+}
+
+fn evaluate_spline(
+    spline: &acadrust::entities::Spline,
+    sampling: SplineSampling,
+    parameter: f64,
+) -> Option<Vector3> {
+    let control_count = spline.control_points.len();
+    let span = if parameter >= sampling.domain_end - CURVE_EPSILON {
+        control_count - 1
+    } else {
+        (sampling.degree..control_count).find(|&index| {
+            spline.knots[index] <= parameter && parameter < spline.knots[index + 1]
+        })?
+    };
+    let mut points = [Vector3::ZERO; MAX_SPLINE_DEGREE + 1];
+    let mut weights = [0.0_f64; MAX_SPLINE_DEGREE + 1];
+    let has_weights = spline.weights.len() == control_count;
+    for index in 0..=sampling.degree {
+        let control_index = span.checked_sub(sampling.degree)?.checked_add(index)?;
+        let control = *spline.control_points.get(control_index)?;
+        let weight = if has_weights {
+            *spline.weights.get(control_index)?
+        } else {
+            1.0
+        };
+        if !vector_is_finite(control) || !weight.is_finite() {
+            return None;
+        }
+        points[index] = control * weight;
+        weights[index] = weight;
+    }
+
+    for level in 1..=sampling.degree {
+        for index in (level..=sampling.degree).rev() {
+            let knot_index = span - sampling.degree + index;
+            let denominator =
+                spline.knots[knot_index + sampling.degree - level + 1] - spline.knots[knot_index];
+            let alpha = if denominator.abs() <= CURVE_EPSILON {
+                0.0
+            } else {
+                ((parameter - spline.knots[knot_index]) / denominator).clamp(0.0, 1.0)
+            };
+            points[index] = points[index - 1] * (1.0 - alpha) + points[index] * alpha;
+            weights[index] = weights[index - 1] * (1.0 - alpha) + weights[index] * alpha;
+        }
+    }
+    let weight = weights[sampling.degree];
+    if !weight.is_finite() || weight.abs() <= CURVE_EPSILON {
+        return None;
+    }
+    Some(points[sampling.degree] / weight)
+}
+
+fn spline_fallback_segment_count(spline: &acadrust::entities::Spline) -> usize {
+    let point_count = if spline.fit_points.len() >= 2 {
+        spline.fit_points.len()
+    } else {
+        spline.control_points.len()
+    };
+    polyline_segment_count(point_count, spline.flags.closed).min(MAX_CURVE_SEGMENTS)
+}
+
+fn spline_fallback_segment(
+    spline: &acadrust::entities::Spline,
+    segment_index: usize,
+) -> Option<(Vector3, Vector3)> {
+    let points = if spline.fit_points.len() >= 2 {
+        &spline.fit_points
+    } else {
+        &spline.control_points
+    };
+    let source_segments = polyline_segment_count(points.len(), spline.flags.closed);
+    let output_segments = source_segments.min(MAX_CURVE_SEGMENTS);
+    if output_segments == 0 || segment_index >= output_segments {
+        return None;
+    }
+    let start_index = segment_index * source_segments / output_segments;
+    let end_index = (segment_index + 1) * source_segments / output_segments;
+    Some((
+        *points.get(start_index % points.len())?,
+        *points.get(end_index % points.len())?,
+    ))
 }
 
 fn polyline_next_vertex(segment_index: usize, vertex_count: usize, closed: bool) -> Option<usize> {
@@ -2521,19 +2985,40 @@ fn rebased_coordinate(value: f64, origin: f64) -> Result<f32> {
     Ok(rebased)
 }
 
-fn rebased_position_error(point: Vector3, origin: Vector3) -> Result<f64> {
-    let encoded = [
-        rebased_coordinate(point.x, origin.x)?,
-        rebased_coordinate(point.y, origin.y)?,
-        rebased_coordinate(point.z, origin.z)?,
+fn rebased_position_error_bound(bounds: FiniteBounds3, origin: Vector3) -> Result<f64> {
+    let extrema = [
+        (bounds.min.x, bounds.max.x, origin.x),
+        (bounds.min.y, bounds.max.y, origin.y),
+        (bounds.min.z, bounds.max.z, origin.z),
     ];
-    Ok([
-        (origin.x + f64::from(encoded[0]) - point.x).abs(),
-        (origin.y + f64::from(encoded[1]) - point.y).abs(),
-        (origin.z + f64::from(encoded[2]) - point.z).abs(),
-    ]
-    .into_iter()
-    .fold(0.0_f64, f64::max))
+    let mut maximum = 0.0_f64;
+    for (minimum, maximum_value, origin_value) in extrema {
+        rebased_coordinate(minimum, origin_value)?;
+        rebased_coordinate(maximum_value, origin_value)?;
+        let magnitude = (minimum - origin_value)
+            .abs()
+            .max((maximum_value - origin_value).abs());
+        let quantization_error = magnitude * f64::from(f32::EPSILON);
+        let reconstruction_error =
+            (origin_value.abs() + magnitude) * f64::EPSILON + f64::from(f32::from_bits(1));
+        maximum = maximum.max(quantization_error + reconstruction_error);
+    }
+    Ok(maximum)
+}
+
+fn round_up_f32(value: f64) -> Result<f32> {
+    if !value.is_finite() || value < 0.0 {
+        anyhow::bail!("value is not a finite non-negative number");
+    }
+    let rounded = value as f32;
+    if !rounded.is_finite() {
+        anyhow::bail!("value cannot be represented as a finite f32");
+    }
+    Ok(if f64::from(rounded) < value {
+        f32::from_bits(rounded.to_bits() + 1)
+    } else {
+        rounded
+    })
 }
 
 fn write_common<W: Write>(
@@ -2781,10 +3266,11 @@ mod tests {
         assert_eq!(read_u32(&bytes, 16), 17);
         assert_eq!(read_u64(&bytes, 48), 1234);
         assert_eq!(summary.counts.serialized_entities, 7);
-        assert_eq!(summary.gpu_lines.model_segments, 2);
-        assert_eq!(summary.gpu_lines.overview_segments, 2);
+        assert_eq!(summary.gpu_lines.model_segments, 43);
+        assert_eq!(summary.gpu_lines.overview_segments, 43);
         assert_eq!(summary.gpu_lines.block_segments, 0);
-        assert_eq!(summary.gpu_lines.vertices, 4);
+        assert_eq!(summary.gpu_lines.vertices, 86);
+        assert_eq!(summary.gpu_lines.approximated_curve_segments, 40);
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
@@ -2815,7 +3301,108 @@ mod tests {
         assert_eq!(gpu_batches.3, 1);
         let gpu_vertices = directory_entry(&bytes, SectionKind::GpuLineVertices);
         assert_eq!(gpu_vertices.1, GPU_LINE_VERTEX_RECORD_SIZE);
-        assert_eq!(gpu_vertices.3, 4);
+        assert_eq!(gpu_vertices.3, 86);
+    }
+
+    #[test]
+    fn analytic_curves_are_tessellated_with_bounded_segments() {
+        let arc = EntityType::Arc(Arc::from_coords(
+            0.0,
+            0.0,
+            0.0,
+            10.0,
+            0.0,
+            std::f64::consts::PI,
+        ));
+        let circle = EntityType::Circle(Circle::from_coords(0.0, 0.0, 0.0, 10.0));
+        let ellipse = EntityType::Ellipse(Ellipse::from_center_axes(
+            Vector3::ZERO,
+            Vector3::new(10.0, 0.0, 0.0),
+            0.5,
+        ));
+        let spline = EntityType::Spline(Spline::from_control_points(
+            3,
+            vec![
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 1.0, 0.0),
+                Vector3::new(2.0, 1.0, 0.0),
+                Vector3::new(3.0, 0.0, 0.0),
+            ],
+        ));
+
+        assert_eq!(gpu_entity_segment_count(&arc), 8);
+        assert_eq!(gpu_entity_segment_count(&circle), 16);
+        assert_eq!(gpu_entity_segment_count(&ellipse), 16);
+        assert_eq!(gpu_entity_segment_count(&spline), 2);
+        assert!(gpu_entity_segment_count(&spline) <= MAX_CURVE_SEGMENTS);
+
+        let arc_start = gpu_segment_geometry(&arc, 0).unwrap().start;
+        let arc_end = gpu_segment_geometry(&arc, 7).unwrap().end;
+        assert!((arc_start.x - 10.0).abs() < 1.0e-9);
+        assert!(arc_start.y.abs() < 1.0e-9);
+        assert!((arc_end.x + 10.0).abs() < 1.0e-9);
+        assert!(arc_end.y.abs() < 1.0e-9);
+
+        let spline_midpoint = gpu_segment_geometry(&spline, 0).unwrap().end;
+        assert!((spline_midpoint.x - 1.5).abs() < 1.0e-9);
+        assert!((spline_midpoint.y - 0.75).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn malformed_spline_fallback_is_bounded_and_reaches_its_endpoint() {
+        let control_points = (0..400)
+            .map(|index| Vector3::new(f64::from(index), 0.0, 0.0))
+            .collect();
+        let mut spline = Spline::from_control_points(3, control_points);
+        spline.knots.clear();
+        let entity = EntityType::Spline(spline);
+
+        assert_eq!(gpu_entity_segment_count(&entity), MAX_CURVE_SEGMENTS);
+        let final_segment = gpu_segment_geometry(&entity, MAX_CURVE_SEGMENTS - 1).unwrap();
+        assert!((final_segment.end.x - 399.0).abs() < 1.0e-9);
+        assert!(gpu_segment_geometry(&entity, MAX_CURVE_SEGMENTS).is_none());
+    }
+
+    #[test]
+    fn malformed_spline_weights_use_control_point_fallback() {
+        let mut spline = Spline::from_control_points(
+            2,
+            vec![
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(1.0, 1.0, 0.0),
+                Vector3::new(2.0, 0.0, 0.0),
+            ],
+        );
+        spline.weights = vec![1.0];
+        let entity = EntityType::Spline(spline);
+
+        assert_eq!(gpu_entity_segment_count(&entity), 2);
+        let first_segment = gpu_segment_geometry(&entity, 0).unwrap();
+        assert_eq!(first_segment.start, Vector3::new(0.0, 0.0, 0.0));
+        assert_eq!(first_segment.end, Vector3::new(1.0, 1.0, 0.0));
+        assert!(first_segment.approximated_curve);
+    }
+
+    #[test]
+    fn stored_position_error_is_rounded_up() {
+        let value = 1.0 + f64::from(f32::EPSILON) * 0.25;
+        let encoded = round_up_f32(value).unwrap();
+
+        assert!(f64::from(encoded) >= value);
+        assert_eq!(encoded, f32::from_bits(1.0_f32.to_bits() + 1));
+    }
+
+    #[test]
+    fn polyline_bulges_are_refined_instead_of_drawn_as_one_chord() {
+        let mut polyline =
+            LwPolyline::from_points(vec![Vector2::new(0.0, 0.0), Vector2::new(2.0, 0.0)]);
+        polyline.vertices[0].bulge = 1.0;
+        let entity = EntityType::LwPolyline(polyline);
+
+        assert_eq!(gpu_entity_segment_count(&entity), 8);
+        let midpoint = gpu_segment_geometry(&entity, 3).unwrap().end;
+        assert!((midpoint.x - 1.0).abs() < 1.0e-9);
+        assert!((midpoint.y + 1.0).abs() < 1.0e-9);
     }
 
     #[test]
@@ -2928,6 +3515,14 @@ mod tests {
         assert!((first_x - (base + 0.125)).abs() < 1.0e-6);
         assert!((first_y - (base + 0.25)).abs() < 1.0e-6);
         assert!((second_x - (base + 0.375)).abs() < 1.0e-6);
+        let measured_error = [
+            (first_x - (base + 0.125)).abs(),
+            (first_y - (base + 0.25)).abs(),
+            (second_x - (base + 0.375)).abs(),
+        ]
+        .into_iter()
+        .fold(0.0_f64, f64::max);
+        assert!(summary.gpu_lines.maximum_position_error >= measured_error);
     }
 
     #[test]

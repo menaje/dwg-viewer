@@ -1,6 +1,6 @@
 # Webview renderer
 
-Dependency-free Scene Cache v1.2 reader and WebGL2 line renderer for the
+Dependency-free Scene Cache v1.3 reader and WebGL2 line renderer for the
 VS Code Webview.
 
 ## Implemented
@@ -22,10 +22,12 @@ VS Code Webview.
 - Cancels stale queued work and safely releases in-flight results on disposal.
 - Searches Hangul layer names and toggles individual or all layers without
   rereading geometry or rebuilding GPU buffers.
+- Displays bounded first-pass chords for arcs, circles, ellipses, polyline
+  bulges and NURBS splines emitted by the converter.
 
 The current page is an engine verification harness, not the final VS Code
-extension UI. Text, SHX/BigFont and curved geometry refinement remain
-follow-up work.
+extension UI. Text, SHX/BigFont and view-adaptive high-zoom curve refinement
+remain follow-up work.
 
 ## Run
 

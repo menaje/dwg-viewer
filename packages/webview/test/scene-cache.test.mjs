@@ -28,6 +28,24 @@ test("opens the header and directory without reading the full cache", async () =
   assert.ok(source.bytesRead < buffer.byteLength / 2);
 });
 
+test("accepts the current Scene Cache v1.3 header", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 3 })),
+  );
+
+  assert.equal(reader.header.major, 1);
+  assert.equal(reader.header.minor, 3);
+});
+
+test("rejects a newer unsupported Scene Cache minor version", async () => {
+  await assert.rejects(
+    SceneCacheReader.open(
+      new MemoryRangeSource(makeFixtureCache({ minorVersion: 4 })),
+    ),
+    /unsupported scene-cache version 1\.4/,
+  );
+});
+
 test("parses render metadata and reads one contiguous overview prefix", async () => {
   const source = new TrackedRangeSource(
     new MemoryRangeSource(makeFixtureCache()),
