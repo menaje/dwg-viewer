@@ -19,10 +19,11 @@ and memory targets and matches the normalized geometry and Korean text
 fingerprint. Its first direct Scene Cache writer also passes the conversion
 time and memory targets. It now renders LINE and LWPOLYLINE/2D/3D POLYLINE
 geometry plus bounded ARC/CIRCLE/ELLIPSE and bulge chords, while preserving
-source records for a partial entity set. It does not become the primary engine
-until the remaining required geometry, spatial-detail and Korean text
-preservation are proved. ACadSharp remains a fallback candidate through the
-same adapter protocol.
+source records for a partial entity set. Bounded SPLINE evaluation and
+fit/control-point fallback now use the same cache contract. It does not become
+the primary engine until the remaining source families, spatial-detail and
+Korean text preservation are proved. ACadSharp remains a fallback candidate
+through the same adapter protocol.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -49,29 +50,30 @@ LibreDWG's separate block markers, owned vertices, table records and attached
 attributes, the drawing summary, entity-type counts, Hangul counts and
 corruption markers match exactly.
 
-The bounded LibreDWG analytic-curve milestone measured 2,312 ms median wall
-time and 591,921,152 bytes median peak RSS; measured maximums were 2,373 ms and
-592,035,840 bytes. It wrote a deterministic 156,879,448-byte valid cache with a
-4,194,304-byte overview and 512 KiB maximum detail batch. ARC, CIRCLE and
-ELLIPSE add 148,502 bounded chords to the previous LINE/polyline display path,
-for 1,508,554 full-detail segments. Together with polyline bulges, 949,899
-segments carry the approximation flag. Browser-side metadata and overview
-reads totaled 5,036,301 bytes in eight reads, and 94,814 block instances
-resolved without invalid references. Every one of the 694 detail-bearing block
-definitions received an overview allocation.
+The bounded LibreDWG SPLINE milestone measured 2,774 ms median wall time and
+592,052,224 bytes median peak RSS; measured maximums were 2,969 ms and
+592,101,376 bytes. It wrote a deterministic 170,448,592-byte valid cache with a
+4,194,304-byte overview and 512 KiB maximum detail batch. Its SPLINE pools hold
+12,330 headers, 148,950 knots, 48 weights, 100,100 control points and 283 fit
+points. Knot-span evaluation and fit/control fallback add 115,651 bounded
+segments, for 1,624,205 full-detail segments in total. Across every curved
+source kind, 1,065,536 segments carry the approximation flag. Browser-side
+metadata and overview reads totaled 5,037,965 bytes in eight reads, and 94,814
+block instances resolved without invalid references. Every one of the 694
+detail-bearing block definitions received an overview allocation.
 
-Compared with the preceding polyline milestone, analytic curves increased the
-median conversion time by 65 ms and the cache by 9,506,816 bytes while peak RSS
-remained effectively unchanged. The first-frame read grew by only 2,688 bytes
-because the overview stays fixed at 4 MiB. This proves that direct repeated
-traversal can expand display coverage without creating a whole-drawing
-geometry plan. The engine decision remains incomplete because the source
-writer still covers 359,066 of 378,400 logical entities (94.89%) and defers
-SPLINE display, other source entity families, spatial ordering and text/SHX
-display.
+Compared with the preceding analytic-curve milestone, SPLINE support increased
+the median conversion time by 462 ms and the cache by 13,569,144 bytes. Peak
+RSS maximum increased by only 65,536 bytes, and the first-frame read grew by
+only 1,664 bytes because source pools are not loaded for the first frame and
+the overview stays fixed at 4 MiB. This proves that direct repeated traversal
+can expand display coverage without creating a whole-drawing geometry plan.
+The source writer now covers 371,396 of 378,400 logical entities (98.15%).
+The engine decision remains incomplete because 7,004 other source entities,
+spatial ordering and text/SHX display are still deferred.
 
 The parser itself accounts for almost all measured RSS: the current conversion
-maximum is only 7,964,160 bytes below the 600,000,000-byte target. Therefore
+maximum is only 7,898,624 bytes below the 600,000,000-byte target. Therefore
 future LibreDWG coverage must retain streaming or disk-backed bounded passes;
 a whole-drawing geometry vector would erase the margin.
 

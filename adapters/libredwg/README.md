@@ -14,15 +14,20 @@ This is a deliberately partial conversion milestone:
 
 - layer and block names stay UTF-8;
 - LINE, ARC, CIRCLE, INSERT/MINSERT, LWPOLYLINE, 2D/3D POLYLINE and
-  ELLIPSE source records are preserved;
-- LINE, normalized polyline, ARC, CIRCLE and ELLIPSE geometry are emitted as
-  renderable, instanced GPU batches;
+  ELLIPSE source records plus SPLINE headers and knot/weight/control/fit pools
+  are preserved;
+- LINE, normalized polyline, ARC, CIRCLE, ELLIPSE and SPLINE geometry are
+  emitted as renderable, instanced GPU batches;
 - circular curves and polyline bulges are converted to bounded chords with at
   most 16 segments per revolution, while exact curve records, vertices and
   bulges remain in the source pools;
+- valid SPLINE definitions use one segment for linear spans or two per
+  non-empty curved knot span, capped at 256 segments per entity; malformed
+  definitions fall back to bounded fit/control-point chords;
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
-- SPLINE and text/SHX display expansion remains open in GitHub issue #9.
+- text/SHX display expansion and spatial detail ordering remain open in GitHub
+  issue #9.
 
 The partial writer produces a structurally valid cache, but it is not yet the
 primary production converter. Its detail batches retain source traversal order
@@ -83,12 +88,13 @@ keeps raw counts under `drawing.raw_*` and `embedded_text`, but normalizes the
 main `drawing.entities`, `drawing.objects`, `entity_types` and `text` fields to
 the shared logical inspection contract.
 
-On the private 24 MB reference drawing, the analytic-curve milestone had a
-2,312 ms median process wall time and 591,921,152-byte median peak RSS across
-three isolated measured runs. The maximums were 2,373 ms and 592,035,840 bytes.
-The deterministic 156,879,448-byte cache contains 148,502 new bounded
-ARC/CIRCLE/ELLIPSE chords and 1,508,554 full-detail segments in total;
-359,066 of 378,400 logical entities (94.89%) have source records. The browser
-opens it with eight range reads totaling 5,036,301 bytes, including the fixed
-4 MiB overview. This is only 2,688 more first-frame bytes than the polyline
-milestone. Private reports and generated caches are not committed.
+On the private 24 MB reference drawing, the SPLINE milestone had a 2,774 ms
+median process wall time and 592,052,224-byte median peak RSS across three
+isolated measured runs. The maximums were 2,969 ms and 592,101,376 bytes.
+The deterministic 170,448,592-byte cache preserves 12,330 SPLINE entities and
+adds 115,651 bounded SPLINE segments, producing 1,624,205 full-detail segments
+in total. Source-record coverage is 371,396 of 378,400 logical entities
+(98.15%). The browser opens it with eight range reads totaling 5,037,965 bytes,
+including the fixed 4 MiB overview. This is only 1,664 more first-frame bytes
+than the analytic-curve milestone. Private reports and generated caches are
+not committed.

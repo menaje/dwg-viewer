@@ -225,14 +225,15 @@ generated artifacts and must not be committed.
 The optional LibreDWG adapter currently writes a valid but partial v1.3 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
-LWPOLYLINE/2D/3D POLYLINE and ELLIPSE. Its GPU sections render LINE and
-normalized polyline segments plus bounded ARC/CIRCLE/ELLIPSE and bulge chords
-with the same 16-segments-per-revolution limit. Empty required spline sections
-are still present and all omitted logical entities are exposed in the
-conversion report rather than silently treated as supported.
+LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
+pools. Its GPU sections render LINE and normalized polyline segments plus
+bounded ARC/CIRCLE/ELLIPSE, bulge and SPLINE chords. Circular curves use the
+same 16-segments-per-revolution limit; SPLINE evaluation and malformed-input
+fallback use the 256-segments-per-entity limit. All omitted logical entities
+are exposed in the conversion report rather than silently treated as
+supported.
 
 This qualification writer keeps the same 4 MiB overview and 512 KiB detail
 limits, but detail batches are in bounded source traversal order rather than
-XY Morton order. SPLINE display coverage, text/SHX caches and spatial ordering
-remain requirements before the LibreDWG writer can replace the primary
-converter.
+XY Morton order. Text/SHX caches and spatial ordering remain requirements
+before the LibreDWG writer can replace the primary converter.

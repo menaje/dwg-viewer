@@ -52,6 +52,9 @@
 #define CURVE_FULL_TURN_RADIANS 6.28318530717958647693
 #define CURVE_EPSILON 1.0e-12
 #define MAX_CIRCULAR_SEGMENTS 16u
+#define SPLINE_SEGMENTS_PER_SPAN 2u
+#define MAX_SPLINE_DEGREE 15u
+#define MAX_SPLINE_SEGMENTS 256u
 
 enum
 {
@@ -189,6 +192,18 @@ typedef struct
   double constant_width;
   int closed;
 } PolylineInfo;
+
+typedef struct
+{
+  size_t degree;
+  size_t control_count;
+  size_t nonzero_spans;
+  unsigned segments_per_span;
+  unsigned segment_count;
+  double domain_start;
+  double domain_end;
+  int uniform_domain;
+} SplineSampling;
 
 typedef struct
 {
@@ -1030,6 +1045,45 @@ polyline_vertex_count (const Dwg_Object *object)
   return count;
 }
 
+static size_t
+spline_knot_count (const Dwg_Entity_SPLINE *spline)
+{
+  if (!spline || !spline->knots || spline->num_knots <= 0)
+    return 0;
+  return (size_t)spline->num_knots;
+}
+
+static size_t
+spline_control_point_count (const Dwg_Entity_SPLINE *spline)
+{
+  if (!spline || !spline->ctrl_pts || spline->num_ctrl_pts <= 0)
+    return 0;
+  return (size_t)spline->num_ctrl_pts;
+}
+
+static size_t
+spline_weight_count (const Dwg_Entity_SPLINE *spline)
+{
+  return spline && spline->weighted
+             ? spline_control_point_count (spline)
+             : 0;
+}
+
+static size_t
+spline_fit_point_count (const Dwg_Entity_SPLINE *spline)
+{
+  if (!spline || !spline->fit_pts || spline->num_fit_pts <= 0)
+    return 0;
+  return (size_t)spline->num_fit_pts;
+}
+
+static int
+spline_is_closed (const Dwg_Entity_SPLINE *spline)
+{
+  return spline
+         && (spline->closed_b || (spline->splineflags & 4u) != 0);
+}
+
 static int
 is_logical_entity (const Dwg_Object *object)
 {
@@ -1097,6 +1151,21 @@ count_primitives (const Dwg_Data *dwg)
         case DWG_TYPE_ELLIPSE:
           counts.ellipses++;
           break;
+        case DWG_TYPE_SPLINE:
+          if (object->tio.entity
+              && object->tio.entity->tio.SPLINE)
+            {
+              const Dwg_Entity_SPLINE *spline
+                  = object->tio.entity->tio.SPLINE;
+              counts.splines++;
+              counts.spline_knots += spline_knot_count (spline);
+              counts.spline_weights += spline_weight_count (spline);
+              counts.spline_control_points
+                  += spline_control_point_count (spline);
+              counts.spline_fit_points
+                  += spline_fit_point_count (spline);
+            }
+          break;
         default:
           break;
         }
@@ -1104,7 +1173,8 @@ count_primitives (const Dwg_Data *dwg)
   counts.serialized_entities = counts.lines + counts.arcs + counts.circles
                                + counts.inserts + counts.lwpolylines
                                + counts.polylines_2d
-                               + counts.polylines_3d + counts.ellipses;
+                               + counts.polylines_3d + counts.ellipses
+                               + counts.splines;
   counts.deferred_entities
       = counts.total_entities - counts.serialized_entities;
   return counts;
@@ -1686,14 +1756,249 @@ write_ellipse_section (CacheWriter *writer, const Dwg_Data *dwg,
 }
 
 static int
-write_empty_section (CacheWriter *writer, SectionEntry *entry, uint32_t kind,
-                     uint32_t record_size, const char *name)
+write_spline_header_section (CacheWriter *writer, const Dwg_Data *dwg,
+                             const CacheTables *tables,
+                             SectionEntry *entry)
 {
   uint64_t offset;
+  uint64_t knot_index = 0;
+  uint64_t weight_index = 0;
+  uint64_t control_index = 0;
+  uint64_t fit_index = 0;
+  uint64_t count = 0;
+  size_t i;
   if (!align_writer (writer, &offset))
     return 0;
-  return finish_fixed_section (writer, entry, kind, record_size, name,
-                               offset, 0);
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      const Dwg_Object *object = &dwg->object[i];
+      const Dwg_Entity_SPLINE *spline;
+      uint64_t knot_count;
+      uint64_t weight_count;
+      uint64_t control_count;
+      uint64_t fit_count;
+      uint32_t flags = 0;
+      double normal[3] = { 0.0, 0.0, 1.0 };
+      double knot_tolerance;
+      double control_tolerance;
+      double begin_tangent[3];
+      double end_tangent[3];
+      if (object->fixedtype != DWG_TYPE_SPLINE || !object->tio.entity
+          || !(spline = object->tio.entity->tio.SPLINE))
+        continue;
+      knot_count = (uint64_t)spline_knot_count (spline);
+      weight_count = (uint64_t)spline_weight_count (spline);
+      control_count = (uint64_t)spline_control_point_count (spline);
+      fit_count = (uint64_t)spline_fit_point_count (spline);
+      if (UINT64_MAX - knot_index < knot_count
+          || UINT64_MAX - weight_index < weight_count
+          || UINT64_MAX - control_index < control_count
+          || UINT64_MAX - fit_index < fit_count)
+        {
+          set_error (writer, "spline pool index overflow");
+          return 0;
+        }
+      if (spline_is_closed (spline))
+        flags |= 1u;
+      if (spline->periodic)
+        flags |= 1u << 1;
+      if (spline->rational)
+        flags |= 1u << 2;
+      knot_tolerance
+          = spline->scenario == SPLINE_SCENARIO_SPLINE
+                ? spline->knot_tol
+                : 0.0;
+      control_tolerance
+          = spline->scenario == SPLINE_SCENARIO_SPLINE
+                ? spline->ctrl_tol
+                : 0.0;
+      begin_tangent[0] = spline->beg_tan_vec.x;
+      begin_tangent[1] = spline->beg_tan_vec.y;
+      begin_tangent[2] = spline->beg_tan_vec.z;
+      end_tangent[0] = spline->end_tan_vec.x;
+      end_tangent[1] = spline->end_tan_vec.y;
+      end_tangent[2] = spline->end_tan_vec.z;
+      if (!write_common (writer, object, tables)
+          || !write_i32 (writer, (int32_t)spline->degree)
+          || !write_u32 (writer, flags)
+          || !write_i32 (writer, (int32_t)spline->knotparam)
+          || !write_u32 (writer, 0)
+          || !write_u64 (writer, knot_index)
+          || !write_u64 (writer, knot_count)
+          || !write_u64 (writer, control_index)
+          || !write_u64 (writer, control_count)
+          || !write_u64 (writer, weight_index)
+          || !write_u64 (writer, weight_count)
+          || !write_u64 (writer, fit_index)
+          || !write_u64 (writer, fit_count)
+          || !write_vec3 (writer, normal)
+          || !write_f64 (writer, knot_tolerance)
+          || !write_f64 (writer, control_tolerance)
+          || !write_f64 (writer, spline->fit_tol)
+          || !write_vec3 (writer, begin_tangent)
+          || !write_vec3 (writer, end_tangent))
+        return 0;
+      knot_index += knot_count;
+      weight_index += weight_count;
+      control_index += control_count;
+      fit_index += fit_count;
+      count++;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_SPLINE_HEADERS, SPLINE_HEADER_RECORD_SIZE,
+      "spline_headers", offset, count);
+}
+
+static int
+write_spline_knot_section (CacheWriter *writer, const Dwg_Data *dwg,
+                           SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t i;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      const Dwg_Object *object = &dwg->object[i];
+      const Dwg_Entity_SPLINE *spline;
+      size_t knot_count;
+      size_t index;
+      if (object->fixedtype != DWG_TYPE_SPLINE || !object->tio.entity
+          || !(spline = object->tio.entity->tio.SPLINE))
+        continue;
+      knot_count = spline_knot_count (spline);
+      if (UINT64_MAX - count < (uint64_t)knot_count)
+        {
+          set_error (writer, "spline knot count overflow");
+          return 0;
+        }
+      for (index = 0; index < knot_count; index++)
+        {
+          if (!write_f64 (writer, spline->knots[index]))
+            return 0;
+        }
+      count += (uint64_t)knot_count;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_SPLINE_KNOTS, SPLINE_SCALAR_RECORD_SIZE,
+      "spline_knots", offset, count);
+}
+
+static int
+write_spline_weight_section (CacheWriter *writer, const Dwg_Data *dwg,
+                             SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t i;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      const Dwg_Object *object = &dwg->object[i];
+      const Dwg_Entity_SPLINE *spline;
+      size_t weight_count;
+      size_t index;
+      if (object->fixedtype != DWG_TYPE_SPLINE || !object->tio.entity
+          || !(spline = object->tio.entity->tio.SPLINE))
+        continue;
+      weight_count = spline_weight_count (spline);
+      if (UINT64_MAX - count < (uint64_t)weight_count)
+        {
+          set_error (writer, "spline weight count overflow");
+          return 0;
+        }
+      for (index = 0; index < weight_count; index++)
+        {
+          if (!write_f64 (writer, spline->ctrl_pts[index].w))
+            return 0;
+        }
+      count += (uint64_t)weight_count;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_SPLINE_WEIGHTS, SPLINE_SCALAR_RECORD_SIZE,
+      "spline_weights", offset, count);
+}
+
+static int
+write_spline_control_point_section (CacheWriter *writer,
+                                    const Dwg_Data *dwg,
+                                    SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t i;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      const Dwg_Object *object = &dwg->object[i];
+      const Dwg_Entity_SPLINE *spline;
+      size_t control_count;
+      size_t index;
+      if (object->fixedtype != DWG_TYPE_SPLINE || !object->tio.entity
+          || !(spline = object->tio.entity->tio.SPLINE))
+        continue;
+      control_count = spline_control_point_count (spline);
+      if (UINT64_MAX - count < (uint64_t)control_count)
+        {
+          set_error (writer, "spline control-point count overflow");
+          return 0;
+        }
+      for (index = 0; index < control_count; index++)
+        {
+          double point[3] = { spline->ctrl_pts[index].x,
+                              spline->ctrl_pts[index].y,
+                              spline->ctrl_pts[index].z };
+          if (!write_vec3 (writer, point))
+            return 0;
+        }
+      count += (uint64_t)control_count;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_SPLINE_CONTROL_POINTS,
+      SPLINE_POINT_RECORD_SIZE, "spline_control_points", offset, count);
+}
+
+static int
+write_spline_fit_point_section (CacheWriter *writer,
+                                const Dwg_Data *dwg,
+                                SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t i;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      const Dwg_Object *object = &dwg->object[i];
+      const Dwg_Entity_SPLINE *spline;
+      size_t fit_count;
+      size_t index;
+      if (object->fixedtype != DWG_TYPE_SPLINE || !object->tio.entity
+          || !(spline = object->tio.entity->tio.SPLINE))
+        continue;
+      fit_count = spline_fit_point_count (spline);
+      if (UINT64_MAX - count < (uint64_t)fit_count)
+        {
+          set_error (writer, "spline fit-point count overflow");
+          return 0;
+        }
+      for (index = 0; index < fit_count; index++)
+        {
+          double point[3] = { spline->fit_pts[index].x,
+                              spline->fit_pts[index].y,
+                              spline->fit_pts[index].z };
+          if (!write_vec3 (writer, point))
+            return 0;
+        }
+      count += (uint64_t)fit_count;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_SPLINE_FIT_POINTS,
+      SPLINE_POINT_RECORD_SIZE, "spline_fit_points", offset, count);
 }
 
 static uint32_t
@@ -2456,6 +2761,364 @@ iterate_analytic_curve_segments (const Dwg_Object *object,
 }
 
 static int
+read_spline_sampling (const Dwg_Entity_SPLINE *spline,
+                      SplineSampling *sampling)
+{
+  size_t degree;
+  size_t control_count;
+  size_t knot_count;
+  size_t required_knots;
+  size_t nonzero_spans = 0;
+  size_t requested_segments;
+  size_t index;
+  int has_nonzero_weight = 0;
+  double domain_range;
+  if (!spline || !sampling || spline->degree <= 0
+      || (uint64_t)spline->degree > MAX_SPLINE_DEGREE)
+    return 0;
+  degree = (size_t)spline->degree;
+  control_count = spline_control_point_count (spline);
+  knot_count = spline_knot_count (spline);
+  if (control_count <= degree
+      || control_count > SIZE_MAX - degree - 1u)
+    return 0;
+  required_knots = control_count + degree + 1u;
+  if (knot_count < required_knots)
+    return 0;
+  for (index = 0; index < knot_count; index++)
+    {
+      if (!isfinite (spline->knots[index])
+          || (index && spline->knots[index - 1u]
+                           > spline->knots[index]))
+        return 0;
+    }
+  if (spline->weighted)
+    {
+      for (index = 0; index < control_count; index++)
+        {
+          double weight = spline->ctrl_pts[index].w;
+          if (!isfinite (weight))
+            return 0;
+          if (fabs (weight) > CURVE_EPSILON)
+            has_nonzero_weight = 1;
+        }
+      if (!has_nonzero_weight)
+        return 0;
+    }
+  sampling->domain_start = spline->knots[degree];
+  sampling->domain_end = spline->knots[control_count];
+  domain_range = sampling->domain_end - sampling->domain_start;
+  if (!isfinite (domain_range) || domain_range <= CURVE_EPSILON)
+    return 0;
+  for (index = degree; index < control_count; index++)
+    {
+      double span = spline->knots[index + 1u] - spline->knots[index];
+      if (!isfinite (span))
+        return 0;
+      if (span > CURVE_EPSILON)
+        nonzero_spans++;
+    }
+  if (!nonzero_spans)
+    return 0;
+  sampling->segments_per_span
+      = degree == 1u ? 1u : SPLINE_SEGMENTS_PER_SPAN;
+  if (nonzero_spans > SIZE_MAX / sampling->segments_per_span)
+    return 0;
+  requested_segments
+      = nonzero_spans * sampling->segments_per_span;
+  sampling->degree = degree;
+  sampling->control_count = control_count;
+  sampling->nonzero_spans = nonzero_spans;
+  sampling->segment_count
+      = requested_segments > MAX_SPLINE_SEGMENTS
+            ? MAX_SPLINE_SEGMENTS
+            : (unsigned)requested_segments;
+  sampling->uniform_domain
+      = requested_segments > MAX_SPLINE_SEGMENTS;
+  return sampling->segment_count != 0;
+}
+
+static int
+spline_segment_parameters (const Dwg_Entity_SPLINE *spline,
+                           const SplineSampling *sampling,
+                           unsigned segment_index, double *start,
+                           double *end)
+{
+  size_t span_ordinal;
+  size_t subdivision;
+  size_t current_span = 0;
+  size_t knot_index;
+  if (!spline || !sampling || !start || !end
+      || segment_index >= sampling->segment_count)
+    return 0;
+  if (sampling->uniform_domain)
+    {
+      double scale
+          = (sampling->domain_end - sampling->domain_start)
+            / (double)sampling->segment_count;
+      *start = sampling->domain_start
+               + scale * (double)segment_index;
+      *end = sampling->domain_start
+             + scale * (double)(segment_index + 1u);
+      return isfinite (*start) && isfinite (*end);
+    }
+  span_ordinal
+      = (size_t)segment_index / sampling->segments_per_span;
+  subdivision
+      = (size_t)segment_index % sampling->segments_per_span;
+  if (span_ordinal >= sampling->nonzero_spans)
+    return 0;
+  for (knot_index = sampling->degree;
+       knot_index < sampling->control_count; knot_index++)
+    {
+      double span_start = spline->knots[knot_index];
+      double span_end = spline->knots[knot_index + 1u];
+      double scale;
+      if (span_end - span_start <= CURVE_EPSILON)
+        continue;
+      if (current_span++ != span_ordinal)
+        continue;
+      scale
+          = (span_end - span_start)
+            / (double)sampling->segments_per_span;
+      *start = span_start + scale * (double)subdivision;
+      *end = span_start + scale * (double)(subdivision + 1u);
+      return isfinite (*start) && isfinite (*end);
+    }
+  return 0;
+}
+
+static int
+evaluate_spline (const Dwg_Entity_SPLINE *spline,
+                 const SplineSampling *sampling, double parameter,
+                 double point[3])
+{
+  double points[MAX_SPLINE_DEGREE + 1u][3];
+  double weights[MAX_SPLINE_DEGREE + 1u];
+  size_t span = SIZE_MAX;
+  size_t level;
+  size_t index;
+  size_t axis;
+  if (!spline || !sampling || !point || !isfinite (parameter))
+    return 0;
+  if (parameter >= sampling->domain_end - CURVE_EPSILON)
+    span = sampling->control_count - 1u;
+  else
+    {
+      for (index = sampling->degree;
+           index < sampling->control_count; index++)
+        {
+          if (spline->knots[index] <= parameter
+              && parameter < spline->knots[index + 1u])
+            {
+              span = index;
+              break;
+            }
+        }
+    }
+  if (span == SIZE_MAX || span < sampling->degree)
+    return 0;
+  for (index = 0; index <= sampling->degree; index++)
+    {
+      size_t control_index = span - sampling->degree + index;
+      const Dwg_SPLINE_control_point *control
+          = &spline->ctrl_pts[control_index];
+      double weight = spline->weighted ? control->w : 1.0;
+      if (!isfinite (control->x) || !isfinite (control->y)
+          || !isfinite (control->z) || !isfinite (weight))
+        return 0;
+      points[index][0] = control->x * weight;
+      points[index][1] = control->y * weight;
+      points[index][2] = control->z * weight;
+      weights[index] = weight;
+    }
+  for (level = 1; level <= sampling->degree; level++)
+    {
+      for (index = sampling->degree; index >= level; index--)
+        {
+          size_t knot_index
+              = span - sampling->degree + index;
+          double denominator
+              = spline->knots[knot_index + sampling->degree - level
+                              + 1u]
+                - spline->knots[knot_index];
+          double alpha;
+          if (fabs (denominator) <= CURVE_EPSILON)
+            alpha = 0.0;
+          else
+            {
+              alpha
+                  = (parameter - spline->knots[knot_index])
+                    / denominator;
+              if (alpha < 0.0)
+                alpha = 0.0;
+              else if (alpha > 1.0)
+                alpha = 1.0;
+            }
+          for (axis = 0; axis < 3; axis++)
+            points[index][axis]
+                = points[index - 1u][axis] * (1.0 - alpha)
+                  + points[index][axis] * alpha;
+          weights[index]
+              = weights[index - 1u] * (1.0 - alpha)
+                + weights[index] * alpha;
+        }
+    }
+  if (!isfinite (weights[sampling->degree])
+      || fabs (weights[sampling->degree]) <= CURVE_EPSILON)
+    return 0;
+  for (axis = 0; axis < 3; axis++)
+    point[axis]
+        = points[sampling->degree][axis]
+          / weights[sampling->degree];
+  return 1;
+}
+
+static int
+spline_fallback_point (const Dwg_Entity_SPLINE *spline,
+                       int use_fit_points, size_t index,
+                       double point[3])
+{
+  if (!spline || !point)
+    return 0;
+  if (use_fit_points)
+    {
+      size_t count = spline_fit_point_count (spline);
+      if (index >= count)
+        return 0;
+      point[0] = spline->fit_pts[index].x;
+      point[1] = spline->fit_pts[index].y;
+      point[2] = spline->fit_pts[index].z;
+    }
+  else
+    {
+      size_t count = spline_control_point_count (spline);
+      if (index >= count)
+        return 0;
+      point[0] = spline->ctrl_pts[index].x;
+      point[1] = spline->ctrl_pts[index].y;
+      point[2] = spline->ctrl_pts[index].z;
+    }
+  return 1;
+}
+
+static unsigned
+spline_fallback_segment_count (const Dwg_Entity_SPLINE *spline)
+{
+  size_t fit_count = spline_fit_point_count (spline);
+  size_t point_count
+      = fit_count >= 2u ? fit_count
+                        : spline_control_point_count (spline);
+  size_t source_segments;
+  if (point_count < 2u)
+    return 0;
+  source_segments
+      = point_count - 1u
+        + (spline_is_closed (spline) ? 1u : 0u);
+  return source_segments > MAX_SPLINE_SEGMENTS
+             ? MAX_SPLINE_SEGMENTS
+             : (unsigned)source_segments;
+}
+
+static int
+spline_fallback_segment (const Dwg_Entity_SPLINE *spline,
+                         unsigned segment_index, double start[3],
+                         double end[3])
+{
+  size_t fit_count = spline_fit_point_count (spline);
+  int use_fit_points = fit_count >= 2u;
+  size_t point_count
+      = use_fit_points ? fit_count
+                       : spline_control_point_count (spline);
+  size_t source_segments;
+  unsigned output_segments;
+  size_t start_index;
+  size_t end_index;
+  if (point_count < 2u)
+    return 0;
+  source_segments
+      = point_count - 1u
+        + (spline_is_closed (spline) ? 1u : 0u);
+  output_segments
+      = source_segments > MAX_SPLINE_SEGMENTS
+            ? MAX_SPLINE_SEGMENTS
+            : (unsigned)source_segments;
+  if (!output_segments || segment_index >= output_segments)
+    return 0;
+  start_index
+      = (size_t)((uint64_t)segment_index * source_segments
+                 / output_segments);
+  end_index
+      = (size_t)((uint64_t)(segment_index + 1u) * source_segments
+                 / output_segments);
+  start_index %= point_count;
+  end_index %= point_count;
+  return spline_fallback_point (
+             spline, use_fit_points, start_index, start)
+         && spline_fallback_point (
+             spline, use_fit_points, end_index, end);
+}
+
+static int
+iterate_spline_segments (const Dwg_Object *object,
+                         const CacheTables *tables,
+                         SegmentIteration *iteration)
+{
+  const Dwg_Entity_SPLINE *spline;
+  SplineSampling sampling;
+  LineSegment base;
+  unsigned index;
+  if (!object || object->fixedtype != DWG_TYPE_SPLINE
+      || !object->tio.entity
+      || !(spline = object->tio.entity->tio.SPLINE))
+    return 1;
+  if (!initialize_entity_segment (object, tables, 7, 1, &base))
+    return 1;
+  memset (&sampling, 0, sizeof (sampling));
+  if (read_spline_sampling (spline, &sampling))
+    {
+      base.approximated_curve = sampling.degree > 1u ? 1u : 0u;
+      for (index = 0; index < sampling.segment_count; index++)
+        {
+          LineSegment segment = base;
+          double start_parameter;
+          double end_parameter;
+          if (!spline_segment_parameters (
+                  spline, &sampling, index, &start_parameter,
+                  &end_parameter)
+              || !evaluate_spline (
+                  spline, &sampling, start_parameter, segment.start)
+              || !evaluate_spline (
+                  spline, &sampling, end_parameter, segment.end))
+            {
+              segment_iteration_reject (iteration);
+              continue;
+            }
+          if (!segment_iteration_emit (iteration, &segment))
+            return 0;
+        }
+      return 1;
+    }
+  {
+    unsigned output_segments
+        = spline_fallback_segment_count (spline);
+    for (index = 0; index < output_segments; index++)
+      {
+        LineSegment segment = base;
+        if (!spline_fallback_segment (
+                spline, index, segment.start, segment.end))
+          {
+            segment_iteration_reject (iteration);
+            continue;
+          }
+        if (!segment_iteration_emit (iteration, &segment))
+          return 0;
+      }
+  }
+  return 1;
+}
+
+static int
 iterate_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
                       OverviewPlan *overview,
                       LineSegmentConsumer consumer, void *context,
@@ -2487,6 +3150,10 @@ iterate_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
         return 0;
       if (status == 0
           && !iterate_analytic_curve_segments (
+              object, tables, &iteration))
+        return 0;
+      if (status == 0
+          && !iterate_spline_segments (
               object, tables, &iteration))
         return 0;
     }
@@ -3035,23 +3702,14 @@ libredwg_write_scene_cache (
                                          &sections[7])
       || !write_polyline_vertex_section (&writer, dwg, &sections[8])
       || !write_ellipse_section (&writer, dwg, &tables, &sections[9])
-      || !write_empty_section (&writer, &sections[10],
-                               SECTION_SPLINE_HEADERS,
-                               SPLINE_HEADER_RECORD_SIZE, "spline_headers")
-      || !write_empty_section (&writer, &sections[11],
-                               SECTION_SPLINE_KNOTS,
-                               SPLINE_SCALAR_RECORD_SIZE, "spline_knots")
-      || !write_empty_section (&writer, &sections[12],
-                               SECTION_SPLINE_WEIGHTS,
-                               SPLINE_SCALAR_RECORD_SIZE, "spline_weights")
-      || !write_empty_section (&writer, &sections[13],
-                               SECTION_SPLINE_CONTROL_POINTS,
-                               SPLINE_POINT_RECORD_SIZE,
-                               "spline_control_points")
-      || !write_empty_section (&writer, &sections[14],
-                               SECTION_SPLINE_FIT_POINTS,
-                               SPLINE_POINT_RECORD_SIZE,
-                               "spline_fit_points")
+      || !write_spline_header_section (&writer, dwg, &tables,
+                                       &sections[10])
+      || !write_spline_knot_section (&writer, dwg, &sections[11])
+      || !write_spline_weight_section (&writer, dwg, &sections[12])
+      || !write_spline_control_point_section (&writer, dwg,
+                                              &sections[13])
+      || !write_spline_fit_point_section (&writer, dwg,
+                                          &sections[14])
       || !write_gpu_batch_section (&writer, dwg, &tables, &gpu_lines,
                                    &overview, &sections[15],
                                    &separate_overview)
