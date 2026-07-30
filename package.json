@@ -1,0 +1,13 @@
+{
+  "name": "dwg-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Free and open-source DWG viewer for VS Code",
+  "license": "MPL-2.0",
+  "packageManager": "pnpm@11.12.0",
+  "scripts": {
+    "check": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace",
+    "format": "cargo fmt --all",
+    "test": "cargo test --workspace"
+  }
+}

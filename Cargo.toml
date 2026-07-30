@@ -1,0 +1,16 @@
+[workspace]
+members = ["crates/dwg-converter"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MPL-2.0"
+repository = "https://github.com/menaje/dwg-viewer"
+rust-version = "1.82"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
