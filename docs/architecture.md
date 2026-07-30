@@ -39,11 +39,19 @@ Webview receives only visible chunks and display metadata.
 
 ## Implemented cache slice
 
-Scene Cache v1.1 writes the drawing/layer/block tables and source-precision
+Scene Cache v1.2 writes the drawing/layer/block tables and source-precision
 LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE, ELLIPSE and SPLINE records.
 The records retain owner handles so block definitions remain shared instead of
-being expanded per insertion. Viewport chunks and text are the next format
-increments.
+being expanded per insertion.
+
+The v1.2 display slice adds local-origin `f32` line buffers. It keeps model
+space and block definitions separate, assigns every non-empty block a bounded
+overview allocation within the global 65,536-segment budget, writes the
+complete first-frame vertex set as one
+contiguous prefix of at most 4 MiB and caps each spatial detail batch at
+512 KiB. Curved polylines are marked as coarse chords so the renderer can
+replace them from source-precision records during refinement. Text and curved
+GPU refinement are the next format increments.
 
 ## Performance gates
 

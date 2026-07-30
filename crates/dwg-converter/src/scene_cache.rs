@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use acadrust::entities::EntityType;
-use acadrust::types::{Color, Vector3};
+use acadrust::types::{Color, Matrix3, Vector3};
 use acadrust::{CadDocument, DwgReader};
 use anyhow::{Context, Result};
 use serde::Serialize;
@@ -14,7 +14,7 @@ use crate::{duration_ms, peak_rss_bytes, Bounds3, BoundsAccumulator, InputSummar
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 1;
+pub const CACHE_VERSION_MINOR: u16 = 2;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -31,9 +31,17 @@ const ELLIPSE_RECORD_SIZE: u32 = 128;
 const SPLINE_HEADER_RECORD_SIZE: u32 = 208;
 const SPLINE_SCALAR_RECORD_SIZE: u32 = 8;
 const SPLINE_POINT_RECORD_SIZE: u32 = 24;
+const GPU_LINE_BATCH_RECORD_SIZE: u32 = 128;
+const GPU_LINE_VERTEX_RECORD_SIZE: u32 = 32;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
 const SECTION_FLAG_STRING_TABLE: u32 = 1;
 const MAX_CACHE_STRING_BYTES: u64 = 1024 * 1024;
+const GPU_LINE_BATCH_SEGMENTS: usize = 8_192;
+const SCENE_OVERVIEW_SEGMENTS: usize = 65_536;
+const GPU_BATCH_FLAG_APPROXIMATED_CURVE: u32 = 1;
+const GPU_STYLE_INVISIBLE: u32 = 1 << 16;
+const GPU_STYLE_SOURCE_KIND_SHIFT: u32 = 17;
+const GPU_STYLE_APPROXIMATED_CURVE: u32 = 1 << 20;
 
 #[derive(Debug, Clone, Default)]
 pub struct ConvertOptions {
@@ -47,6 +55,7 @@ pub struct ConversionReport {
     pub input: InputSummary,
     pub cache: CacheSummary,
     pub coverage: PrimitiveCounts,
+    pub gpu_lines: GpuLineSummary,
     pub performance: CachePerformance,
     pub diagnostics: usize,
 }
@@ -86,6 +95,27 @@ pub struct PrimitiveCounts {
     pub spline_weights: u64,
     pub spline_control_points: u64,
     pub spline_fit_points: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct GpuLineSummary {
+    pub model_segments: u64,
+    pub block_segments: u64,
+    pub overview_segments: u64,
+    pub approximated_curve_segments: u64,
+    pub skipped_non_finite_segments: u64,
+    pub batches: u64,
+    pub model_overview_batches: u64,
+    pub model_detail_batches: u64,
+    pub block_batches: u64,
+    pub block_overview_batches: u64,
+    pub block_detail_batches: u64,
+    pub vertices: u64,
+    pub cached_vertex_bytes: u64,
+    pub first_frame_vertex_bytes: u64,
+    pub full_detail_vertex_bytes: u64,
+    pub maximum_batch_bytes: u64,
+    pub maximum_position_error: f64,
 }
 
 #[derive(Debug, Serialize)]
@@ -138,6 +168,8 @@ enum SectionKind {
     SplineWeights = 19,
     SplineControlPoints = 20,
     SplineFitPoints = 21,
+    GpuLineBatches = 30,
+    GpuLineVertices = 31,
 }
 
 impl SectionKind {
@@ -158,6 +190,8 @@ impl SectionKind {
             Self::SplineWeights => "spline_weights",
             Self::SplineControlPoints => "spline_control_points",
             Self::SplineFitPoints => "spline_fit_points",
+            Self::GpuLineBatches => "gpu_line_batches",
+            Self::GpuLineVertices => "gpu_line_vertices",
         }
     }
 
@@ -178,6 +212,8 @@ impl SectionKind {
             19 => Some(Self::SplineWeights),
             20 => Some(Self::SplineControlPoints),
             21 => Some(Self::SplineFitPoints),
+            30 => Some(Self::GpuLineBatches),
+            31 => Some(Self::GpuLineVertices),
             _ => None,
         }
     }
@@ -197,6 +233,8 @@ impl SectionKind {
             Self::SplineHeaders => SPLINE_HEADER_RECORD_SIZE,
             Self::SplineKnots | Self::SplineWeights => SPLINE_SCALAR_RECORD_SIZE,
             Self::SplineControlPoints | Self::SplineFitPoints => SPLINE_POINT_RECORD_SIZE,
+            Self::GpuLineBatches => GPU_LINE_BATCH_RECORD_SIZE,
+            Self::GpuLineVertices => GPU_LINE_VERTEX_RECORD_SIZE,
         }
     }
 
@@ -218,6 +256,7 @@ struct SectionEntry {
 #[derive(Debug)]
 struct CacheWriteSummary {
     counts: PrimitiveCounts,
+    gpu_lines: GpuLineSummary,
     sections: Vec<SectionEntry>,
 }
 
@@ -323,6 +362,7 @@ pub fn convert_dwg(
                 .collect(),
         },
         coverage: summary.counts,
+        gpu_lines: summary.gpu_lines,
         performance: CachePerformance {
             parse_ms: duration_ms(parse_elapsed),
             write_ms: duration_ms(write_elapsed),
@@ -488,6 +528,9 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
             SectionKind::SplineControlPoints,
             SectionKind::SplineFitPoints,
         ]);
+    }
+    if minor_version >= 2 {
+        required.extend([SectionKind::GpuLineBatches, SectionKind::GpuLineVertices]);
     }
     for kind in required {
         let count = entries
@@ -699,6 +742,98 @@ fn validate_cross_section_references<R: Read + Seek>(
             )?;
         }
     }
+
+    if let Some(batches) = find_section(entries, SectionKind::GpuLineBatches) {
+        let vertices = find_section(entries, SectionKind::GpuLineVertices)
+            .context("GPU line batches exist without a vertex pool")?;
+        let blocks = find_section(entries, SectionKind::Blocks)
+            .context("GPU line batches exist without a block table")?;
+        let mut expected_first_vertex = 0_u64;
+        let mut detail_lod_started = false;
+
+        for index in 0..batches.record_count {
+            let mut record = [0_u8; GPU_LINE_BATCH_RECORD_SIZE as usize];
+            read_record(reader, batches, index, &mut record)?;
+
+            if u64::from(slice_u32(&record, 0)) != index {
+                anyhow::bail!("GPU line batch IDs are not sequential");
+            }
+
+            let batch_kind = slice_u16(&record, 4);
+            let lod_level = slice_u16(&record, 6);
+            let flags = slice_u32(&record, 8);
+            let block_index = slice_u32(&record, 12);
+            if lod_level > 1 {
+                anyhow::bail!("GPU line batch has an unsupported LOD level");
+            }
+            if detail_lod_started && lod_level == 0 {
+                anyhow::bail!("GPU overview batches are not contiguous");
+            }
+            detail_lod_started |= lod_level == 1;
+            if flags & !GPU_BATCH_FLAG_APPROXIMATED_CURVE != 0 {
+                anyhow::bail!("GPU line batch has unsupported flags");
+            }
+            match batch_kind {
+                0 => {
+                    if lod_level != 0 || block_index != u32::MAX {
+                        anyhow::bail!("model overview GPU batch metadata is inconsistent");
+                    }
+                }
+                1 => {
+                    if lod_level > 1 || block_index != u32::MAX {
+                        anyhow::bail!("model detail GPU batch metadata is inconsistent");
+                    }
+                }
+                2 => {
+                    if u64::from(block_index) >= blocks.record_count {
+                        anyhow::bail!("block GPU batch references an invalid block");
+                    }
+                }
+                _ => anyhow::bail!("GPU line batch has an unknown kind"),
+            }
+
+            let first_vertex = slice_u64(&record, 16);
+            let vertex_count = slice_u64(&record, 24);
+            let segment_count = u64::from(slice_u32(&record, 32));
+            if first_vertex != expected_first_vertex {
+                anyhow::bail!("GPU line vertex ranges are not contiguous");
+            }
+            let expected_vertex_count = segment_count
+                .checked_mul(2)
+                .context("GPU line segment count overflow")?;
+            if vertex_count != expected_vertex_count {
+                anyhow::bail!("GPU line batch vertex count does not match its segments");
+            }
+            validate_pool_range(
+                "GPU line vertices",
+                first_vertex,
+                vertex_count,
+                vertices.record_count,
+            )?;
+            expected_first_vertex = first_vertex
+                .checked_add(vertex_count)
+                .context("GPU line vertex range overflow")?;
+
+            for coordinate_offset in [40, 48, 56, 64, 72, 80, 88, 96, 104] {
+                if !slice_f64(&record, coordinate_offset).is_finite() {
+                    anyhow::bail!("GPU line batch contains a non-finite coordinate");
+                }
+            }
+            for axis in 0..3 {
+                if slice_f64(&record, 64 + axis * 8) > slice_f64(&record, 88 + axis * 8) {
+                    anyhow::bail!("GPU line batch has inverted bounds");
+                }
+            }
+            let maximum_error = slice_f32(&record, 112);
+            if !maximum_error.is_finite() || maximum_error < 0.0 {
+                anyhow::bail!("GPU line batch has an invalid position error");
+            }
+        }
+
+        if expected_first_vertex != vertices.record_count {
+            anyhow::bail!("GPU line vertex pool is not fully covered by its batches");
+        }
+    }
     Ok(())
 }
 
@@ -741,7 +876,7 @@ fn write_scene_cache<W: Write + Seek>(
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
     let counts = PrimitiveCounts::from_document(document);
-    let section_count = 15_u32;
+    let section_count = 17_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
         directory_offset + u64::from(section_count) * u64::from(DIRECTORY_ENTRY_SIZE),
@@ -801,6 +936,13 @@ fn write_scene_cache<W: Write + Seek>(
     sections.push(write_spline_weight_section(writer, document)?);
     sections.push(write_spline_control_point_section(writer, document)?);
     sections.push(write_spline_fit_point_section(writer, document)?);
+    let gpu_line_plan = build_gpu_line_plan(document)?;
+    sections.push(write_gpu_line_batch_section(writer, &gpu_line_plan)?);
+    sections.push(write_gpu_line_vertex_section(
+        writer,
+        &gpu_line_plan,
+        &layer_indices,
+    )?);
 
     let file_size = writer.stream_position()?;
     writer.seek(SeekFrom::Start(0))?;
@@ -819,7 +961,11 @@ fn write_scene_cache<W: Write + Seek>(
     }
     writer.seek(SeekFrom::Start(file_size))?;
 
-    Ok(CacheWriteSummary { counts, sections })
+    Ok(CacheWriteSummary {
+        counts,
+        gpu_lines: gpu_line_plan.summary,
+        sections,
+    })
 }
 
 impl PrimitiveCounts {
@@ -1574,6 +1720,822 @@ where
     finish_fixed_section(writer, kind, SPLINE_POINT_RECORD_SIZE, offset, count)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u16)]
+enum GpuLineBatchKind {
+    ModelOverview = 0,
+    ModelDetail = 1,
+    BlockDefinition = 2,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GpuEntityGroupKind {
+    Model,
+    Block(u32),
+}
+
+#[derive(Debug)]
+struct GpuEntityGroup {
+    kind: GpuEntityGroupKind,
+    entity_indices: Vec<u32>,
+}
+
+#[derive(Debug)]
+struct PreparedGpuEntityGroup {
+    kind: GpuEntityGroupKind,
+    segments: Vec<SpatialSegmentRef>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SpatialSegmentRef {
+    morton: u32,
+    entity_index: u32,
+    segment_index: u32,
+}
+
+#[derive(Debug)]
+struct GpuLineBatchPlan {
+    kind: GpuLineBatchKind,
+    lod_level: u16,
+    flags: u32,
+    block_index: u32,
+    first_vertex: u64,
+    vertex_count: u64,
+    segment_start: usize,
+    segment_count: u32,
+    origin: Vector3,
+    bounds: FiniteBounds3,
+    maximum_position_error: f32,
+}
+
+#[derive(Debug)]
+struct GpuLinePlan<'a> {
+    entities: Vec<&'a EntityType>,
+    segments: Vec<SpatialSegmentRef>,
+    batches: Vec<GpuLineBatchPlan>,
+    summary: GpuLineSummary,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GpuSegmentGeometry {
+    start: Vector3,
+    end: Vector3,
+    approximated_curve: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FiniteBounds3 {
+    min: Vector3,
+    max: Vector3,
+}
+
+impl FiniteBounds3 {
+    fn empty() -> Self {
+        Self {
+            min: Vector3::new(f64::INFINITY, f64::INFINITY, f64::INFINITY),
+            max: Vector3::new(f64::NEG_INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY),
+        }
+    }
+
+    fn include(&mut self, point: Vector3) {
+        self.min.x = self.min.x.min(point.x);
+        self.min.y = self.min.y.min(point.y);
+        self.min.z = self.min.z.min(point.z);
+        self.max.x = self.max.x.max(point.x);
+        self.max.y = self.max.y.max(point.y);
+        self.max.z = self.max.z.max(point.z);
+    }
+
+    fn center(self) -> Vector3 {
+        Vector3::new(
+            self.min.x * 0.5 + self.max.x * 0.5,
+            self.min.y * 0.5 + self.max.y * 0.5,
+            self.min.z * 0.5 + self.max.z * 0.5,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FiniteBounds2 {
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+}
+
+impl FiniteBounds2 {
+    fn empty() -> Self {
+        Self {
+            min_x: f64::INFINITY,
+            min_y: f64::INFINITY,
+            max_x: f64::NEG_INFINITY,
+            max_y: f64::NEG_INFINITY,
+        }
+    }
+
+    fn include(&mut self, x: f64, y: f64) {
+        self.min_x = self.min_x.min(x);
+        self.min_y = self.min_y.min(y);
+        self.max_x = self.max_x.max(x);
+        self.max_y = self.max_y.max(y);
+    }
+}
+
+fn build_gpu_line_plan(document: &CadDocument) -> Result<GpuLinePlan<'_>> {
+    let mut groups = vec![GpuEntityGroup {
+        kind: GpuEntityGroupKind::Model,
+        entity_indices: Vec::new(),
+    }];
+    let mut owner_groups = HashMap::new();
+
+    for (block_index, block) in document.block_records.iter().enumerate() {
+        if block.is_model_space() {
+            if !block.handle.is_null() {
+                owner_groups.insert(block.handle.value(), 0);
+            }
+        } else if !block.is_paper_space() {
+            let group_index = groups.len();
+            groups.push(GpuEntityGroup {
+                kind: GpuEntityGroupKind::Block(
+                    u32::try_from(block_index).context("too many blocks for GPU line cache")?,
+                ),
+                entity_indices: Vec::new(),
+            });
+            if !block.handle.is_null() {
+                owner_groups.insert(block.handle.value(), group_index);
+            }
+        }
+    }
+    if !document.header.model_space_block_handle.is_null() {
+        owner_groups.insert(document.header.model_space_block_handle.value(), 0);
+    }
+
+    let mut entities = Vec::new();
+    for entity in document.entities() {
+        if gpu_entity_segment_count(entity) == 0 {
+            continue;
+        }
+        let common = entity.common();
+        let group_index = owner_groups
+            .get(&common.owner_handle.value())
+            .copied()
+            .or_else(|| {
+                (common.entity_mode == Some(2) || common.owner_handle.is_null()).then_some(0)
+            });
+        let Some(group_index) = group_index else {
+            continue;
+        };
+        let entity_index =
+            u32::try_from(entities.len()).context("too many GPU line source entities")?;
+        entities.push(entity);
+        groups[group_index].entity_indices.push(entity_index);
+    }
+
+    let mut draw_segments = Vec::new();
+    let mut batches = Vec::new();
+    let mut summary = GpuLineSummary::default();
+    let mut prepared_groups = Vec::with_capacity(groups.len());
+
+    for group in groups {
+        let (segments, approximated, skipped) =
+            build_spatial_segment_refs(&entities, &group.entity_indices)?;
+        summary.approximated_curve_segments = summary
+            .approximated_curve_segments
+            .checked_add(approximated)
+            .context("approximated GPU segment count overflow")?;
+        summary.skipped_non_finite_segments = summary
+            .skipped_non_finite_segments
+            .checked_add(skipped)
+            .context("skipped GPU segment count overflow")?;
+
+        match group.kind {
+            GpuEntityGroupKind::Model => {
+                summary.model_segments =
+                    u64::try_from(segments.len()).context("too many model GPU line segments")?;
+            }
+            GpuEntityGroupKind::Block(_) => {
+                summary.block_segments = summary
+                    .block_segments
+                    .checked_add(u64::try_from(segments.len())?)
+                    .context("block GPU line segment count overflow")?;
+            }
+        }
+        prepared_groups.push(PreparedGpuEntityGroup {
+            kind: group.kind,
+            segments,
+        });
+    }
+
+    let total_detail_segments = prepared_groups.iter().try_fold(0_usize, |total, group| {
+        total
+            .checked_add(group.segments.len())
+            .context("GPU detail segment count overflow")
+    })?;
+    let has_separate_overview = total_detail_segments > SCENE_OVERVIEW_SEGMENTS;
+
+    if has_separate_overview {
+        let quotas = allocate_overview_quotas(&prepared_groups, SCENE_OVERVIEW_SEGMENTS);
+        for (group, quota) in prepared_groups.iter().zip(quotas) {
+            if quota == 0 {
+                continue;
+            }
+            let mut overview = sample_spatial_segments(&group.segments, quota);
+            summary.overview_segments = summary
+                .overview_segments
+                .checked_add(u64::try_from(overview.len())?)
+                .context("GPU overview segment count overflow")?;
+            let (kind, block_index) = match group.kind {
+                GpuEntityGroupKind::Model => (GpuLineBatchKind::ModelOverview, u32::MAX),
+                GpuEntityGroupKind::Block(block_index) => {
+                    (GpuLineBatchKind::BlockDefinition, block_index)
+                }
+            };
+            append_gpu_line_batches(
+                &entities,
+                &mut overview,
+                kind,
+                0,
+                block_index,
+                &mut draw_segments,
+                &mut batches,
+                &mut summary,
+            )?;
+        }
+    } else {
+        summary.overview_segments = u64::try_from(total_detail_segments)?;
+    }
+
+    for group in &mut prepared_groups {
+        let (kind, block_index) = match group.kind {
+            GpuEntityGroupKind::Model => (GpuLineBatchKind::ModelDetail, u32::MAX),
+            GpuEntityGroupKind::Block(block_index) => {
+                (GpuLineBatchKind::BlockDefinition, block_index)
+            }
+        };
+        append_gpu_line_batches(
+            &entities,
+            &mut group.segments,
+            kind,
+            if has_separate_overview { 1 } else { 0 },
+            block_index,
+            &mut draw_segments,
+            &mut batches,
+            &mut summary,
+        )?;
+    }
+
+    summary.batches = u64::try_from(batches.len())?;
+    summary.vertices = batches.iter().try_fold(0_u64, |total, batch| {
+        total
+            .checked_add(batch.vertex_count)
+            .context("GPU line vertex count overflow")
+    })?;
+    summary.cached_vertex_bytes = summary
+        .vertices
+        .checked_mul(u64::from(GPU_LINE_VERTEX_RECORD_SIZE))
+        .context("GPU line vertex byte size overflow")?;
+    summary.first_frame_vertex_bytes = summary
+        .overview_segments
+        .checked_mul(2)
+        .and_then(|value| value.checked_mul(u64::from(GPU_LINE_VERTEX_RECORD_SIZE)))
+        .context("scene overview byte size overflow")?;
+    summary.full_detail_vertex_bytes = summary
+        .model_segments
+        .checked_add(summary.block_segments)
+        .and_then(|value| value.checked_mul(2))
+        .and_then(|value| value.checked_mul(u64::from(GPU_LINE_VERTEX_RECORD_SIZE)))
+        .context("full-detail GPU line byte size overflow")?;
+
+    Ok(GpuLinePlan {
+        entities,
+        segments: draw_segments,
+        batches,
+        summary,
+    })
+}
+
+fn build_spatial_segment_refs(
+    entities: &[&EntityType],
+    entity_indices: &[u32],
+) -> Result<(Vec<SpatialSegmentRef>, u64, u64)> {
+    let mut midpoint_bounds = FiniteBounds2::empty();
+    let mut valid_segments = 0_usize;
+    let mut approximated_segments = 0_u64;
+    let mut skipped_segments = 0_u64;
+
+    for &entity_index in entity_indices {
+        let entity = entities[entity_index as usize];
+        for segment_index in 0..gpu_entity_segment_count(entity) {
+            let geometry = gpu_segment_geometry(entity, segment_index);
+            let Some(geometry) = geometry.filter(gpu_segment_is_finite) else {
+                skipped_segments = skipped_segments
+                    .checked_add(1)
+                    .context("skipped GPU segment count overflow")?;
+                continue;
+            };
+            let midpoint_x = geometry.start.x * 0.5 + geometry.end.x * 0.5;
+            let midpoint_y = geometry.start.y * 0.5 + geometry.end.y * 0.5;
+            midpoint_bounds.include(midpoint_x, midpoint_y);
+            valid_segments = valid_segments
+                .checked_add(1)
+                .context("GPU segment count overflow")?;
+            if geometry.approximated_curve {
+                approximated_segments = approximated_segments
+                    .checked_add(1)
+                    .context("approximated GPU segment count overflow")?;
+            }
+        }
+    }
+
+    let mut segments = Vec::with_capacity(valid_segments);
+    for &entity_index in entity_indices {
+        let entity = entities[entity_index as usize];
+        for segment_index in 0..gpu_entity_segment_count(entity) {
+            let Some(geometry) =
+                gpu_segment_geometry(entity, segment_index).filter(gpu_segment_is_finite)
+            else {
+                continue;
+            };
+            let midpoint_x = geometry.start.x * 0.5 + geometry.end.x * 0.5;
+            let midpoint_y = geometry.start.y * 0.5 + geometry.end.y * 0.5;
+            segments.push(SpatialSegmentRef {
+                morton: morton_key(midpoint_x, midpoint_y, midpoint_bounds),
+                entity_index,
+                segment_index: u32::try_from(segment_index)
+                    .context("entity has too many GPU line segments")?,
+            });
+        }
+    }
+    segments.sort_unstable_by_key(|segment| {
+        (segment.morton, segment.entity_index, segment.segment_index)
+    });
+
+    Ok((segments, approximated_segments, skipped_segments))
+}
+
+fn allocate_overview_quotas(groups: &[PreparedGpuEntityGroup], budget: usize) -> Vec<usize> {
+    let lengths: Vec<_> = groups.iter().map(|group| group.segments.len()).collect();
+    let total = lengths.iter().sum::<usize>();
+    if total <= budget {
+        return lengths;
+    }
+
+    let nonempty: Vec<_> = lengths
+        .iter()
+        .enumerate()
+        .filter_map(|(index, &length)| (length > 0).then_some(index))
+        .collect();
+    let mut quotas = vec![0_usize; groups.len()];
+    if nonempty.len() > budget {
+        let mut by_size = nonempty;
+        by_size.sort_unstable_by(|&left, &right| {
+            lengths[right]
+                .cmp(&lengths[left])
+                .then_with(|| left.cmp(&right))
+        });
+        for index in by_size.into_iter().take(budget) {
+            quotas[index] = 1;
+        }
+        return quotas;
+    }
+
+    for &index in &nonempty {
+        quotas[index] = 1;
+    }
+    let remaining = budget - nonempty.len();
+    let capacity_total = total - nonempty.len();
+    if remaining == 0 || capacity_total == 0 {
+        return quotas;
+    }
+
+    let mut allocated = 0_usize;
+    let mut remainders = Vec::with_capacity(nonempty.len());
+    for &index in &nonempty {
+        let capacity = lengths[index] - 1;
+        let numerator = (remaining as u128) * (capacity as u128);
+        let extra = usize::try_from(numerator / (capacity_total as u128))
+            .expect("overview quota cannot exceed usize");
+        quotas[index] += extra;
+        allocated += extra;
+        remainders.push((numerator % (capacity_total as u128), index));
+    }
+
+    remainders
+        .sort_unstable_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    for &(_, index) in remainders.iter().take(remaining - allocated) {
+        if quotas[index] < lengths[index] {
+            quotas[index] += 1;
+        }
+    }
+    quotas
+}
+
+fn sample_spatial_segments(
+    segments: &[SpatialSegmentRef],
+    sample_count: usize,
+) -> Vec<SpatialSegmentRef> {
+    if sample_count >= segments.len() {
+        return segments.to_vec();
+    }
+    if sample_count == 0 {
+        return Vec::new();
+    }
+    if sample_count == 1 {
+        return vec![segments[segments.len() / 2]];
+    }
+
+    let mut overview = Vec::with_capacity(sample_count);
+    for index in 0..sample_count {
+        overview.push(segments[index * (segments.len() - 1) / (sample_count - 1)]);
+    }
+    overview
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_gpu_line_batches(
+    entities: &[&EntityType],
+    segments: &mut Vec<SpatialSegmentRef>,
+    kind: GpuLineBatchKind,
+    lod_level: u16,
+    block_index: u32,
+    draw_segments: &mut Vec<SpatialSegmentRef>,
+    batches: &mut Vec<GpuLineBatchPlan>,
+    summary: &mut GpuLineSummary,
+) -> Result<()> {
+    let destination_start = draw_segments.len();
+    for chunk_start in (0..segments.len()).step_by(GPU_LINE_BATCH_SEGMENTS) {
+        let chunk_end = (chunk_start + GPU_LINE_BATCH_SEGMENTS).min(segments.len());
+        let chunk = &segments[chunk_start..chunk_end];
+        let mut bounds = FiniteBounds3::empty();
+        for segment in chunk {
+            let geometry = resolve_gpu_segment(entities, *segment)?;
+            bounds.include(geometry.start);
+            bounds.include(geometry.end);
+        }
+        let origin = bounds.center();
+        let mut flags = 0_u32;
+        let mut maximum_position_error = 0.0_f64;
+        for segment in chunk {
+            let geometry = resolve_gpu_segment(entities, *segment)?;
+            if geometry.approximated_curve {
+                flags |= GPU_BATCH_FLAG_APPROXIMATED_CURVE;
+            }
+            maximum_position_error =
+                maximum_position_error.max(rebased_position_error(geometry.start, origin)?);
+            maximum_position_error =
+                maximum_position_error.max(rebased_position_error(geometry.end, origin)?);
+        }
+
+        let segment_count = u32::try_from(chunk.len())?;
+        let vertex_count = u64::from(segment_count)
+            .checked_mul(2)
+            .context("GPU batch vertex count overflow")?;
+        let first_vertex = batches
+            .last()
+            .map(|batch| {
+                batch
+                    .first_vertex
+                    .checked_add(batch.vertex_count)
+                    .context("GPU line vertex count overflow")
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let maximum_batch_bytes = vertex_count
+            .checked_mul(u64::from(GPU_LINE_VERTEX_RECORD_SIZE))
+            .context("GPU batch byte size overflow")?;
+        summary.maximum_batch_bytes = summary.maximum_batch_bytes.max(maximum_batch_bytes);
+        summary.maximum_position_error = summary.maximum_position_error.max(maximum_position_error);
+        match kind {
+            GpuLineBatchKind::ModelOverview => {
+                summary.model_overview_batches += 1;
+            }
+            GpuLineBatchKind::ModelDetail => {
+                summary.model_detail_batches += 1;
+            }
+            GpuLineBatchKind::BlockDefinition => {
+                summary.block_batches += 1;
+                if lod_level == 0 {
+                    summary.block_overview_batches += 1;
+                } else {
+                    summary.block_detail_batches += 1;
+                }
+            }
+        }
+
+        batches.push(GpuLineBatchPlan {
+            kind,
+            lod_level,
+            flags,
+            block_index,
+            first_vertex,
+            vertex_count,
+            segment_start: destination_start + chunk_start,
+            segment_count,
+            origin,
+            bounds,
+            maximum_position_error: maximum_position_error as f32,
+        });
+    }
+    draw_segments.append(segments);
+    Ok(())
+}
+
+fn write_gpu_line_batch_section<W: Write + Seek>(
+    writer: &mut W,
+    plan: &GpuLinePlan<'_>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    for (batch_id, batch) in plan.batches.iter().enumerate() {
+        write_u32(writer, u32::try_from(batch_id)?)?;
+        write_u16(writer, batch.kind as u16)?;
+        write_u16(writer, batch.lod_level)?;
+        write_u32(writer, batch.flags)?;
+        write_u32(writer, batch.block_index)?;
+        write_u64(writer, batch.first_vertex)?;
+        write_u64(writer, batch.vertex_count)?;
+        write_u32(writer, batch.segment_count)?;
+        write_u32(writer, 0)?;
+        write_vec3(writer, batch.origin)?;
+        write_vec3(writer, batch.bounds.min)?;
+        write_vec3(writer, batch.bounds.max)?;
+        write_f32(writer, batch.maximum_position_error)?;
+        write_u32(writer, 0)?;
+        write_u64(writer, 0)?;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::GpuLineBatches,
+        GPU_LINE_BATCH_RECORD_SIZE,
+        offset,
+        plan.batches.len() as u64,
+    )
+}
+
+fn write_gpu_line_vertex_section<W: Write + Seek>(
+    writer: &mut W,
+    plan: &GpuLinePlan<'_>,
+    layer_indices: &HashMap<String, u32>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut vertex_count = 0_u64;
+    for batch in &plan.batches {
+        let segment_start = batch.segment_start;
+        let segment_end = segment_start
+            .checked_add(batch.segment_count as usize)
+            .context("GPU batch segment range overflow")?;
+        for segment in &plan.segments[segment_start..segment_end] {
+            let entity = plan.entities[segment.entity_index as usize];
+            let geometry = resolve_gpu_segment(&plan.entities, *segment)?;
+            let common = entity.common();
+            let layer_index = layer_indices
+                .get(&common.layer.to_uppercase())
+                .copied()
+                .unwrap_or(u32::MAX);
+            let color = encode_color(common.color);
+            let handle = common.handle.value();
+            let style = encode_gpu_line_style(entity, geometry.approximated_curve);
+            write_gpu_line_vertex(
+                writer,
+                geometry.start,
+                batch.origin,
+                layer_index,
+                color,
+                handle,
+                style,
+            )?;
+            write_gpu_line_vertex(
+                writer,
+                geometry.end,
+                batch.origin,
+                layer_index,
+                color,
+                handle,
+                style,
+            )?;
+            vertex_count = vertex_count
+                .checked_add(2)
+                .context("GPU line vertex count overflow")?;
+        }
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::GpuLineVertices,
+        GPU_LINE_VERTEX_RECORD_SIZE,
+        offset,
+        vertex_count,
+    )
+}
+
+fn write_gpu_line_vertex<W: Write>(
+    writer: &mut W,
+    point: Vector3,
+    origin: Vector3,
+    layer_index: u32,
+    color: u32,
+    handle: u64,
+    style: u32,
+) -> Result<()> {
+    write_f32(writer, rebased_coordinate(point.x, origin.x)?)?;
+    write_f32(writer, rebased_coordinate(point.y, origin.y)?)?;
+    write_f32(writer, rebased_coordinate(point.z, origin.z)?)?;
+    write_u32(writer, layer_index)?;
+    write_u32(writer, color)?;
+    write_u32(writer, handle as u32)?;
+    write_u32(writer, (handle >> 32) as u32)?;
+    write_u32(writer, style)?;
+    Ok(())
+}
+
+fn encode_gpu_line_style(entity: &EntityType, approximated_curve: bool) -> u32 {
+    let common = entity.common();
+    let mut style = u32::from(common.line_weight.value() as u16);
+    if common.invisible {
+        style |= GPU_STYLE_INVISIBLE;
+    }
+    style |= gpu_source_kind(entity) << GPU_STYLE_SOURCE_KIND_SHIFT;
+    if approximated_curve {
+        style |= GPU_STYLE_APPROXIMATED_CURVE;
+    }
+    style
+}
+
+fn gpu_source_kind(entity: &EntityType) -> u32 {
+    match entity {
+        EntityType::Line(_) => 0,
+        EntityType::LwPolyline(_) => 1,
+        EntityType::Polyline2D(_) => 2,
+        EntityType::Polyline(_) => 3,
+        _ => unreachable!("only GPU line source entities reach the vertex writer"),
+    }
+}
+
+fn resolve_gpu_segment(
+    entities: &[&EntityType],
+    segment: SpatialSegmentRef,
+) -> Result<GpuSegmentGeometry> {
+    let entity = entities
+        .get(segment.entity_index as usize)
+        .context("GPU segment references an invalid entity")?;
+    gpu_segment_geometry(entity, segment.segment_index as usize)
+        .filter(gpu_segment_is_finite)
+        .context("GPU segment geometry changed or became non-finite")
+}
+
+fn gpu_entity_segment_count(entity: &EntityType) -> usize {
+    match entity {
+        EntityType::Line(_) => 1,
+        EntityType::LwPolyline(polyline) => {
+            polyline_segment_count(polyline.vertices.len(), polyline.is_closed)
+        }
+        EntityType::Polyline2D(polyline) => {
+            polyline_segment_count(polyline.vertices.len(), polyline.is_closed())
+        }
+        EntityType::Polyline(polyline) => {
+            polyline_segment_count(polyline.vertices.len(), polyline.is_closed())
+        }
+        _ => 0,
+    }
+}
+
+fn polyline_segment_count(vertex_count: usize, closed: bool) -> usize {
+    vertex_count.saturating_sub(1) + usize::from(closed && vertex_count > 1)
+}
+
+fn gpu_segment_geometry(entity: &EntityType, segment_index: usize) -> Option<GpuSegmentGeometry> {
+    match entity {
+        EntityType::Line(line) if segment_index == 0 => Some(GpuSegmentGeometry {
+            start: line.start,
+            end: line.end,
+            approximated_curve: false,
+        }),
+        EntityType::LwPolyline(polyline) => {
+            let next_index =
+                polyline_next_vertex(segment_index, polyline.vertices.len(), polyline.is_closed)?;
+            let start_vertex = polyline.vertices.get(segment_index)?;
+            let end_vertex = polyline.vertices.get(next_index)?;
+            let ocs_to_wcs = safe_ocs_matrix(polyline.normal);
+            Some(GpuSegmentGeometry {
+                start: ocs_to_wcs
+                    * Vector3::new(
+                        start_vertex.location.x,
+                        start_vertex.location.y,
+                        polyline.elevation,
+                    ),
+                end: ocs_to_wcs
+                    * Vector3::new(
+                        end_vertex.location.x,
+                        end_vertex.location.y,
+                        polyline.elevation,
+                    ),
+                approximated_curve: start_vertex.bulge != 0.0,
+            })
+        }
+        EntityType::Polyline2D(polyline) => {
+            let next_index =
+                polyline_next_vertex(segment_index, polyline.vertices.len(), polyline.is_closed())?;
+            let start_vertex = polyline.vertices.get(segment_index)?;
+            let end_vertex = polyline.vertices.get(next_index)?;
+            let ocs_to_wcs = safe_ocs_matrix(polyline.normal);
+            Some(GpuSegmentGeometry {
+                start: ocs_to_wcs
+                    * Vector3::new(
+                        start_vertex.location.x,
+                        start_vertex.location.y,
+                        polyline.elevation,
+                    ),
+                end: ocs_to_wcs
+                    * Vector3::new(
+                        end_vertex.location.x,
+                        end_vertex.location.y,
+                        polyline.elevation,
+                    ),
+                approximated_curve: start_vertex.bulge != 0.0,
+            })
+        }
+        EntityType::Polyline(polyline) => {
+            let next_index =
+                polyline_next_vertex(segment_index, polyline.vertices.len(), polyline.is_closed())?;
+            Some(GpuSegmentGeometry {
+                start: polyline.vertices.get(segment_index)?.location,
+                end: polyline.vertices.get(next_index)?.location,
+                approximated_curve: false,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn polyline_next_vertex(segment_index: usize, vertex_count: usize, closed: bool) -> Option<usize> {
+    let segment_count = polyline_segment_count(vertex_count, closed);
+    if segment_index >= segment_count {
+        return None;
+    }
+    Some((segment_index + 1) % vertex_count)
+}
+
+fn safe_ocs_matrix(normal: Vector3) -> Matrix3 {
+    let length_squared = normal.x * normal.x + normal.y * normal.y + normal.z * normal.z;
+    if vector_is_finite(normal) && length_squared.is_finite() && length_squared > 1.0e-24 {
+        Matrix3::arbitrary_axis(normal)
+    } else {
+        Matrix3::identity()
+    }
+}
+
+fn gpu_segment_is_finite(geometry: &GpuSegmentGeometry) -> bool {
+    vector_is_finite(geometry.start) && vector_is_finite(geometry.end)
+}
+
+fn vector_is_finite(vector: Vector3) -> bool {
+    vector.x.is_finite() && vector.y.is_finite() && vector.z.is_finite()
+}
+
+fn morton_key(x: f64, y: f64, bounds: FiniteBounds2) -> u32 {
+    let x = quantize_morton_axis(x, bounds.min_x, bounds.max_x);
+    let y = quantize_morton_axis(y, bounds.min_y, bounds.max_y);
+    interleave_u16(x) | (interleave_u16(y) << 1)
+}
+
+fn quantize_morton_axis(value: f64, minimum: f64, maximum: f64) -> u16 {
+    let span = maximum - minimum;
+    if !span.is_finite() || span <= 0.0 {
+        return 0;
+    }
+    let normalized = ((value - minimum) / span).clamp(0.0, 1.0);
+    (normalized * f64::from(u16::MAX)).round() as u16
+}
+
+fn interleave_u16(value: u16) -> u32 {
+    let mut value = u32::from(value);
+    value = (value | (value << 8)) & 0x00ff_00ff;
+    value = (value | (value << 4)) & 0x0f0f_0f0f;
+    value = (value | (value << 2)) & 0x3333_3333;
+    (value | (value << 1)) & 0x5555_5555
+}
+
+fn rebased_coordinate(value: f64, origin: f64) -> Result<f32> {
+    let rebased = (value - origin) as f32;
+    if !rebased.is_finite() {
+        anyhow::bail!("GPU line coordinate cannot be represented as a finite f32");
+    }
+    Ok(rebased)
+}
+
+fn rebased_position_error(point: Vector3, origin: Vector3) -> Result<f64> {
+    let encoded = [
+        rebased_coordinate(point.x, origin.x)?,
+        rebased_coordinate(point.y, origin.y)?,
+        rebased_coordinate(point.z, origin.z)?,
+    ];
+    Ok([
+        (origin.x + f64::from(encoded[0]) - point.x).abs(),
+        (origin.y + f64::from(encoded[1]) - point.y).abs(),
+        (origin.z + f64::from(encoded[2]) - point.z).abs(),
+    ]
+    .into_iter()
+    .fold(0.0_f64, f64::max))
+}
+
 fn write_common<W: Write>(
     writer: &mut W,
     entity: &EntityType,
@@ -1726,6 +2688,11 @@ fn write_f64<W: Write>(writer: &mut W, value: f64) -> Result<()> {
     Ok(())
 }
 
+fn write_f32<W: Write>(writer: &mut W, value: f32) -> Result<()> {
+    writer.write_all(&value.to_le_bytes())?;
+    Ok(())
+}
+
 fn slice_u16(bytes: &[u8], offset: usize) -> u16 {
     u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("u16 slice"))
 }
@@ -1738,11 +2705,20 @@ fn slice_u64(bytes: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("u64 slice"))
 }
 
+fn slice_f32(bytes: &[u8], offset: usize) -> f32 {
+    f32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("f32 slice"))
+}
+
+fn slice_f64(bytes: &[u8], offset: usize) -> f64 {
+    f64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("f64 slice"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Cursor;
 
     use acadrust::entities::{Arc, Circle, Ellipse, EntityType, Insert, Line, LwPolyline, Spline};
+    use acadrust::tables::BlockRecord;
     use acadrust::types::{Vector2, Vector3};
 
     use super::*;
@@ -1800,14 +2776,19 @@ mod tests {
 
         assert_eq!(&bytes[0..8], &CACHE_MAGIC);
         assert_eq!(read_u16(&bytes, 8), CACHE_VERSION_MAJOR);
+        assert_eq!(read_u16(&bytes, 10), CACHE_VERSION_MINOR);
         assert_eq!(read_u32(&bytes, 12), HEADER_SIZE);
-        assert_eq!(read_u32(&bytes, 16), 15);
+        assert_eq!(read_u32(&bytes, 16), 17);
         assert_eq!(read_u64(&bytes, 48), 1234);
         assert_eq!(summary.counts.serialized_entities, 7);
+        assert_eq!(summary.gpu_lines.model_segments, 2);
+        assert_eq!(summary.gpu_lines.overview_segments, 2);
+        assert_eq!(summary.gpu_lines.block_segments, 0);
+        assert_eq!(summary.gpu_lines.vertices, 4);
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
-        assert_eq!(validation.sections.len(), 15);
+        assert_eq!(validation.sections.len(), 17);
         assert_eq!(validation.source_size, 1234);
 
         let line = directory_entry(&bytes, SectionKind::Lines);
@@ -1828,6 +2809,13 @@ mod tests {
         let spline_knots = directory_entry(&bytes, SectionKind::SplineKnots);
         assert_eq!(spline_knots.1, SPLINE_SCALAR_RECORD_SIZE);
         assert_eq!(spline_knots.3, 4);
+
+        let gpu_batches = directory_entry(&bytes, SectionKind::GpuLineBatches);
+        assert_eq!(gpu_batches.1, GPU_LINE_BATCH_RECORD_SIZE);
+        assert_eq!(gpu_batches.3, 1);
+        let gpu_vertices = directory_entry(&bytes, SectionKind::GpuLineVertices);
+        assert_eq!(gpu_vertices.1, GPU_LINE_VERTEX_RECORD_SIZE);
+        assert_eq!(gpu_vertices.3, 4);
     }
 
     #[test]
@@ -1877,6 +2865,162 @@ mod tests {
         let error = validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64)
             .unwrap_err();
         assert!(error.to_string().contains("exceeds its pool"));
+    }
+
+    #[test]
+    fn validation_rejects_a_gpu_batch_with_the_wrong_vertex_count() {
+        let mut document = CadDocument::new();
+        document
+            .add_entity(EntityType::Line(Line::from_coords(
+                0.0, 0.0, 0.0, 1.0, 1.0, 0.0,
+            )))
+            .unwrap();
+        let mut cursor = Cursor::new(Vec::new());
+        write_scene_cache(&mut cursor, &document, 0).unwrap();
+        let mut bytes = cursor.into_inner();
+        let batches = directory_entry(&bytes, SectionKind::GpuLineBatches);
+        let first_vertex_count = usize::try_from(batches.2).unwrap() + 24;
+        bytes[first_vertex_count..first_vertex_count + 8].copy_from_slice(&4_u64.to_le_bytes());
+
+        let error = validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("vertex count does not match its segments"));
+    }
+
+    #[test]
+    fn local_origin_preserves_small_offsets_at_large_world_coordinates() {
+        let mut document = CadDocument::new();
+        let base = 1_000_000_000.0;
+        document
+            .add_entity(EntityType::Line(Line::from_coords(
+                base + 0.125,
+                base + 0.25,
+                0.0,
+                base + 0.375,
+                base + 0.5,
+                0.0,
+            )))
+            .unwrap();
+        let mut cursor = Cursor::new(Vec::new());
+        let summary = write_scene_cache(&mut cursor, &document, 0).unwrap();
+        let bytes = cursor.into_inner();
+
+        assert_eq!((base + 0.125) as f32, (base + 0.375) as f32);
+        assert_eq!(summary.gpu_lines.model_segments, 1);
+        assert!(summary.gpu_lines.maximum_position_error < 1.0e-6);
+
+        let batches = directory_entry(&bytes, SectionKind::GpuLineBatches);
+        let batch_offset = usize::try_from(batches.2).unwrap();
+        let origin_x = read_f64(&bytes, batch_offset + 40);
+        let origin_y = read_f64(&bytes, batch_offset + 48);
+        let vertices = directory_entry(&bytes, SectionKind::GpuLineVertices);
+        let vertex_offset = usize::try_from(vertices.2).unwrap();
+        let first_x = origin_x + f64::from(read_f32(&bytes, vertex_offset));
+        let first_y = origin_y + f64::from(read_f32(&bytes, vertex_offset + 4));
+        let second_x = origin_x
+            + f64::from(read_f32(
+                &bytes,
+                vertex_offset + GPU_LINE_VERTEX_RECORD_SIZE as usize,
+            ));
+
+        assert!((first_x - (base + 0.125)).abs() < 1.0e-6);
+        assert!((first_y - (base + 0.25)).abs() < 1.0e-6);
+        assert!((second_x - (base + 0.375)).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn block_geometry_is_cached_once_instead_of_per_insert() {
+        let mut document = CadDocument::new();
+        let block_handle = document.allocate_handle();
+        let mut block = BlockRecord::new("TEST_BLOCK");
+        block.handle = block_handle;
+        document.block_records.add(block).unwrap();
+
+        let mut block_line = Line::from_coords(0.0, 0.0, 0.0, 5.0, 0.0, 0.0);
+        block_line.common.owner_handle = block_handle;
+        document.add_entity(EntityType::Line(block_line)).unwrap();
+        document
+            .add_entity(EntityType::Insert(Insert::new(
+                "TEST_BLOCK",
+                Vector3::new(10.0, 0.0, 0.0),
+            )))
+            .unwrap();
+        document
+            .add_entity(EntityType::Insert(Insert::new(
+                "TEST_BLOCK",
+                Vector3::new(20.0, 0.0, 0.0),
+            )))
+            .unwrap();
+
+        let mut cursor = Cursor::new(Vec::new());
+        let summary = write_scene_cache(&mut cursor, &document, 0).unwrap();
+        let bytes = cursor.into_inner();
+        assert_eq!(summary.gpu_lines.model_segments, 0);
+        assert_eq!(summary.gpu_lines.block_segments, 1);
+        assert_eq!(summary.gpu_lines.block_batches, 1);
+        assert_eq!(summary.gpu_lines.block_overview_batches, 1);
+        assert_eq!(summary.gpu_lines.block_detail_batches, 0);
+        assert_eq!(summary.gpu_lines.first_frame_vertex_bytes, 64);
+        assert_eq!(summary.gpu_lines.vertices, 2);
+
+        let batches = directory_entry(&bytes, SectionKind::GpuLineBatches);
+        let batch_offset = usize::try_from(batches.2).unwrap();
+        assert_eq!(read_u16(&bytes, batch_offset + 4), 2);
+        assert_ne!(read_u32(&bytes, batch_offset + 12), u32::MAX);
+    }
+
+    #[test]
+    fn overview_sampling_is_bounded_and_keeps_both_spatial_ends() {
+        let segments: Vec<_> = (0..SCENE_OVERVIEW_SEGMENTS + 17)
+            .map(|index| SpatialSegmentRef {
+                morton: index as u32,
+                entity_index: 0,
+                segment_index: 0,
+            })
+            .collect();
+        let overview = sample_spatial_segments(&segments, SCENE_OVERVIEW_SEGMENTS);
+        assert_eq!(overview.len(), SCENE_OVERVIEW_SEGMENTS);
+        assert_eq!(overview.first().unwrap().morton, 0);
+        assert_eq!(
+            overview.last().unwrap().morton,
+            u32::try_from(segments.len() - 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn overview_budget_keeps_every_nonempty_block_represented() {
+        let make_segments = |count: usize, entity_index: u32| {
+            (0..count)
+                .map(|index| SpatialSegmentRef {
+                    morton: index as u32,
+                    entity_index,
+                    segment_index: 0,
+                })
+                .collect()
+        };
+        let groups = vec![
+            PreparedGpuEntityGroup {
+                kind: GpuEntityGroupKind::Model,
+                segments: make_segments(2, 0),
+            },
+            PreparedGpuEntityGroup {
+                kind: GpuEntityGroupKind::Block(2),
+                segments: make_segments(20, 1),
+            },
+            PreparedGpuEntityGroup {
+                kind: GpuEntityGroupKind::Block(3),
+                segments: make_segments(3, 2),
+            },
+        ];
+        let quotas = allocate_overview_quotas(&groups, 10);
+        assert_eq!(quotas.iter().sum::<usize>(), 10);
+        assert!(quotas.iter().all(|&quota| quota > 0));
+        assert!(quotas
+            .iter()
+            .zip(&groups)
+            .all(|(&quota, group)| quota <= group.segments.len()));
     }
 
     #[test]
@@ -1942,5 +3086,9 @@ mod tests {
 
     fn read_f64(bytes: &[u8], offset: usize) -> f64 {
         f64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap())
+    }
+
+    fn read_f32(bytes: &[u8], offset: usize) -> f32 {
+        f32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
     }
 }
