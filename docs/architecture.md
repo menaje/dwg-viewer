@@ -17,11 +17,11 @@ misses the reference drawing's memory hard gate. LibreDWG 0.13.4 is now the
 leading replacement candidate: its inspection adapter passes the current time
 and memory targets and matches the normalized geometry and Korean text
 fingerprint. Its first direct Scene Cache writer also passes the conversion
-time and memory targets, but currently renders LINE geometry only and preserves
-source records for a partial entity set. It does not become the primary engine
-until full required geometry, spatial-detail and Korean text preservation are
-proved. ACadSharp remains a fallback candidate through the same adapter
-protocol.
+time and memory targets. It now renders LINE and LWPOLYLINE/2D/3D POLYLINE
+geometry, including bounded bulge chords, while preserving source records for
+a partial entity set. It does not become the primary engine until the remaining
+required geometry, spatial-detail and Korean text preservation are proved.
+ACadSharp remains a fallback candidate through the same adapter protocol.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -48,16 +48,19 @@ LibreDWG's separate block markers, owned vertices, table records and attached
 attributes, the drawing summary, entity-type counts, Hangul counts and
 corruption markers match exactly.
 
-The first bounded LibreDWG conversion milestone measured 1,224 ms median wall
-time and 592,084,992 bytes median peak RSS; measured maximums were 1,248 ms and
-592,134,144 bytes. It wrote a deterministic 53,623,640-byte valid cache with a
-4,194,304-byte overview and 512 KiB maximum detail batch. Browser-side metadata
-and overview reads totaled 4,991,501 bytes, and 94,814 block instances resolved
-without invalid references. Every one of the 609 LINE-bearing block
-definitions received an overview allocation. This proves that direct repeated
-traversal avoids the acadrust writer's large in-memory scene plan. The engine
-decision remains incomplete because this milestone preserves source records
-for 347,470 of 378,400 logical entities and only LINE reaches GPU sections.
+The bounded LibreDWG polyline milestone measured 2,247 ms median wall time and
+592,003,072 bytes median peak RSS; measured maximums were 2,286 ms and
+592,134,144 bytes. It wrote a deterministic 147,372,632-byte valid cache with a
+4,194,304-byte overview and 512 KiB maximum detail batch. The source pools hold
+11,596 polylines and 400,974 vertices; 801,397 bounded bulge chords contribute
+to 1,360,052 full-detail LINE/polyline segments. Browser-side metadata and
+overview reads totaled 5,033,613 bytes in eight reads, and 94,814 block
+instances resolved without invalid references. Every one of the 689
+detail-bearing block definitions received an overview allocation. This proves
+that direct repeated traversal can expand display coverage without creating a
+whole-drawing geometry plan. The engine decision remains incomplete because
+this milestone preserves source records for 359,066 of 378,400 logical
+entities (94.89%) and still defers other curve, spline and text display paths.
 
 The parser itself accounts for almost all measured RSS: the current conversion
 maximum is only 7,865,856 bytes below the 600,000,000-byte target. Therefore

@@ -13,11 +13,15 @@ one 8,192-segment batch.
 This is a deliberately partial conversion milestone:
 
 - layer and block names stay UTF-8;
-- LINE, ARC, CIRCLE, INSERT/MINSERT and ELLIPSE source records are preserved;
-- LINE geometry is emitted as renderable, instanced GPU batches;
+- LINE, ARC, CIRCLE, INSERT/MINSERT, LWPOLYLINE, 2D/3D POLYLINE and
+  ELLIPSE source records are preserved;
+- LINE and normalized polyline geometry are emitted as renderable, instanced
+  GPU batches;
+- polyline bulges are converted to bounded chords with at most 16 segments per
+  revolution, while exact vertices and bulges remain in the source pools;
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
-- polyline, curve-chord, spline and text/SHX display expansion remains open in
+- ARC/CIRCLE/ELLIPSE chords, spline and text/SHX display expansion remains open in
   GitHub issue #9.
 
 The partial writer produces a structurally valid cache, but it is not yet the
@@ -79,9 +83,11 @@ keeps raw counts under `drawing.raw_*` and `embedded_text`, but normalizes the
 main `drawing.entities`, `drawing.objects`, `entity_types` and `text` fields to
 the shared logical inspection contract.
 
-On the private 24 MB reference drawing, the current partial conversion had a
-1,224 ms median process wall time and 592,084,992-byte median peak RSS across
-three isolated measured runs. The maximums were 1,248 ms and 592,134,144 bytes.
-The output was deterministic and passed both benchmark targets, but only
-347,470 of 378,400 logical entities (91.83%) have source records in this
-milestone. Private reports and generated caches are not committed.
+On the private 24 MB reference drawing, the polyline milestone had a 2,247 ms
+median process wall time and 592,003,072-byte median peak RSS across three
+isolated measured runs. The maximums were 2,286 ms and 592,134,144 bytes.
+The deterministic 147,372,632-byte cache contains 11,596 polylines and 400,974
+pooled vertices; 359,066 of 378,400 logical entities (94.89%) now have source
+records. The browser still opens it with eight range reads totaling 5,033,613
+bytes, including the fixed 4 MiB overview. Private reports and generated
+caches are not committed.

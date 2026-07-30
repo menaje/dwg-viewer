@@ -44,7 +44,13 @@
 #define GPU_BATCH_SEGMENTS 8192u
 #define SCENE_OVERVIEW_SEGMENTS 65536u
 #define GPU_LINE_VERTEX_RECORD_SIZE 32u
+#define GPU_BATCH_FLAG_APPROXIMATED_CURVE 1u
 #define GPU_STYLE_INVISIBLE (1u << 16)
+#define GPU_STYLE_SOURCE_KIND_SHIFT 17u
+#define GPU_STYLE_APPROXIMATED_CURVE (1u << 20)
+#define CURVE_MAX_ANGLE_RADIANS 0.39269908169872415481
+#define CURVE_EPSILON 1.0e-12
+#define MAX_CIRCULAR_SEGMENTS 16u
 
 enum
 {
@@ -149,6 +155,8 @@ typedef struct
   int16_t line_weight;
   uint16_t flags;
   uint32_t group;
+  uint8_t source_kind;
+  uint8_t approximated_curve;
 } LineSegment;
 
 typedef int (*LineSegmentConsumer) (void *context,
@@ -156,10 +164,38 @@ typedef int (*LineSegmentConsumer) (void *context,
 
 typedef struct
 {
+  double position[3];
+  double bulge;
+  double start_width;
+  double end_width;
+  double curve_tangent;
+  uint32_t flags;
+  int32_t id;
+} PolylineVertex;
+
+typedef int (*PolylineVertexConsumer) (void *context,
+                                       const PolylineVertex *vertex);
+
+typedef struct
+{
+  uint16_t kind;
+  uint16_t flags;
+  double elevation;
+  double thickness;
+  double normal[3];
+  double default_start_width;
+  double default_end_width;
+  double constant_width;
+  int closed;
+} PolylineInfo;
+
+typedef struct
+{
   CacheWriter *writer;
   LibreDwgGpuLineSummary *summary;
   uint32_t current_group;
   uint32_t count;
+  uint32_t batch_flags;
   uint16_t lod_level;
   int separate_overview;
   int has_group;
@@ -192,6 +228,16 @@ typedef struct
   size_t group_count;
   uint64_t quota_total;
 } OverviewPlan;
+
+typedef struct
+{
+  OverviewPlan *overview;
+  LineSegmentConsumer consumer;
+  void *consumer_context;
+  uint64_t emitted;
+  uint64_t skipped;
+  uint64_t approximated;
+} SegmentIteration;
 
 typedef struct
 {
@@ -713,6 +759,276 @@ write_common (CacheWriter *writer, const Dwg_Object *object,
          && write_u16 (writer, flags) && write_u32 (writer, 0);
 }
 
+static void
+finite_normal_or_unit_z (double x, double y, double z, double normal[3])
+{
+  double length_squared = x * x + y * y + z * z;
+  if (isfinite (x) && isfinite (y) && isfinite (z)
+      && isfinite (length_squared) && length_squared > 1.0e-24)
+    {
+      normal[0] = x;
+      normal[1] = y;
+      normal[2] = z;
+    }
+  else
+    {
+      normal[0] = 0.0;
+      normal[1] = 0.0;
+      normal[2] = 1.0;
+    }
+}
+
+static int
+read_polyline_info (const Dwg_Object *object, PolylineInfo *info)
+{
+  memset (info, 0, sizeof (*info));
+  if (!object || !object->tio.entity)
+    return 0;
+  if (object->fixedtype == DWG_TYPE_LWPOLYLINE
+      && object->tio.entity->tio.LWPOLYLINE)
+    {
+      const Dwg_Entity_LWPOLYLINE *polyline
+          = object->tio.entity->tio.LWPOLYLINE;
+      info->kind = 1;
+      info->closed = (polyline->flag & 512u) != 0;
+      info->flags = (uint16_t)(info->closed ? 1u : 0u);
+      if (polyline->flag & 256u)
+        info->flags |= 1u << 7;
+      info->elevation = polyline->elevation;
+      info->thickness = polyline->thickness;
+      finite_normal_or_unit_z (polyline->extrusion.x,
+                               polyline->extrusion.y,
+                               polyline->extrusion.z, info->normal);
+      info->constant_width = polyline->const_width;
+      return 1;
+    }
+  if (object->fixedtype == DWG_TYPE_POLYLINE_2D
+      && object->tio.entity->tio.POLYLINE_2D)
+    {
+      const Dwg_Entity_POLYLINE_2D *polyline
+          = object->tio.entity->tio.POLYLINE_2D;
+      info->kind = 2;
+      info->flags = (uint16_t)polyline->flag;
+      info->closed = (polyline->flag & 1u) != 0;
+      info->elevation = polyline->elevation;
+      info->thickness = polyline->thickness;
+      finite_normal_or_unit_z (polyline->extrusion.x,
+                               polyline->extrusion.y,
+                               polyline->extrusion.z, info->normal);
+      info->default_start_width = polyline->start_width;
+      info->default_end_width = polyline->end_width;
+      return 1;
+    }
+  if (object->fixedtype == DWG_TYPE_POLYLINE_3D
+      && object->tio.entity->tio.POLYLINE_3D)
+    {
+      const Dwg_Entity_POLYLINE_3D *polyline
+          = object->tio.entity->tio.POLYLINE_3D;
+      info->kind = 3;
+      info->flags = (uint16_t)polyline->flag;
+      info->closed = (polyline->flag & 1u) != 0;
+      info->normal[2] = 1.0;
+      return 1;
+    }
+  return 0;
+}
+
+static int
+consume_polyline_subentity (const Dwg_Object *vertex_object, uint16_t kind,
+                            PolylineVertexConsumer consumer, void *context,
+                            uint64_t *count)
+{
+  PolylineVertex vertex;
+  memset (&vertex, 0, sizeof (vertex));
+  if (!vertex_object || !vertex_object->tio.entity)
+    return 1;
+  if (kind == 2 && vertex_object->fixedtype == DWG_TYPE_VERTEX_2D
+      && vertex_object->tio.entity->tio.VERTEX_2D)
+    {
+      const Dwg_Entity_VERTEX_2D *source
+          = vertex_object->tio.entity->tio.VERTEX_2D;
+      vertex.position[0] = source->point.x;
+      vertex.position[1] = source->point.y;
+      vertex.position[2] = source->point.z;
+      vertex.bulge = source->bulge;
+      vertex.start_width = source->start_width;
+      vertex.end_width = source->end_width;
+      vertex.curve_tangent = source->tangent_dir;
+      vertex.flags = (uint32_t)source->flag;
+      vertex.id = (int32_t)(uint32_t)source->id;
+    }
+  else if (kind == 3 && vertex_object->fixedtype == DWG_TYPE_VERTEX_3D
+           && vertex_object->tio.entity->tio.VERTEX_3D)
+    {
+      const Dwg_Entity_VERTEX_3D *source
+          = vertex_object->tio.entity->tio.VERTEX_3D;
+      vertex.position[0] = source->point.x;
+      vertex.position[1] = source->point.y;
+      vertex.position[2] = source->point.z;
+      vertex.flags = (uint32_t)source->flag;
+    }
+  else
+    return 1;
+  if (consumer && !consumer (context, &vertex))
+    return 0;
+  (*count)++;
+  return 1;
+}
+
+static int
+iterate_polyline_vertices (const Dwg_Object *object,
+                           PolylineVertexConsumer consumer, void *context,
+                           uint64_t *vertex_count)
+{
+  PolylineInfo info;
+  uint64_t count = 0;
+  if (!read_polyline_info (object, &info))
+    {
+      if (vertex_count)
+        *vertex_count = 0;
+      return 1;
+    }
+  if (info.kind == 1)
+    {
+      const Dwg_Entity_LWPOLYLINE *polyline
+          = object->tio.entity->tio.LWPOLYLINE;
+      uint64_t i;
+      if (polyline->num_points && !polyline->points)
+        {
+          if (vertex_count)
+            *vertex_count = 0;
+          return 1;
+        }
+      for (i = 0; i < (uint64_t)polyline->num_points; i++)
+        {
+          PolylineVertex vertex;
+          memset (&vertex, 0, sizeof (vertex));
+          vertex.position[0] = polyline->points[i].x;
+          vertex.position[1] = polyline->points[i].y;
+          vertex.position[2] = polyline->elevation;
+          if (polyline->bulges && i < (uint64_t)polyline->num_bulges)
+            vertex.bulge = polyline->bulges[i];
+          if (polyline->widths && i < (uint64_t)polyline->num_widths)
+            {
+              vertex.start_width = polyline->widths[i].start;
+              vertex.end_width = polyline->widths[i].end;
+            }
+          if (polyline->vertexids
+              && i < (uint64_t)polyline->num_vertexids)
+            vertex.id = (int32_t)(uint32_t)polyline->vertexids[i];
+          if (consumer && !consumer (context, &vertex))
+            return 0;
+          count++;
+        }
+    }
+  else
+    {
+      Dwg_Data *dwg = object->parent;
+      BITCODE_H *references = NULL;
+      BITCODE_H first = NULL;
+      BITCODE_H last = NULL;
+      uint64_t declared = 0;
+      Dwg_Version_Type version;
+      if (!dwg)
+        {
+          if (vertex_count)
+            *vertex_count = 0;
+          return 1;
+        }
+      version = dwg->header.version;
+      if (info.kind == 2)
+        {
+          const Dwg_Entity_POLYLINE_2D *polyline
+              = object->tio.entity->tio.POLYLINE_2D;
+          declared = (uint64_t)polyline->num_owned;
+          references = polyline->vertex;
+          first = polyline->first_vertex;
+          last = polyline->last_vertex;
+        }
+      else
+        {
+          const Dwg_Entity_POLYLINE_3D *polyline
+              = object->tio.entity->tio.POLYLINE_3D;
+          declared = (uint64_t)polyline->num_owned;
+          references = polyline->vertex;
+          first = polyline->first_vertex;
+          last = polyline->last_vertex;
+        }
+      if (version < R_13b1)
+        {
+          Dwg_Object *current = dwg_next_object (object);
+          uint64_t visited = 0;
+          uint64_t limit = (uint64_t)dwg->num_objects;
+          Dwg_Object_Type expected_type
+              = info.kind == 2 ? DWG_TYPE_VERTEX_2D
+                               : DWG_TYPE_VERTEX_3D;
+          while (current && visited < limit
+                 && current->fixedtype != DWG_TYPE_SEQEND)
+            {
+              Dwg_Object *next;
+              if (current->fixedtype != expected_type)
+                break;
+              visited++;
+              if (!consume_polyline_subentity (
+                      current, info.kind, consumer, context, &count))
+                return 0;
+              next = dwg_next_object (current);
+              current = next;
+            }
+        }
+      else if (version <= R_2000)
+        {
+          Dwg_Object *current
+              = first ? dwg_ref_object_silent (dwg, first) : NULL;
+          uint64_t visited = 0;
+          uint64_t limit = (uint64_t)dwg->num_objects;
+          while (current && visited < limit)
+            {
+              Dwg_Object *next;
+              visited++;
+              if (!consume_polyline_subentity (
+                      current, info.kind, consumer, context, &count))
+                return 0;
+              if (last && current == last->obj)
+                break;
+              next = dwg_next_object (current);
+              if (!next || next->fixedtype == DWG_TYPE_SEQEND)
+                break;
+              current = next;
+            }
+        }
+      else if (references)
+        {
+          uint64_t i;
+          uint64_t limit
+              = declared < (uint64_t)dwg->num_objects
+                    ? declared
+                    : (uint64_t)dwg->num_objects;
+          for (i = 0; i < limit; i++)
+            {
+              Dwg_Object *current
+                  = references[i]
+                        ? dwg_ref_object_silent (dwg, references[i])
+                        : NULL;
+              if (!consume_polyline_subentity (
+                      current, info.kind, consumer, context, &count))
+                return 0;
+            }
+        }
+    }
+  if (vertex_count)
+    *vertex_count = count;
+  return 1;
+}
+
+static uint64_t
+polyline_vertex_count (const Dwg_Object *object)
+{
+  uint64_t count = 0;
+  (void)iterate_polyline_vertices (object, NULL, NULL, &count);
+  return count;
+}
+
 static int
 is_logical_entity (const Dwg_Object *object)
 {
@@ -762,6 +1078,21 @@ count_primitives (const Dwg_Data *dwg)
         case DWG_TYPE_MINSERT:
           counts.inserts++;
           break;
+        case DWG_TYPE_LWPOLYLINE:
+          counts.lwpolylines++;
+          counts.polyline_vertices
+              += polyline_vertex_count (object);
+          break;
+        case DWG_TYPE_POLYLINE_2D:
+          counts.polylines_2d++;
+          counts.polyline_vertices
+              += polyline_vertex_count (object);
+          break;
+        case DWG_TYPE_POLYLINE_3D:
+          counts.polylines_3d++;
+          counts.polyline_vertices
+              += polyline_vertex_count (object);
+          break;
         case DWG_TYPE_ELLIPSE:
           counts.ellipses++;
           break;
@@ -770,7 +1101,9 @@ count_primitives (const Dwg_Data *dwg)
         }
     }
   counts.serialized_entities = counts.lines + counts.arcs + counts.circles
-                               + counts.inserts + counts.ellipses;
+                               + counts.inserts + counts.lwpolylines
+                               + counts.polylines_2d
+                               + counts.polylines_3d + counts.ellipses;
   counts.deferred_entities
       = counts.total_entities - counts.serialized_entities;
   return counts;
@@ -1218,6 +1551,97 @@ write_insert_section (CacheWriter *writer, const Dwg_Data *dwg,
 }
 
 static int
+write_polyline_header_section (CacheWriter *writer, const Dwg_Data *dwg,
+                               const CacheTables *tables,
+                               SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t first_vertex = 0;
+  uint64_t count = 0;
+  size_t i;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      const Dwg_Object *object = &dwg->object[i];
+      PolylineInfo info;
+      uint64_t vertex_count;
+      if (!read_polyline_info (object, &info))
+        continue;
+      vertex_count = polyline_vertex_count (object);
+      if (vertex_count > UINT32_MAX
+          || UINT64_MAX - first_vertex < vertex_count)
+        {
+          set_error (writer, "polyline vertex range exceeds scene cache");
+          return 0;
+        }
+      if (!write_common (writer, object, tables)
+          || !write_u64 (writer, first_vertex)
+          || !write_u32 (writer, (uint32_t)vertex_count)
+          || !write_u16 (writer, info.kind)
+          || !write_u16 (writer, info.flags)
+          || !write_f64 (writer, info.elevation)
+          || !write_f64 (writer, info.thickness)
+          || !write_vec3 (writer, info.normal)
+          || !write_f64 (writer, info.default_start_width)
+          || !write_f64 (writer, info.default_end_width)
+          || !write_f64 (writer, info.constant_width))
+        return 0;
+      first_vertex += vertex_count;
+      count++;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_POLYLINE_HEADERS,
+      POLYLINE_HEADER_RECORD_SIZE, "polyline_headers", offset, count);
+}
+
+static int
+write_polyline_vertex_record (void *context,
+                              const PolylineVertex *vertex)
+{
+  CacheWriter *writer = (CacheWriter *)context;
+  return write_vec3 (writer, vertex->position)
+         && write_f64 (writer, vertex->bulge)
+         && write_f64 (writer, vertex->start_width)
+         && write_f64 (writer, vertex->end_width)
+         && write_f64 (writer, vertex->curve_tangent)
+         && write_u32 (writer, vertex->flags)
+         && write_i32 (writer, vertex->id);
+}
+
+static int
+write_polyline_vertex_section (CacheWriter *writer, const Dwg_Data *dwg,
+                               SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t i;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      const Dwg_Object *object = &dwg->object[i];
+      PolylineInfo info;
+      uint64_t object_count = 0;
+      if (!read_polyline_info (object, &info))
+        continue;
+      if (!iterate_polyline_vertices (
+              object, write_polyline_vertex_record, writer,
+              &object_count))
+        return 0;
+      if (UINT64_MAX - count < object_count)
+        {
+          set_error (writer, "polyline vertex count overflow");
+          return 0;
+        }
+      count += object_count;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_POLYLINE_VERTICES,
+      POLYLINE_VERTEX_RECORD_SIZE, "polyline_vertices", offset, count);
+}
+
+static int
 write_ellipse_section (CacheWriter *writer, const Dwg_Data *dwg,
                        const CacheTables *tables, SectionEntry *entry)
 {
@@ -1277,7 +1701,8 @@ entity_group (const Dwg_Object_Entity *entity, const CacheTables *tables)
   uint64_t owner = entity_owner_handle (entity, tables);
   uint32_t index
       = find_handle_index (tables->block_indices, tables->block_count, owner);
-  if (index != UINT32_MAX)
+  if (index != UINT32_MAX && tables->blocks
+      && index < tables->block_count)
     {
       if (tables->blocks[index].is_model)
         return UINT32_MAX;
@@ -1325,6 +1750,8 @@ line_segment_from_object (const Dwg_Object *object,
   segment->color = encode_color (&entity->color);
   segment->line_weight = (int16_t)line_weight;
   segment->flags = entity->invisible ? 1u : 0u;
+  segment->source_kind = 0;
+  segment->approximated_curve = 0;
   return 1;
 }
 
@@ -1496,58 +1923,363 @@ overview_select (OverviewPlan *plan, const LineSegment *segment)
 }
 
 static int
-iterate_line_segments (const Dwg_Data *dwg, const CacheTables *tables,
-                       OverviewPlan *overview, LineSegmentConsumer consumer,
-                       void *context, uint64_t *selected)
+segment_iteration_emit (SegmentIteration *iteration,
+                        const LineSegment *segment)
 {
-  uint64_t emitted = 0;
-  size_t i;
-  if (overview)
-    reset_overview_plan (overview);
-  for (i = 0; i < (size_t)dwg->num_objects; i++)
+  size_t axis;
+  for (axis = 0; axis < 3; axis++)
     {
-      LineSegment segment;
-      int status = line_segment_from_object (&dwg->object[i], tables,
-                                             &segment);
-      if (status <= 0)
-        continue;
-      if (!overview || overview_select (overview, &segment))
+      if (!isfinite (segment->start[axis])
+          || !isfinite (segment->end[axis]))
         {
-          if (!consumer (context, &segment))
-            return 0;
-          emitted++;
+          iteration->skipped++;
+          return 1;
         }
     }
-  if (selected)
-    *selected = emitted;
-  if (overview && emitted != overview->quota_total)
+  if (segment->approximated_curve)
+    iteration->approximated++;
+  if (iteration->overview
+      && !overview_select (iteration->overview, segment))
+    return 1;
+  if (!iteration->consumer (
+          iteration->consumer_context, segment))
     return 0;
+  iteration->emitted++;
   return 1;
 }
 
 static void
-count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
-                    LibreDwgGpuLineSummary *summary, OverviewPlan *overview)
+segment_iteration_reject (SegmentIteration *iteration)
 {
-  size_t i;
-  for (i = 0; i < (size_t)dwg->num_objects; i++)
+  iteration->skipped++;
+}
+
+static unsigned
+bulge_segment_count (double bulge)
+{
+  double sweep;
+  double requested;
+  if (!isfinite (bulge) || fabs (bulge) <= CURVE_EPSILON)
+    return 1;
+  sweep = fabs (4.0 * atan (bulge));
+  requested = ceil (sweep / CURVE_MAX_ANGLE_RADIANS);
+  if (!isfinite (requested) || requested < 1.0)
+    return 1;
+  if (requested > (double)MAX_CIRCULAR_SEGMENTS)
+    return MAX_CIRCULAR_SEGMENTS;
+  return (unsigned)requested;
+}
+
+static int
+bulge_point (const PolylineVertex *start, const PolylineVertex *end,
+             double elevation, unsigned subdivision,
+             unsigned subdivisions, double point[3])
+{
+  double fraction;
+  double delta_x;
+  double delta_y;
+  double chord;
+  double center_offset;
+  double center_x;
+  double center_y;
+  double radius;
+  double start_angle;
+  double angle;
+  if (!subdivisions || subdivision > subdivisions
+      || !isfinite (start->bulge))
+    return 0;
+  fraction = (double)subdivision / (double)subdivisions;
+  if (fabs (start->bulge) <= CURVE_EPSILON)
+    {
+      point[0] = start->position[0]
+                 + (end->position[0] - start->position[0]) * fraction;
+      point[1] = start->position[1]
+                 + (end->position[1] - start->position[1]) * fraction;
+      point[2] = elevation;
+      return 1;
+    }
+  delta_x = end->position[0] - start->position[0];
+  delta_y = end->position[1] - start->position[1];
+  chord = hypot (delta_x, delta_y);
+  if (!isfinite (chord))
+    return 0;
+  if (chord <= CURVE_EPSILON)
+    {
+      point[0] = start->position[0];
+      point[1] = start->position[1];
+      point[2] = elevation;
+      return 1;
+    }
+  center_offset
+      = chord * (1.0 - start->bulge * start->bulge)
+        / (4.0 * start->bulge);
+  center_x = (start->position[0] + end->position[0]) * 0.5
+             - delta_y / chord * center_offset;
+  center_y = (start->position[1] + end->position[1]) * 0.5
+             + delta_x / chord * center_offset;
+  radius = hypot (start->position[0] - center_x,
+                  start->position[1] - center_y);
+  start_angle = atan2 (start->position[1] - center_y,
+                       start->position[0] - center_x);
+  angle = start_angle + 4.0 * atan (start->bulge) * fraction;
+  point[0] = center_x + radius * cos (angle);
+  point[1] = center_y + radius * sin (angle);
+  point[2] = elevation;
+  return 1;
+}
+
+static void
+ocs_to_wcs (const double normal[3], const double point[3],
+            double transformed[3])
+{
+  double n[3] = { normal[0], normal[1], normal[2] };
+  double x_axis[3];
+  double y_axis[3];
+  double length = sqrt (n[0] * n[0] + n[1] * n[1]
+                        + n[2] * n[2]);
+  double axis_length;
+  if (!isfinite (length) || length <= 1.0e-12)
+    {
+      memcpy (transformed, point, 3 * sizeof (double));
+      return;
+    }
+  n[0] /= length;
+  n[1] /= length;
+  n[2] /= length;
+  if (fabs (n[0]) < 1.0 / 64.0 && fabs (n[1]) < 1.0 / 64.0)
+    {
+      x_axis[0] = n[2];
+      x_axis[1] = 0.0;
+      x_axis[2] = -n[0];
+    }
+  else
+    {
+      x_axis[0] = -n[1];
+      x_axis[1] = n[0];
+      x_axis[2] = 0.0;
+    }
+  axis_length = sqrt (x_axis[0] * x_axis[0]
+                      + x_axis[1] * x_axis[1]
+                      + x_axis[2] * x_axis[2]);
+  if (!isfinite (axis_length) || axis_length <= 1.0e-12)
+    {
+      memcpy (transformed, point, 3 * sizeof (double));
+      return;
+    }
+  x_axis[0] /= axis_length;
+  x_axis[1] /= axis_length;
+  x_axis[2] /= axis_length;
+  y_axis[0] = n[1] * x_axis[2] - n[2] * x_axis[1];
+  y_axis[1] = n[2] * x_axis[0] - n[0] * x_axis[2];
+  y_axis[2] = n[0] * x_axis[1] - n[1] * x_axis[0];
+  transformed[0] = x_axis[0] * point[0] + y_axis[0] * point[1]
+                   + n[0] * point[2];
+  transformed[1] = x_axis[1] * point[0] + y_axis[1] * point[1]
+                   + n[1] * point[2];
+  transformed[2] = x_axis[2] * point[0] + y_axis[2] * point[1]
+                   + n[2] * point[2];
+}
+
+typedef struct
+{
+  const Dwg_Object *object;
+  const CacheTables *tables;
+  const PolylineInfo *info;
+  SegmentIteration *iteration;
+  PolylineVertex first;
+  PolylineVertex previous;
+  uint64_t count;
+  int has_previous;
+} PolylineSegmentBuilder;
+
+static void
+initialize_polyline_segment (const PolylineSegmentBuilder *builder,
+                             LineSegment *segment)
+{
+  const Dwg_Object_Entity *entity = builder->object->tio.entity;
+  int line_weight = dxf_cvt_lweight (entity->linewt);
+  memset (segment, 0, sizeof (*segment));
+  if (line_weight < INT16_MIN || line_weight > INT16_MAX)
+    line_weight = -1;
+  segment->handle = (uint64_t)builder->object->handle.value;
+  segment->layer_index = entity_layer_index (entity, builder->tables);
+  segment->color = encode_color (&entity->color);
+  segment->line_weight = (int16_t)line_weight;
+  segment->flags = entity->invisible ? 1u : 0u;
+  segment->group = entity_group (entity, builder->tables);
+  segment->source_kind = (uint8_t)builder->info->kind;
+}
+
+static int
+emit_polyline_edge (PolylineSegmentBuilder *builder,
+                    const PolylineVertex *start,
+                    const PolylineVertex *end)
+{
+  unsigned subdivisions
+      = builder->info->kind == 3
+            ? 1u
+            : bulge_segment_count (start->bulge);
+  unsigned index;
+  for (index = 0; index < subdivisions; index++)
     {
       LineSegment segment;
-      int status
-          = line_segment_from_object (&dwg->object[i], tables, &segment);
+      initialize_polyline_segment (builder, &segment);
+      if (builder->info->kind == 3)
+        {
+          memcpy (segment.start, start->position,
+                  3 * sizeof (double));
+          memcpy (segment.end, end->position, 3 * sizeof (double));
+        }
+      else
+        {
+          double start_ocs[3];
+          double end_ocs[3];
+          if (!bulge_point (start, end, builder->info->elevation,
+                            index, subdivisions, start_ocs)
+              || !bulge_point (start, end, builder->info->elevation,
+                               index + 1u, subdivisions, end_ocs))
+            {
+              segment_iteration_reject (builder->iteration);
+              continue;
+            }
+          ocs_to_wcs (builder->info->normal, start_ocs,
+                      segment.start);
+          ocs_to_wcs (builder->info->normal, end_ocs, segment.end);
+          segment.approximated_curve
+              = isfinite (start->bulge)
+                && fabs (start->bulge) > CURVE_EPSILON;
+        }
+      if (!segment_iteration_emit (builder->iteration, &segment))
+        return 0;
+    }
+  return 1;
+}
+
+static int
+polyline_segment_vertex (void *context, const PolylineVertex *vertex)
+{
+  PolylineSegmentBuilder *builder
+      = (PolylineSegmentBuilder *)context;
+  if (!builder->has_previous)
+    {
+      builder->first = *vertex;
+      builder->previous = *vertex;
+      builder->has_previous = 1;
+    }
+  else
+    {
+      if (!emit_polyline_edge (builder, &builder->previous, vertex))
+        return 0;
+      builder->previous = *vertex;
+    }
+  builder->count++;
+  return 1;
+}
+
+static int
+iterate_polyline_segments (const Dwg_Object *object,
+                           const CacheTables *tables,
+                           SegmentIteration *iteration)
+{
+  PolylineInfo info;
+  PolylineSegmentBuilder builder;
+  if (!read_polyline_info (object, &info))
+    return 1;
+  if (entity_group (object->tio.entity, tables) == UINT32_MAX - 1u)
+    return 1;
+  memset (&builder, 0, sizeof (builder));
+  builder.object = object;
+  builder.tables = tables;
+  builder.info = &info;
+  builder.iteration = iteration;
+  if (!iterate_polyline_vertices (
+          object, polyline_segment_vertex, &builder, NULL))
+    return 0;
+  if (info.closed && builder.count > 1
+      && !emit_polyline_edge (
+          &builder, &builder.previous, &builder.first))
+    return 0;
+  return 1;
+}
+
+static int
+iterate_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
+                      OverviewPlan *overview,
+                      LineSegmentConsumer consumer, void *context,
+                      uint64_t *selected, uint64_t *skipped,
+                      uint64_t *approximated)
+{
+  SegmentIteration iteration;
+  size_t i;
+  memset (&iteration, 0, sizeof (iteration));
+  iteration.overview = overview;
+  iteration.consumer = consumer;
+  iteration.consumer_context = context;
+  if (overview)
+    reset_overview_plan (overview);
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      const Dwg_Object *object = &dwg->object[i];
+      LineSegment segment;
+      int status = line_segment_from_object (object, tables, &segment);
       if (status < 0)
-        summary->skipped_non_finite_segments++;
+        iteration.skipped++;
       else if (status > 0)
         {
-          size_t index = overview_group_index (&segment, overview);
-          if (segment.group == UINT32_MAX)
-            summary->model_segments++;
-          else
-            summary->block_segments++;
-          if (index < overview->group_count)
-            overview->groups[index].count++;
+          if (!segment_iteration_emit (&iteration, &segment))
+            return 0;
         }
+      else if (!iterate_polyline_segments (
+                   object, tables, &iteration))
+        return 0;
     }
+  if (selected)
+    *selected = iteration.emitted;
+  if (skipped)
+    *skipped = iteration.skipped;
+  if (approximated)
+    *approximated = iteration.approximated;
+  if (overview && iteration.emitted != overview->quota_total)
+    return 0;
+  return 1;
+}
+
+typedef struct
+{
+  LibreDwgGpuLineSummary *summary;
+  OverviewPlan *overview;
+} GpuSegmentCounter;
+
+static int
+count_gpu_segment (void *context, const LineSegment *segment)
+{
+  GpuSegmentCounter *counter = (GpuSegmentCounter *)context;
+  size_t index = overview_group_index (segment, counter->overview);
+  if (segment->group == UINT32_MAX)
+    counter->summary->model_segments++;
+  else
+    counter->summary->block_segments++;
+  if (index < counter->overview->group_count)
+    counter->overview->groups[index].count++;
+  return 1;
+}
+
+static int
+count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
+                    LibreDwgGpuLineSummary *summary,
+                    OverviewPlan *overview)
+{
+  GpuSegmentCounter counter;
+  uint64_t skipped = 0;
+  uint64_t approximated = 0;
+  counter.summary = summary;
+  counter.overview = overview;
+  if (!iterate_gpu_segments (dwg, tables, NULL, count_gpu_segment,
+                             &counter, NULL, &skipped, &approximated))
+    return 0;
+  summary->skipped_non_finite_segments = skipped;
+  summary->approximated_curve_segments = approximated;
+  return 1;
 }
 
 static double
@@ -1624,7 +2356,8 @@ write_batch_record (BatchDirectoryBuilder *builder)
     encoded_error = nextafterf (encoded_error, INFINITY);
   if (!write_u32 (writer, id) || !write_u16 (writer, kind)
       || !write_u16 (writer, builder->lod_level)
-      || !write_u32 (writer, 0) || !write_u32 (writer, block_index)
+      || !write_u32 (writer, builder->batch_flags)
+      || !write_u32 (writer, block_index)
       || !write_u64 (writer, builder->first_vertex)
       || !write_u64 (writer, vertex_count)
       || !write_u32 (writer, builder->count) || !write_u32 (writer, 0)
@@ -1643,6 +2376,7 @@ write_batch_record (BatchDirectoryBuilder *builder)
   summary->maximum_position_error
       = fmax (summary->maximum_position_error, error);
   builder->count = 0;
+  builder->batch_flags = 0;
   builder->has_group = 0;
   return 1;
 }
@@ -1681,6 +2415,8 @@ batch_directory_consume (void *context, const LineSegment *segment)
                       fmax (segment->start[axis], segment->end[axis]));
         }
     }
+  if (segment->approximated_curve)
+    builder->batch_flags |= GPU_BATCH_FLAG_APPROXIMATED_CURVE;
   builder->count++;
   return 1;
 }
@@ -1699,8 +2435,9 @@ write_batch_pass (CacheWriter *writer, const Dwg_Data *dwg,
   builder.lod_level = lod_level;
   builder.separate_overview = separate_overview;
   builder.first_vertex = summary->vertices;
-  if (!iterate_line_segments (dwg, tables, overview,
-                              batch_directory_consume, &builder, selected)
+  if (!iterate_gpu_segments (dwg, tables, overview,
+                             batch_directory_consume, &builder, selected,
+                             NULL, NULL)
       || !write_batch_record (&builder))
     return 0;
   summary->vertices = builder.first_vertex;
@@ -1765,6 +2502,10 @@ write_gpu_vertex (CacheWriter *writer, const double point[3],
     }
   if (segment->flags & 1u)
     style |= GPU_STYLE_INVISIBLE;
+  style |= (uint32_t)segment->source_kind
+           << GPU_STYLE_SOURCE_KIND_SHIFT;
+  if (segment->approximated_curve)
+    style |= GPU_STYLE_APPROXIMATED_CURVE;
   return write_u32 (writer, segment->layer_index)
          && write_u32 (writer, segment->color)
          && write_u32 (writer, (uint32_t)segment->handle)
@@ -1852,8 +2593,8 @@ write_vertex_pass (CacheWriter *writer, const Dwg_Data *dwg,
       set_error (writer, "out of memory while writing GPU vertices");
       return 0;
     }
-  if (!iterate_line_segments (dwg, tables, overview, vertex_consume,
-                              &builder, NULL)
+  if (!iterate_gpu_segments (dwg, tables, overview, vertex_consume,
+                             &builder, NULL, NULL, NULL)
       || !flush_vertex_batch (&builder))
     {
       free (builder.segments);
@@ -1984,7 +2725,13 @@ libredwg_write_scene_cache (
                         "cannot allocate bounded overview plan");
       goto done;
     }
-  count_gpu_segments (dwg, &tables, &gpu_lines, &overview);
+  if (!count_gpu_segments (dwg, &tables, &gpu_lines, &overview))
+    {
+      if (error_message && error_message_size)
+        (void)snprintf (error_message, error_message_size,
+                        "cannot count bounded GPU segments");
+      goto done;
+    }
   if (!finalize_overview_quotas (&overview))
     {
       if (error_message && error_message_size)
@@ -2027,14 +2774,9 @@ libredwg_write_scene_cache (
       || !write_arc_section (&writer, dwg, &tables, &sections[4])
       || !write_circle_section (&writer, dwg, &tables, &sections[5])
       || !write_insert_section (&writer, dwg, &tables, &sections[6])
-      || !write_empty_section (&writer, &sections[7],
-                               SECTION_POLYLINE_HEADERS,
-                               POLYLINE_HEADER_RECORD_SIZE,
-                               "polyline_headers")
-      || !write_empty_section (&writer, &sections[8],
-                               SECTION_POLYLINE_VERTICES,
-                               POLYLINE_VERTEX_RECORD_SIZE,
-                               "polyline_vertices")
+      || !write_polyline_header_section (&writer, dwg, &tables,
+                                         &sections[7])
+      || !write_polyline_vertex_section (&writer, dwg, &sections[8])
       || !write_ellipse_section (&writer, dwg, &tables, &sections[9])
       || !write_empty_section (&writer, &sections[10],
                                SECTION_SPLINE_HEADERS,
