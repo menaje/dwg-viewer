@@ -12,10 +12,10 @@ DWG
   -> batched and instanced GPU renderer
 ```
 
-`acadrust` is the first parser candidate. It must pass a representative Korean
-DWG corpus before becoming a permanent dependency. ACadSharp or native
-LibreDWG may later be evaluated behind the same converter boundary if the
-corpus exposes critical gaps.
+`acadrust` is the current parser baseline, not a permanent engine decision. It
+must pass the time, memory and Korean DWG corpus gates before becoming a
+permanent dependency. Native LibreDWG and ACadSharp are evaluated through the
+same process-isolated adapter protocol when the baseline misses a hard gate.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -26,6 +26,14 @@ render-cache cloning and geometry merging amplify memory.
 DWG parsing runs outside the VS Code extension host and Webview. The converter
 writes a compact cache and exits, releasing transient parser memory. The
 Webview receives only visible chunks and display metadata.
+
+The `dwg-engine-adapter/1` benchmark boundary invokes `inspect` and `convert`
+in a new process for every run. It records process wall time, adapter-reported
+time, peak RSS and privacy-filtered compatibility fingerprints. Warmups are
+excluded from aggregates, temporary caches are deleted per run, target gates
+use the median and hard gates use the maximum. External engine wrappers must
+produce the same inspection report and Scene Cache contract; documentation
+feature tables alone do not select the primary parser.
 
 The implemented Webview first-frame path opens the cache with `Blob.slice`
 or HTTP byte ranges. It validates the 64-byte header and section directory

@@ -4,10 +4,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use acadrust::entities::EntityType;
-use acadrust::DwgReader;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+pub mod benchmark;
+mod engine;
 pub mod scene_cache;
 
 const REPORT_SCHEMA: &str = "dwg-inspection/1";
@@ -127,11 +128,7 @@ pub fn inspect_dwg(path: &Path, options: &InspectOptions) -> Result<InspectionRe
     }
 
     let started = Instant::now();
-    let mut reader = DwgReader::from_file(path)
-        .with_context(|| format!("cannot open DWG: {}", path.display()))?;
-    let document = reader
-        .read()
-        .with_context(|| format!("cannot parse DWG: {}", path.display()))?;
+    let document = engine::parse_acadrust(path)?;
     let parse_elapsed = started.elapsed();
 
     let analysis_started = Instant::now();

@@ -6,11 +6,11 @@ use std::time::Instant;
 
 use acadrust::entities::EntityType;
 use acadrust::types::{Color, Matrix3, Vector3};
-use acadrust::{CadDocument, DwgReader};
+use acadrust::CadDocument;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::{duration_ms, peak_rss_bytes, Bounds3, BoundsAccumulator, InputSummary};
+use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, InputSummary};
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
@@ -291,11 +291,7 @@ pub fn convert_dwg(
     }
 
     let started = Instant::now();
-    let mut reader = DwgReader::from_file(input)
-        .with_context(|| format!("cannot open DWG: {}", input.display()))?;
-    let document = reader
-        .read()
-        .with_context(|| format!("cannot parse DWG: {}", input.display()))?;
+    let document = engine::parse_acadrust(input)?;
     let parse_elapsed = started.elapsed();
 
     let write_started = Instant::now();
@@ -388,6 +384,17 @@ pub fn validate_scene_cache(path: &Path) -> Result<CacheValidationReport> {
         File::open(path).with_context(|| format!("cannot open cache: {}", path.display()))?;
     validate_scene_cache_reader(BufReader::new(file), metadata.len())
         .with_context(|| format!("invalid scene cache: {}", path.display()))
+}
+
+#[cfg(test)]
+pub(crate) fn write_test_scene_cache(path: &Path, source_size: u64) -> Result<()> {
+    let output = OpenOptions::new().write(true).create_new(true).open(path)?;
+    let mut writer = BufWriter::new(output);
+    write_scene_cache(&mut writer, &CadDocument::new(), source_size)?;
+    writer.flush()?;
+    drop(writer);
+    validate_scene_cache(path)?;
+    Ok(())
 }
 
 fn validate_scene_cache_reader<R: Read + Seek>(

@@ -34,6 +34,22 @@ cargo run --release -p dwg-converter -- inspect /path/to/drawing.dwg \
   --text-samples 5
 ```
 
+## 도면 엔진 벤치마크
+
+`benchmark` 명령은 검사와 변환을 각각 독립 프로세스로 반복해 벽시계
+시간, 최고 RSS, 출력 일관성과 성능 기준 판정을 하나의 JSON으로
+기록합니다. 기본값은 준비 실행 1회와 측정 3회이며, 측정 중 만든 캐시는
+매 회차 즉시 삭제합니다.
+
+```bash
+cargo build --release -p dwg-converter
+target/release/dwg-converter benchmark /path/to/drawing.dwg --pretty
+```
+
+비공개 결과는 Git에서 제외되는 `benchmarks/results/`에만 저장합니다.
+LibreDWG와 ACadSharp 후보도 같은
+[`engine-adapter`](specs/engine-adapter.md) 계약으로 연결해 비교합니다.
+
 ## 최소 Scene Cache 생성
 
 현재 캐시 작성기는 LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE,
