@@ -27,6 +27,13 @@ DWG parsing runs outside the VS Code extension host and Webview. The converter
 writes a compact cache and exits, releasing transient parser memory. The
 Webview receives only visible chunks and display metadata.
 
+The implemented Webview first-frame path opens the cache with `Blob.slice`
+or HTTP byte ranges. It validates the 64-byte header and section directory
+before reading metadata, resolves nested INSERT/MINSERT transforms into packed
+matrix arrays and uploads one bounded overview vertex prefix to WebGL2.
+World-space transforms remain `f64` on the CPU; the renderer rebases each
+batch around the camera before converting matrices to `f32`.
+
 ## Data rules
 
 - No entity-per-JavaScript-object scene model.
@@ -52,6 +59,12 @@ contiguous prefix of at most 4 MiB and caps each spatial detail batch at
 512 KiB. Curved polylines are marked as coarse chords so the renderer can
 replace them from source-precision records during refinement. Text and curved
 GPU refinement are the next format increments.
+
+Detail ranges are independently capped at 512 KiB. The Webview includes a
+byte-budgeted least-recently-used cache so viewport refinement can release
+inactive chunks instead of retaining the complete drawing. The current
+prototype renders the bounded overview; viewport-driven detail selection is
+the next integration step.
 
 ## Performance gates
 

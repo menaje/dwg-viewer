@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>DWG Scene Cache Viewer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">DWG Viewer · Scene Cache v1.2</p>
+          <h1>대형 도면 첫 화면 검증기</h1>
+        </div>
+        <label class="file-button">
+          캐시 선택
+          <input id="cache-file" type="file" accept=".cache,.dwg.cache" />
+        </label>
+      </header>
+      <section id="drop-zone" class="viewport">
+        <canvas id="drawing"></canvas>
+        <div class="empty-state">
+          <strong>생성된 DWG 캐시를 여기에 놓으세요.</strong>
+          <span>원본 DWG는 전송하지 않으며 브라우저가 필요한 범위만 읽습니다.</span>
+        </div>
+        <div id="status" class="status">캐시를 기다리는 중</div>
+      </section>
+      <aside id="metrics" aria-live="polite"></aside>
+    </main>
+    <script type="module" src="./src/main.mjs"></script>
+  </body>
+</html>

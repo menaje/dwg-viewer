@@ -22,3 +22,15 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+
+  webview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Check and test
+        run: |
+          node --check packages/webview/src/*.mjs
+          node --test packages/webview/test/*.test.mjs
