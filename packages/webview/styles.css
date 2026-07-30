@@ -66,6 +66,15 @@ h1 {
   background: #2673df;
 }
 
+.file-button.secondary {
+  border-color: #40506a;
+  background: #172131;
+}
+
+.file-button.secondary:hover {
+  background: #24344c;
+}
+
 .toolbar,
 .view-controls {
   display: flex;
@@ -128,6 +137,17 @@ canvas {
   display: block;
   cursor: grab;
   touch-action: none;
+}
+
+#drawing,
+#text-overlay {
+  position: absolute;
+  inset: 0;
+}
+
+#text-overlay {
+  z-index: 1;
+  pointer-events: none;
 }
 
 canvas.panning {

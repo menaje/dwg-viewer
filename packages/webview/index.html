@@ -10,7 +10,7 @@
     <main>
       <header>
         <div>
-          <p class="eyebrow">DWG Viewer · Scene Cache v1.3</p>
+          <p class="eyebrow">DWG Viewer · Scene Cache v1.4</p>
           <h1>대형 도면 첫 화면 검증기</h1>
         </div>
         <div class="toolbar">
@@ -28,6 +28,10 @@
             </button>
             <button type="button" data-view-action="zoom-in" disabled aria-label="확대">+</button>
           </nav>
+          <label class="file-button secondary">
+            SHX 글꼴
+            <input id="font-files" type="file" accept=".shx" multiple />
+          </label>
           <label class="file-button">
             캐시 선택
             <input id="cache-file" type="file" accept=".cache,.dwg.cache" />
@@ -36,6 +40,7 @@
       </header>
       <section id="drop-zone" class="viewport">
         <canvas id="drawing"></canvas>
+        <canvas id="text-overlay" aria-hidden="true"></canvas>
         <aside id="layer-panel" class="layer-panel" aria-label="레이어 표시 설정" hidden>
           <div class="layer-panel-heading">
             <strong>레이어</strong>
@@ -61,6 +66,13 @@
       </section>
       <aside id="metrics" aria-live="polite"></aside>
     </main>
+    <script type="importmap">
+      {
+        "imports": {
+          "#shx-parser": "./node_modules/@mlightcad/shx-parser/dist/index.es.js"
+        }
+      }
+    </script>
     <script type="module" src="./src/main.mjs"></script>
   </body>
 </html>

@@ -1,6 +1,7 @@
-# Scene Cache v1.3
+# Scene Cache v1.4
 
-Status: minimal writer implemented; expansion tracked by GitHub issue #3.
+Status: source geometry and text writer implemented; expansion tracked by
+GitHub issues #3 and #9.
 
 The cache is a little-endian, versioned binary container designed for range
 reads and browser `ArrayBuffer`/`DataView` access. Geometry is never encoded as
@@ -52,6 +53,7 @@ Section kinds currently written:
 | 1 | drawing metadata and bounds |
 | 2 | layer table and UTF-8 strings |
 | 3 | shared block-definition table and UTF-8 strings |
+| 4 | text-style table and UTF-8 strings |
 | 10 | LINE records |
 | 11 | ARC records |
 | 12 | CIRCLE records |
@@ -64,13 +66,16 @@ Section kinds currently written:
 | 19 | SPLINE weight pool |
 | 20 | SPLINE control-point pool |
 | 21 | SPLINE fit-point pool |
+| 22 | TEXT/MTEXT/ATTDEF/ATTRIB records and UTF-8 strings |
+| 23 | MTEXT column-height pool |
 | 30 | viewport/LOD GPU line batches |
 | 31 | interleaved GPU line vertices |
 
 Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
 Version 1.2 adds kinds 30–31 for straight and polyline GPU lines. Version 1.3
 extends those GPU sections with bounded curve chords without changing their
-binary record sizes. The validator continues to accept older v1 caches.
+binary record sizes. Version 1.4 adds kinds 4 and 22–23 for source text and
+font-style metadata. The validator continues to accept older v1 caches.
 
 ## Shared primitive prefix
 
@@ -95,7 +100,7 @@ coordinates without replacing these source-precision records.
 
 ## String-table sections
 
-Layer and block sections begin with:
+Layer, block, text-style and text-entity sections begin with:
 
 | Offset | Type | Field |
 | ---: | --- | --- |
@@ -106,6 +111,89 @@ Layer and block sections begin with:
 Individual records contain offsets and lengths into the trailing UTF-8 blob.
 Layer and block data is stored once; primitive and INSERT records reference it
 by index or owner handle.
+
+## Text styles and source text
+
+Scene Cache v1.4 preserves the source strings before attempting display. The
+Webview reads the text sections only after the first geometry frame and decodes
+an entity's value only after cheap pixel-size and viewport culling.
+
+### Text-style record
+
+Each kind-4 record is 96 bytes:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u64` | style handle |
+| 8 | `u32[2]` | style-name UTF-8 offset and length |
+| 16 | `u32[2]` | primary font-file UTF-8 offset and length |
+| 24 | `u32[2]` | BigFont-file UTF-8 offset and length |
+| 32 | `u32[2]` | TrueType-name UTF-8 offset and length |
+| 40 | `u32` | style flags |
+| 44 | `u32` | reserved |
+| 48 | `f64` | fixed height |
+| 56 | `f64` | width factor |
+| 64 | `f64` | oblique angle |
+| 72 | `f64` | last height |
+| 80 | `u8[16]` | reserved |
+
+Style flag bits are 0 backward, 1 upside down, 2 xref-dependent, 3
+annotative, 4 vertical and 5 shape.
+
+### Text-entity record
+
+Each kind-22 record is 336 bytes:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u8[32]` | shared primitive prefix |
+| 32 | `u16` | kind: 0 TEXT, 1 MTEXT, 2 ATTDEF, 3 ATTRIB |
+| 34 | `u16` | text flags |
+| 36 | `u32` | style index, or `0xffffffff` |
+| 40 | `u32[2]` | value UTF-8 offset and length |
+| 48 | `u32[2]` | attribute tag UTF-8 offset and length |
+| 56 | `u32[2]` | attribute prompt UTF-8 offset and length |
+| 64 | `u64` | linked handle, or zero |
+| 72 | `f64[3]` | insertion point |
+| 96 | `f64[3]` | alignment point |
+| 120 | `f64[3]` | OCS normal |
+| 144 | `f64[3]` | source X-axis direction |
+| 168 | `f64` | height |
+| 176 | `f64` | width factor |
+| 184 | `f64` | rotation |
+| 192 | `f64` | oblique angle |
+| 200 | `f64` | thickness |
+| 208 | `f64` | rectangle width |
+| 216 | `f64` | rectangle height |
+| 224 | `f64` | extents width |
+| 232 | `f64` | extents height |
+| 240 | `f64` | line-spacing factor |
+| 248 | `f64` | background scale |
+| 256 | `u32` | encoded background color |
+| 260 | `i32` | background transparency |
+| 264 | `i32` | background flags |
+| 268 | `i32` | source attribute flags |
+| 272 | `i16` | horizontal alignment |
+| 274 | `i16` | vertical alignment |
+| 276 | `i16` | MTEXT attachment |
+| 278 | `i16` | MTEXT flow direction |
+| 280 | `i16` | line-spacing style |
+| 282 | `i16` | generation flags |
+| 284 | `i16` | attribute field length |
+| 286 | `i16` | embedded-MTEXT type |
+| 288 | `i32` | line count |
+| 292 | `i32` | column type |
+| 296 | `i32` | column count |
+| 300 | `u32` | column flags |
+| 304 | `f64` | column width |
+| 312 | `f64` | column gutter |
+| 320 | `u64` | first kind-23 column height |
+| 328 | `u64` | column-height count |
+
+Text flag bits are 0 alignment point present, 1 rectangle height present, 2
+annotative, 3 multiline, 4 position locked and 5 really locked. Column flag
+bits are 0 automatic height and 1 reversed flow. Kind 23 is a packed `f64`
+pool; every offset/count pair is range-checked.
 
 ## Polyline normalization
 
@@ -212,7 +300,9 @@ high-zoom refinement.
 
 ## Deferred v1 work
 
-- text runs and SHX glyph references;
+- complete MTEXT formatting, background, column and exact OCS/alignment display
+  fidelity beyond the bounded first pass;
+- automatic trusted SHX font discovery and project font mapping;
 - linetype override table;
 - view-adaptive high-zoom refinement beyond the bounded v1.3 curve chords;
 - entity-selection index and source fingerprint.
@@ -222,18 +312,19 @@ generated artifacts and must not be committed.
 
 ## LibreDWG qualification writer
 
-The optional LibreDWG adapter currently writes a valid but partial v1.3 cache
+The optional LibreDWG adapter currently writes a valid but partial v1.4 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
-pools. Its GPU sections render LINE and normalized polyline segments plus
-bounded ARC/CIRCLE/ELLIPSE, bulge and SPLINE chords. Circular curves use the
-same 16-segments-per-revolution limit; SPLINE evaluation and malformed-input
-fallback use the 256-segments-per-entity limit. All omitted logical entities
-are exposed in the conversion report rather than silently treated as
-supported.
+pools. It also preserves text styles and UTF-8 TEXT, MTEXT, ATTDEF and attached
+ATTRIB source records. Its GPU sections render LINE and normalized polyline
+segments plus bounded ARC/CIRCLE/ELLIPSE, bulge and SPLINE chords. Circular
+curves use the same 16-segments-per-revolution limit; SPLINE evaluation and
+malformed-input fallback use the 256-segments-per-entity limit. All omitted
+logical entities are exposed in the conversion report rather than silently
+treated as supported.
 
 This qualification writer keeps the same 4 MiB overview and 512 KiB detail
-limits, but detail batches are in bounded source traversal order rather than
-XY Morton order. Text/SHX caches and spatial ordering remain requirements
-before the LibreDWG writer can replace the primary converter.
+limits and uses disk-backed group-local XY Morton ordering for detail batches.
+The remaining unsupported source families and exact CAD text-layout fidelity
+must be closed before the LibreDWG writer can replace the primary converter.

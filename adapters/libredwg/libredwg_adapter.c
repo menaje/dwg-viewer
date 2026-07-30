@@ -877,6 +877,11 @@ json_conversion_coverage (const LibreDwgPrimitiveCounts *counts)
           counts->spline_control_points);
   printf (",\"spline_fit_points\":%" PRIu64,
           counts->spline_fit_points);
+  printf (",\"texts\":%" PRIu64, counts->texts);
+  printf (",\"mtexts\":%" PRIu64, counts->mtexts);
+  printf (",\"attribute_definitions\":%" PRIu64,
+          counts->attribute_definitions);
+  printf (",\"attributes\":%" PRIu64, counts->attributes);
   putchar ('}');
 }
 
@@ -994,7 +999,7 @@ convert_dwg (const char *path, const char *output_path)
           (uint64_t)metadata.st_size);
   printf ("\"cache\":{\"format_major\":%u,\"format_minor\":%u,"
           "\"size_bytes\":%" PRIu64 ",\"validated\":true,\"sections\":[",
-          1u, 3u, report.cache_size);
+          1u, 4u, report.cache_size);
   for (i = 0; i < LIBREDWG_SCENE_SECTION_COUNT; i++)
     {
       if (i)

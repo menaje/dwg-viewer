@@ -27,11 +27,13 @@ with GPL-3.0-or-later.
 - Usage: downloaded only when `pkg-config` is unavailable while preparing the
   optional LibreDWG adapter
 
-## Planned dependency: mlightcad/shx-parser
+## @mlightcad/shx-parser
 
 - Project: https://github.com/mlightcad/shx-parser
+- Version: 1.4.5
 - License: MIT
-- Planned usage: SHX, BigFont and Extended BigFont parsing
+- Usage: browser-local SHX, BigFont, Extended BigFont and Unifont parsing
 
-The planned dependency is listed for architectural transparency and is not yet
-included in a shipped build.
+The Webview imports the package's ESM build. Fonts and glyphs are opened lazily
+under explicit byte and record limits; no font data is sent to an external
+service.

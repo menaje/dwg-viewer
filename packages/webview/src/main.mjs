@@ -1,13 +1,17 @@
 import { ViewportInteraction } from "./interaction.mjs";
 import { BlobRangeSource, TrackedRangeSource } from "./range-source.mjs";
 import { WebGlLineRenderer } from "./renderer.mjs";
+import { ShxGlyphCache } from "./shx-glyph-cache.mjs";
+import { CanvasTextOverlay } from "./text-overlay.mjs";
 import { loadFirstFrame } from "./viewer.mjs";
 
 const fileInput = document.querySelector("#cache-file");
+const fontInput = document.querySelector("#font-files");
 const dropZone = document.querySelector("#drop-zone");
 const status = document.querySelector("#status");
 const metrics = document.querySelector("#metrics");
 const canvas = document.querySelector("#drawing");
+const textCanvas = document.querySelector("#text-overlay");
 const viewControls = [...document.querySelectorAll("[data-view-action]")];
 const layersToggle = document.querySelector("#layers-toggle");
 const layerPanel = document.querySelector("#layer-panel");
@@ -18,12 +22,28 @@ const layersShowAll = document.querySelector("#layers-show-all");
 const layersHideAll = document.querySelector("#layers-hide-all");
 let activeScene;
 let activeInteraction;
+let activeTextStatus;
 let openRevision = 0;
+const glyphCache = new ShxGlyphCache();
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / 1024 ** 2).toFixed(2)} MiB`;
+}
+
+function missingFontSuffix() {
+  const missing = activeTextStatus?.missingFonts ?? [];
+  if (missing.length === 0) {
+    return "";
+  }
+  const visibleNames = missing
+    .slice(0, 3)
+    .map((name) => name.split(/[\\/]/).at(-1).slice(0, 80))
+    .join(", ");
+  const remainder =
+    missing.length > 3 ? ` 외 ${missing.length - 3}개` : "";
+  return ` · 누락 SHX: ${visibleNames}${remainder}`;
 }
 
 function renderMetrics(scene, rangeSource, viewport = null) {
@@ -40,6 +60,17 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>상세 대기</dt><dd>${detail.loading.toLocaleString()}</dd></div>
     `
     : "";
+  const text = render?.text;
+  const textRows = text
+    ? `
+      <div><dt>문자 원본</dt><dd>${text.sourceTexts.toLocaleString()}개</dd></div>
+      <div><dt>화면 문자</dt><dd>${text.visibleOccurrences.toLocaleString()}개</dd></div>
+      <div><dt>SHX 글자</dt><dd>${text.vectorGlyphs.toLocaleString()}개</dd></div>
+      <div><dt>대체 글자</dt><dd>${text.fallbackGlyphs.toLocaleString()}개</dd></div>
+      <div><dt>문자 선분</dt><dd>${text.segments.toLocaleString()}개</dd></div>
+      <div><dt>Glyph 캐시</dt><dd>${formatBytes(glyphCache.stats.glyphBytes)}</dd></div>
+    `
+    : "";
   metrics.innerHTML = `
     <dl>
       <div><dt>첫 화면</dt><dd>${value.timings.firstFrameMs.toFixed(1)} ms</dd></div>
@@ -52,6 +83,7 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>GPU 정점 버퍼</dt><dd>${formatBytes(render.gpuVertexBytes)}</dd></div>
       <div><dt>전체 캐시</dt><dd>${formatBytes(value.cacheBytes)}</dd></div>
       ${detailRows}
+      ${textRows}
     </dl>
   `;
 }
@@ -124,12 +156,71 @@ function setAllLayersVisible(visible) {
   updateLayerSummary();
 }
 
+async function initializeTextOverlay(scene, revision) {
+  if (scene.reader.header.minor < 4) {
+    return;
+  }
+  status.textContent = "문자 원본과 스타일 읽는 중";
+  const [textEntities, styles] = await Promise.all([
+    scene.reader.readTextEntities(),
+    scene.reader.readTextStyles(),
+  ]);
+  if (revision !== openRevision || activeScene !== scene) {
+    return;
+  }
+  const overlay = new CanvasTextOverlay(textCanvas, {
+    textEntities,
+    blocks: scene.metadata.blocks,
+    layers: scene.metadata.layers,
+    instanceGraph: scene.instanceGraph,
+    glyphCache,
+  });
+  scene.renderer.setTextOverlay(overlay);
+  const missing = glyphCache.missingFonts(styles);
+  activeTextStatus = Object.freeze({
+    sourceTexts: textEntities.length,
+    missingFonts: missing,
+  });
+  activeInteraction?.refresh();
+  status.textContent =
+    missing.length === 0
+      ? `문자 ${textEntities.length.toLocaleString()}개 표시 준비 완료`
+      : `문자 ${textEntities.length.toLocaleString()}개 표시${missingFontSuffix()}(시스템 글꼴 대체)`;
+}
+
+async function registerFontFiles(files) {
+  if (files.length === 0) {
+    return;
+  }
+  status.textContent = `SHX 글꼴 ${files.length.toLocaleString()}개 읽는 중`;
+  const registered = await glyphCache.registerFiles(files);
+  if (activeScene) {
+    if (activeScene.renderer.textOverlay) {
+      activeInteraction?.refresh();
+    } else {
+      await initializeTextOverlay(activeScene, openRevision);
+    }
+    const styles = await activeScene.reader.readTextStyles();
+    const missing = glyphCache.missingFonts(styles);
+    activeTextStatus = Object.freeze({
+      sourceTexts: activeTextStatus?.sourceTexts ?? 0,
+      missingFonts: missing,
+    });
+    status.textContent =
+      `SHX ${registered.length.toLocaleString()}개 등록` +
+      (missing.length === 0 ? " · 누락 없음" : missingFontSuffix());
+  } else {
+    status.textContent = `SHX 글꼴 ${registered.length.toLocaleString()}개 등록 완료`;
+  }
+}
+
 async function openFile(file) {
   const revision = ++openRevision;
   status.textContent = "준비 중";
   metrics.innerHTML = "";
   setControlsEnabled(false);
   resetLayerPanel();
+  activeTextStatus = undefined;
   activeInteraction?.dispose();
   activeInteraction = undefined;
   activeScene?.renderer.dispose();
@@ -160,6 +251,7 @@ async function openFile(file) {
           viewport.detail.loading > 0
             ? `상세 청크 ${viewport.detail.loading.toLocaleString()}개 읽는 중`
             : `${viewport.zoom.toFixed(2)}× · 화면 상세 ${viewport.detail.selectedBatches.toLocaleString()}개`;
+        status.textContent += missingFontSuffix();
       },
       onError(error) {
         status.textContent = `상세 표시 실패: ${error.message}`;
@@ -167,6 +259,12 @@ async function openFile(file) {
       },
     });
     setControlsEnabled(true);
+    initializeTextOverlay(activeScene, revision).catch((error) => {
+      if (revision === openRevision) {
+        status.textContent = `문자 표시 실패: ${error.message}`;
+      }
+      console.error(error);
+    });
   } catch (error) {
     renderer.dispose();
     if (revision !== openRevision) {
@@ -187,6 +285,15 @@ fileInput.addEventListener("change", () => {
   }
 });
 
+fontInput.addEventListener("change", () => {
+  const files = [...fontInput.files];
+  fontInput.value = "";
+  registerFontFiles(files).catch((error) => {
+    status.textContent = `SHX 글꼴 실패: ${error.message}`;
+    console.error(error);
+  });
+});
+
 for (const eventName of ["dragenter", "dragover"]) {
   dropZone.addEventListener(eventName, (event) => {
     event.preventDefault();
@@ -200,9 +307,14 @@ for (const eventName of ["dragleave", "drop"]) {
   });
 }
 dropZone.addEventListener("drop", (event) => {
-  const [file] = event.dataTransfer.files;
-  if (file) {
-    openFile(file).catch(console.error);
+  const files = [...event.dataTransfer.files];
+  const fonts = files.filter((file) => file.name.toLocaleLowerCase().endsWith(".shx"));
+  const cache = files.find((file) => !file.name.toLocaleLowerCase().endsWith(".shx"));
+  if (fonts.length > 0) {
+    registerFontFiles(fonts).catch(console.error);
+  }
+  if (cache) {
+    openFile(cache).catch(console.error);
   }
 });
 
@@ -255,5 +367,6 @@ window.addEventListener("beforeunload", () => {
   activeScene?.renderer.dispose();
   activeInteraction = undefined;
   activeScene = undefined;
+  glyphCache.dispose();
   resetLayerPanel();
 });

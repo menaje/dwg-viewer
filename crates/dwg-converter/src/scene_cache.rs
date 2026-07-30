@@ -4,7 +4,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use acadrust::entities::EntityType;
+use acadrust::entities::{AttributeEntity, EntityCommon, EntityType};
 use acadrust::types::{Color, Matrix3, Vector3};
 use acadrust::CadDocument;
 use anyhow::{Context, Result};
@@ -14,13 +14,14 @@ use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, Inp
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 3;
+pub const CACHE_VERSION_MINOR: u16 = 4;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
 const DRAWING_RECORD_SIZE: u32 = 80;
 const LAYER_RECORD_SIZE: u32 = 40;
 const BLOCK_RECORD_SIZE: u32 = 64;
+const TEXT_STYLE_RECORD_SIZE: u32 = 96;
 const LINE_RECORD_SIZE: u32 = 80;
 const ARC_RECORD_SIZE: u32 = 112;
 const CIRCLE_RECORD_SIZE: u32 = 96;
@@ -31,6 +32,8 @@ const ELLIPSE_RECORD_SIZE: u32 = 128;
 const SPLINE_HEADER_RECORD_SIZE: u32 = 208;
 const SPLINE_SCALAR_RECORD_SIZE: u32 = 8;
 const SPLINE_POINT_RECORD_SIZE: u32 = 24;
+const TEXT_ENTITY_RECORD_SIZE: u32 = 336;
+const TEXT_COLUMN_HEIGHT_RECORD_SIZE: u32 = 8;
 const GPU_LINE_BATCH_RECORD_SIZE: u32 = 128;
 const GPU_LINE_VERTEX_RECORD_SIZE: u32 = 32;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
@@ -42,6 +45,11 @@ const GPU_BATCH_FLAG_APPROXIMATED_CURVE: u32 = 1;
 const GPU_STYLE_INVISIBLE: u32 = 1 << 16;
 const GPU_STYLE_SOURCE_KIND_SHIFT: u32 = 17;
 const GPU_STYLE_APPROXIMATED_CURVE: u32 = 1 << 20;
+const TEXT_FLAG_HAS_ALIGNMENT_POINT: u16 = 1;
+const TEXT_FLAG_HAS_RECTANGLE_HEIGHT: u16 = 1 << 1;
+const TEXT_FLAG_ANNOTATIVE: u16 = 1 << 2;
+const TEXT_FLAG_MULTILINE: u16 = 1 << 3;
+const TEXT_FLAG_LOCK_POSITION: u16 = 1 << 4;
 const CURVE_MAX_ANGLE_RADIANS: f64 = std::f64::consts::PI / 8.0;
 const MAX_CURVE_SEGMENTS: usize = 256;
 const SPLINE_SEGMENTS_PER_SPAN: usize = 2;
@@ -100,6 +108,10 @@ pub struct PrimitiveCounts {
     pub spline_weights: u64,
     pub spline_control_points: u64,
     pub spline_fit_points: u64,
+    pub texts: u64,
+    pub mtexts: u64,
+    pub attribute_definitions: u64,
+    pub attributes: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -161,6 +173,7 @@ enum SectionKind {
     Drawing = 1,
     Layers = 2,
     Blocks = 3,
+    TextStyles = 4,
     Lines = 10,
     Arcs = 11,
     Circles = 12,
@@ -173,6 +186,8 @@ enum SectionKind {
     SplineWeights = 19,
     SplineControlPoints = 20,
     SplineFitPoints = 21,
+    TextEntities = 22,
+    TextColumnHeights = 23,
     GpuLineBatches = 30,
     GpuLineVertices = 31,
 }
@@ -183,6 +198,7 @@ impl SectionKind {
             Self::Drawing => "drawing",
             Self::Layers => "layers",
             Self::Blocks => "blocks",
+            Self::TextStyles => "text_styles",
             Self::Lines => "lines",
             Self::Arcs => "arcs",
             Self::Circles => "circles",
@@ -195,6 +211,8 @@ impl SectionKind {
             Self::SplineWeights => "spline_weights",
             Self::SplineControlPoints => "spline_control_points",
             Self::SplineFitPoints => "spline_fit_points",
+            Self::TextEntities => "text_entities",
+            Self::TextColumnHeights => "text_column_heights",
             Self::GpuLineBatches => "gpu_line_batches",
             Self::GpuLineVertices => "gpu_line_vertices",
         }
@@ -205,6 +223,7 @@ impl SectionKind {
             1 => Some(Self::Drawing),
             2 => Some(Self::Layers),
             3 => Some(Self::Blocks),
+            4 => Some(Self::TextStyles),
             10 => Some(Self::Lines),
             11 => Some(Self::Arcs),
             12 => Some(Self::Circles),
@@ -217,6 +236,8 @@ impl SectionKind {
             19 => Some(Self::SplineWeights),
             20 => Some(Self::SplineControlPoints),
             21 => Some(Self::SplineFitPoints),
+            22 => Some(Self::TextEntities),
+            23 => Some(Self::TextColumnHeights),
             30 => Some(Self::GpuLineBatches),
             31 => Some(Self::GpuLineVertices),
             _ => None,
@@ -228,6 +249,7 @@ impl SectionKind {
             Self::Drawing => DRAWING_RECORD_SIZE,
             Self::Layers => LAYER_RECORD_SIZE,
             Self::Blocks => BLOCK_RECORD_SIZE,
+            Self::TextStyles => TEXT_STYLE_RECORD_SIZE,
             Self::Lines => LINE_RECORD_SIZE,
             Self::Arcs => ARC_RECORD_SIZE,
             Self::Circles => CIRCLE_RECORD_SIZE,
@@ -238,13 +260,18 @@ impl SectionKind {
             Self::SplineHeaders => SPLINE_HEADER_RECORD_SIZE,
             Self::SplineKnots | Self::SplineWeights => SPLINE_SCALAR_RECORD_SIZE,
             Self::SplineControlPoints | Self::SplineFitPoints => SPLINE_POINT_RECORD_SIZE,
+            Self::TextEntities => TEXT_ENTITY_RECORD_SIZE,
+            Self::TextColumnHeights => TEXT_COLUMN_HEIGHT_RECORD_SIZE,
             Self::GpuLineBatches => GPU_LINE_BATCH_RECORD_SIZE,
             Self::GpuLineVertices => GPU_LINE_VERTEX_RECORD_SIZE,
         }
     }
 
     fn uses_string_table(self) -> bool {
-        matches!(self, Self::Layers | Self::Blocks)
+        matches!(
+            self,
+            Self::Layers | Self::Blocks | Self::TextStyles | Self::TextEntities
+        )
     }
 }
 
@@ -273,6 +300,52 @@ struct RawSectionEntry {
     byte_length: u64,
     record_count: u64,
     flags: u32,
+}
+
+#[derive(Debug)]
+struct SourceTextRow<'a> {
+    common: &'a EntityCommon,
+    kind: u16,
+    flags: u16,
+    style_name: &'a str,
+    value: &'a str,
+    tag: &'a str,
+    prompt: &'a str,
+    linked_handle: u64,
+    insertion_point: Vector3,
+    alignment_point: Vector3,
+    normal: Vector3,
+    x_axis_direction: Vector3,
+    height: f64,
+    width_factor: f64,
+    rotation: f64,
+    oblique_angle: f64,
+    thickness: f64,
+    rectangle_width: f64,
+    rectangle_height: f64,
+    extents_width: f64,
+    extents_height: f64,
+    line_spacing_factor: f64,
+    background_scale: f64,
+    background_color: u32,
+    background_transparency: i32,
+    background_flags: i32,
+    source_flags: i32,
+    horizontal_alignment: i16,
+    vertical_alignment: i16,
+    attachment: i16,
+    flow_direction: i16,
+    line_spacing_style: i16,
+    generation_flags: i16,
+    field_length: i16,
+    mtext_type: i16,
+    line_count: i32,
+    column_type: i32,
+    column_count: i32,
+    column_flags: u32,
+    column_width: f64,
+    column_gutter: f64,
+    column_heights: &'a [f64],
 }
 
 pub fn convert_dwg(
@@ -544,6 +617,13 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
     if minor_version >= 2 {
         required.extend([SectionKind::GpuLineBatches, SectionKind::GpuLineVertices]);
     }
+    if minor_version >= 4 {
+        required.extend([
+            SectionKind::TextStyles,
+            SectionKind::TextEntities,
+            SectionKind::TextColumnHeights,
+        ]);
+    }
     for kind in required {
         let count = entries
             .iter()
@@ -627,7 +707,7 @@ fn validate_string_references<R: Read + Seek>(
             })
             .context("string-table record offset overflow")?;
         reader.seek(SeekFrom::Start(record_offset))?;
-        let mut record = [0_u8; BLOCK_RECORD_SIZE as usize];
+        let mut record = [0_u8; TEXT_ENTITY_RECORD_SIZE as usize];
         reader.read_exact(&mut record[..entry.record_size as usize])?;
 
         match kind {
@@ -655,6 +735,28 @@ fn validate_string_references<R: Read + Seek>(
                     slice_u32(&record, 8),
                     slice_u32(&record, 12),
                 )?;
+            }
+            SectionKind::TextStyles => {
+                for reference_offset in [8, 16, 24, 32] {
+                    validate_utf8_reference(
+                        reader,
+                        entry,
+                        string_offset,
+                        slice_u32(&record, reference_offset),
+                        slice_u32(&record, reference_offset + 4),
+                    )?;
+                }
+            }
+            SectionKind::TextEntities => {
+                for reference_offset in [40, 48, 56] {
+                    validate_utf8_reference(
+                        reader,
+                        entry,
+                        string_offset,
+                        slice_u32(&record, reference_offset),
+                        slice_u32(&record, reference_offset + 4),
+                    )?;
+                }
             }
             _ => unreachable!("only string-table sections are validated here"),
         }
@@ -700,6 +802,27 @@ fn validate_cross_section_references<R: Read + Seek>(
     reader: &mut R,
     entries: &[RawSectionEntry],
 ) -> Result<()> {
+    if let Some(texts) = find_section(entries, SectionKind::TextEntities) {
+        let styles = find_section(entries, SectionKind::TextStyles)
+            .context("text entities exist without a text-style table")?;
+        let column_heights = find_section(entries, SectionKind::TextColumnHeights)
+            .context("text entities exist without a column-height pool")?;
+        for index in 0..texts.record_count {
+            let mut record = [0_u8; TEXT_ENTITY_RECORD_SIZE as usize];
+            read_record(reader, texts, index, &mut record)?;
+            let style_index = slice_u32(&record, 36);
+            if style_index != u32::MAX && u64::from(style_index) >= styles.record_count {
+                anyhow::bail!("text entity references an invalid text style");
+            }
+            validate_pool_range(
+                "text column heights",
+                slice_u64(&record, 320),
+                slice_u64(&record, 328),
+                column_heights.record_count,
+            )?;
+        }
+    }
+
     if let Some(headers) = find_section(entries, SectionKind::PolylineHeaders) {
         let vertices = find_section(entries, SectionKind::PolylineVertices)
             .context("polyline headers exist without a vertex pool")?;
@@ -861,6 +984,12 @@ fn read_record<R: Read + Seek>(
 ) -> Result<()> {
     let offset = section
         .offset
+        .checked_add(if section.flags & SECTION_FLAG_STRING_TABLE != 0 {
+            STRING_TABLE_HEADER_SIZE
+        } else {
+            0
+        })
+        .context("record section-header offset overflow")?
         .checked_add(
             index
                 .checked_mul(u64::from(section.record_size))
@@ -888,7 +1017,7 @@ fn write_scene_cache<W: Write + Seek>(
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
     let counts = PrimitiveCounts::from_document(document);
-    let section_count = 17_u32;
+    let section_count = 20_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
         directory_offset + u64::from(section_count) * u64::from(DIRECTORY_ENTRY_SIZE),
@@ -918,11 +1047,23 @@ fn write_scene_cache<W: Write + Seek>(
             ))
         })
         .collect::<Result<_>>()?;
+    let text_style_indices: HashMap<String, u32> = document
+        .text_styles
+        .iter()
+        .enumerate()
+        .map(|(index, style)| -> Result<_> {
+            Ok((
+                style.name.to_uppercase(),
+                u32::try_from(index).context("too many text styles for scene cache")?,
+            ))
+        })
+        .collect::<Result<_>>()?;
 
     let mut sections = Vec::with_capacity(section_count as usize);
     sections.push(write_drawing_section(writer, document, &counts)?);
     sections.push(write_layer_section(writer, document)?);
     sections.push(write_block_section(writer, document)?);
+    sections.push(write_text_style_section(writer, document)?);
     sections.push(write_line_section(writer, document, &layer_indices)?);
     sections.push(write_arc_section(writer, document, &layer_indices)?);
     sections.push(write_circle_section(writer, document, &layer_indices)?);
@@ -948,6 +1089,13 @@ fn write_scene_cache<W: Write + Seek>(
     sections.push(write_spline_weight_section(writer, document)?);
     sections.push(write_spline_control_point_section(writer, document)?);
     sections.push(write_spline_fit_point_section(writer, document)?);
+    sections.push(write_text_entity_section(
+        writer,
+        document,
+        &layer_indices,
+        &text_style_indices,
+    )?);
+    sections.push(write_text_column_height_section(writer, document)?);
     let gpu_line_plan = build_gpu_line_plan(document)?;
     sections.push(write_gpu_line_batch_section(writer, &gpu_line_plan)?);
     sections.push(write_gpu_line_vertex_section(
@@ -991,7 +1139,10 @@ impl PrimitiveCounts {
                 EntityType::Line(_) => counts.lines += 1,
                 EntityType::Arc(_) => counts.arcs += 1,
                 EntityType::Circle(_) => counts.circles += 1,
-                EntityType::Insert(_) => counts.inserts += 1,
+                EntityType::Insert(insert) => {
+                    counts.inserts += 1;
+                    counts.attributes += insert.attributes.len() as u64;
+                }
                 EntityType::LwPolyline(polyline) => {
                     counts.lwpolylines += 1;
                     counts.polyline_vertices += polyline.vertices.len() as u64;
@@ -1012,6 +1163,10 @@ impl PrimitiveCounts {
                     counts.spline_control_points += spline.control_points.len() as u64;
                     counts.spline_fit_points += spline.fit_points.len() as u64;
                 }
+                EntityType::Text(_) => counts.texts += 1,
+                EntityType::MText(_) => counts.mtexts += 1,
+                EntityType::AttributeDefinition(_) => counts.attribute_definitions += 1,
+                EntityType::AttributeEntity(_) => counts.attributes += 1,
                 _ => {}
             }
         }
@@ -1023,7 +1178,10 @@ impl PrimitiveCounts {
             + counts.polylines_2d
             + counts.polylines_3d
             + counts.ellipses
-            + counts.splines;
+            + counts.splines
+            + counts.texts
+            + counts.mtexts
+            + counts.attribute_definitions;
         counts.deferred_entities = counts
             .total_entities
             .saturating_sub(counts.serialized_entities);
@@ -1242,6 +1400,458 @@ fn write_block_section<W: Write + Seek>(
         document.block_records.len() as u64,
         SECTION_FLAG_STRING_TABLE,
     )
+}
+
+fn write_text_style_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+) -> Result<SectionEntry> {
+    struct TextStyleRow {
+        handle: u64,
+        name: (u32, u32),
+        font_file: (u32, u32),
+        big_font_file: (u32, u32),
+        true_type_font: (u32, u32),
+        flags: u32,
+        height: f64,
+        width_factor: f64,
+        oblique_angle: f64,
+        last_height: f64,
+    }
+
+    let offset = aligned_position(writer)?;
+    let mut strings = Vec::new();
+    let mut rows = Vec::with_capacity(document.text_styles.len());
+    for style in document.text_styles.iter() {
+        let mut flags = 0_u32;
+        if style.flags.backward {
+            flags |= 1;
+        }
+        if style.flags.upside_down {
+            flags |= 1 << 1;
+        }
+        if style.xref_dependent {
+            flags |= 1 << 2;
+        }
+        if style.annotative {
+            flags |= 1 << 3;
+        }
+        rows.push(TextStyleRow {
+            handle: style.handle.value(),
+            name: push_string(&mut strings, &style.name)?,
+            font_file: push_string(&mut strings, &style.font_file)?,
+            big_font_file: push_string(&mut strings, &style.big_font_file)?,
+            true_type_font: push_string(&mut strings, &style.true_type_font)?,
+            flags,
+            height: style.height,
+            width_factor: style.width_factor,
+            oblique_angle: style.oblique_angle,
+            last_height: style.last_height,
+        });
+    }
+
+    let string_offset =
+        STRING_TABLE_HEADER_SIZE + u64::try_from(rows.len())? * u64::from(TEXT_STYLE_RECORD_SIZE);
+    write_u32(writer, u32::try_from(rows.len())?)?;
+    write_u32(writer, TEXT_STYLE_RECORD_SIZE)?;
+    write_u64(writer, string_offset)?;
+    for row in rows {
+        write_u64(writer, row.handle)?;
+        for reference in [
+            row.name,
+            row.font_file,
+            row.big_font_file,
+            row.true_type_font,
+        ] {
+            write_u32(writer, reference.0)?;
+            write_u32(writer, reference.1)?;
+        }
+        write_u32(writer, row.flags)?;
+        write_u32(writer, 0)?;
+        write_f64(writer, row.height)?;
+        write_f64(writer, row.width_factor)?;
+        write_f64(writer, row.oblique_angle)?;
+        write_f64(writer, row.last_height)?;
+        write_u64(writer, 0)?;
+        write_u64(writer, 0)?;
+    }
+    writer.write_all(&strings)?;
+
+    finish_variable_section(
+        writer,
+        SectionKind::TextStyles,
+        TEXT_STYLE_RECORD_SIZE,
+        offset,
+        document.text_styles.len() as u64,
+        SECTION_FLAG_STRING_TABLE,
+    )
+}
+
+fn write_text_entity_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+    layer_indices: &HashMap<String, u32>,
+    text_style_indices: &HashMap<String, u32>,
+) -> Result<SectionEntry> {
+    let rows = collect_source_text_rows(document);
+    let offset = aligned_position(writer)?;
+    let mut strings = Vec::new();
+    let mut references = Vec::with_capacity(rows.len());
+    for row in &rows {
+        references.push([
+            push_string(&mut strings, row.value)?,
+            push_string(&mut strings, row.tag)?,
+            push_string(&mut strings, row.prompt)?,
+        ]);
+    }
+
+    let string_offset =
+        STRING_TABLE_HEADER_SIZE + u64::try_from(rows.len())? * u64::from(TEXT_ENTITY_RECORD_SIZE);
+    write_u32(writer, u32::try_from(rows.len())?)?;
+    write_u32(writer, TEXT_ENTITY_RECORD_SIZE)?;
+    write_u64(writer, string_offset)?;
+
+    let mut first_column_height = 0_u64;
+    for (row, string_references) in rows.iter().zip(references) {
+        write_common_data(writer, row.common, layer_indices)?;
+        write_u16(writer, row.kind)?;
+        write_u16(writer, row.flags)?;
+        write_u32(
+            writer,
+            text_style_indices
+                .get(&row.style_name.to_uppercase())
+                .copied()
+                .unwrap_or(u32::MAX),
+        )?;
+        for reference in string_references {
+            write_u32(writer, reference.0)?;
+            write_u32(writer, reference.1)?;
+        }
+        write_u64(writer, row.linked_handle)?;
+        write_vec3(writer, row.insertion_point)?;
+        write_vec3(writer, row.alignment_point)?;
+        write_vec3(writer, row.normal)?;
+        write_vec3(writer, row.x_axis_direction)?;
+        for value in [
+            row.height,
+            row.width_factor,
+            row.rotation,
+            row.oblique_angle,
+            row.thickness,
+            row.rectangle_width,
+            row.rectangle_height,
+            row.extents_width,
+            row.extents_height,
+            row.line_spacing_factor,
+            row.background_scale,
+        ] {
+            write_f64(writer, value)?;
+        }
+        write_u32(writer, row.background_color)?;
+        write_i32(writer, row.background_transparency)?;
+        write_i32(writer, row.background_flags)?;
+        write_i32(writer, row.source_flags)?;
+        for value in [
+            row.horizontal_alignment,
+            row.vertical_alignment,
+            row.attachment,
+            row.flow_direction,
+            row.line_spacing_style,
+            row.generation_flags,
+            row.field_length,
+            row.mtext_type,
+        ] {
+            write_i16(writer, value)?;
+        }
+        write_i32(writer, row.line_count)?;
+        write_i32(writer, row.column_type)?;
+        write_i32(writer, row.column_count)?;
+        write_u32(writer, row.column_flags)?;
+        write_f64(writer, row.column_width)?;
+        write_f64(writer, row.column_gutter)?;
+        write_u64(writer, first_column_height)?;
+        write_u64(writer, u64::try_from(row.column_heights.len())?)?;
+        first_column_height = first_column_height
+            .checked_add(u64::try_from(row.column_heights.len())?)
+            .context("too many text column heights for scene cache")?;
+    }
+    writer.write_all(&strings)?;
+
+    finish_variable_section(
+        writer,
+        SectionKind::TextEntities,
+        TEXT_ENTITY_RECORD_SIZE,
+        offset,
+        rows.len() as u64,
+        SECTION_FLAG_STRING_TABLE,
+    )
+}
+
+fn write_text_column_height_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+    for row in collect_source_text_rows(document) {
+        for value in row.column_heights {
+            write_f64(writer, *value)?;
+            count += 1;
+        }
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::TextColumnHeights,
+        TEXT_COLUMN_HEIGHT_RECORD_SIZE,
+        offset,
+        count,
+    )
+}
+
+fn collect_source_text_rows(document: &CadDocument) -> Vec<SourceTextRow<'_>> {
+    let mut rows = Vec::new();
+    for entity in document.entities() {
+        match entity {
+            EntityType::Text(text) => {
+                let mut flags = 0_u16;
+                let alignment_point = text.alignment_point.unwrap_or(Vector3::ZERO);
+                if text.alignment_point.is_some() {
+                    flags |= TEXT_FLAG_HAS_ALIGNMENT_POINT;
+                }
+                rows.push(SourceTextRow {
+                    common: &text.common,
+                    kind: 0,
+                    flags,
+                    style_name: &text.style,
+                    value: &text.value,
+                    tag: "",
+                    prompt: "",
+                    linked_handle: 0,
+                    insertion_point: text.insertion_point,
+                    alignment_point,
+                    normal: text.normal,
+                    x_axis_direction: Vector3::new(text.rotation.cos(), text.rotation.sin(), 0.0),
+                    height: text.height,
+                    width_factor: text.width_factor,
+                    rotation: text.rotation,
+                    oblique_angle: text.oblique_angle,
+                    thickness: text.thickness,
+                    rectangle_width: 0.0,
+                    rectangle_height: 0.0,
+                    extents_width: 0.0,
+                    extents_height: 0.0,
+                    line_spacing_factor: 0.0,
+                    background_scale: 0.0,
+                    background_color: 0,
+                    background_transparency: 0,
+                    background_flags: 0,
+                    source_flags: 0,
+                    horizontal_alignment: text.horizontal_alignment as i16,
+                    vertical_alignment: text.vertical_alignment as i16,
+                    attachment: 0,
+                    flow_direction: 0,
+                    line_spacing_style: 0,
+                    generation_flags: text.generation_flags,
+                    field_length: 0,
+                    mtext_type: 0,
+                    line_count: 1,
+                    column_type: 0,
+                    column_count: 0,
+                    column_flags: 0,
+                    column_width: 0.0,
+                    column_gutter: 0.0,
+                    column_heights: &[],
+                });
+            }
+            EntityType::MText(text) => {
+                let mut flags = 0_u16;
+                if text.rectangle_height.is_some() {
+                    flags |= TEXT_FLAG_HAS_RECTANGLE_HEIGHT;
+                }
+                if text.is_annotative {
+                    flags |= TEXT_FLAG_ANNOTATIVE;
+                }
+                let mut column_flags = 0_u32;
+                if text.column_data.auto_height {
+                    column_flags |= 1;
+                }
+                if text.column_data.flow_reversed {
+                    column_flags |= 1 << 1;
+                }
+                rows.push(SourceTextRow {
+                    common: &text.common,
+                    kind: 1,
+                    flags,
+                    style_name: &text.style,
+                    value: &text.value,
+                    tag: "",
+                    prompt: "",
+                    linked_handle: 0,
+                    insertion_point: text.insertion_point,
+                    alignment_point: Vector3::ZERO,
+                    normal: text.normal,
+                    x_axis_direction: Vector3::new(text.rotation.cos(), text.rotation.sin(), 0.0),
+                    height: text.height,
+                    width_factor: 1.0,
+                    rotation: text.rotation,
+                    oblique_angle: 0.0,
+                    thickness: 0.0,
+                    rectangle_width: text.rectangle_width,
+                    rectangle_height: text.rectangle_height.unwrap_or(0.0),
+                    extents_width: 0.0,
+                    extents_height: 0.0,
+                    line_spacing_factor: text.line_spacing_factor,
+                    background_scale: text.background_scale,
+                    background_color: encode_color(text.background_color),
+                    background_transparency: text.background_transparency,
+                    background_flags: text.background_fill_flags,
+                    source_flags: 0,
+                    horizontal_alignment: 0,
+                    vertical_alignment: 0,
+                    attachment: text.attachment_point as i16,
+                    flow_direction: text.drawing_direction as i16,
+                    line_spacing_style: text.line_spacing_style as i16,
+                    generation_flags: 0,
+                    field_length: 0,
+                    mtext_type: 0,
+                    line_count: 0,
+                    column_type: i32::from(text.column_data.column_type),
+                    column_count: text.column_data.column_count,
+                    column_flags,
+                    column_width: text.column_data.width,
+                    column_gutter: text.column_data.gutter,
+                    column_heights: &text.column_data.heights,
+                });
+            }
+            EntityType::AttributeDefinition(attribute) => {
+                rows.push(source_attribute_definition_row(attribute));
+            }
+            EntityType::AttributeEntity(attribute) => {
+                rows.push(source_attribute_row(attribute));
+            }
+            EntityType::Insert(insert) => {
+                rows.extend(insert.attributes.iter().map(source_attribute_row));
+            }
+            _ => {}
+        }
+    }
+    rows
+}
+
+fn source_attribute_definition_row(
+    attribute: &acadrust::entities::AttributeDefinition,
+) -> SourceTextRow<'_> {
+    let mut flags = TEXT_FLAG_HAS_ALIGNMENT_POINT;
+    if attribute.flags.annotative {
+        flags |= TEXT_FLAG_ANNOTATIVE;
+    }
+    if attribute.is_multiline {
+        flags |= TEXT_FLAG_MULTILINE;
+    }
+    if attribute.lock_position {
+        flags |= TEXT_FLAG_LOCK_POSITION;
+    }
+    SourceTextRow {
+        common: &attribute.common,
+        kind: 2,
+        flags,
+        style_name: &attribute.text_style,
+        value: &attribute.default_value,
+        tag: &attribute.tag,
+        prompt: &attribute.prompt,
+        linked_handle: 0,
+        insertion_point: attribute.insertion_point,
+        alignment_point: attribute.alignment_point,
+        normal: attribute.normal,
+        x_axis_direction: Vector3::new(attribute.rotation.cos(), attribute.rotation.sin(), 0.0),
+        height: attribute.height,
+        width_factor: attribute.width_factor,
+        rotation: attribute.rotation,
+        oblique_angle: attribute.oblique_angle,
+        thickness: 0.0,
+        rectangle_width: 0.0,
+        rectangle_height: 0.0,
+        extents_width: 0.0,
+        extents_height: 0.0,
+        line_spacing_factor: 0.0,
+        background_scale: 0.0,
+        background_color: 0,
+        background_transparency: 0,
+        background_flags: 0,
+        source_flags: attribute.flags.to_bits(),
+        horizontal_alignment: attribute.horizontal_alignment as i16,
+        vertical_alignment: attribute.vertical_alignment as i16,
+        attachment: 0,
+        flow_direction: 0,
+        line_spacing_style: 0,
+        generation_flags: attribute.text_generation_flags,
+        field_length: attribute.field_length,
+        mtext_type: attribute.mtext_flag as i16,
+        line_count: i32::from(attribute.line_count),
+        column_type: 0,
+        column_count: 0,
+        column_flags: 0,
+        column_width: 0.0,
+        column_gutter: 0.0,
+        column_heights: &[],
+    }
+}
+
+fn source_attribute_row(attribute: &AttributeEntity) -> SourceTextRow<'_> {
+    let mut flags = TEXT_FLAG_HAS_ALIGNMENT_POINT;
+    if attribute.flags.annotative {
+        flags |= TEXT_FLAG_ANNOTATIVE;
+    }
+    if attribute.is_multiline {
+        flags |= TEXT_FLAG_MULTILINE;
+    }
+    if attribute.lock_position {
+        flags |= TEXT_FLAG_LOCK_POSITION;
+    }
+    SourceTextRow {
+        common: &attribute.common,
+        kind: 3,
+        flags,
+        style_name: &attribute.text_style,
+        value: &attribute.value,
+        tag: &attribute.tag,
+        prompt: "",
+        linked_handle: attribute.attdef_handle.value(),
+        insertion_point: attribute.insertion_point,
+        alignment_point: attribute.alignment_point,
+        normal: attribute.normal,
+        x_axis_direction: Vector3::new(attribute.rotation.cos(), attribute.rotation.sin(), 0.0),
+        height: attribute.height,
+        width_factor: attribute.width_factor,
+        rotation: attribute.rotation,
+        oblique_angle: attribute.oblique_angle,
+        thickness: 0.0,
+        rectangle_width: 0.0,
+        rectangle_height: 0.0,
+        extents_width: 0.0,
+        extents_height: 0.0,
+        line_spacing_factor: 0.0,
+        background_scale: 0.0,
+        background_color: 0,
+        background_transparency: 0,
+        background_flags: 0,
+        source_flags: attribute.flags.to_bits(),
+        horizontal_alignment: attribute.horizontal_alignment as i16,
+        vertical_alignment: attribute.vertical_alignment as i16,
+        attachment: 0,
+        flow_direction: 0,
+        line_spacing_style: 0,
+        generation_flags: attribute.text_generation_flags,
+        field_length: attribute.field_length,
+        mtext_type: attribute.mtext_flag as i16,
+        line_count: i32::from(attribute.line_count),
+        column_type: 0,
+        column_count: 0,
+        column_flags: 0,
+        column_width: 0.0,
+        column_gutter: 0.0,
+        column_heights: &[],
+    }
 }
 
 fn write_line_section<W: Write + Seek>(
@@ -3033,7 +3643,14 @@ fn write_common<W: Write>(
     entity: &EntityType,
     layer_indices: &HashMap<String, u32>,
 ) -> Result<()> {
-    let common = entity.common();
+    write_common_data(writer, entity.common(), layer_indices)
+}
+
+fn write_common_data<W: Write>(
+    writer: &mut W,
+    common: &EntityCommon,
+    layer_indices: &HashMap<String, u32>,
+) -> Result<()> {
     write_u64(writer, common.handle.value())?;
     write_u64(writer, common.owner_handle.value())?;
     write_u32(
@@ -3209,7 +3826,10 @@ fn slice_f64(bytes: &[u8], offset: usize) -> f64 {
 mod tests {
     use std::io::Cursor;
 
-    use acadrust::entities::{Arc, Circle, Ellipse, EntityType, Insert, Line, LwPolyline, Spline};
+    use acadrust::entities::{
+        Arc, AttributeDefinition, AttributeEntity, Circle, Ellipse, EntityType, Insert, Line,
+        LwPolyline, MText, Spline, Text,
+    };
     use acadrust::tables::BlockRecord;
     use acadrust::types::{Vector2, Vector3};
 
@@ -3270,7 +3890,7 @@ mod tests {
         assert_eq!(read_u16(&bytes, 8), CACHE_VERSION_MAJOR);
         assert_eq!(read_u16(&bytes, 10), CACHE_VERSION_MINOR);
         assert_eq!(read_u32(&bytes, 12), HEADER_SIZE);
-        assert_eq!(read_u32(&bytes, 16), 17);
+        assert_eq!(read_u32(&bytes, 16), 20);
         assert_eq!(read_u64(&bytes, 48), 1234);
         assert_eq!(summary.counts.serialized_entities, 7);
         assert_eq!(summary.gpu_lines.model_segments, 43);
@@ -3281,7 +3901,7 @@ mod tests {
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
-        assert_eq!(validation.sections.len(), 17);
+        assert_eq!(validation.sections.len(), 20);
         assert_eq!(validation.source_size, 1234);
 
         let line = directory_entry(&bytes, SectionKind::Lines);
@@ -3309,6 +3929,95 @@ mod tests {
         let gpu_vertices = directory_entry(&bytes, SectionKind::GpuLineVertices);
         assert_eq!(gpu_vertices.1, GPU_LINE_VERTEX_RECORD_SIZE);
         assert_eq!(gpu_vertices.3, 86);
+    }
+
+    #[test]
+    fn korean_text_styles_attributes_and_mtext_columns_are_lossless() {
+        let mut document = CadDocument::new();
+        let style = document.text_styles.get_mut("Standard").unwrap();
+        style.font_file = "txt.shx".to_string();
+        style.big_font_file = "ksc.shx".to_string();
+        style.true_type_font = "맑은 고딕".to_string();
+
+        let mut text = Text::with_value("한글 주석", Vector3::new(1.0, 2.0, 0.0));
+        text.style = "Standard".to_string();
+        document.add_entity(EntityType::Text(text)).unwrap();
+
+        let mut mtext = MText::with_value("{\\H1.2x;배관}\\P점검", Vector3::new(3.0, 4.0, 0.0));
+        mtext.column_data.column_type = 2;
+        mtext.column_data.column_count = 2;
+        mtext.column_data.width = 20.0;
+        mtext.column_data.gutter = 2.0;
+        mtext.column_data.heights = vec![10.0, 11.0];
+        document.add_entity(EntityType::MText(mtext)).unwrap();
+
+        document
+            .add_entity(EntityType::AttributeDefinition(AttributeDefinition::new(
+                "도면번호".to_string(),
+                "번호 입력".to_string(),
+                "가-001".to_string(),
+            )))
+            .unwrap();
+        let mut insert = Insert::new("*Model_Space", Vector3::ZERO);
+        insert.attributes.push(AttributeEntity::new(
+            "도면번호".to_string(),
+            "나-002".to_string(),
+        ));
+        document.add_entity(EntityType::Insert(insert)).unwrap();
+
+        let mut cursor = Cursor::new(Vec::new());
+        let summary = write_scene_cache(&mut cursor, &document, 321).unwrap();
+        let bytes = cursor.into_inner();
+        validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
+
+        assert_eq!(summary.counts.texts, 1);
+        assert_eq!(summary.counts.mtexts, 1);
+        assert_eq!(summary.counts.attribute_definitions, 1);
+        assert_eq!(summary.counts.attributes, 1);
+        assert_eq!(summary.counts.serialized_entities, 4);
+
+        let styles = directory_entry(&bytes, SectionKind::TextStyles);
+        assert_eq!(styles.1, TEXT_STYLE_RECORD_SIZE);
+        let style_section = styles.2 as usize;
+        let style_strings =
+            style_section + usize::try_from(read_u64(&bytes, style_section + 8)).unwrap();
+        assert_eq!(
+            read_cache_string(&bytes, style_section + 16 + 16, style_strings),
+            "txt.shx"
+        );
+        assert_eq!(
+            read_cache_string(&bytes, style_section + 16 + 24, style_strings),
+            "ksc.shx"
+        );
+        assert_eq!(
+            read_cache_string(&bytes, style_section + 16 + 32, style_strings),
+            "맑은 고딕"
+        );
+
+        let texts = directory_entry(&bytes, SectionKind::TextEntities);
+        assert_eq!(texts.1, TEXT_ENTITY_RECORD_SIZE);
+        assert_eq!(texts.3, 4);
+        let text_section = texts.2 as usize;
+        let text_strings =
+            text_section + usize::try_from(read_u64(&bytes, text_section + 8)).unwrap();
+        let values: Vec<_> = (0..4)
+            .map(|index| {
+                read_cache_string(
+                    &bytes,
+                    text_section + 16 + index * TEXT_ENTITY_RECORD_SIZE as usize + 40,
+                    text_strings,
+                )
+            })
+            .collect();
+        assert_eq!(
+            values,
+            ["한글 주석", "{\\H1.2x;배관}\\P점검", "가-001", "나-002"]
+        );
+
+        let heights = directory_entry(&bytes, SectionKind::TextColumnHeights);
+        assert_eq!(heights.3, 2);
+        assert_eq!(read_f64(&bytes, heights.2 as usize), 10.0);
+        assert_eq!(read_f64(&bytes, heights.2 as usize + 8), 11.0);
     }
 
     #[test]
@@ -3672,6 +4381,13 @@ mod tests {
             }
         }
         panic!("missing directory entry: {}", expected_kind.name());
+    }
+
+    fn read_cache_string(bytes: &[u8], reference_offset: usize, string_blob: usize) -> &str {
+        let relative = read_u32(bytes, reference_offset) as usize;
+        let length = read_u32(bytes, reference_offset + 4) as usize;
+        std::str::from_utf8(&bytes[string_blob + relative..string_blob + relative + length])
+            .unwrap()
     }
 
     fn read_u16(bytes: &[u8], offset: usize) -> u16 {

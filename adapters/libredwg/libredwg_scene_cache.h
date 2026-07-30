@@ -10,7 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define LIBREDWG_SCENE_SECTION_COUNT 17
+#define LIBREDWG_SCENE_SECTION_COUNT 20
 
 typedef struct
 {
@@ -31,6 +31,10 @@ typedef struct
   uint64_t spline_weights;
   uint64_t spline_control_points;
   uint64_t spline_fit_points;
+  uint64_t texts;
+  uint64_t mtexts;
+  uint64_t attribute_definitions;
+  uint64_t attributes;
 } LibreDwgPrimitiveCounts;
 
 typedef struct

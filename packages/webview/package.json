@@ -3,8 +3,14 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "imports": {
+    "#shx-parser": "@mlightcad/shx-parser/dist/index.es.js"
+  },
   "scripts": {
     "check": "node --check src/*.mjs && node --test test/*.test.mjs",
     "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@mlightcad/shx-parser": "1.4.5"
   }
 }

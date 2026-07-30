@@ -1,15 +1,19 @@
 export const CACHE_MAGIC = new Uint8Array([68, 87, 71, 83, 67, 78, 49, 0]);
 export const CACHE_VERSION_MAJOR = 1;
-export const MAX_CACHE_VERSION_MINOR = 3;
+export const MAX_CACHE_VERSION_MINOR = 4;
 export const HEADER_SIZE = 64;
 export const DIRECTORY_ENTRY_SIZE = 40;
 export const GPU_LINE_BATCH_RECORD_SIZE = 128;
 export const GPU_LINE_VERTEX_RECORD_SIZE = 32;
+export const TEXT_STYLE_RECORD_SIZE = 96;
+export const TEXT_ENTITY_RECORD_SIZE = 336;
+export const TEXT_COLUMN_HEIGHT_RECORD_SIZE = 8;
 
 export const SectionKind = Object.freeze({
   Drawing: 1,
   Layers: 2,
   Blocks: 3,
+  TextStyles: 4,
   Lines: 10,
   Arcs: 11,
   Circles: 12,
@@ -22,6 +26,8 @@ export const SectionKind = Object.freeze({
   SplineWeights: 19,
   SplineControlPoints: 20,
   SplineFitPoints: 21,
+  TextEntities: 22,
+  TextColumnHeights: 23,
   GpuLineBatches: 30,
   GpuLineVertices: 31,
 });
@@ -35,14 +41,23 @@ export const GpuLineBatchKind = Object.freeze({
 const FIXED_RECORD_SIZES = new Map([
   [SectionKind.Drawing, 80],
   [SectionKind.Inserts, 136],
+  [SectionKind.TextColumnHeights, TEXT_COLUMN_HEIGHT_RECORD_SIZE],
   [SectionKind.GpuLineBatches, GPU_LINE_BATCH_RECORD_SIZE],
   [SectionKind.GpuLineVertices, GPU_LINE_VERTEX_RECORD_SIZE],
 ]);
 const MAX_METADATA_SECTION_BYTES = 64 * 1024 * 1024;
+const MAX_CACHE_STRING_BYTES = 1024 * 1024;
 const MAX_OVERVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_DETAIL_BATCH_BYTES = 512 * 1024;
 const STRING_TABLE_HEADER_SIZE = 16;
 const STRING_TABLE_FLAG = 1;
+
+export const TextEntityKind = Object.freeze({
+  Text: 0,
+  MText: 1,
+  AttributeDefinition: 2,
+  Attribute: 3,
+});
 
 function requireArrayBuffer(buffer, expectedLength, label) {
   if (!(buffer instanceof ArrayBuffer)) {
@@ -115,6 +130,176 @@ function validateRecordSection(entry, expectedRecordSize) {
   }
   if (entry.flags !== 0) {
     throw new Error(`section ${entry.kind} has unsupported flags`);
+  }
+}
+
+function validateStringTableDirectoryEntry(entry, expectedRecordSize) {
+  if (
+    entry.recordSize !== expectedRecordSize ||
+    entry.flags !== STRING_TABLE_FLAG ||
+    entry.byteLength < STRING_TABLE_HEADER_SIZE
+  ) {
+    throw new Error(`section ${entry.kind} has invalid string-table metadata`);
+  }
+  const minimumBytes = checkedAdd(
+    STRING_TABLE_HEADER_SIZE,
+    checkedMultiply(
+      entry.recordCount,
+      entry.recordSize,
+      `section ${entry.kind} record bytes`,
+    ),
+    `section ${entry.kind} minimum bytes`,
+  );
+  if (entry.byteLength < minimumBytes) {
+    throw new Error(`section ${entry.kind} is shorter than its records`);
+  }
+}
+
+export class TextEntityTable {
+  constructor(buffer, stringOffset, recordCount, styles, columnHeights) {
+    this.buffer = buffer;
+    this.view = new DataView(buffer);
+    this.stringOffset = stringOffset;
+    this.recordCount = recordCount;
+    this.styles = styles;
+    this.columnHeights = columnHeights;
+    this.decoder = new TextDecoder("utf-8", { fatal: true });
+  }
+
+  get length() {
+    return this.recordCount;
+  }
+
+  #recordOffset(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.recordCount) {
+      throw new RangeError(`text entity index is out of range: ${index}`);
+    }
+    return STRING_TABLE_HEADER_SIZE + index * TEXT_ENTITY_RECORD_SIZE;
+  }
+
+  readValue(index) {
+    return this.#readString(this.#recordOffset(index) + 40);
+  }
+
+  readDisplayRecord(index, target) {
+    if (!target || typeof target !== "object") {
+      throw new TypeError("text display record target must be an object");
+    }
+    const offset = this.#recordOffset(index);
+    const styleIndex = this.view.getUint32(offset + 36, true);
+    target.index = index;
+    target.ownerHandle = this.view.getBigUint64(offset + 8, true);
+    target.layerIndex = this.view.getUint32(offset + 16, true);
+    target.color = this.view.getUint32(offset + 20, true);
+    target.commonFlags = this.view.getUint16(offset + 26, true);
+    target.kind = this.view.getUint16(offset + 32, true);
+    target.styleIndex = styleIndex === 0xffffffff ? null : styleIndex;
+    target.style =
+      styleIndex === 0xffffffff ? null : this.styles[styleIndex];
+    target.valueByteLength = this.view.getUint32(offset + 44, true);
+    target.insertionPoint ??= [0, 0, 0];
+    target.normal ??= [0, 0, 1];
+    for (let axis = 0; axis < 3; axis += 1) {
+      target.insertionPoint[axis] = this.view.getFloat64(
+        offset + 72 + axis * 8,
+        true,
+      );
+      target.normal[axis] = this.view.getFloat64(
+        offset + 120 + axis * 8,
+        true,
+      );
+    }
+    target.height = this.view.getFloat64(offset + 168, true);
+    target.widthFactor = this.view.getFloat64(offset + 176, true);
+    target.rotation = this.view.getFloat64(offset + 184, true);
+    target.obliqueAngle = this.view.getFloat64(offset + 192, true);
+    target.lineSpacingFactor = this.view.getFloat64(offset + 240, true);
+    target.sourceFlags = this.view.getInt32(offset + 268, true);
+    target.horizontalAlignment = this.view.getInt16(offset + 272, true);
+    target.attachment = this.view.getInt16(offset + 276, true);
+    target.mtextType = this.view.getInt16(offset + 286, true);
+    return target;
+  }
+
+  get(index) {
+    const offset = this.#recordOffset(index);
+    const styleIndex = this.view.getUint32(offset + 36, true);
+    const firstColumnHeight = readSafeU64(
+      this.view,
+      offset + 320,
+      "text column-height offset",
+    );
+    const columnHeightCount = readSafeU64(
+      this.view,
+      offset + 328,
+      "text column-height count",
+    );
+    return Object.freeze({
+      index,
+      handle: this.view.getBigUint64(offset, true),
+      ownerHandle: this.view.getBigUint64(offset + 8, true),
+      layerIndex: this.view.getUint32(offset + 16, true),
+      color: this.view.getUint32(offset + 20, true),
+      lineWeight: this.view.getInt16(offset + 24, true),
+      commonFlags: this.view.getUint16(offset + 26, true),
+      kind: this.view.getUint16(offset + 32, true),
+      flags: this.view.getUint16(offset + 34, true),
+      styleIndex: styleIndex === 0xffffffff ? null : styleIndex,
+      style: styleIndex === 0xffffffff ? null : this.styles[styleIndex],
+      value: this.#readString(offset + 40),
+      tag: this.#readString(offset + 48),
+      prompt: this.#readString(offset + 56),
+      linkedHandle: this.view.getBigUint64(offset + 64, true),
+      insertionPoint: readVec3F64(this.view, offset + 72),
+      alignmentPoint: readVec3F64(this.view, offset + 96),
+      normal: readVec3F64(this.view, offset + 120),
+      xAxisDirection: readVec3F64(this.view, offset + 144),
+      height: this.view.getFloat64(offset + 168, true),
+      widthFactor: this.view.getFloat64(offset + 176, true),
+      rotation: this.view.getFloat64(offset + 184, true),
+      obliqueAngle: this.view.getFloat64(offset + 192, true),
+      thickness: this.view.getFloat64(offset + 200, true),
+      rectangleWidth: this.view.getFloat64(offset + 208, true),
+      rectangleHeight: this.view.getFloat64(offset + 216, true),
+      extentsWidth: this.view.getFloat64(offset + 224, true),
+      extentsHeight: this.view.getFloat64(offset + 232, true),
+      lineSpacingFactor: this.view.getFloat64(offset + 240, true),
+      backgroundScale: this.view.getFloat64(offset + 248, true),
+      backgroundColor: this.view.getUint32(offset + 256, true),
+      backgroundTransparency: this.view.getInt32(offset + 260, true),
+      backgroundFlags: this.view.getInt32(offset + 264, true),
+      sourceFlags: this.view.getInt32(offset + 268, true),
+      horizontalAlignment: this.view.getInt16(offset + 272, true),
+      verticalAlignment: this.view.getInt16(offset + 274, true),
+      attachment: this.view.getInt16(offset + 276, true),
+      flowDirection: this.view.getInt16(offset + 278, true),
+      lineSpacingStyle: this.view.getInt16(offset + 280, true),
+      generationFlags: this.view.getInt16(offset + 282, true),
+      fieldLength: this.view.getInt16(offset + 284, true),
+      mtextType: this.view.getInt16(offset + 286, true),
+      lineCount: this.view.getInt32(offset + 288, true),
+      columnType: this.view.getInt32(offset + 292, true),
+      columnCount: this.view.getInt32(offset + 296, true),
+      columnFlags: this.view.getUint32(offset + 300, true),
+      columnWidth: this.view.getFloat64(offset + 304, true),
+      columnGutter: this.view.getFloat64(offset + 312, true),
+      columnHeights: this.columnHeights.subarray(
+        firstColumnHeight,
+        firstColumnHeight + columnHeightCount,
+      ),
+    });
+  }
+
+  #readString(referenceOffset) {
+    const relativeOffset = this.view.getUint32(referenceOffset, true);
+    const byteLength = this.view.getUint32(referenceOffset + 4, true);
+    return this.decoder.decode(
+      new Uint8Array(
+        this.buffer,
+        this.stringOffset + relativeOffset,
+        byteLength,
+      ),
+    );
   }
 }
 
@@ -232,6 +417,18 @@ export class SceneCacheReader {
       }
     }
 
+    if (minor >= 4) {
+      const textStyles = sections.get(SectionKind.TextStyles);
+      const textEntities = sections.get(SectionKind.TextEntities);
+      const columnHeights = sections.get(SectionKind.TextColumnHeights);
+      if (!textStyles || !textEntities || !columnHeights) {
+        throw new Error("Scene Cache v1.4 is missing required text sections");
+      }
+      validateStringTableDirectoryEntry(textStyles, TEXT_STYLE_RECORD_SIZE);
+      validateStringTableDirectoryEntry(textEntities, TEXT_ENTITY_RECORD_SIZE);
+      validateRecordSection(columnHeights, TEXT_COLUMN_HEIGHT_RECORD_SIZE);
+    }
+
     return new SceneCacheReader(
       source,
       Object.freeze({
@@ -321,6 +518,147 @@ export class SceneCacheReader {
             "block base point",
           ),
         }),
+      );
+    });
+  }
+
+  async readTextStyles() {
+    return this.memoize("text-styles", async () => {
+      const section = this.getSection(SectionKind.TextStyles);
+      return this.readStringTable(
+        section,
+        TEXT_STYLE_RECORD_SIZE,
+        (view, offset, readString, index) =>
+          Object.freeze({
+            index,
+            handle: view.getBigUint64(offset, true),
+            name: readString(
+              view.getUint32(offset + 8, true),
+              view.getUint32(offset + 12, true),
+            ),
+            fontFile: readString(
+              view.getUint32(offset + 16, true),
+              view.getUint32(offset + 20, true),
+            ),
+            bigFontFile: readString(
+              view.getUint32(offset + 24, true),
+              view.getUint32(offset + 28, true),
+            ),
+            trueTypeFont: readString(
+              view.getUint32(offset + 32, true),
+              view.getUint32(offset + 36, true),
+            ),
+            flags: view.getUint32(offset + 40, true),
+            height: view.getFloat64(offset + 48, true),
+            widthFactor: view.getFloat64(offset + 56, true),
+            obliqueAngle: view.getFloat64(offset + 64, true),
+            lastHeight: view.getFloat64(offset + 72, true),
+          }),
+      );
+    });
+  }
+
+  async readTextColumnHeights() {
+    return this.memoize("text-column-heights", async () => {
+      const section = this.getSection(SectionKind.TextColumnHeights);
+      const buffer = await this.readWholeMetadataSection(section);
+      const view = new DataView(buffer);
+      const values = new Float64Array(section.recordCount);
+      for (let index = 0; index < values.length; index += 1) {
+        values[index] = view.getFloat64(
+          index * TEXT_COLUMN_HEIGHT_RECORD_SIZE,
+          true,
+        );
+      }
+      return values;
+    });
+  }
+
+  async readTextEntities() {
+    return this.memoize("text-entities", async () => {
+      const section = this.getSection(SectionKind.TextEntities);
+      validateStringTableDirectoryEntry(section, TEXT_ENTITY_RECORD_SIZE);
+      const [styles, columnHeights, buffer] = await Promise.all([
+        this.readTextStyles(),
+        this.readTextColumnHeights(),
+        this.readWholeMetadataSection(section),
+      ]);
+      const view = new DataView(buffer);
+      const recordCount = view.getUint32(0, true);
+      const recordSize = view.getUint32(4, true);
+      const stringOffset = readSafeU64(view, 8, "text UTF-8 blob offset");
+      const minimumStringOffset = checkedAdd(
+        STRING_TABLE_HEADER_SIZE,
+        checkedMultiply(
+          section.recordCount,
+          section.recordSize,
+          "text record bytes",
+        ),
+        "text UTF-8 minimum offset",
+      );
+      if (
+        recordCount !== section.recordCount ||
+        recordSize !== section.recordSize ||
+        stringOffset < minimumStringOffset ||
+        stringOffset > section.byteLength
+      ) {
+        throw new Error("text-entity string-table header is inconsistent");
+      }
+
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      for (let index = 0; index < section.recordCount; index += 1) {
+        const offset = STRING_TABLE_HEADER_SIZE + index * section.recordSize;
+        const kind = view.getUint16(offset + 32, true);
+        const styleIndex = view.getUint32(offset + 36, true);
+        if (kind > TextEntityKind.Attribute) {
+          throw new Error(`text entity ${index} has an unsupported kind`);
+        }
+        if (styleIndex !== 0xffffffff && styleIndex >= styles.length) {
+          throw new Error(`text entity ${index} has an invalid style reference`);
+        }
+        for (const referenceOffset of [40, 48, 56]) {
+          const relativeOffset = view.getUint32(offset + referenceOffset, true);
+          const byteLength = view.getUint32(offset + referenceOffset + 4, true);
+          if (byteLength > MAX_CACHE_STRING_BYTES) {
+            throw new Error(`text entity ${index} contains an oversized string`);
+          }
+          const start = checkedAdd(
+            stringOffset,
+            relativeOffset,
+            "text UTF-8 offset",
+          );
+          const end = checkedAdd(start, byteLength, "text UTF-8 end");
+          if (start < stringOffset || end > section.byteLength) {
+            throw new Error(`text entity ${index} points outside its UTF-8 blob`);
+          }
+          decoder.decode(new Uint8Array(buffer, start, byteLength));
+        }
+        const firstColumnHeight = readSafeU64(
+          view,
+          offset + 320,
+          "text column-height offset",
+        );
+        const columnHeightCount = readSafeU64(
+          view,
+          offset + 328,
+          "text column-height count",
+        );
+        if (
+          checkedAdd(
+            firstColumnHeight,
+            columnHeightCount,
+            "text column-height range",
+          ) > columnHeights.length
+        ) {
+          throw new Error(`text entity ${index} has an invalid column-height range`);
+        }
+      }
+      return new TextEntityTable(
+        buffer,
+        stringOffset,
+        section.recordCount,
+        styles,
+        columnHeights,
       );
     });
   }
@@ -560,6 +898,9 @@ export class SceneCacheReader {
     }
     const decoder = new TextDecoder("utf-8", { fatal: true });
     const readString = (relativeOffset, byteLength) => {
+      if (byteLength > MAX_CACHE_STRING_BYTES) {
+        throw new Error(`section ${section.kind} contains an oversized string`);
+      }
       const start = checkedAdd(
         stringOffset,
         relativeOffset,

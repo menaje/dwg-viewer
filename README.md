@@ -5,9 +5,10 @@ VS Code 읽기 전용 뷰어입니다.
 
 현재는 제품 기능보다 엔진의 생존 가능성을 먼저 검증하는 단계입니다.
 `acadrust` 변환기는 범위 읽기가 가능한 Scene Cache를 생성하며,
-LibreDWG 어댑터는 더 낮은 메모리의 검사와 부분 변환 경로를 검증합니다.
+LibreDWG 어댑터는 더 낮은 메모리의 검사와 직접 변환 경로를 검증합니다.
 브라우저 기반 Webview 프로토타입은 캐시 전체를 메모리에 올리지 않고
-첫 화면용 버퍼만 읽어 WebGL2로 그립니다.
+첫 화면용 버퍼만 읽어 WebGL2로 그린 뒤 한글 문자 원본을 별도 범위로
+읽습니다.
 
 ## 원칙
 
@@ -57,15 +58,17 @@ LibreDWG의 현재 직접 변환기는 LINE, LWPOLYLINE/2D·3D POLYLINE,
 ARC, CIRCLE, ELLIPSE, SPLINE을 화면 버퍼로 만듭니다. 원호·원·타원과
 폴리라인 불지는 회전당 최대 16개, SPLINE은 엔티티당 최대 256개
 선분으로 제한하고, 정밀 원본 레코드와 knot·weight·control/fit point는
-별도로 보존합니다. 기준 도면에서 시간·메모리와 첫 화면 읽기 목표를
-통과했지만, 공간 정렬과 한글 문자 캐시가 완료되기 전에는 기본 엔진으로
-선택하지 않습니다.
+별도로 보존합니다. Scene Cache v1.4는 TEXT, MTEXT, ATTDEF, ATTRIB과
+문자 스타일·SHX/BigFont 파일명을 UTF-8로 함께 보존합니다. 기준 도면의
+시간·메모리와 첫 화면 읽기 목표를 통과했지만, 남은 엔티티 계열과
+정밀 MTEXT/OCS 배치가 완료되기 전에는 기본 엔진으로 선택하지 않습니다.
 
 ## 최소 Scene Cache 생성
 
 현재 캐시 작성기는 LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE,
-ELLIPSE, SPLINE을 레이어 및 공유 블록 정보와 함께 little-endian 이진
-형식으로 저장합니다. Scene Cache v1.3은 원본 정밀 좌표와 별도로
+ELLIPSE, SPLINE과 네 문자 계열을 레이어·문자 스타일·공유 블록 정보와
+함께 little-endian 이진 형식으로 저장합니다. Scene Cache v1.4는
+원본 정밀 좌표와 별도로
 로컬 원점 기반 `f32` GPU 선 버퍼를 만들며, 첫 화면용 데이터는 최대
 4MiB, 개별 상세 청크는 최대 512KiB로 제한합니다. 블록 형상은 배치
 횟수와 관계없이 한 번만 저장합니다. 원호, 원, 타원, 폴리라인 불지와
@@ -93,12 +96,13 @@ cargo run --release -p dwg-converter -- validate-cache \
 있습니다. 생성된 캐시에도 도면 정보가 포함될 수 있으므로 Git에 올리지
 않습니다.
 
-## Webview 첫 화면 검증
+## Webview 첫 화면과 한글 검증
 
-빌드나 외부 패키지 설치 없이 정적 서버로 프로토타입을 실행할 수
-있습니다.
+MIT 라이선스의 `@mlightcad/shx-parser`를 포함한 잠금 버전 의존성을
+준비한 뒤 정적 서버로 프로토타입을 실행합니다.
 
 ```bash
+pnpm install --frozen-lockfile
 python3 -m http.server 4173 --bind 127.0.0.1 --directory packages/webview
 ```
 
@@ -110,6 +114,12 @@ python3 -m http.server 4173 --bind 127.0.0.1 --directory packages/webview
 레이어 패널에서는 한글 이름을 검색하고 개별 또는 전체 레이어를
 켜고 끌 수 있습니다. 이때 형상을 다시 읽거나 GPU에 다시 올리지 않고
 작은 레이어 가시성 텍스처만 갱신합니다.
+
+문자는 첫 도형 화면이 나온 뒤 별도 범위로 읽습니다. `SHX 글꼴`에서
+도면 스타일이 참조하는 기본 SHX와 BigFont 파일을 함께 선택하면 요청된
+글자만 벡터 선분으로 해석해 제한된 LRU 캐시에 보관합니다. 글꼴이 없거나
+해당 글리프가 없으면 한글 시스템 글꼴로 대체합니다. 글꼴 파일은 서버로
+전송되지 않으며 브라우저 세션 메모리에만 등록됩니다.
 
 Webview 단위 검사는 다음 명령으로 실행합니다.
 

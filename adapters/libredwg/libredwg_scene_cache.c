@@ -1,10 +1,11 @@
 /*
  * SPDX-License-Identifier: MPL-2.0
  *
- * A bounded-memory Scene Cache v1.3 writer for GNU LibreDWG. Geometry is
- * traversed repeatedly and written directly to the destination; the writer
- * never creates a JSON or whole-drawing in-memory representation. Large
- * detail passes use private temporary files for an external XY Morton sort.
+ * A bounded-memory Scene Cache v1.4 writer for GNU LibreDWG. Geometry and
+ * source text are traversed repeatedly and written directly to the
+ * destination; the writer never creates a JSON or whole-drawing in-memory
+ * representation. Large detail passes use private temporary files for an
+ * external XY Morton sort.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -36,7 +37,7 @@
 #include <unistd.h>
 
 #define CACHE_VERSION_MAJOR 1u
-#define CACHE_VERSION_MINOR 3u
+#define CACHE_VERSION_MINOR 4u
 #define CACHE_HEADER_SIZE 64u
 #define DIRECTORY_ENTRY_SIZE 40u
 #define SECTION_FLAG_STRING_TABLE 1u
@@ -51,6 +52,12 @@
 #define GPU_STYLE_INVISIBLE (1u << 16)
 #define GPU_STYLE_SOURCE_KIND_SHIFT 17u
 #define GPU_STYLE_APPROXIMATED_CURVE (1u << 20)
+#define TEXT_FLAG_HAS_ALIGNMENT_POINT 1u
+#define TEXT_FLAG_HAS_RECTANGLE_HEIGHT (1u << 1)
+#define TEXT_FLAG_ANNOTATIVE (1u << 2)
+#define TEXT_FLAG_MULTILINE (1u << 3)
+#define TEXT_FLAG_LOCK_POSITION (1u << 4)
+#define TEXT_FLAG_REALLY_LOCKED (1u << 5)
 #define CURVE_MAX_ANGLE_RADIANS 0.39269908169872415481
 #define CURVE_FULL_TURN_RADIANS 6.28318530717958647693
 #define CURVE_EPSILON 1.0e-12
@@ -64,6 +71,7 @@ enum
   SECTION_DRAWING = 1,
   SECTION_LAYERS = 2,
   SECTION_BLOCKS = 3,
+  SECTION_TEXT_STYLES = 4,
   SECTION_LINES = 10,
   SECTION_ARCS = 11,
   SECTION_CIRCLES = 12,
@@ -76,6 +84,8 @@ enum
   SECTION_SPLINE_WEIGHTS = 19,
   SECTION_SPLINE_CONTROL_POINTS = 20,
   SECTION_SPLINE_FIT_POINTS = 21,
+  SECTION_TEXT_ENTITIES = 22,
+  SECTION_TEXT_COLUMN_HEIGHTS = 23,
   SECTION_GPU_LINE_BATCHES = 30,
   SECTION_GPU_LINE_VERTICES = 31
 };
@@ -85,6 +95,7 @@ enum
   DRAWING_RECORD_SIZE = 80,
   LAYER_RECORD_SIZE = 40,
   BLOCK_RECORD_SIZE = 64,
+  TEXT_STYLE_RECORD_SIZE = 96,
   LINE_RECORD_SIZE = 80,
   ARC_RECORD_SIZE = 112,
   CIRCLE_RECORD_SIZE = 96,
@@ -95,6 +106,8 @@ enum
   SPLINE_HEADER_RECORD_SIZE = 208,
   SPLINE_SCALAR_RECORD_SIZE = 8,
   SPLINE_POINT_RECORD_SIZE = 24,
+  TEXT_ENTITY_RECORD_SIZE = 336,
+  TEXT_COLUMN_HEIGHT_RECORD_SIZE = 8,
   GPU_LINE_BATCH_RECORD_SIZE = 128
 };
 
@@ -128,6 +141,15 @@ typedef struct
 
 typedef struct
 {
+  Dwg_Object *object;
+  uint64_t handle;
+  char *name;
+  char *font_file;
+  char *bigfont_file;
+} TextStyleEntry;
+
+typedef struct
+{
   uint64_t handle;
   uint32_t index;
 } HandleIndex;
@@ -140,6 +162,9 @@ typedef struct
   BlockEntry *blocks;
   size_t block_count;
   HandleIndex *block_indices;
+  TextStyleEntry *text_styles;
+  size_t text_style_count;
+  HandleIndex *text_style_indices;
   uint64_t model_handle;
   uint64_t paper_handle;
 } CacheTables;
@@ -151,6 +176,53 @@ typedef struct
   size_t error_size;
   int failed;
 } CacheWriter;
+
+typedef struct
+{
+  const Dwg_Object *object;
+  uint16_t kind;
+  uint16_t flags;
+  Dwg_Object_Ref *style;
+  char *value;
+  char *tag;
+  char *prompt;
+  uint64_t linked_handle;
+  double insertion_point[3];
+  double alignment_point[3];
+  double normal[3];
+  double x_axis_direction[3];
+  double height;
+  double width_factor;
+  double rotation;
+  double oblique_angle;
+  double thickness;
+  double rectangle_width;
+  double rectangle_height;
+  double extents_width;
+  double extents_height;
+  double line_spacing_factor;
+  double background_scale;
+  uint32_t background_color;
+  int32_t background_transparency;
+  int32_t background_flags;
+  int32_t source_flags;
+  int16_t horizontal_alignment;
+  int16_t vertical_alignment;
+  int16_t attachment;
+  int16_t flow_direction;
+  int16_t line_spacing_style;
+  int16_t generation_flags;
+  int16_t field_length;
+  int16_t mtext_type;
+  int32_t line_count;
+  int32_t column_type;
+  int32_t column_count;
+  uint32_t column_flags;
+  double column_width;
+  double column_gutter;
+  const double *column_heights;
+  uint64_t column_height_count;
+} TextSource;
 
 typedef struct
 {
@@ -303,6 +375,7 @@ static const uint32_t SECTION_KINDS[LIBREDWG_SCENE_SECTION_COUNT]
     = { SECTION_DRAWING,
         SECTION_LAYERS,
         SECTION_BLOCKS,
+        SECTION_TEXT_STYLES,
         SECTION_LINES,
         SECTION_ARCS,
         SECTION_CIRCLES,
@@ -315,6 +388,8 @@ static const uint32_t SECTION_KINDS[LIBREDWG_SCENE_SECTION_COUNT]
         SECTION_SPLINE_WEIGHTS,
         SECTION_SPLINE_CONTROL_POINTS,
         SECTION_SPLINE_FIT_POINTS,
+        SECTION_TEXT_ENTITIES,
+        SECTION_TEXT_COLUMN_HEIGHTS,
         SECTION_GPU_LINE_BATCHES,
         SECTION_GPU_LINE_VERTICES };
 
@@ -322,6 +397,7 @@ static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
     = { DRAWING_RECORD_SIZE,
         LAYER_RECORD_SIZE,
         BLOCK_RECORD_SIZE,
+        TEXT_STYLE_RECORD_SIZE,
         LINE_RECORD_SIZE,
         ARC_RECORD_SIZE,
         CIRCLE_RECORD_SIZE,
@@ -334,6 +410,8 @@ static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
         SPLINE_SCALAR_RECORD_SIZE,
         SPLINE_POINT_RECORD_SIZE,
         SPLINE_POINT_RECORD_SIZE,
+        TEXT_ENTITY_RECORD_SIZE,
+        TEXT_COLUMN_HEIGHT_RECORD_SIZE,
         GPU_LINE_BATCH_RECORD_SIZE,
         GPU_LINE_VERTEX_RECORD_SIZE };
 
@@ -341,6 +419,7 @@ static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
     = { "drawing",
         "layers",
         "blocks",
+        "text_styles",
         "lines",
         "arcs",
         "circles",
@@ -353,6 +432,8 @@ static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
         "spline_weights",
         "spline_control_points",
         "spline_fit_points",
+        "text_entities",
+        "text_column_heights",
         "gpu_line_batches",
         "gpu_line_vertices" };
 
@@ -638,10 +719,18 @@ free_tables (CacheTables *tables)
     }
   for (i = 0; i < tables->block_count; i++)
     free (tables->blocks[i].name);
+  for (i = 0; i < tables->text_style_count; i++)
+    {
+      free (tables->text_styles[i].name);
+      free (tables->text_styles[i].font_file);
+      free (tables->text_styles[i].bigfont_file);
+    }
   free (tables->layers);
   free (tables->layer_indices);
   free (tables->blocks);
   free (tables->block_indices);
+  free (tables->text_styles);
+  free (tables->text_style_indices);
   memset (tables, 0, sizeof (*tables));
 }
 
@@ -650,8 +739,10 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
 {
   size_t layer_count = 0;
   size_t block_count = 0;
+  size_t text_style_count = 0;
   size_t layer_index = 0;
   size_t block_index = 0;
+  size_t text_style_index = 0;
   size_t i;
 
   memset (tables, 0, sizeof (*tables));
@@ -666,8 +757,11 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
         layer_count++;
       else if (dwg->object[i].fixedtype == DWG_TYPE_BLOCK_HEADER)
         block_count++;
+      else if (dwg->object[i].fixedtype == DWG_TYPE_STYLE)
+        text_style_count++;
     }
-  if (layer_count > UINT32_MAX || block_count > UINT32_MAX)
+  if (layer_count > UINT32_MAX || block_count > UINT32_MAX
+      || text_style_count > UINT32_MAX)
     return 0;
   tables->layers
       = layer_count ? (LayerEntry *)calloc (layer_count, sizeof (LayerEntry))
@@ -683,8 +777,19 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
       = block_count
             ? (HandleIndex *)malloc (block_count * sizeof (HandleIndex))
             : NULL;
+  tables->text_styles
+      = text_style_count
+            ? (TextStyleEntry *)calloc (text_style_count,
+                                       sizeof (TextStyleEntry))
+            : NULL;
+  tables->text_style_indices
+      = text_style_count
+            ? (HandleIndex *)malloc (text_style_count * sizeof (HandleIndex))
+            : NULL;
   if ((layer_count && (!tables->layers || !tables->layer_indices))
-      || (block_count && (!tables->blocks || !tables->block_indices)))
+      || (block_count && (!tables->blocks || !tables->block_indices))
+      || (text_style_count
+          && (!tables->text_styles || !tables->text_style_indices)))
     {
       free_tables (tables);
       return 0;
@@ -695,6 +800,7 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
    */
   tables->layer_count = layer_count;
   tables->block_count = block_count;
+  tables->text_style_count = text_style_count;
 
   for (i = 0; i < (size_t)dwg->num_objects; i++)
     {
@@ -742,13 +848,40 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
           tables->block_indices[block_index].index = (uint32_t)block_index;
           block_index++;
         }
+      else if (object->fixedtype == DWG_TYPE_STYLE && object->tio.object
+               && object->tio.object->tio.STYLE)
+        {
+          TextStyleEntry *entry
+              = &tables->text_styles[text_style_index];
+          Dwg_Object_STYLE *style = object->tio.object->tio.STYLE;
+          entry->object = object;
+          entry->handle = (uint64_t)object->handle.value;
+          entry->name
+              = copy_utf8_field (style, "STYLE", "name", "");
+          entry->font_file
+              = copy_utf8_field (style, "STYLE", "font_file", "");
+          entry->bigfont_file
+              = copy_utf8_field (style, "STYLE", "bigfont_file", "");
+          if (!entry->name || !entry->font_file || !entry->bigfont_file)
+            {
+              free_tables (tables);
+              return 0;
+            }
+          tables->text_style_indices[text_style_index].handle = entry->handle;
+          tables->text_style_indices[text_style_index].index
+              = (uint32_t)text_style_index;
+          text_style_index++;
+        }
     }
   tables->layer_count = layer_index;
   tables->block_count = block_index;
+  tables->text_style_count = text_style_index;
   qsort (tables->layer_indices, tables->layer_count, sizeof (HandleIndex),
          handle_index_compare);
   qsort (tables->block_indices, tables->block_count, sizeof (HandleIndex),
          handle_index_compare);
+  qsort (tables->text_style_indices, tables->text_style_count,
+         sizeof (HandleIndex), handle_index_compare);
   return 1;
 }
 
@@ -1201,15 +1334,33 @@ count_primitives (const Dwg_Data *dwg)
                   += spline_fit_point_count (spline);
             }
           break;
+        case DWG_TYPE_TEXT:
+          counts.texts++;
+          break;
+        case DWG_TYPE_MTEXT:
+          counts.mtexts++;
+          break;
+        case DWG_TYPE_ATTDEF:
+          counts.attribute_definitions++;
+          break;
         default:
           break;
         }
+    }
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      const Dwg_Object *object = &dwg->object[i];
+      if (object->fixedtype == DWG_TYPE_ATTRIB && object->tio.entity
+          && object->tio.entity->tio.ATTRIB)
+        counts.attributes++;
     }
   counts.serialized_entities = counts.lines + counts.arcs + counts.circles
                                + counts.inserts + counts.lwpolylines
                                + counts.polylines_2d
                                + counts.polylines_3d + counts.ellipses
-                               + counts.splines;
+                               + counts.splines + counts.texts
+                               + counts.mtexts
+                               + counts.attribute_definitions;
   counts.deferred_entities
       = counts.total_entities - counts.serialized_entities;
   return counts;
@@ -1451,6 +1602,634 @@ write_block_section (CacheWriter *writer, const CacheTables *tables,
   return finish_variable_section (
       writer, entry, SECTION_BLOCKS, BLOCK_RECORD_SIZE, "blocks", offset,
       (uint64_t)tables->block_count, SECTION_FLAG_STRING_TABLE);
+}
+
+static int16_t
+normalize_mtext_flow_direction (int value)
+{
+  if (value == 1)
+    return 1;
+  if (value == 3)
+    return 2;
+  if (value == 5)
+    return 3;
+  return 0;
+}
+
+static void
+free_text_source (TextSource *source)
+{
+  free (source->value);
+  free (source->tag);
+  free (source->prompt);
+  source->value = NULL;
+  source->tag = NULL;
+  source->prompt = NULL;
+}
+
+static void
+copy_embedded_mtext (TextSource *source,
+                     const Dwg_AcDbMTextObjectEmbedded *mtext)
+{
+  source->attachment = (int16_t)mtext->attachment;
+  source->x_axis_direction[0] = mtext->x_axis_dir.x;
+  source->x_axis_direction[1] = mtext->x_axis_dir.y;
+  source->x_axis_direction[2] = mtext->x_axis_dir.z;
+  source->rectangle_height = mtext->rect_height;
+  source->rectangle_width = mtext->rect_width;
+  source->extents_width = mtext->extents_width;
+  source->extents_height = mtext->extents_height;
+  source->column_type = (int32_t)mtext->column_type;
+  source->column_count = (int32_t)mtext->num_column_heights;
+  source->column_width = mtext->column_width;
+  source->column_gutter = mtext->gutter;
+  if (mtext->auto_height)
+    source->column_flags |= 1u;
+  if (mtext->flow_reversed)
+    source->column_flags |= 1u << 1;
+  if (mtext->num_column_heights > 0 && mtext->column_heights)
+    {
+      source->column_heights = mtext->column_heights;
+      source->column_height_count
+          = (uint64_t)mtext->num_column_heights;
+    }
+}
+
+static int
+read_text_source (const Dwg_Object *object, TextSource *source)
+{
+  const char *value_type = "";
+  const char *value_field = "";
+  const char *tag_type = "";
+  const char *prompt_type = "";
+  memset (source, 0, sizeof (*source));
+  source->object = object;
+  source->normal[2] = 1.0;
+  source->x_axis_direction[0] = 1.0;
+  source->width_factor = 1.0;
+  source->line_count = 1;
+  if (!object || !object->tio.entity)
+    return 0;
+
+  switch (object->fixedtype)
+    {
+    case DWG_TYPE_TEXT:
+      {
+        const Dwg_Entity_TEXT *text = object->tio.entity->tio.TEXT;
+        if (!text)
+          return 0;
+        source->kind = 0;
+        value_type = "TEXT";
+        value_field = "text_value";
+        source->style = text->style;
+        source->insertion_point[0] = text->ins_pt.x;
+        source->insertion_point[1] = text->ins_pt.y;
+        source->insertion_point[2] = text->elevation;
+        source->alignment_point[0] = text->alignment_pt.x;
+        source->alignment_point[1] = text->alignment_pt.y;
+        source->alignment_point[2] = text->elevation;
+        if ((text->dataflags & 2u) || text->horiz_alignment
+            || text->vert_alignment)
+          source->flags |= TEXT_FLAG_HAS_ALIGNMENT_POINT;
+        finite_normal_or_unit_z (text->extrusion.x, text->extrusion.y,
+                                 text->extrusion.z, source->normal);
+        source->height = text->height;
+        source->width_factor = text->width_factor;
+        source->rotation = text->rotation;
+        source->oblique_angle = text->oblique_angle;
+        source->thickness = text->thickness;
+        source->x_axis_direction[0] = cos (text->rotation);
+        source->x_axis_direction[1] = sin (text->rotation);
+        source->horizontal_alignment
+            = (int16_t)text->horiz_alignment;
+        source->vertical_alignment = (int16_t)text->vert_alignment;
+        source->generation_flags = (int16_t)text->generation;
+        break;
+      }
+    case DWG_TYPE_MTEXT:
+      {
+        const Dwg_Entity_MTEXT *text = object->tio.entity->tio.MTEXT;
+        if (!text)
+          return 0;
+        source->kind = 1;
+        value_type = "MTEXT";
+        value_field = "text";
+        source->style = text->style;
+        source->insertion_point[0] = text->ins_pt.x;
+        source->insertion_point[1] = text->ins_pt.y;
+        source->insertion_point[2] = text->ins_pt.z;
+        finite_normal_or_unit_z (text->extrusion.x, text->extrusion.y,
+                                 text->extrusion.z, source->normal);
+        source->x_axis_direction[0] = text->x_axis_dir.x;
+        source->x_axis_direction[1] = text->x_axis_dir.y;
+        source->x_axis_direction[2] = text->x_axis_dir.z;
+        source->rotation
+            = atan2 (text->x_axis_dir.y, text->x_axis_dir.x);
+        source->height = text->text_height;
+        source->rectangle_width = text->rect_width;
+        source->rectangle_height = text->rect_height;
+        source->flags |= TEXT_FLAG_HAS_RECTANGLE_HEIGHT;
+        if (!text->is_not_annotative)
+          source->flags |= TEXT_FLAG_ANNOTATIVE;
+        source->extents_width = text->extents_width;
+        source->extents_height = text->extents_height;
+        source->attachment = (int16_t)text->attachment;
+        source->flow_direction
+            = normalize_mtext_flow_direction (text->flow_dir);
+        source->line_spacing_style = (int16_t)text->linespace_style;
+        source->line_spacing_factor = text->linespace_factor;
+        source->background_flags = (int32_t)text->bg_fill_flag;
+        source->background_scale = (double)text->bg_fill_scale;
+        source->background_color
+            = encode_color (&text->bg_fill_color);
+        source->background_transparency
+            = (int32_t)text->bg_fill_trans;
+        source->column_type = (int32_t)text->column_type;
+        source->column_count
+            = text->column_type == 1 ? (int32_t)text->numfragments
+                                     : (int32_t)text->num_column_heights;
+        source->column_width = text->column_width;
+        source->column_gutter = text->gutter;
+        if (text->auto_height)
+          source->column_flags |= 1u;
+        if (text->flow_reversed)
+          source->column_flags |= 1u << 1;
+        if (text->num_column_heights > 0 && text->column_heights)
+          {
+            source->column_heights = text->column_heights;
+            source->column_height_count
+                = (uint64_t)text->num_column_heights;
+          }
+        source->line_count = 0;
+        break;
+      }
+    case DWG_TYPE_ATTDEF:
+      {
+        const Dwg_Entity_ATTDEF *text = object->tio.entity->tio.ATTDEF;
+        if (!text)
+          return 0;
+        source->kind = 2;
+        value_type = "ATTDEF";
+        value_field = "default_value";
+        tag_type = "ATTDEF";
+        prompt_type = "ATTDEF";
+        source->style = text->style;
+        source->insertion_point[0] = text->ins_pt.x;
+        source->insertion_point[1] = text->ins_pt.y;
+        source->insertion_point[2] = text->elevation;
+        source->alignment_point[0] = text->alignment_pt.x;
+        source->alignment_point[1] = text->alignment_pt.y;
+        source->alignment_point[2] = text->elevation;
+        source->flags |= TEXT_FLAG_HAS_ALIGNMENT_POINT;
+        if (text->annotative_flag)
+          source->flags |= TEXT_FLAG_ANNOTATIVE;
+        if (text->mtext_type)
+          source->flags |= TEXT_FLAG_MULTILINE;
+        if (text->lock_position_flag)
+          source->flags |= TEXT_FLAG_LOCK_POSITION;
+        if (text->is_really_locked)
+          source->flags |= TEXT_FLAG_REALLY_LOCKED;
+        finite_normal_or_unit_z (text->extrusion.x, text->extrusion.y,
+                                 text->extrusion.z, source->normal);
+        source->height = text->height;
+        source->width_factor = text->width_factor;
+        source->rotation = text->rotation;
+        source->oblique_angle = text->oblique_angle;
+        source->thickness = text->thickness;
+        source->x_axis_direction[0] = cos (text->rotation);
+        source->x_axis_direction[1] = sin (text->rotation);
+        source->source_flags = (int32_t)text->flags;
+        source->horizontal_alignment
+            = (int16_t)text->horiz_alignment;
+        source->vertical_alignment = (int16_t)text->vert_alignment;
+        source->generation_flags = (int16_t)text->generation;
+        source->field_length = (int16_t)text->field_length;
+        source->mtext_type = (int16_t)text->mtext_type;
+        if (text->mtext_type)
+          copy_embedded_mtext (source, &text->mtext);
+        break;
+      }
+    case DWG_TYPE_ATTRIB:
+      {
+        const Dwg_Entity_ATTRIB *text = object->tio.entity->tio.ATTRIB;
+        if (!text)
+          return 0;
+        source->kind = 3;
+        value_type = "ATTRIB";
+        value_field = "text_value";
+        tag_type = "ATTRIB";
+        source->style = text->style;
+        source->insertion_point[0] = text->ins_pt.x;
+        source->insertion_point[1] = text->ins_pt.y;
+        source->insertion_point[2] = text->elevation;
+        source->alignment_point[0] = text->alignment_pt.x;
+        source->alignment_point[1] = text->alignment_pt.y;
+        source->alignment_point[2] = text->elevation;
+        source->flags |= TEXT_FLAG_HAS_ALIGNMENT_POINT;
+        if (text->annotative_flag)
+          source->flags |= TEXT_FLAG_ANNOTATIVE;
+        if (text->mtext_type)
+          source->flags |= TEXT_FLAG_MULTILINE;
+        if (text->lock_position_flag)
+          source->flags |= TEXT_FLAG_LOCK_POSITION;
+        if (text->is_really_locked)
+          source->flags |= TEXT_FLAG_REALLY_LOCKED;
+        finite_normal_or_unit_z (text->extrusion.x, text->extrusion.y,
+                                 text->extrusion.z, source->normal);
+        source->height = text->height;
+        source->width_factor = text->width_factor;
+        source->rotation = text->rotation;
+        source->oblique_angle = text->oblique_angle;
+        source->thickness = text->thickness;
+        source->x_axis_direction[0] = cos (text->rotation);
+        source->x_axis_direction[1] = sin (text->rotation);
+        source->source_flags = (int32_t)text->flags;
+        source->horizontal_alignment
+            = (int16_t)text->horiz_alignment;
+        source->vertical_alignment = (int16_t)text->vert_alignment;
+        source->generation_flags = (int16_t)text->generation;
+        source->field_length = (int16_t)text->field_length;
+        source->mtext_type = (int16_t)text->mtext_type;
+        if (text->mtext_type)
+          copy_embedded_mtext (source, &text->mtext);
+        break;
+      }
+    default:
+      return 0;
+    }
+
+  source->value = copy_utf8_field (
+      (void *)(source->kind == 0
+                   ? (void *)object->tio.entity->tio.TEXT
+                   : source->kind == 1
+                         ? (void *)object->tio.entity->tio.MTEXT
+                         : source->kind == 2
+                               ? (void *)object->tio.entity->tio.ATTDEF
+                               : (void *)object->tio.entity->tio.ATTRIB),
+      value_type, value_field, "");
+  source->tag = copy_utf8_field (
+      source->kind == 2
+          ? (void *)object->tio.entity->tio.ATTDEF
+          : source->kind == 3 ? (void *)object->tio.entity->tio.ATTRIB : NULL,
+      tag_type, "tag", "");
+  source->prompt = copy_utf8_field (
+      source->kind == 2 ? (void *)object->tio.entity->tio.ATTDEF : NULL,
+      prompt_type, "prompt", "");
+  if (!source->value || !source->tag || !source->prompt)
+    {
+      free_text_source (source);
+      return 0;
+    }
+  return 1;
+}
+
+static int
+write_text_style_section (CacheWriter *writer, const CacheTables *tables,
+                          SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t string_cursor = 0;
+  uint64_t string_offset;
+  uint32_t *references;
+  size_t i;
+  if (tables->text_style_count > SIZE_MAX / (8 * sizeof (uint32_t)))
+    {
+      set_error (writer, "too many text styles for scene cache");
+      return 0;
+    }
+  references
+      = tables->text_style_count
+            ? (uint32_t *)malloc (tables->text_style_count * 8
+                                 * sizeof (uint32_t))
+            : NULL;
+  if (tables->text_style_count && !references)
+    {
+      set_error (writer, "out of memory while writing text-style table");
+      return 0;
+    }
+  for (i = 0; i < tables->text_style_count; i++)
+    {
+      TextStyleEntry *style = &tables->text_styles[i];
+      if (!checked_string_layout (&string_cursor, style->name,
+                                  &references[i * 8],
+                                  &references[i * 8 + 1])
+          || !checked_string_layout (&string_cursor, style->font_file,
+                                     &references[i * 8 + 2],
+                                     &references[i * 8 + 3])
+          || !checked_string_layout (&string_cursor, style->bigfont_file,
+                                     &references[i * 8 + 4],
+                                     &references[i * 8 + 5])
+          || !checked_string_layout (&string_cursor, "",
+                                     &references[i * 8 + 6],
+                                     &references[i * 8 + 7]))
+        {
+          free (references);
+          set_error (writer, "text-style string table exceeds its limits");
+          return 0;
+        }
+    }
+  string_offset
+      = STRING_TABLE_HEADER_SIZE
+        + (uint64_t)tables->text_style_count * TEXT_STYLE_RECORD_SIZE;
+  if (!align_writer (writer, &offset)
+      || !write_u32 (writer, (uint32_t)tables->text_style_count)
+      || !write_u32 (writer, TEXT_STYLE_RECORD_SIZE)
+      || !write_u64 (writer, string_offset))
+    {
+      free (references);
+      return 0;
+    }
+  for (i = 0; i < tables->text_style_count; i++)
+    {
+      Dwg_Object_STYLE *style
+          = tables->text_styles[i].object->tio.object->tio.STYLE;
+      uint32_t flags = 0;
+      size_t j;
+      if ((style->generation & 2u) || (style->flag & 128u))
+        flags |= 1u;
+      if ((style->generation & 4u) || (style->flag & 2u))
+        flags |= 1u << 1;
+      if (style->is_xref_dep)
+        flags |= 1u << 2;
+      if (style->is_vertical)
+        flags |= 1u << 4;
+      if (style->is_shape)
+        flags |= 1u << 5;
+      if (!write_u64 (writer, tables->text_styles[i].handle))
+        {
+          free (references);
+          return 0;
+        }
+      for (j = 0; j < 8; j++)
+        {
+          if (!write_u32 (writer, references[i * 8 + j]))
+            {
+              free (references);
+              return 0;
+            }
+        }
+      if (!write_u32 (writer, flags) || !write_u32 (writer, 0)
+          || !write_f64 (writer, style->text_size)
+          || !write_f64 (writer, style->width_factor)
+          || !write_f64 (writer, style->oblique_angle)
+          || !write_f64 (writer, style->last_height)
+          || !write_u64 (writer, 0) || !write_u64 (writer, 0))
+        {
+          free (references);
+          return 0;
+        }
+    }
+  for (i = 0; i < tables->text_style_count; i++)
+    {
+      if (!write_bytes (writer, tables->text_styles[i].name,
+                        strlen (tables->text_styles[i].name))
+          || !write_bytes (writer, tables->text_styles[i].font_file,
+                           strlen (tables->text_styles[i].font_file))
+          || !write_bytes (writer, tables->text_styles[i].bigfont_file,
+                           strlen (tables->text_styles[i].bigfont_file)))
+        {
+          free (references);
+          return 0;
+        }
+    }
+  free (references);
+  return finish_variable_section (
+      writer, entry, SECTION_TEXT_STYLES, TEXT_STYLE_RECORD_SIZE,
+      "text_styles", offset, (uint64_t)tables->text_style_count,
+      SECTION_FLAG_STRING_TABLE);
+}
+
+static int
+is_text_source_object (const Dwg_Object *object)
+{
+  return object && (object->fixedtype == DWG_TYPE_TEXT
+                    || object->fixedtype == DWG_TYPE_MTEXT
+                    || object->fixedtype == DWG_TYPE_ATTDEF
+                    || object->fixedtype == DWG_TYPE_ATTRIB);
+}
+
+static int
+write_text_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
+                           const CacheTables *tables, SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t text_count = 0;
+  uint64_t string_cursor = 0;
+  uint64_t string_offset;
+  uint64_t first_column_height = 0;
+  uint32_t *references;
+  size_t i;
+  size_t row_index = 0;
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      if (is_text_source_object (&dwg->object[i]))
+        text_count++;
+    }
+  if (text_count > SIZE_MAX / (6 * sizeof (uint32_t))
+      || text_count > UINT32_MAX)
+    {
+      set_error (writer, "too many text entities for scene cache");
+      return 0;
+    }
+  references
+      = text_count
+            ? (uint32_t *)malloc ((size_t)text_count * 6
+                                 * sizeof (uint32_t))
+            : NULL;
+  if (text_count && !references)
+    {
+      set_error (writer, "out of memory while writing source text");
+      return 0;
+    }
+
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      TextSource source;
+      if (!is_text_source_object (&dwg->object[i]))
+        continue;
+      if (!read_text_source (&dwg->object[i], &source))
+        {
+          free (references);
+          set_error (writer, "cannot decode source text as UTF-8");
+          return 0;
+        }
+      if (!checked_string_layout (
+              &string_cursor, source.value, &references[row_index * 6],
+              &references[row_index * 6 + 1])
+          || !checked_string_layout (
+              &string_cursor, source.tag, &references[row_index * 6 + 2],
+              &references[row_index * 6 + 3])
+          || !checked_string_layout (
+              &string_cursor, source.prompt,
+              &references[row_index * 6 + 4],
+              &references[row_index * 6 + 5]))
+        {
+          free_text_source (&source);
+          free (references);
+          set_error (writer, "text string table exceeds its limits");
+          return 0;
+        }
+      free_text_source (&source);
+      row_index++;
+    }
+
+  string_offset
+      = STRING_TABLE_HEADER_SIZE + text_count * TEXT_ENTITY_RECORD_SIZE;
+  if (!align_writer (writer, &offset)
+      || !write_u32 (writer, (uint32_t)text_count)
+      || !write_u32 (writer, TEXT_ENTITY_RECORD_SIZE)
+      || !write_u64 (writer, string_offset))
+    {
+      free (references);
+      return 0;
+    }
+
+  row_index = 0;
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      TextSource source;
+      uint32_t style_index;
+      size_t j;
+      if (!is_text_source_object (&dwg->object[i]))
+        continue;
+      if (!read_text_source (&dwg->object[i], &source))
+        {
+          free (references);
+          set_error (writer, "cannot decode source text as UTF-8");
+          return 0;
+        }
+      style_index = find_handle_index (
+          tables->text_style_indices, tables->text_style_count,
+          reference_handle (source.style));
+      if (!write_common (writer, source.object, tables)
+          || !write_u16 (writer, source.kind)
+          || !write_u16 (writer, source.flags)
+          || !write_u32 (writer, style_index))
+        goto text_row_failed;
+      for (j = 0; j < 6; j++)
+        {
+          if (!write_u32 (writer, references[row_index * 6 + j]))
+            goto text_row_failed;
+        }
+      if (!write_u64 (writer, source.linked_handle)
+          || !write_vec3 (writer, source.insertion_point)
+          || !write_vec3 (writer, source.alignment_point)
+          || !write_vec3 (writer, source.normal)
+          || !write_vec3 (writer, source.x_axis_direction)
+          || !write_f64 (writer, source.height)
+          || !write_f64 (writer, source.width_factor)
+          || !write_f64 (writer, source.rotation)
+          || !write_f64 (writer, source.oblique_angle)
+          || !write_f64 (writer, source.thickness)
+          || !write_f64 (writer, source.rectangle_width)
+          || !write_f64 (writer, source.rectangle_height)
+          || !write_f64 (writer, source.extents_width)
+          || !write_f64 (writer, source.extents_height)
+          || !write_f64 (writer, source.line_spacing_factor)
+          || !write_f64 (writer, source.background_scale)
+          || !write_u32 (writer, source.background_color)
+          || !write_i32 (writer, source.background_transparency)
+          || !write_i32 (writer, source.background_flags)
+          || !write_i32 (writer, source.source_flags)
+          || !write_i16 (writer, source.horizontal_alignment)
+          || !write_i16 (writer, source.vertical_alignment)
+          || !write_i16 (writer, source.attachment)
+          || !write_i16 (writer, source.flow_direction)
+          || !write_i16 (writer, source.line_spacing_style)
+          || !write_i16 (writer, source.generation_flags)
+          || !write_i16 (writer, source.field_length)
+          || !write_i16 (writer, source.mtext_type)
+          || !write_i32 (writer, source.line_count)
+          || !write_i32 (writer, source.column_type)
+          || !write_i32 (writer, source.column_count)
+          || !write_u32 (writer, source.column_flags)
+          || !write_f64 (writer, source.column_width)
+          || !write_f64 (writer, source.column_gutter)
+          || !write_u64 (writer, first_column_height)
+          || !write_u64 (writer, source.column_height_count))
+        goto text_row_failed;
+      if (UINT64_MAX - first_column_height
+          < source.column_height_count)
+        {
+          free_text_source (&source);
+          free (references);
+          set_error (writer, "text column-height range overflow");
+          return 0;
+        }
+      first_column_height += source.column_height_count;
+      free_text_source (&source);
+      row_index++;
+      continue;
+
+    text_row_failed:
+      free_text_source (&source);
+      free (references);
+      return 0;
+    }
+
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      TextSource source;
+      if (!is_text_source_object (&dwg->object[i]))
+        continue;
+      if (!read_text_source (&dwg->object[i], &source))
+        {
+          free (references);
+          set_error (writer, "cannot decode source text as UTF-8");
+          return 0;
+        }
+      if (!write_bytes (writer, source.value, strlen (source.value))
+          || !write_bytes (writer, source.tag, strlen (source.tag))
+          || !write_bytes (writer, source.prompt,
+                           strlen (source.prompt)))
+        {
+          free_text_source (&source);
+          free (references);
+          return 0;
+        }
+      free_text_source (&source);
+    }
+  free (references);
+  return finish_variable_section (
+      writer, entry, SECTION_TEXT_ENTITIES, TEXT_ENTITY_RECORD_SIZE,
+      "text_entities", offset, text_count, SECTION_FLAG_STRING_TABLE);
+}
+
+static int
+write_text_column_height_section (CacheWriter *writer, const Dwg_Data *dwg,
+                                  SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t i;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      TextSource source;
+      uint64_t column_index;
+      if (!is_text_source_object (&dwg->object[i]))
+        continue;
+      if (!read_text_source (&dwg->object[i], &source))
+        {
+          set_error (writer, "cannot decode source text as UTF-8");
+          return 0;
+        }
+      for (column_index = 0;
+           column_index < source.column_height_count; column_index++)
+        {
+          if (!write_f64 (writer, source.column_heights[column_index]))
+            {
+              free_text_source (&source);
+              return 0;
+            }
+          count++;
+        }
+      free_text_source (&source);
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_TEXT_COLUMN_HEIGHTS,
+      TEXT_COLUMN_HEIGHT_RECORD_SIZE, "text_column_heights", offset, count);
 }
 
 static int
@@ -4225,27 +5004,32 @@ libredwg_write_scene_cache (
                                  &sections[0])
       || !write_layer_section (&writer, &tables, &sections[1])
       || !write_block_section (&writer, &tables, &sections[2])
-      || !write_line_section (&writer, dwg, &tables, &sections[3])
-      || !write_arc_section (&writer, dwg, &tables, &sections[4])
-      || !write_circle_section (&writer, dwg, &tables, &sections[5])
-      || !write_insert_section (&writer, dwg, &tables, &sections[6])
+      || !write_text_style_section (&writer, &tables, &sections[3])
+      || !write_line_section (&writer, dwg, &tables, &sections[4])
+      || !write_arc_section (&writer, dwg, &tables, &sections[5])
+      || !write_circle_section (&writer, dwg, &tables, &sections[6])
+      || !write_insert_section (&writer, dwg, &tables, &sections[7])
       || !write_polyline_header_section (&writer, dwg, &tables,
-                                         &sections[7])
-      || !write_polyline_vertex_section (&writer, dwg, &sections[8])
-      || !write_ellipse_section (&writer, dwg, &tables, &sections[9])
+                                         &sections[8])
+      || !write_polyline_vertex_section (&writer, dwg, &sections[9])
+      || !write_ellipse_section (&writer, dwg, &tables, &sections[10])
       || !write_spline_header_section (&writer, dwg, &tables,
-                                       &sections[10])
-      || !write_spline_knot_section (&writer, dwg, &sections[11])
-      || !write_spline_weight_section (&writer, dwg, &sections[12])
+                                       &sections[11])
+      || !write_spline_knot_section (&writer, dwg, &sections[12])
+      || !write_spline_weight_section (&writer, dwg, &sections[13])
       || !write_spline_control_point_section (&writer, dwg,
-                                              &sections[13])
+                                              &sections[14])
       || !write_spline_fit_point_section (&writer, dwg,
-                                          &sections[14])
+                                          &sections[15])
+      || !write_text_entity_section (&writer, dwg, &tables,
+                                     &sections[16])
+      || !write_text_column_height_section (&writer, dwg,
+                                            &sections[17])
       || !write_gpu_batch_section (&writer, dwg, &tables, &gpu_lines,
-                                   &overview, &spatial, &sections[15],
+                                   &overview, &spatial, &sections[18],
                                    &separate_overview)
       || !write_gpu_vertex_section (&writer, dwg, &tables, &gpu_lines,
-                                    &overview, &spatial, &sections[16],
+                                    &overview, &spatial, &sections[19],
                                     separate_overview)
       || !position (&writer, &file_size)
       || !write_header (&writer, file_size, source_size, source_version,

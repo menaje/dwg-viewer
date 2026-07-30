@@ -4,6 +4,9 @@ import {
   GPU_LINE_VERTEX_RECORD_SIZE,
   HEADER_SIZE,
   SectionKind,
+  TEXT_COLUMN_HEIGHT_RECORD_SIZE,
+  TEXT_ENTITY_RECORD_SIZE,
+  TEXT_STYLE_RECORD_SIZE,
 } from "../src/scene-cache.mjs";
 
 const encoder = new TextEncoder();
@@ -111,6 +114,131 @@ function makeBlockSection() {
       writeVec3(view, offset + 32, row.basePoint);
     },
   );
+}
+
+function makeTextStyleSection() {
+  const values = ["KOREAN", "txt.shx", "hztxt.shx", ""];
+  const encoded = values.map((value) => encoder.encode(value));
+  const stringOffset = 16 + TEXT_STYLE_RECORD_SIZE;
+  const stringBytes = encoded.reduce((total, value) => total + value.byteLength, 0);
+  const buffer = new ArrayBuffer(stringOffset + stringBytes);
+  const view = new DataView(buffer);
+  view.setUint32(0, 1, true);
+  view.setUint32(4, TEXT_STYLE_RECORD_SIZE, true);
+  writeU64(view, 8, stringOffset);
+  writeU64(view, 16, 150);
+  let relativeOffset = 0;
+  encoded.forEach((value, index) => {
+    view.setUint32(24 + index * 8, relativeOffset, true);
+    view.setUint32(28 + index * 8, value.byteLength, true);
+    new Uint8Array(buffer, stringOffset + relativeOffset, value.byteLength).set(
+      value,
+    );
+    relativeOffset += value.byteLength;
+  });
+  view.setFloat64(64, 1, true);
+  view.setFloat64(72, 1, true);
+  view.setFloat64(80, 0, true);
+  view.setFloat64(88, 2.5, true);
+  return {
+    kind: SectionKind.TextStyles,
+    recordSize: TEXT_STYLE_RECORD_SIZE,
+    recordCount: 1,
+    flags: 1,
+    buffer,
+  };
+}
+
+function makeTextEntitySection() {
+  const rows = [
+    { kind: 0, value: "한글", tag: "", prompt: "", columns: [] },
+    {
+      kind: 1,
+      value: "{\\H1.2x;배관}\\P점검",
+      tag: "",
+      prompt: "",
+      columns: [10, 11],
+    },
+  ];
+  const references = [];
+  const strings = [];
+  let stringBytes = 0;
+  for (const row of rows) {
+    const rowReferences = [];
+    for (const value of [row.value, row.tag, row.prompt]) {
+      const encoded = encoder.encode(value);
+      rowReferences.push({ offset: stringBytes, length: encoded.byteLength });
+      strings.push(encoded);
+      stringBytes += encoded.byteLength;
+    }
+    references.push(rowReferences);
+  }
+  const stringOffset = 16 + rows.length * TEXT_ENTITY_RECORD_SIZE;
+  const buffer = new ArrayBuffer(stringOffset + stringBytes);
+  const view = new DataView(buffer);
+  view.setUint32(0, rows.length, true);
+  view.setUint32(4, TEXT_ENTITY_RECORD_SIZE, true);
+  writeU64(view, 8, stringOffset);
+  rows.forEach((row, index) => {
+    const offset = 16 + index * TEXT_ENTITY_RECORD_SIZE;
+    writeU64(view, offset, 300 + index);
+    writeU64(view, offset + 8, 100);
+    view.setUint32(offset + 16, 0, true);
+    view.setInt16(offset + 24, -1, true);
+    view.setUint16(offset + 32, row.kind, true);
+    view.setUint32(offset + 36, 0, true);
+    references[index].forEach((reference, referenceIndex) => {
+      view.setUint32(offset + 40 + referenceIndex * 8, reference.offset, true);
+      view.setUint32(
+        offset + 44 + referenceIndex * 8,
+        reference.length,
+        true,
+      );
+    });
+    writeVec3(view, offset + 72, [101 + index * 2, 201, 0]);
+    writeVec3(view, offset + 120, [0, 0, 1]);
+    writeVec3(view, offset + 144, [1, 0, 0]);
+    view.setFloat64(offset + 168, 0.5, true);
+    view.setFloat64(offset + 176, 1, true);
+    if (row.kind === 1) {
+      view.setUint16(offset + 276, 1, true);
+      view.setUint16(offset + 278, 1, true);
+      view.setUint16(offset + 280, 1, true);
+      view.setFloat64(offset + 240, 1, true);
+      view.setInt32(offset + 292, 2, true);
+      view.setInt32(offset + 296, 2, true);
+      view.setFloat64(offset + 304, 20, true);
+      view.setFloat64(offset + 312, 2, true);
+      writeU64(view, offset + 320, 0);
+      writeU64(view, offset + 328, row.columns.length);
+    }
+  });
+  let destination = stringOffset;
+  for (const string of strings) {
+    new Uint8Array(buffer, destination, string.byteLength).set(string);
+    destination += string.byteLength;
+  }
+  return {
+    kind: SectionKind.TextEntities,
+    recordSize: TEXT_ENTITY_RECORD_SIZE,
+    recordCount: rows.length,
+    flags: 1,
+    buffer,
+  };
+}
+
+function makeTextColumnHeightSection() {
+  const buffer = new ArrayBuffer(TEXT_COLUMN_HEIGHT_RECORD_SIZE * 2);
+  const view = new DataView(buffer);
+  view.setFloat64(0, 10, true);
+  view.setFloat64(8, 11, true);
+  return {
+    kind: SectionKind.TextColumnHeights,
+    recordSize: TEXT_COLUMN_HEIGHT_RECORD_SIZE,
+    recordCount: 2,
+    flags: 0,
+    buffer,
+  };
 }
 
 function writeInsert(view, offset, values) {
@@ -232,12 +360,19 @@ function makeVertexSection() {
   };
 }
 
-export function makeFixtureCache({ minorVersion = 2 } = {}) {
+export function makeFixtureCache({
+  minorVersion = 2,
+  includeText = minorVersion >= 4,
+} = {}) {
   const sections = [
     makeDrawingSection(),
     makeLayerSection(),
     makeBlockSection(),
+    ...(includeText ? [makeTextStyleSection()] : []),
     makeInsertSection(),
+    ...(includeText
+      ? [makeTextEntitySection(), makeTextColumnHeightSection()]
+      : []),
     makeBatchSection(),
     makeVertexSection(),
   ];

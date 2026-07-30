@@ -8,4 +8,17 @@ importers:
 
   .: {}
 
-  packages/webview: {}
+  packages/webview:
+    dependencies:
+      '@mlightcad/shx-parser':
+        specifier: 1.4.5
+        version: 1.4.5
+
+packages:
+
+  '@mlightcad/shx-parser@1.4.5':
+    resolution: {integrity: sha512-wFY0X7vnuq1IYdP6JRggb7LHcKho1P8zmcWGtXa6XYthwyKZCUoZCswTXr7J26pbzyhBB7KsiCcCL48iwIevdQ==}
+
+snapshots:
+
+  '@mlightcad/shx-parser@1.4.5': {}

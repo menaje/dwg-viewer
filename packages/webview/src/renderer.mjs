@@ -260,6 +260,7 @@ export class WebGlLineRenderer {
     this.detailResources = new Map();
     this.detailSelections = new Map();
     this.overviewScene = null;
+    this.textOverlay = null;
     if (!this.instanceBuffer || !this.layerTexture) {
       throw new Error("cannot allocate WebGL buffers");
     }
@@ -319,6 +320,13 @@ export class WebGlLineRenderer {
   setAllLayersVisible(visible) {
     this.layerVisibility.fill(Boolean(visible));
     this.uploadLayerTexture();
+  }
+
+  setTextOverlay(overlay) {
+    if (this.textOverlay && this.textOverlay !== overlay) {
+      this.textOverlay.dispose();
+    }
+    this.textOverlay = overlay ?? null;
   }
 
   uploadVertices(arrayBuffer) {
@@ -587,6 +595,7 @@ export class WebGlLineRenderer {
       metrics.detailBatches += 1;
     }
     gl.bindVertexArray(null);
+    metrics.text = this.textOverlay?.redraw(camera, this.layerVisibility) ?? null;
     return Object.freeze(metrics);
   }
 
@@ -599,6 +608,8 @@ export class WebGlLineRenderer {
     this.gl.deleteProgram(this.program);
     this.detailResources.clear();
     this.detailSelections.clear();
+    this.textOverlay?.dispose();
+    this.textOverlay = null;
     this.overviewScene = null;
   }
 }

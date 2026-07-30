@@ -28,7 +28,7 @@ test("opens the header and directory without reading the full cache", async () =
   assert.ok(source.bytesRead < buffer.byteLength / 2);
 });
 
-test("accepts the current Scene Cache v1.3 header", async () => {
+test("accepts the Scene Cache v1.3 header", async () => {
   const reader = await SceneCacheReader.open(
     new MemoryRangeSource(makeFixtureCache({ minorVersion: 3 })),
   );
@@ -40,10 +40,35 @@ test("accepts the current Scene Cache v1.3 header", async () => {
 test("rejects a newer unsupported Scene Cache minor version", async () => {
   await assert.rejects(
     SceneCacheReader.open(
-      new MemoryRangeSource(makeFixtureCache({ minorVersion: 4 })),
+      new MemoryRangeSource(makeFixtureCache({ minorVersion: 5 })),
     ),
-    /unsupported scene-cache version 1\.4/,
+    /unsupported scene-cache version 1\.5/,
   );
+});
+
+test("preserves v1.4 Korean source text, style fonts and MTEXT columns", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 4 })),
+  );
+  const styles = await reader.readTextStyles();
+  const texts = await reader.readTextEntities();
+
+  assert.equal(reader.header.minor, 4);
+  assert.equal(styles[0].fontFile, "txt.shx");
+  assert.equal(styles[0].bigFontFile, "hztxt.shx");
+  assert.equal(texts.length, 2);
+  assert.equal(texts.get(0).value, "한글");
+  assert.equal(texts.get(0).style, styles[0]);
+  assert.equal(texts.get(1).value, "{\\H1.2x;배관}\\P점검");
+  assert.deepEqual([...texts.get(1).columnHeights], [10, 11]);
+  const displayRecord = {
+    insertionPoint: [0, 0, 0],
+    normal: [0, 0, 1],
+  };
+  assert.equal(texts.readDisplayRecord(0, displayRecord), displayRecord);
+  assert.equal(displayRecord.valueByteLength, 6);
+  assert.equal(displayRecord.style, styles[0]);
+  assert.equal(texts.readValue(0), "한글");
 });
 
 test("parses render metadata and reads one contiguous overview prefix", async () => {

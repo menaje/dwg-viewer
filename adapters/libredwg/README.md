@@ -5,7 +5,7 @@ This optional process-isolated adapter measures LibreDWG with the same
 acadrust engine. It traverses LibreDWG's object model directly instead of
 creating a full JSON dump.
 
-The `convert` path writes Scene Cache v1.3 without a whole-drawing intermediate
+The `convert` path writes Scene Cache v1.4 without a whole-drawing intermediate
 model. It repeatedly traverses LibreDWG objects and streams sections and
 bounded GPU batches directly to a new cache file. For large drawings, it
 spills fixed-size detail records into private unnamed temporary files, sorts
@@ -19,6 +19,9 @@ This is a deliberately partial conversion milestone:
 - LINE, ARC, CIRCLE, INSERT/MINSERT, LWPOLYLINE, 2D/3D POLYLINE and
   ELLIPSE source records plus SPLINE headers and knot/weight/control/fit pools
   are preserved;
+- text-style names, SHX/BigFont filenames and UTF-8 TEXT, MTEXT, ATTDEF and
+  attached ATTRIB source records are preserved, including bounded MTEXT column
+  height pools;
 - LINE, normalized polyline, ARC, CIRCLE, ELLIPSE and SPLINE geometry are
   emitted as renderable, instanced GPU batches;
 - circular curves and polyline bulges are converted to bounded chords with at
@@ -29,7 +32,8 @@ This is a deliberately partial conversion milestone:
   definitions fall back to bounded fit/control-point chords;
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
-- text/SHX display expansion remains open in GitHub issue #9.
+- bounded SHX/BigFont and system-font fallback display is implemented in the
+  Webview; exact MTEXT/OCS fidelity remains open in GitHub issue #9.
 
 The partial writer produces a structurally valid cache, but it is not yet the
 primary production converter. Its large-drawing detail batches now use the
@@ -92,14 +96,17 @@ keeps raw counts under `drawing.raw_*` and `embedded_text`, but normalizes the
 main `drawing.entities`, `drawing.objects`, `entity_types` and `text` fields to
 the shared logical inspection contract.
 
-On the private 24 MB reference drawing, the disk-backed Morton milestone had a
-3,461 ms median process wall time and 592,019,456-byte median peak RSS across
-three isolated measured runs. The maximums were 3,561 ms and 592,035,840 bytes,
-so both target gates pass. The deterministic 170,409,424-byte cache preserves
-1,624,205 full-detail segments while reducing detail batches from 1,169 to 863.
+On the private 24 MB reference drawing, the Scene Cache v1.4 milestone had a
+4,069 ms median process wall time and 592,101,376-byte median peak RSS across
+three isolated measured runs. The maximums were 4,246 ms and 592,150,528 bytes,
+so both target gates pass. The deterministic 171,202,960-byte cache preserves
+1,624,205 full-detail segments and keeps the 863 Morton-ordered detail batches.
 Across 2,650 fixed grid viewports in the same 106 multi-batch block groups,
 intersecting detail bytes fell 15.6%. The browser opens the cache with eight
-range reads totaling 4,998,797 bytes, including the unchanged 4 MiB overview.
-At peak, the two automatically removed sort files use about 312 MB of
-temporary disk for this drawing; they do not become resident geometry arrays.
-Private reports and generated caches are not committed.
+range reads totaling 4,998,917 bytes, including the unchanged 4 MiB overview.
+The 2,289 text records then load in three separate reads totaling 793,407 bytes;
+their 690 Hangul-bearing values and 2,674 Hangul characters exactly match the
+inspection fingerprint with no corruption markers. At peak, the two
+automatically removed sort files use about 312 MB of temporary disk for this
+drawing; they do not become resident geometry arrays. Private reports and
+generated caches are not committed.

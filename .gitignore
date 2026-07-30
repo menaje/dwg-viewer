@@ -11,7 +11,7 @@ Thumbs.db
 /target/
 
 # JavaScript
-/node_modules/
+node_modules/
 /.pnpm-store/
 *.vsix
 
