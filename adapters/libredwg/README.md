@@ -7,8 +7,11 @@ creating a full JSON dump.
 
 The `convert` path writes Scene Cache v1.3 without a whole-drawing intermediate
 model. It repeatedly traverses LibreDWG objects and streams sections and
-bounded GPU batches directly to a new cache file. The only geometry buffer is
-one 8,192-segment batch.
+bounded GPU batches directly to a new cache file. For large drawings, it
+spills fixed-size detail records into private unnamed temporary files, sorts
+8,192-record runs, and performs one buffered merge into group-local XY Morton
+order. The in-memory sort working set stays bounded below 0.8 MB; the
+temporary files are mode `0600`, close-on-exec, and removed automatically.
 
 This is a deliberately partial conversion milestone:
 
@@ -26,12 +29,13 @@ This is a deliberately partial conversion milestone:
   definitions fall back to bounded fit/control-point chords;
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
-- text/SHX display expansion and spatial detail ordering remain open in GitHub
-  issue #9.
+- text/SHX display expansion remains open in GitHub issue #9.
 
 The partial writer produces a structurally valid cache, but it is not yet the
-primary production converter. Its detail batches retain source traversal order
-rather than the acadrust writer's XY Morton order.
+primary production converter. Its large-drawing detail batches now use the
+same group-local midpoint quantization and 16-bit XY Morton key as the acadrust
+writer, with original source order as the deterministic tie breaker. The
+65,536-segment first-frame overview remains byte-for-byte unchanged.
 
 ## Portable build
 
@@ -88,13 +92,14 @@ keeps raw counts under `drawing.raw_*` and `embedded_text`, but normalizes the
 main `drawing.entities`, `drawing.objects`, `entity_types` and `text` fields to
 the shared logical inspection contract.
 
-On the private 24 MB reference drawing, the SPLINE milestone had a 2,774 ms
-median process wall time and 592,052,224-byte median peak RSS across three
-isolated measured runs. The maximums were 2,969 ms and 592,101,376 bytes.
-The deterministic 170,448,592-byte cache preserves 12,330 SPLINE entities and
-adds 115,651 bounded SPLINE segments, producing 1,624,205 full-detail segments
-in total. Source-record coverage is 371,396 of 378,400 logical entities
-(98.15%). The browser opens it with eight range reads totaling 5,037,965 bytes,
-including the fixed 4 MiB overview. This is only 1,664 more first-frame bytes
-than the analytic-curve milestone. Private reports and generated caches are
-not committed.
+On the private 24 MB reference drawing, the disk-backed Morton milestone had a
+3,461 ms median process wall time and 592,019,456-byte median peak RSS across
+three isolated measured runs. The maximums were 3,561 ms and 592,035,840 bytes,
+so both target gates pass. The deterministic 170,409,424-byte cache preserves
+1,624,205 full-detail segments while reducing detail batches from 1,169 to 863.
+Across 2,650 fixed grid viewports in the same 106 multi-batch block groups,
+intersecting detail bytes fell 15.6%. The browser opens the cache with eight
+range reads totaling 4,998,797 bytes, including the unchanged 4 MiB overview.
+At peak, the two automatically removed sort files use about 312 MB of
+temporary disk for this drawing; they do not become resident geometry arrays.
+Private reports and generated caches are not committed.

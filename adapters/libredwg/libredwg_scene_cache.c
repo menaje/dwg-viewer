@@ -3,7 +3,8 @@
  *
  * A bounded-memory Scene Cache v1.3 writer for GNU LibreDWG. Geometry is
  * traversed repeatedly and written directly to the destination; the writer
- * never creates a JSON or whole-drawing intermediate representation.
+ * never creates a JSON or whole-drawing in-memory representation. Large
+ * detail passes use private temporary files for an external XY Morton sort.
  */
 
 #define _POSIX_C_SOURCE 200809L
@@ -43,6 +44,8 @@
 #define MAX_CACHE_STRING_BYTES (1024u * 1024u)
 #define GPU_BATCH_SEGMENTS 8192u
 #define SCENE_OVERVIEW_SEGMENTS 65536u
+#define SPATIAL_SORT_RUN_SEGMENTS 8192u
+#define SPATIAL_MERGE_BUFFER_RECORDS 16u
 #define GPU_LINE_VERTEX_RECORD_SIZE 32u
 #define GPU_BATCH_FLAG_APPROXIMATED_CURVE 1u
 #define GPU_STYLE_INVISIBLE (1u << 16)
@@ -236,6 +239,9 @@ typedef struct
   uint64_t quota;
   uint64_t seen;
   uint64_t emitted;
+  double midpoint_min[2];
+  double midpoint_max[2];
+  int has_midpoint_bounds;
 } OverviewGroup;
 
 typedef struct
@@ -244,6 +250,35 @@ typedef struct
   size_t group_count;
   uint64_t quota_total;
 } OverviewPlan;
+
+typedef struct
+{
+  LineSegment segment;
+  uint64_t source_order;
+  uint32_t morton;
+  uint32_t reserved;
+} SpatialSegmentRecord;
+
+typedef struct
+{
+  FILE *file;
+  uint64_t count;
+} SpatialSegmentStore;
+
+typedef struct
+{
+  uint64_t start;
+  uint64_t count;
+} SpatialSortRun;
+
+typedef struct
+{
+  uint64_t next;
+  uint64_t remaining;
+  size_t buffered;
+  size_t position;
+  SpatialSegmentRecord buffer[SPATIAL_MERGE_BUFFER_RECORDS];
+} SpatialMergeRun;
 
 typedef struct
 {
@@ -3179,12 +3214,36 @@ count_gpu_segment (void *context, const LineSegment *segment)
 {
   GpuSegmentCounter *counter = (GpuSegmentCounter *)context;
   size_t index = overview_group_index (segment, counter->overview);
+  double midpoint[2];
+  size_t axis;
   if (segment->group == UINT32_MAX)
     counter->summary->model_segments++;
   else
     counter->summary->block_segments++;
   if (index < counter->overview->group_count)
-    counter->overview->groups[index].count++;
+    {
+      OverviewGroup *group = &counter->overview->groups[index];
+      group->count++;
+      midpoint[0] = segment->start[0] * 0.5 + segment->end[0] * 0.5;
+      midpoint[1] = segment->start[1] * 0.5 + segment->end[1] * 0.5;
+      if (!group->has_midpoint_bounds)
+        {
+          for (axis = 0; axis < 2; axis++)
+            group->midpoint_min[axis] = group->midpoint_max[axis]
+                = midpoint[axis];
+          group->has_midpoint_bounds = 1;
+        }
+      else
+        {
+          for (axis = 0; axis < 2; axis++)
+            {
+              group->midpoint_min[axis]
+                  = fmin (group->midpoint_min[axis], midpoint[axis]);
+              group->midpoint_max[axis]
+                  = fmax (group->midpoint_max[axis], midpoint[axis]);
+            }
+        }
+    }
   return 1;
 }
 
@@ -3203,6 +3262,444 @@ count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
     return 0;
   summary->skipped_non_finite_segments = skipped;
   summary->approximated_curve_segments = approximated;
+  return 1;
+}
+
+typedef struct
+{
+  CacheWriter *writer;
+  OverviewPlan *overview;
+  FILE *file;
+  SpatialSegmentRecord *buffer;
+  SpatialSortRun *runs;
+  size_t buffered;
+  size_t run_count;
+  size_t run_capacity;
+  uint64_t records_written;
+  uint64_t source_order;
+} SpatialSortBuilder;
+
+static FILE *
+open_spatial_temp_file (CacheWriter *writer)
+{
+  FILE *file = tmpfile ();
+  int descriptor;
+  int flags;
+  if (!file)
+    {
+      set_error (writer, "cannot create private spatial-sort storage");
+      return NULL;
+    }
+  descriptor = fileno (file);
+  flags = descriptor >= 0 ? fcntl (descriptor, F_GETFD) : -1;
+  if (descriptor < 0 || fchmod (descriptor, 0600) != 0 || flags < 0
+      || fcntl (descriptor, F_SETFD, flags | FD_CLOEXEC) != 0)
+    {
+      fclose (file);
+      set_error (writer, "cannot secure private spatial-sort storage");
+      return NULL;
+    }
+  return file;
+}
+
+static void
+close_spatial_segment_store (SpatialSegmentStore *store)
+{
+  if (store->file)
+    fclose (store->file);
+  memset (store, 0, sizeof (*store));
+}
+
+static uint16_t
+quantize_morton_axis (double value, double minimum, double maximum)
+{
+  double span = maximum - minimum;
+  double normalized;
+  if (!isfinite (span) || span <= 0.0)
+    return 0;
+  normalized = (value - minimum) / span;
+  if (normalized < 0.0)
+    normalized = 0.0;
+  else if (normalized > 1.0)
+    normalized = 1.0;
+  return (uint16_t)round (normalized * (double)UINT16_MAX);
+}
+
+static uint32_t
+interleave_u16 (uint16_t input)
+{
+  uint32_t value = input;
+  value = (value | (value << 8)) & 0x00ff00ffu;
+  value = (value | (value << 4)) & 0x0f0f0f0fu;
+  value = (value | (value << 2)) & 0x33333333u;
+  return (value | (value << 1)) & 0x55555555u;
+}
+
+static uint32_t
+spatial_morton_key (const LineSegment *segment,
+                    const OverviewPlan *overview)
+{
+  size_t index = overview_group_index (segment, overview);
+  const OverviewGroup *group = &overview->groups[index];
+  double midpoint_x
+      = segment->start[0] * 0.5 + segment->end[0] * 0.5;
+  double midpoint_y
+      = segment->start[1] * 0.5 + segment->end[1] * 0.5;
+  uint16_t x = quantize_morton_axis (
+      midpoint_x, group->midpoint_min[0], group->midpoint_max[0]);
+  uint16_t y = quantize_morton_axis (
+      midpoint_y, group->midpoint_min[1], group->midpoint_max[1]);
+  return interleave_u16 (x) | (interleave_u16 (y) << 1);
+}
+
+static int
+spatial_record_compare (const void *left, const void *right)
+{
+  const SpatialSegmentRecord *a = (const SpatialSegmentRecord *)left;
+  const SpatialSegmentRecord *b = (const SpatialSegmentRecord *)right;
+  uint32_t a_group = a->segment.group;
+  uint32_t b_group = b->segment.group;
+  if (a_group != b_group)
+    {
+      if (a_group == UINT32_MAX)
+        return -1;
+      if (b_group == UINT32_MAX)
+        return 1;
+      return a_group < b_group ? -1 : 1;
+    }
+  if (a->morton != b->morton)
+    return a->morton < b->morton ? -1 : 1;
+  if (a->source_order != b->source_order)
+    return a->source_order < b->source_order ? -1 : 1;
+  return 0;
+}
+
+static int
+flush_spatial_sort_run (SpatialSortBuilder *builder)
+{
+  SpatialSortRun *run;
+  if (!builder->buffered)
+    return 1;
+  if (builder->run_count >= builder->run_capacity)
+    {
+      set_error (builder->writer, "spatial-sort run count is inconsistent");
+      return 0;
+    }
+  qsort (builder->buffer, builder->buffered,
+         sizeof (SpatialSegmentRecord), spatial_record_compare);
+  run = &builder->runs[builder->run_count++];
+  run->start = builder->records_written;
+  run->count = builder->buffered;
+  if (fwrite (builder->buffer, sizeof (SpatialSegmentRecord),
+              builder->buffered, builder->file)
+      != builder->buffered)
+    {
+      set_error (builder->writer, "cannot write spatial-sort run");
+      return 0;
+    }
+  builder->records_written += builder->buffered;
+  builder->buffered = 0;
+  return 1;
+}
+
+static int
+spatial_sort_consume (void *context, const LineSegment *segment)
+{
+  SpatialSortBuilder *builder = (SpatialSortBuilder *)context;
+  SpatialSegmentRecord *record;
+  size_t index = overview_group_index (segment, builder->overview);
+  if (index >= builder->overview->group_count
+      || !builder->overview->groups[index].has_midpoint_bounds)
+    {
+      set_error (builder->writer, "spatial-sort group bounds are missing");
+      return 0;
+    }
+  if (builder->buffered == SPATIAL_SORT_RUN_SEGMENTS
+      && !flush_spatial_sort_run (builder))
+    return 0;
+  record = &builder->buffer[builder->buffered++];
+  record->segment = *segment;
+  record->source_order = builder->source_order++;
+  record->morton = spatial_morton_key (segment, builder->overview);
+  record->reserved = 0;
+  return 1;
+}
+
+static int
+read_spatial_records (int descriptor, uint64_t index, size_t count,
+                      SpatialSegmentRecord *records)
+{
+  uint64_t record_size = sizeof (SpatialSegmentRecord);
+  uint64_t byte_offset;
+  size_t byte_count;
+  size_t completed = 0;
+  if (index > (uint64_t)INT64_MAX / record_size
+      || count > SIZE_MAX / sizeof (SpatialSegmentRecord))
+    return 0;
+  byte_offset = index * record_size;
+  byte_count = count * sizeof (SpatialSegmentRecord);
+  while (completed < byte_count)
+    {
+      ssize_t result = pread (
+          descriptor, (uint8_t *)records + completed,
+          byte_count - completed, (off_t)(byte_offset + completed));
+      if (result < 0 && errno == EINTR)
+        continue;
+      if (result <= 0)
+        return 0;
+      completed += (size_t)result;
+    }
+  return 1;
+}
+
+static int
+load_spatial_merge_run (CacheWriter *writer, int descriptor,
+                        SpatialMergeRun *run)
+{
+  size_t count
+      = run->remaining < SPATIAL_MERGE_BUFFER_RECORDS
+            ? (size_t)run->remaining
+            : SPATIAL_MERGE_BUFFER_RECORDS;
+  if (!count || !read_spatial_records (
+                    descriptor, run->next, count, run->buffer))
+    {
+      set_error (writer, "cannot read spatial-sort run");
+      return 0;
+    }
+  run->next += count;
+  run->remaining -= count;
+  run->buffered = count;
+  run->position = 0;
+  return 1;
+}
+
+static int
+spatial_heap_less (const SpatialMergeRun *runs, size_t left,
+                   size_t right)
+{
+  const SpatialSegmentRecord *a
+      = &runs[left].buffer[runs[left].position];
+  const SpatialSegmentRecord *b
+      = &runs[right].buffer[runs[right].position];
+  return spatial_record_compare (a, b) < 0;
+}
+
+static void
+sift_spatial_heap (size_t *heap, size_t count, size_t root,
+                   const SpatialMergeRun *runs)
+{
+  for (;;)
+    {
+      size_t left = root * 2u + 1u;
+      size_t right = left + 1u;
+      size_t smallest = root;
+      size_t temporary;
+      if (left < count
+          && spatial_heap_less (runs, heap[left], heap[smallest]))
+        smallest = left;
+      if (right < count
+          && spatial_heap_less (runs, heap[right], heap[smallest]))
+        smallest = right;
+      if (smallest == root)
+        return;
+      temporary = heap[root];
+      heap[root] = heap[smallest];
+      heap[smallest] = temporary;
+      root = smallest;
+    }
+}
+
+static int
+merge_spatial_sort_runs (CacheWriter *writer, FILE *input,
+                         const SpatialSortRun *source_runs,
+                         size_t run_count, FILE *output,
+                         uint64_t expected)
+{
+  SpatialMergeRun *runs = NULL;
+  size_t *heap = NULL;
+  size_t heap_count = run_count;
+  uint64_t written = 0;
+  int descriptor = fileno (input);
+  size_t i;
+  int success = 0;
+  if (descriptor < 0)
+    {
+      set_error (writer, "cannot open spatial-sort runs");
+      return 0;
+    }
+  if (run_count > SIZE_MAX / sizeof (SpatialMergeRun)
+      || run_count > SIZE_MAX / sizeof (size_t))
+    {
+      set_error (writer, "spatial-sort merge is too large");
+      return 0;
+    }
+  runs = (SpatialMergeRun *)calloc (run_count, sizeof (*runs));
+  heap = (size_t *)malloc (run_count * sizeof (*heap));
+  if (!runs || !heap)
+    {
+      set_error (writer, "out of memory while merging spatial-sort runs");
+      goto done;
+    }
+  for (i = 0; i < run_count; i++)
+    {
+      runs[i].next = source_runs[i].start;
+      runs[i].remaining = source_runs[i].count;
+      heap[i] = i;
+      if (!load_spatial_merge_run (writer, descriptor, &runs[i]))
+        goto done;
+    }
+  for (i = heap_count / 2u; i > 0; i--)
+    sift_spatial_heap (heap, heap_count, i - 1u, runs);
+
+  while (heap_count)
+    {
+      size_t run_index = heap[0];
+      SpatialMergeRun *run = &runs[run_index];
+      if (fwrite (&run->buffer[run->position],
+                  sizeof (SpatialSegmentRecord), 1, output)
+          != 1)
+        {
+          set_error (writer, "cannot write sorted spatial geometry");
+          goto done;
+        }
+      written++;
+      run->position++;
+      if (run->position == run->buffered)
+        {
+          if (run->remaining)
+            {
+              if (!load_spatial_merge_run (writer, descriptor, run))
+                goto done;
+            }
+          else
+            {
+              heap[0] = heap[--heap_count];
+            }
+        }
+      if (heap_count)
+        sift_spatial_heap (heap, heap_count, 0, runs);
+    }
+  if (written != expected || fflush (output) != 0
+      || fseeko (output, 0, SEEK_SET) != 0)
+    {
+      set_error (writer, "sorted spatial geometry is incomplete");
+      goto done;
+    }
+  success = 1;
+
+done:
+  free (heap);
+  free (runs);
+  return success;
+}
+
+static int
+build_spatial_segment_store (CacheWriter *writer, const Dwg_Data *dwg,
+                             const CacheTables *tables,
+                             OverviewPlan *overview, uint64_t total,
+                             SpatialSegmentStore *store)
+{
+  SpatialSortBuilder builder;
+  FILE *runs_file = NULL;
+  FILE *sorted_file = NULL;
+  uint64_t selected = 0;
+  uint64_t run_capacity
+      = total / SPATIAL_SORT_RUN_SEGMENTS
+        + (total % SPATIAL_SORT_RUN_SEGMENTS != 0);
+  int success = 0;
+  memset (&builder, 0, sizeof (builder));
+  memset (store, 0, sizeof (*store));
+  if (!total || total > (uint64_t)INT64_MAX
+                            / sizeof (SpatialSegmentRecord)
+      || run_capacity > SIZE_MAX
+      || run_capacity > SIZE_MAX / sizeof (SpatialSortRun))
+    {
+      set_error (writer, "spatial-sort geometry is too large");
+      return 0;
+    }
+  runs_file = open_spatial_temp_file (writer);
+  if (!runs_file)
+    goto done;
+  sorted_file = open_spatial_temp_file (writer);
+  if (!sorted_file)
+    goto done;
+  builder.buffer = (SpatialSegmentRecord *)malloc (
+      SPATIAL_SORT_RUN_SEGMENTS * sizeof (SpatialSegmentRecord));
+  builder.runs
+      = (SpatialSortRun *)calloc ((size_t)run_capacity,
+                                 sizeof (SpatialSortRun));
+  if (!builder.buffer || !builder.runs)
+    {
+      if (!writer->failed)
+        set_error (writer, "out of memory while preparing spatial sort");
+      goto done;
+    }
+  builder.writer = writer;
+  builder.overview = overview;
+  builder.file = runs_file;
+  builder.run_capacity = (size_t)run_capacity;
+  if (!iterate_gpu_segments (dwg, tables, NULL, spatial_sort_consume,
+                             &builder, &selected, NULL, NULL)
+      || !flush_spatial_sort_run (&builder)
+      || selected != total || builder.records_written != total
+      || fflush (runs_file) != 0)
+    {
+      if (!writer->failed)
+        set_error (writer, "cannot prepare complete spatial geometry");
+      goto done;
+    }
+  free (builder.buffer);
+  builder.buffer = NULL;
+  if (!merge_spatial_sort_runs (
+          writer, runs_file, builder.runs, builder.run_count,
+          sorted_file, total))
+    goto done;
+  store->file = sorted_file;
+  store->count = total;
+  sorted_file = NULL;
+  success = 1;
+
+done:
+  free (builder.runs);
+  free (builder.buffer);
+  if (sorted_file)
+    fclose (sorted_file);
+  if (runs_file)
+    fclose (runs_file);
+  return success;
+}
+
+static int
+iterate_spatial_segment_store (CacheWriter *writer,
+                               SpatialSegmentStore *store,
+                               LineSegmentConsumer consumer, void *context,
+                               uint64_t *selected)
+{
+  SpatialSegmentRecord record;
+  uint64_t count;
+  if (!store || !store->file || !consumer)
+    {
+      set_error (writer, "sorted spatial geometry is unavailable");
+      return 0;
+    }
+  clearerr (store->file);
+  if (fseeko (store->file, 0, SEEK_SET) != 0)
+    {
+      set_error (writer, "cannot rewind sorted spatial geometry");
+      return 0;
+    }
+  for (count = 0; count < store->count; count++)
+    {
+      if (fread (&record, sizeof (record), 1, store->file) != 1)
+        {
+          set_error (writer, "cannot read sorted spatial geometry");
+          return 0;
+        }
+      if (!consumer (context, &record.segment))
+        return 0;
+    }
+  if (selected)
+    *selected = count;
   return 1;
 }
 
@@ -3349,6 +3846,7 @@ static int
 write_batch_pass (CacheWriter *writer, const Dwg_Data *dwg,
                   const CacheTables *tables,
                   LibreDwgGpuLineSummary *summary, OverviewPlan *overview,
+                  SpatialSegmentStore *spatial,
                   uint16_t lod_level, int separate_overview,
                   uint64_t *selected)
 {
@@ -3359,9 +3857,13 @@ write_batch_pass (CacheWriter *writer, const Dwg_Data *dwg,
   builder.lod_level = lod_level;
   builder.separate_overview = separate_overview;
   builder.first_vertex = summary->vertices;
-  if (!iterate_gpu_segments (dwg, tables, overview,
-                             batch_directory_consume, &builder, selected,
-                             NULL, NULL)
+  if (!(spatial
+            ? iterate_spatial_segment_store (
+                  writer, spatial, batch_directory_consume, &builder,
+                  selected)
+            : iterate_gpu_segments (
+                  dwg, tables, overview, batch_directory_consume, &builder,
+                  selected, NULL, NULL))
       || !write_batch_record (&builder))
     return 0;
   summary->vertices = builder.first_vertex;
@@ -3372,7 +3874,8 @@ static int
 write_gpu_batch_section (CacheWriter *writer, const Dwg_Data *dwg,
                          const CacheTables *tables,
                          LibreDwgGpuLineSummary *summary,
-                         OverviewPlan *overview, SectionEntry *entry,
+                         OverviewPlan *overview,
+                         SpatialSegmentStore *spatial, SectionEntry *entry,
                          int *separate_overview)
 {
   uint64_t offset;
@@ -3383,22 +3886,28 @@ write_gpu_batch_section (CacheWriter *writer, const Dwg_Data *dwg,
   if (!align_writer (writer, &offset))
     return 0;
   *separate_overview = total > SCENE_OVERVIEW_SEGMENTS;
+  if (*separate_overview
+      && (!spatial || !spatial->file || spatial->count != total))
+    {
+      set_error (writer, "sorted spatial geometry count is inconsistent");
+      return 0;
+    }
   before_batches = summary->batches;
   if (*separate_overview)
     {
-      if (!write_batch_pass (writer, dwg, tables, summary, overview,
+      if (!write_batch_pass (writer, dwg, tables, summary, overview, NULL,
                              0, 1, &selected))
         return 0;
       summary->overview_segments = selected;
-      if (!write_batch_pass (writer, dwg, tables, summary, NULL, 1, 1,
-                             NULL))
+      if (!write_batch_pass (writer, dwg, tables, summary, NULL, spatial,
+                             1, 1, NULL))
         return 0;
     }
   else
     {
       summary->overview_segments = total;
-      if (!write_batch_pass (writer, dwg, tables, summary, NULL, 0, 0,
-                             NULL))
+      if (!write_batch_pass (writer, dwg, tables, summary, NULL, NULL,
+                             0, 0, NULL))
         return 0;
     }
   return finish_fixed_section (
@@ -3505,6 +4014,7 @@ vertex_consume (void *context, const LineSegment *segment)
 static int
 write_vertex_pass (CacheWriter *writer, const Dwg_Data *dwg,
                    const CacheTables *tables, OverviewPlan *overview,
+                   SpatialSegmentStore *spatial,
                    uint64_t *vertices)
 {
   VertexBuilder builder;
@@ -3517,8 +4027,12 @@ write_vertex_pass (CacheWriter *writer, const Dwg_Data *dwg,
       set_error (writer, "out of memory while writing GPU vertices");
       return 0;
     }
-  if (!iterate_gpu_segments (dwg, tables, overview, vertex_consume,
-                             &builder, NULL, NULL, NULL)
+  if (!(spatial
+            ? iterate_spatial_segment_store (
+                  writer, spatial, vertex_consume, &builder, NULL)
+            : iterate_gpu_segments (
+                  dwg, tables, overview, vertex_consume, &builder, NULL,
+                  NULL, NULL))
       || !flush_vertex_batch (&builder))
     {
       free (builder.segments);
@@ -3533,7 +4047,8 @@ static int
 write_gpu_vertex_section (CacheWriter *writer, const Dwg_Data *dwg,
                           const CacheTables *tables,
                           LibreDwgGpuLineSummary *summary,
-                          OverviewPlan *overview, SectionEntry *entry,
+                          OverviewPlan *overview,
+                          SpatialSegmentStore *spatial, SectionEntry *entry,
                           int separate_overview)
 {
   uint64_t offset;
@@ -3542,9 +4057,12 @@ write_gpu_vertex_section (CacheWriter *writer, const Dwg_Data *dwg,
   if (!align_writer (writer, &offset))
     return 0;
   if (separate_overview
-      && !write_vertex_pass (writer, dwg, tables, overview, &vertices))
+      && !write_vertex_pass (
+          writer, dwg, tables, overview, NULL, &vertices))
     return 0;
-  if (!write_vertex_pass (writer, dwg, tables, NULL, &vertices))
+  if (!write_vertex_pass (
+          writer, dwg, tables, NULL,
+          separate_overview ? spatial : NULL, &vertices))
     return 0;
   if (vertices != expected)
     {
@@ -3615,8 +4133,10 @@ libredwg_write_scene_cache (
   LibreDwgPrimitiveCounts counts;
   LibreDwgGpuLineSummary gpu_lines;
   OverviewPlan overview;
+  SpatialSegmentStore spatial;
   uint64_t body_offset;
   uint64_t file_size;
+  uint64_t gpu_segment_count;
   int separate_overview;
   int descriptor = -1;
   FILE *file = NULL;
@@ -3629,6 +4149,7 @@ libredwg_write_scene_cache (
   memset (sections, 0, sizeof (sections));
   memset (&gpu_lines, 0, sizeof (gpu_lines));
   memset (&overview, 0, sizeof (overview));
+  memset (&spatial, 0, sizeof (spatial));
   if (error_message && error_message_size)
     error_message[0] = '\0';
   writer.error = error_message;
@@ -3663,6 +4184,16 @@ libredwg_write_scene_cache (
                         "cannot allocate bounded overview quotas");
       goto done;
     }
+  if (UINT64_MAX - gpu_lines.model_segments < gpu_lines.block_segments)
+    {
+      set_error (&writer, "GPU segment count exceeds cache limits");
+      goto done;
+    }
+  gpu_segment_count = gpu_lines.model_segments + gpu_lines.block_segments;
+  if (gpu_segment_count > SCENE_OVERVIEW_SEGMENTS
+      && !build_spatial_segment_store (
+          &writer, dwg, &tables, &overview, gpu_segment_count, &spatial))
+    goto done;
 
   descriptor = open (output_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
   if (descriptor < 0)
@@ -3711,10 +4242,10 @@ libredwg_write_scene_cache (
       || !write_spline_fit_point_section (&writer, dwg,
                                           &sections[14])
       || !write_gpu_batch_section (&writer, dwg, &tables, &gpu_lines,
-                                   &overview, &sections[15],
+                                   &overview, &spatial, &sections[15],
                                    &separate_overview)
       || !write_gpu_vertex_section (&writer, dwg, &tables, &gpu_lines,
-                                    &overview, &sections[16],
+                                    &overview, &spatial, &sections[16],
                                     separate_overview)
       || !position (&writer, &file_size)
       || !write_header (&writer, file_size, source_size, source_version,
@@ -3759,6 +4290,7 @@ done:
     close (descriptor);
   if (!success && created)
     unlink (output_path);
+  close_spatial_segment_store (&spatial);
   free_overview_plan (&overview);
   free_tables (&tables);
   return success;
