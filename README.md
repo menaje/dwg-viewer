@@ -53,12 +53,12 @@ LibreDWG 후보는 전역 설치 없이
 모든 후보는 같은 [`engine-adapter`](specs/engine-adapter.md) 계약으로
 연결해 비교합니다.
 
-LibreDWG의 현재 직접 변환기는 LINE과 LWPOLYLINE/2D·3D POLYLINE을
-화면 버퍼로 만들고, 폴리라인 불지는 회전당 최대 16개 선분으로 제한해
-표시합니다. LINE/ARC/CIRCLE/INSERT/MINSERT/POLYLINE/ELLIPSE 원본
-레코드도 보존합니다. 기준 도면에서 시간·메모리 목표는 통과했지만,
-원호·원·타원·스플라인 화면 표시와 한글 문자 캐시가 완료되기 전에는
-기본 엔진으로 선택하지 않습니다.
+LibreDWG의 현재 직접 변환기는 LINE, LWPOLYLINE/2D·3D POLYLINE,
+ARC, CIRCLE, ELLIPSE를 화면 버퍼로 만듭니다. 원호·원·타원과 폴리라인
+불지는 회전당 최대 16개 선분으로 제한하고, 정밀 원본 레코드는 별도로
+보존합니다. 기준 도면에서 시간·메모리와 첫 화면 읽기 목표를
+통과했지만, SPLINE 화면 표시, 공간 정렬과 한글 문자 캐시가 완료되기
+전에는 기본 엔진으로 선택하지 않습니다.
 
 ## 최소 Scene Cache 생성
 

@@ -15,14 +15,14 @@ This is a deliberately partial conversion milestone:
 - layer and block names stay UTF-8;
 - LINE, ARC, CIRCLE, INSERT/MINSERT, LWPOLYLINE, 2D/3D POLYLINE and
   ELLIPSE source records are preserved;
-- LINE and normalized polyline geometry are emitted as renderable, instanced
-  GPU batches;
-- polyline bulges are converted to bounded chords with at most 16 segments per
-  revolution, while exact vertices and bulges remain in the source pools;
+- LINE, normalized polyline, ARC, CIRCLE and ELLIPSE geometry are emitted as
+  renderable, instanced GPU batches;
+- circular curves and polyline bulges are converted to bounded chords with at
+  most 16 segments per revolution, while exact curve records, vertices and
+  bulges remain in the source pools;
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
-- ARC/CIRCLE/ELLIPSE chords, spline and text/SHX display expansion remains open in
-  GitHub issue #9.
+- SPLINE and text/SHX display expansion remains open in GitHub issue #9.
 
 The partial writer produces a structurally valid cache, but it is not yet the
 primary production converter. Its detail batches retain source traversal order
@@ -83,11 +83,12 @@ keeps raw counts under `drawing.raw_*` and `embedded_text`, but normalizes the
 main `drawing.entities`, `drawing.objects`, `entity_types` and `text` fields to
 the shared logical inspection contract.
 
-On the private 24 MB reference drawing, the polyline milestone had a 2,247 ms
-median process wall time and 592,003,072-byte median peak RSS across three
-isolated measured runs. The maximums were 2,286 ms and 592,134,144 bytes.
-The deterministic 147,372,632-byte cache contains 11,596 polylines and 400,974
-pooled vertices; 359,066 of 378,400 logical entities (94.89%) now have source
-records. The browser still opens it with eight range reads totaling 5,033,613
-bytes, including the fixed 4 MiB overview. Private reports and generated
-caches are not committed.
+On the private 24 MB reference drawing, the analytic-curve milestone had a
+2,312 ms median process wall time and 591,921,152-byte median peak RSS across
+three isolated measured runs. The maximums were 2,373 ms and 592,035,840 bytes.
+The deterministic 156,879,448-byte cache contains 148,502 new bounded
+ARC/CIRCLE/ELLIPSE chords and 1,508,554 full-detail segments in total;
+359,066 of 378,400 logical entities (94.89%) have source records. The browser
+opens it with eight range reads totaling 5,036,301 bytes, including the fixed
+4 MiB overview. This is only 2,688 more first-frame bytes than the polyline
+milestone. Private reports and generated caches are not committed.

@@ -49,6 +49,7 @@
 #define GPU_STYLE_SOURCE_KIND_SHIFT 17u
 #define GPU_STYLE_APPROXIMATED_CURVE (1u << 20)
 #define CURVE_MAX_ANGLE_RADIANS 0.39269908169872415481
+#define CURVE_FULL_TURN_RADIANS 6.28318530717958647693
 #define CURVE_EPSILON 1.0e-12
 #define MAX_CIRCULAR_SEGMENTS 16u
 
@@ -1716,19 +1717,42 @@ entity_group (const Dwg_Object_Entity *entity, const CacheTables *tables)
 }
 
 static int
+initialize_entity_segment (const Dwg_Object *object,
+                           const CacheTables *tables, uint8_t source_kind,
+                           int approximated_curve, LineSegment *segment)
+{
+  Dwg_Object_Entity *entity;
+  int line_weight;
+  if (!object || !object->tio.entity || !segment)
+    return 0;
+  entity = object->tio.entity;
+  memset (segment, 0, sizeof (*segment));
+  segment->group = entity_group (entity, tables);
+  if (segment->group == UINT32_MAX - 1u)
+    return 0;
+  line_weight = dxf_cvt_lweight (entity->linewt);
+  if (line_weight < INT16_MIN || line_weight > INT16_MAX)
+    line_weight = -1;
+  segment->handle = (uint64_t)object->handle.value;
+  segment->layer_index = entity_layer_index (entity, tables);
+  segment->color = encode_color (&entity->color);
+  segment->line_weight = (int16_t)line_weight;
+  segment->flags = entity->invisible ? 1u : 0u;
+  segment->source_kind = source_kind;
+  segment->approximated_curve = approximated_curve ? 1u : 0u;
+  return 1;
+}
+
+static int
 line_segment_from_object (const Dwg_Object *object,
                           const CacheTables *tables, LineSegment *segment)
 {
   Dwg_Entity_LINE *line;
-  Dwg_Object_Entity *entity;
-  int line_weight;
   size_t axis;
   if (object->fixedtype != DWG_TYPE_LINE || !object->tio.entity
       || !(line = object->tio.entity->tio.LINE))
     return 0;
-  entity = object->tio.entity;
-  segment->group = entity_group (entity, tables);
-  if (segment->group == UINT32_MAX - 1u)
+  if (!initialize_entity_segment (object, tables, 0, 0, segment))
     return 0;
   segment->start[0] = line->start.x;
   segment->start[1] = line->start.y;
@@ -1742,16 +1766,6 @@ line_segment_from_object (const Dwg_Object *object,
           || !isfinite (segment->end[axis]))
         return -1;
     }
-  line_weight = dxf_cvt_lweight (entity->linewt);
-  if (line_weight < INT16_MIN || line_weight > INT16_MAX)
-    line_weight = -1;
-  segment->handle = (uint64_t)object->handle.value;
-  segment->layer_index = entity_layer_index (entity, tables);
-  segment->color = encode_color (&entity->color);
-  segment->line_weight = (int16_t)line_weight;
-  segment->flags = entity->invisible ? 1u : 0u;
-  segment->source_kind = 0;
-  segment->approximated_curve = 0;
   return 1;
 }
 
@@ -1955,19 +1969,51 @@ segment_iteration_reject (SegmentIteration *iteration)
 }
 
 static unsigned
-bulge_segment_count (double bulge)
+curve_segment_count (double sweep)
 {
-  double sweep;
   double requested;
-  if (!isfinite (bulge) || fabs (bulge) <= CURVE_EPSILON)
-    return 1;
-  sweep = fabs (4.0 * atan (bulge));
-  requested = ceil (sweep / CURVE_MAX_ANGLE_RADIANS);
+  if (!isfinite (sweep) || fabs (sweep) <= CURVE_EPSILON)
+    return 0;
+  requested = ceil (fabs (sweep) / CURVE_MAX_ANGLE_RADIANS);
   if (!isfinite (requested) || requested < 1.0)
-    return 1;
+    return 0;
   if (requested > (double)MAX_CIRCULAR_SEGMENTS)
     return MAX_CIRCULAR_SEGMENTS;
   return (unsigned)requested;
+}
+
+static int
+normalized_curve_sweep (double start, double end, double *sweep)
+{
+  double raw;
+  double normalized;
+  if (!sweep || !isfinite (start) || !isfinite (end))
+    return 0;
+  raw = end - start;
+  if (fabs (raw) >= CURVE_FULL_TURN_RADIANS - CURVE_EPSILON)
+    {
+      *sweep = CURVE_FULL_TURN_RADIANS;
+      return 1;
+    }
+  normalized = fmod (raw, CURVE_FULL_TURN_RADIANS);
+  if (normalized < 0.0)
+    normalized += CURVE_FULL_TURN_RADIANS;
+  if (!isfinite (normalized) || normalized <= CURVE_EPSILON)
+    return 0;
+  *sweep = normalized;
+  return 1;
+}
+
+static unsigned
+bulge_segment_count (double bulge)
+{
+  double sweep;
+  unsigned requested;
+  if (!isfinite (bulge) || fabs (bulge) <= CURVE_EPSILON)
+    return 1;
+  sweep = fabs (4.0 * atan (bulge));
+  requested = curve_segment_count (sweep);
+  return requested ? requested : 1u;
 }
 
 static int
@@ -2202,6 +2248,213 @@ iterate_polyline_segments (const Dwg_Object *object,
   return 1;
 }
 
+static void
+circular_ocs_point (const double center[3], double radius, double angle,
+                    const double normal[3], double point[3])
+{
+  double ocs_point[3];
+  ocs_point[0] = center[0] + radius * cos (angle);
+  ocs_point[1] = center[1] + radius * sin (angle);
+  ocs_point[2] = center[2];
+  ocs_to_wcs (normal, ocs_point, point);
+}
+
+static int
+ellipse_axes (const double major_axis[3], const double normal[3],
+              double axis_ratio, double minor_axis[3])
+{
+  double major_length;
+  double normal_length_squared;
+  double normal_length;
+  double unit_normal[3];
+  double cross[3];
+  double cross_length;
+  double minor_length;
+  size_t axis;
+  for (axis = 0; axis < 3; axis++)
+    {
+      if (!isfinite (major_axis[axis]) || !isfinite (normal[axis]))
+        return 0;
+    }
+  if (!isfinite (axis_ratio) || fabs (axis_ratio) <= CURVE_EPSILON)
+    return 0;
+  major_length
+      = hypot (hypot (major_axis[0], major_axis[1]), major_axis[2]);
+  normal_length_squared = normal[0] * normal[0]
+                          + normal[1] * normal[1]
+                          + normal[2] * normal[2];
+  if (!isfinite (major_length) || major_length <= CURVE_EPSILON
+      || !isfinite (normal_length_squared)
+      || normal_length_squared <= CURVE_EPSILON)
+    return 0;
+  normal_length = sqrt (normal_length_squared);
+  unit_normal[0] = normal[0] / normal_length;
+  unit_normal[1] = normal[1] / normal_length;
+  unit_normal[2] = normal[2] / normal_length;
+  cross[0] = unit_normal[1] * major_axis[2]
+             - unit_normal[2] * major_axis[1];
+  cross[1] = unit_normal[2] * major_axis[0]
+             - unit_normal[0] * major_axis[2];
+  cross[2] = unit_normal[0] * major_axis[1]
+             - unit_normal[1] * major_axis[0];
+  cross_length = hypot (hypot (cross[0], cross[1]), cross[2]);
+  minor_length = major_length * fabs (axis_ratio);
+  if (!isfinite (cross_length) || cross_length <= CURVE_EPSILON
+      || !isfinite (minor_length))
+    return 0;
+  minor_axis[0] = cross[0] / cross_length * minor_length;
+  minor_axis[1] = cross[1] / cross_length * minor_length;
+  minor_axis[2] = cross[2] / cross_length * minor_length;
+  return 1;
+}
+
+static void
+ellipse_point (const double center[3], const double major_axis[3],
+               const double minor_axis[3], double parameter,
+               double point[3])
+{
+  double major_scale = cos (parameter);
+  double minor_scale = sin (parameter);
+  size_t axis;
+  for (axis = 0; axis < 3; axis++)
+    point[axis] = center[axis] + major_axis[axis] * major_scale
+                  + minor_axis[axis] * minor_scale;
+}
+
+static int
+iterate_analytic_curve_segments (const Dwg_Object *object,
+                                 const CacheTables *tables,
+                                 SegmentIteration *iteration)
+{
+  LineSegment base;
+  double center[3];
+  double normal[3];
+  double major_axis[3];
+  double minor_axis[3];
+  double start_parameter;
+  double sweep;
+  double radius;
+  unsigned segment_count;
+  unsigned index;
+  if (!object || !object->tio.entity)
+    return 1;
+  if (object->fixedtype == DWG_TYPE_ARC
+      && object->tio.entity->tio.ARC)
+    {
+      const Dwg_Entity_ARC *arc = object->tio.entity->tio.ARC;
+      radius = arc->radius;
+      start_parameter = arc->start_angle;
+      if (!isfinite (radius) || fabs (radius) <= CURVE_EPSILON
+          || !normalized_curve_sweep (
+              start_parameter, arc->end_angle, &sweep))
+        return 1;
+      center[0] = arc->center.x;
+      center[1] = arc->center.y;
+      center[2] = arc->center.z;
+      normal[0] = arc->extrusion.x;
+      normal[1] = arc->extrusion.y;
+      normal[2] = arc->extrusion.z;
+      if (!initialize_entity_segment (object, tables, 4, 1, &base))
+        return 1;
+      segment_count = curve_segment_count (sweep);
+      for (index = 0; index < segment_count; index++)
+        {
+          LineSegment segment = base;
+          double start_angle
+              = start_parameter
+                + sweep * (double)index / (double)segment_count;
+          double end_angle
+              = start_parameter
+                + sweep * (double)(index + 1u)
+                      / (double)segment_count;
+          circular_ocs_point (center, radius, start_angle, normal,
+                              segment.start);
+          circular_ocs_point (center, radius, end_angle, normal,
+                              segment.end);
+          if (!segment_iteration_emit (iteration, &segment))
+            return 0;
+        }
+      return 1;
+    }
+  if (object->fixedtype == DWG_TYPE_CIRCLE
+      && object->tio.entity->tio.CIRCLE)
+    {
+      const Dwg_Entity_CIRCLE *circle
+          = object->tio.entity->tio.CIRCLE;
+      radius = circle->radius;
+      if (!isfinite (radius) || fabs (radius) <= CURVE_EPSILON)
+        return 1;
+      center[0] = circle->center.x;
+      center[1] = circle->center.y;
+      center[2] = circle->center.z;
+      normal[0] = circle->extrusion.x;
+      normal[1] = circle->extrusion.y;
+      normal[2] = circle->extrusion.z;
+      if (!initialize_entity_segment (object, tables, 5, 1, &base))
+        return 1;
+      segment_count = curve_segment_count (CURVE_FULL_TURN_RADIANS);
+      for (index = 0; index < segment_count; index++)
+        {
+          LineSegment segment = base;
+          double start_angle
+              = CURVE_FULL_TURN_RADIANS * (double)index
+                / (double)segment_count;
+          double end_angle
+              = CURVE_FULL_TURN_RADIANS * (double)(index + 1u)
+                / (double)segment_count;
+          circular_ocs_point (center, radius, start_angle, normal,
+                              segment.start);
+          circular_ocs_point (center, radius, end_angle, normal,
+                              segment.end);
+          if (!segment_iteration_emit (iteration, &segment))
+            return 0;
+        }
+      return 1;
+    }
+  if (object->fixedtype == DWG_TYPE_ELLIPSE
+      && object->tio.entity->tio.ELLIPSE)
+    {
+      const Dwg_Entity_ELLIPSE *ellipse
+          = object->tio.entity->tio.ELLIPSE;
+      center[0] = ellipse->center.x;
+      center[1] = ellipse->center.y;
+      center[2] = ellipse->center.z;
+      major_axis[0] = ellipse->sm_axis.x;
+      major_axis[1] = ellipse->sm_axis.y;
+      major_axis[2] = ellipse->sm_axis.z;
+      normal[0] = ellipse->extrusion.x;
+      normal[1] = ellipse->extrusion.y;
+      normal[2] = ellipse->extrusion.z;
+      start_parameter = ellipse->start_angle;
+      if (!ellipse_axes (major_axis, normal, ellipse->axis_ratio,
+                         minor_axis)
+          || !normalized_curve_sweep (
+              start_parameter, ellipse->end_angle, &sweep))
+        return 1;
+      if (!initialize_entity_segment (object, tables, 6, 1, &base))
+        return 1;
+      segment_count = curve_segment_count (sweep);
+      for (index = 0; index < segment_count; index++)
+        {
+          LineSegment segment = base;
+          double start
+              = start_parameter
+                + sweep * (double)index / (double)segment_count;
+          double end
+              = start_parameter
+                + sweep * (double)(index + 1u)
+                      / (double)segment_count;
+          ellipse_point (center, major_axis, minor_axis, start,
+                         segment.start);
+          ellipse_point (center, major_axis, minor_axis, end,
+                         segment.end);
+          if (!segment_iteration_emit (iteration, &segment))
+            return 0;
+        }
+    }
+  return 1;
+}
+
 static int
 iterate_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
                       OverviewPlan *overview,
@@ -2231,6 +2484,10 @@ iterate_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
         }
       else if (!iterate_polyline_segments (
                    object, tables, &iteration))
+        return 0;
+      if (status == 0
+          && !iterate_analytic_curve_segments (
+              object, tables, &iteration))
         return 0;
     }
   if (selected)
