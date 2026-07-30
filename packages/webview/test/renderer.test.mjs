@@ -10,6 +10,7 @@ function makeFakeGl() {
     bufferData: [],
     drawArraysInstanced: [],
     deletedBuffers: [],
+    shaderSources: [],
   };
   const gl = {
     VERTEX_SHADER: 1,
@@ -38,7 +39,9 @@ function makeFakeGl() {
     ONE_MINUS_SRC_ALPHA: 24,
     LINES: 25,
     createShader: () => ({ id: ++nextId }),
-    shaderSource() {},
+    shaderSource(_shader, source) {
+      calls.shaderSources.push(source);
+    },
     compileShader() {},
     getShaderParameter: () => true,
     getShaderInfoLog: () => "",
@@ -126,7 +129,10 @@ test("redraws overview and independently uploaded detail vertex ranges", () => {
   });
   const first = renderer.renderOverview({
     batches: [overview, detail],
-    layers: [],
+    layers: [
+      { color: 0, flags: 0 },
+      { color: 0, flags: 1 },
+    ],
     instanceGraph: { instancesByBlock: new Map() },
     vertices: {
       buffer: new ArrayBuffer(64),
@@ -136,6 +142,18 @@ test("redraws overview and independently uploaded detail vertex ranges", () => {
   });
 
   assert.equal(first.drawCalls, 1);
+  assert.deepEqual(renderer.getLayerVisibility(), [true, false]);
+  renderer.setLayerVisibility(1, true);
+  assert.deepEqual(renderer.getLayerVisibility(), [true, true]);
+  assert.throws(() => renderer.setLayerVisibility(2, true), /invalid layer/);
+  renderer.setAllLayersVisible(false);
+  assert.deepEqual(renderer.getLayerVisibility(), [false, false]);
+  assert.ok(
+    calls.shaderSources.some((source) =>
+      source.includes("v_layerIndex < uint(u_layerCount)"),
+    ),
+  );
+  renderer.setAllLayersVisible(true);
   assert.deepEqual(calls.drawArraysInstanced.at(-1), {
     mode: gl.LINES,
     first: 0,

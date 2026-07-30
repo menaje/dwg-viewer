@@ -151,6 +151,12 @@ export class ViewportInteraction {
     this.scheduleDetail();
   }
 
+  refresh() {
+    this.lastRender = this.scene.renderer.redraw(this.camera.view());
+    this.emit(this.detailStreamer.snapshot());
+    return this.snapshot();
+  }
+
   scheduleRender() {
     if (this.frameRequest !== null) {
       return;

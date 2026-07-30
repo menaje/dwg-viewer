@@ -89,6 +89,10 @@ vec4 resolveColor() {
 
 void main() {
   if ((v_style & (1u << 16u)) != 0u) discard;
+  if (
+    v_layerIndex < uint(u_layerCount) &&
+    texelFetch(u_layerColors, ivec2(int(v_layerIndex), 0), 0).a <= 0.0
+  ) discard;
   outColor = resolveColor();
   if (outColor.a <= 0.0) discard;
 }
@@ -163,7 +167,7 @@ function decodeColor(encoded) {
   return [235, 235, 235];
 }
 
-function makeLayerPixels(layers) {
+function makeLayerPixels(layers, visibility) {
   const pixels = new Uint8Array(Math.max(layers.length, 1) * 4);
   if (layers.length === 0) {
     pixels.set([235, 235, 235, 255]);
@@ -171,8 +175,10 @@ function makeLayerPixels(layers) {
   }
   for (let index = 0; index < layers.length; index += 1) {
     const [red, green, blue] = decodeColor(layers[index].color);
-    const hidden = (layers[index].flags & 0b11) !== 0;
-    pixels.set([red, green, blue, hidden ? 0 : 255], index * 4);
+    pixels.set(
+      [red, green, blue, visibility[index] ? 255 : 0],
+      index * 4,
+    );
   }
   return pixels;
 }
@@ -261,12 +267,20 @@ export class WebGlLineRenderer {
     this.layerCountLocation = gl.getUniformLocation(this.program, "u_layerCount");
     this.layerTextureLocation = gl.getUniformLocation(this.program, "u_layerColors");
     this.layerCount = 0;
+    this.layers = Object.freeze([]);
+    this.layerVisibility = [];
   }
 
   setLayers(layers) {
+    this.layers = layers;
+    this.layerVisibility = layers.map((layer) => (layer.flags & 0b11) === 0);
+    this.uploadLayerTexture();
+  }
+
+  uploadLayerTexture() {
     const gl = this.gl;
-    const pixels = makeLayerPixels(layers);
-    this.layerCount = layers.length;
+    const pixels = makeLayerPixels(this.layers, this.layerVisibility);
+    this.layerCount = this.layers.length;
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.layerTexture);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -277,13 +291,34 @@ export class WebGlLineRenderer {
       gl.TEXTURE_2D,
       0,
       gl.RGBA,
-      Math.max(layers.length, 1),
+      Math.max(this.layers.length, 1),
       1,
       0,
       gl.RGBA,
       gl.UNSIGNED_BYTE,
       pixels,
     );
+  }
+
+  getLayerVisibility() {
+    return [...this.layerVisibility];
+  }
+
+  setLayerVisibility(layerIndex, visible) {
+    if (
+      !Number.isInteger(layerIndex) ||
+      layerIndex < 0 ||
+      layerIndex >= this.layerVisibility.length
+    ) {
+      throw new RangeError(`invalid layer index ${layerIndex}`);
+    }
+    this.layerVisibility[layerIndex] = Boolean(visible);
+    this.uploadLayerTexture();
+  }
+
+  setAllLayersVisible(visible) {
+    this.layerVisibility.fill(Boolean(visible));
+    this.uploadLayerTexture();
   }
 
   uploadVertices(arrayBuffer) {

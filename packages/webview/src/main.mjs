@@ -9,6 +9,13 @@ const status = document.querySelector("#status");
 const metrics = document.querySelector("#metrics");
 const canvas = document.querySelector("#drawing");
 const viewControls = [...document.querySelectorAll("[data-view-action]")];
+const layersToggle = document.querySelector("#layers-toggle");
+const layerPanel = document.querySelector("#layer-panel");
+const layerSearch = document.querySelector("#layer-search");
+const layerList = document.querySelector("#layer-list");
+const layerSummary = document.querySelector("#layer-summary");
+const layersShowAll = document.querySelector("#layers-show-all");
+const layersHideAll = document.querySelector("#layers-hide-all");
 let activeScene;
 let activeInteraction;
 let openRevision = 0;
@@ -27,7 +34,8 @@ function renderMetrics(scene, rangeSource, viewport = null) {
   const detailRows = detail
     ? `
       <div><dt>현재 확대</dt><dd>${viewport.zoom.toFixed(2)}×</dd></div>
-      <div><dt>상세 청크</dt><dd>${detail.cache.entries.toLocaleString()} / ${detail.selectedBatches.toLocaleString()}</dd></div>
+      <div><dt>화면 상세</dt><dd>${detail.selectedBatches.toLocaleString()}개</dd></div>
+      <div><dt>상세 캐시</dt><dd>${detail.cache.entries.toLocaleString()}개</dd></div>
       <div><dt>상세 GPU</dt><dd>${formatBytes(detail.cache.bytes)}</dd></div>
       <div><dt>상세 대기</dt><dd>${detail.loading.toLocaleString()}</dd></div>
     `
@@ -52,6 +60,68 @@ function setControlsEnabled(enabled) {
   for (const control of viewControls) {
     control.disabled = !enabled;
   }
+  layersToggle.disabled = !enabled;
+}
+
+function updateLayerSummary() {
+  if (!activeScene) {
+    layerSummary.textContent = "";
+    return;
+  }
+  const visibility = activeScene.renderer.getLayerVisibility();
+  const visible = visibility.filter(Boolean).length;
+  layerSummary.textContent = `${visible.toLocaleString()} / ${visibility.length.toLocaleString()} 켜짐`;
+}
+
+function resetLayerPanel() {
+  layerPanel.hidden = true;
+  layersToggle.setAttribute("aria-expanded", "false");
+  layerSearch.value = "";
+  layerList.replaceChildren();
+  layerSummary.textContent = "";
+}
+
+function populateLayerPanel(scene) {
+  layerList.replaceChildren();
+  const visibility = scene.renderer.getLayerVisibility();
+  const fragment = document.createDocumentFragment();
+  for (const [index, layer] of scene.metadata.layers.entries()) {
+    const item = document.createElement("li");
+    const label = document.createElement("label");
+    const checkbox = document.createElement("input");
+    const name = document.createElement("span");
+    checkbox.type = "checkbox";
+    checkbox.checked = visibility[index];
+    checkbox.dataset.layerIndex = String(index);
+    name.className = "layer-name";
+    name.textContent = layer.name || "(이름 없음)";
+    item.dataset.layerName = name.textContent.toLocaleLowerCase();
+    checkbox.addEventListener("change", () => {
+      if (activeScene !== scene) {
+        return;
+      }
+      scene.renderer.setLayerVisibility(index, checkbox.checked);
+      activeInteraction?.refresh();
+      updateLayerSummary();
+    });
+    label.append(checkbox, name);
+    item.append(label);
+    fragment.append(item);
+  }
+  layerList.append(fragment);
+  updateLayerSummary();
+}
+
+function setAllLayersVisible(visible) {
+  if (!activeScene) {
+    return;
+  }
+  activeScene.renderer.setAllLayersVisible(visible);
+  for (const checkbox of layerList.querySelectorAll("input[type=checkbox]")) {
+    checkbox.checked = visible;
+  }
+  activeInteraction?.refresh();
+  updateLayerSummary();
 }
 
 async function openFile(file) {
@@ -59,6 +129,7 @@ async function openFile(file) {
   status.textContent = "준비 중";
   metrics.innerHTML = "";
   setControlsEnabled(false);
+  resetLayerPanel();
   activeInteraction?.dispose();
   activeInteraction = undefined;
   activeScene?.renderer.dispose();
@@ -80,6 +151,7 @@ async function openFile(file) {
     }
     activeScene = scene;
     dropZone.classList.add("loaded");
+    populateLayerPanel(scene);
     renderMetrics(activeScene, source);
     activeInteraction = new ViewportInteraction(activeScene, canvas, {
       onUpdate(viewport) {
@@ -87,7 +159,7 @@ async function openFile(file) {
         status.textContent =
           viewport.detail.loading > 0
             ? `상세 청크 ${viewport.detail.loading.toLocaleString()}개 읽는 중`
-            : `${viewport.zoom.toFixed(2)}× · 상세 ${viewport.detail.cache.entries.toLocaleString()}개`;
+            : `${viewport.zoom.toFixed(2)}× · 화면 상세 ${viewport.detail.selectedBatches.toLocaleString()}개`;
       },
       onError(error) {
         status.textContent = `상세 표시 실패: ${error.message}`;
@@ -153,10 +225,35 @@ for (const control of viewControls) {
   });
 }
 
+layersToggle.addEventListener("click", () => {
+  const opening = layerPanel.hidden;
+  layerPanel.hidden = !opening;
+  layersToggle.setAttribute("aria-expanded", String(opening));
+  if (opening) {
+    layerSearch.focus();
+  }
+});
+
+layerSearch.addEventListener("input", () => {
+  const query = layerSearch.value.trim().toLocaleLowerCase();
+  for (const item of layerList.children) {
+    item.hidden = Boolean(query) && !item.dataset.layerName.includes(query);
+  }
+});
+
+layersShowAll.addEventListener("click", () => {
+  setAllLayersVisible(true);
+});
+
+layersHideAll.addEventListener("click", () => {
+  setAllLayersVisible(false);
+});
+
 window.addEventListener("beforeunload", () => {
   openRevision += 1;
   activeInteraction?.dispose();
   activeScene?.renderer.dispose();
   activeInteraction = undefined;
   activeScene = undefined;
+  resetLayerPanel();
 });

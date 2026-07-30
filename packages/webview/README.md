@@ -20,10 +20,12 @@ VS Code Webview.
 - Streams at most two detail reads concurrently and coalesces redraws.
 - Caps one visible detail set at 32 MiB and cached GPU detail at 96 MiB.
 - Cancels stale queued work and safely releases in-flight results on disposal.
+- Searches Hangul layer names and toggles individual or all layers without
+  rereading geometry or rebuilding GPU buffers.
 
 The current page is an engine verification harness, not the final VS Code
-extension UI. Layer controls, text, SHX/BigFont and curved geometry refinement
-remain follow-up work.
+extension UI. Text, SHX/BigFont and curved geometry refinement remain
+follow-up work.
 
 ## Run
 
@@ -44,4 +46,4 @@ pnpm --filter @dwg-viewer/webview check
 
 Tests cover bounded range reads, cache validation, nested block transforms,
 large-coordinate camera rebasing, camera controls, viewport detail selection,
-GPU resource ranges and LRU eviction/request coalescing.
+GPU resource ranges, layer visibility and LRU eviction/request coalescing.

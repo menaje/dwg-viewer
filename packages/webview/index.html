@@ -17,6 +17,15 @@
           <nav class="view-controls" aria-label="도면 화면 조절">
             <button type="button" data-view-action="zoom-out" disabled aria-label="축소">−</button>
             <button type="button" data-view-action="fit" disabled>전체 보기</button>
+            <button
+              id="layers-toggle"
+              type="button"
+              disabled
+              aria-expanded="false"
+              aria-controls="layer-panel"
+            >
+              레이어
+            </button>
             <button type="button" data-view-action="zoom-in" disabled aria-label="확대">+</button>
           </nav>
           <label class="file-button">
@@ -27,6 +36,23 @@
       </header>
       <section id="drop-zone" class="viewport">
         <canvas id="drawing"></canvas>
+        <aside id="layer-panel" class="layer-panel" aria-label="레이어 표시 설정" hidden>
+          <div class="layer-panel-heading">
+            <strong>레이어</strong>
+            <span id="layer-summary"></span>
+          </div>
+          <input
+            id="layer-search"
+            type="search"
+            placeholder="레이어 이름 검색"
+            autocomplete="off"
+          />
+          <div class="layer-actions">
+            <button id="layers-show-all" type="button">전체 켜기</button>
+            <button id="layers-hide-all" type="button">전체 끄기</button>
+          </div>
+          <ul id="layer-list"></ul>
+        </aside>
         <div class="empty-state">
           <strong>생성된 DWG 캐시를 여기에 놓으세요.</strong>
           <span>원본 DWG는 전송하지 않으며 브라우저가 필요한 범위만 읽습니다.</span>

@@ -69,6 +69,14 @@ to 32 MiB. GPU detail resources use a 96 MiB LRU budget. Camera revisions stop
 stale queued work, while at most two in-flight local reads are allowed to
 finish and become reusable cache entries.
 
+Layer visibility is stored in a compact one-dimensional GPU texture indexed by
+the existing layer index on every vertex. Hiding a layer therefore updates only
+that texture and redraws the current camera; it does not reread cache ranges,
+rebuild geometry or upload vertex buffers. The visibility test runs before
+color resolution in the fragment shader, so by-layer and explicit-color
+entities follow the same hidden-layer state. The Webview layer panel searches
+Unicode names locally and supports individual, all-on and all-off changes.
+
 ## Performance gates
 
 | Metric | Target | Hard limit |
