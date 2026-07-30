@@ -35,4 +35,7 @@ libs=$("$pkg_config" --libs libredwg)
 # pkg-config output is intentionally split into compiler arguments.
 # shellcheck disable=SC2086
 "$cc" -std=c11 -O3 -DNDEBUG -Wall -Wextra -Wpedantic \
-  $cflags "$script_dir/libredwg_adapter.c" $libs -o "$output"
+  $cflags \
+  "$script_dir/libredwg_adapter.c" \
+  "$script_dir/libredwg_scene_cache.c" \
+  $libs -o "$output"

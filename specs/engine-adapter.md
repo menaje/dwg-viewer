@@ -1,8 +1,8 @@
 # DWG engine adapter protocol v1
 
-Status: built-in acadrust adapter, benchmark runner and LibreDWG inspection
-adapter implemented; LibreDWG conversion and ACadSharp are tracked by GitHub
-issue #9.
+Status: built-in acadrust adapter, benchmark runner and a partial LibreDWG
+inspection/conversion adapter implemented. LibreDWG coverage expansion and
+ACadSharp are tracked by GitHub issue #9.
 
 ## Purpose
 
@@ -92,6 +92,12 @@ LibreDWG adapter exposes those raw values separately as `drawing.raw_*` and
 The generated cache must follow the current Scene Cache specification. Report
 fields other than schema, status, input name and performance form the
 repeatability fingerprint.
+
+An experimental adapter may report incomplete entity coverage while its
+conversion path is being qualified. It must still emit a valid cache, count
+every omitted logical entity in `coverage.deferred_entities`, and must not be
+selected as the primary engine until the required geometry and text coverage
+gates pass.
 
 ## Measurement and decisions
 

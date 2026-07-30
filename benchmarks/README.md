@@ -23,7 +23,7 @@ privacy-filtered compatibility fingerprints and automatic target/hard-limit
 decisions.
 
 The implemented LibreDWG adapter can be prepared without a global install and
-measured in inspection-only mode:
+measured in both inspection and partial conversion mode:
 
 ```bash
 adapters/libredwg/prepare.sh \
@@ -35,9 +35,15 @@ target/release/dwg-converter benchmark /path/to/drawing.dwg \
   --engine-id libredwg \
   --engine-version 0.13.4 \
   --engine-license GPL-3.0-or-later \
-  --scope inspect \
+  --scope all \
   --output benchmarks/results/libredwg.json
 ```
+
+The current direct LibreDWG writer is a qualification milestone, not a complete
+engine replacement. Its report explicitly identifies deferred entities.
+Benchmark gate success proves that this bounded conversion architecture meets
+the time/RSS limits; it does not waive geometry, Korean text or spatial-detail
+coverage requirements.
 
 External adapters must implement
 [`specs/engine-adapter.md`](../specs/engine-adapter.md).

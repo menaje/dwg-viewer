@@ -22,6 +22,8 @@
 #pragma clang diagnostic pop
 #endif
 
+#include "libredwg_scene_cache.h"
+
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -40,6 +42,7 @@
 
 #define ADAPTER_PROTOCOL "dwg-engine-adapter/1"
 #define REPORT_SCHEMA "dwg-inspection/1"
+#define CONVERSION_REPORT_SCHEMA "dwg-scene-cache/1"
 
 typedef struct
 {
@@ -102,8 +105,24 @@ static void
 print_usage (void)
 {
   fputs (
-      "usage: libredwg-adapter inspect INPUT [--notification-samples N]\n",
+      "usage:\n"
+      "  libredwg-adapter inspect INPUT [--notification-samples N]\n"
+      "  libredwg-adapter convert INPUT OUTPUT\n",
       stderr);
+}
+
+static uint32_t
+numeric_version_code (const char version_code[7])
+{
+  char *end = NULL;
+  unsigned long value;
+  if (version_code[0] != 'A' || version_code[1] != 'C')
+    return 0;
+  errno = 0;
+  value = strtoul (version_code + 2, &end, 10);
+  if (errno || !end || end == version_code + 2 || value > UINT32_MAX)
+    return 0;
+  return (uint32_t)value;
 }
 
 static uint64_t
@@ -545,7 +564,7 @@ json_diagnostics (unsigned int error)
 }
 
 static int
-validate_environment (void)
+validate_environment (const char *command)
 {
   const char *protocol = getenv ("DWG_VIEWER_ADAPTER_PROTOCOL");
   const char *phase = getenv ("DWG_VIEWER_BENCHMARK_PHASE");
@@ -554,7 +573,7 @@ validate_environment (void)
       fputs ("unsupported adapter protocol\n", stderr);
       return 0;
     }
-  if (phase && strcmp (phase, "inspect") != 0)
+  if (phase && strcmp (phase, command) != 0)
     {
       fputs ("unsupported benchmark phase\n", stderr);
       return 0;
@@ -566,6 +585,8 @@ static int
 validate_arguments (int argc, char **argv)
 {
   int i;
+  if (argc >= 2 && strcmp (argv[1], "convert") == 0)
+    return argc == 4;
   if (argc < 3 || strcmp (argv[1], "inspect") != 0)
     return 0;
   for (i = 3; i < argc; i++)
@@ -831,13 +852,192 @@ done:
   return result;
 }
 
+static void
+json_conversion_coverage (const LibreDwgPrimitiveCounts *counts)
+{
+  fputs ("{\"total_entities\":", stdout);
+  printf ("%" PRIu64, counts->total_entities);
+  printf (",\"serialized_entities\":%" PRIu64,
+          counts->serialized_entities);
+  printf (",\"deferred_entities\":%" PRIu64, counts->deferred_entities);
+  printf (",\"lines\":%" PRIu64, counts->lines);
+  printf (",\"arcs\":%" PRIu64, counts->arcs);
+  printf (",\"circles\":%" PRIu64, counts->circles);
+  printf (",\"inserts\":%" PRIu64, counts->inserts);
+  printf (",\"lwpolylines\":%" PRIu64, counts->lwpolylines);
+  printf (",\"polylines_2d\":%" PRIu64, counts->polylines_2d);
+  printf (",\"polylines_3d\":%" PRIu64, counts->polylines_3d);
+  printf (",\"polyline_vertices\":%" PRIu64,
+          counts->polyline_vertices);
+  printf (",\"ellipses\":%" PRIu64, counts->ellipses);
+  printf (",\"splines\":%" PRIu64, counts->splines);
+  printf (",\"spline_knots\":%" PRIu64, counts->spline_knots);
+  printf (",\"spline_weights\":%" PRIu64, counts->spline_weights);
+  printf (",\"spline_control_points\":%" PRIu64,
+          counts->spline_control_points);
+  printf (",\"spline_fit_points\":%" PRIu64,
+          counts->spline_fit_points);
+  putchar ('}');
+}
+
+static void
+json_gpu_lines (const LibreDwgGpuLineSummary *summary)
+{
+  fputs ("{\"model_segments\":", stdout);
+  printf ("%" PRIu64, summary->model_segments);
+  printf (",\"block_segments\":%" PRIu64, summary->block_segments);
+  printf (",\"overview_segments\":%" PRIu64,
+          summary->overview_segments);
+  printf (",\"approximated_curve_segments\":%" PRIu64,
+          summary->approximated_curve_segments);
+  printf (",\"skipped_non_finite_segments\":%" PRIu64,
+          summary->skipped_non_finite_segments);
+  printf (",\"batches\":%" PRIu64, summary->batches);
+  printf (",\"model_overview_batches\":%" PRIu64,
+          summary->model_overview_batches);
+  printf (",\"model_detail_batches\":%" PRIu64,
+          summary->model_detail_batches);
+  printf (",\"block_batches\":%" PRIu64, summary->block_batches);
+  printf (",\"block_overview_batches\":%" PRIu64,
+          summary->block_overview_batches);
+  printf (",\"block_detail_batches\":%" PRIu64,
+          summary->block_detail_batches);
+  printf (",\"vertices\":%" PRIu64, summary->vertices);
+  printf (",\"cached_vertex_bytes\":%" PRIu64,
+          summary->cached_vertex_bytes);
+  printf (",\"first_frame_vertex_bytes\":%" PRIu64,
+          summary->first_frame_vertex_bytes);
+  printf (",\"full_detail_vertex_bytes\":%" PRIu64,
+          summary->full_detail_vertex_bytes);
+  printf (",\"maximum_batch_bytes\":%" PRIu64,
+          summary->maximum_batch_bytes);
+  printf (",\"maximum_position_error\":%.17g",
+          summary->maximum_position_error);
+  putchar ('}');
+}
+
+static int
+convert_dwg (const char *path, const char *output_path)
+{
+  struct stat metadata;
+  struct timespec started;
+  struct timespec parsed;
+  struct timespec written;
+  Dwg_Data dwg;
+  LibreDwgSceneCacheReport report;
+  char version_code[7];
+  char cache_error[160];
+  uint64_t parse_ms;
+  uint64_t write_ms;
+  uint64_t total_ms;
+  uint64_t peak_rss;
+  unsigned int error;
+  size_t i;
+  int result = 1;
+
+  if (stat (path, &metadata) != 0 || !S_ISREG (metadata.st_mode)
+      || metadata.st_size < 0)
+    {
+      fputs ("input is not a readable regular file\n", stderr);
+      return 1;
+    }
+  if (!read_version_code (path, version_code))
+    {
+      fputs ("cannot read DWG version code\n", stderr);
+      return 1;
+    }
+  memset (&dwg, 0, sizeof (dwg));
+  dwg.opts = 0;
+  if (clock_gettime (CLOCK_MONOTONIC, &started) != 0)
+    {
+      fputs ("cannot start monotonic timer\n", stderr);
+      return 1;
+    }
+  if (!read_dwg_quietly (path, &dwg, &error))
+    {
+      fputs ("cannot isolate LibreDWG diagnostics\n", stderr);
+      goto done;
+    }
+  if (clock_gettime (CLOCK_MONOTONIC, &parsed) != 0)
+    {
+      fputs ("cannot read monotonic timer\n", stderr);
+      goto done;
+    }
+  if (error >= DWG_ERR_CRITICAL)
+    {
+      fprintf (stderr, "LibreDWG parse failed (0x%x)\n", error);
+      goto done;
+    }
+  if (!libredwg_write_scene_cache (
+          &dwg, output_path, (uint64_t)metadata.st_size,
+          numeric_version_code (version_code), &report, cache_error,
+          sizeof (cache_error)))
+    {
+      fprintf (stderr, "LibreDWG scene-cache conversion failed: %s\n",
+               cache_error[0] ? cache_error : "unknown writer error");
+      goto done;
+    }
+  if (clock_gettime (CLOCK_MONOTONIC, &written) != 0)
+    {
+      fputs ("cannot read monotonic timer\n", stderr);
+      goto done;
+    }
+  parse_ms = elapsed_ms (&started, &parsed);
+  write_ms = elapsed_ms (&parsed, &written);
+  total_ms = elapsed_ms (&started, &written);
+  peak_rss = peak_rss_bytes ();
+
+  fputs ("{\"schema\":\"" CONVERSION_REPORT_SCHEMA
+         "\",\"status\":\"ok\",",
+         stdout);
+  printf ("\"input\":{\"size_bytes\":%" PRIu64 "},",
+          (uint64_t)metadata.st_size);
+  printf ("\"cache\":{\"format_major\":%u,\"format_minor\":%u,"
+          "\"size_bytes\":%" PRIu64 ",\"validated\":true,\"sections\":[",
+          1u, 3u, report.cache_size);
+  for (i = 0; i < LIBREDWG_SCENE_SECTION_COUNT; i++)
+    {
+      if (i)
+        putchar (',');
+      fputs ("{\"kind\":", stdout);
+      json_string (report.sections[i].name);
+      printf (",\"records\":%" PRIu64 ",\"bytes\":%" PRIu64 "}",
+              report.sections[i].records, report.sections[i].bytes);
+    }
+  fputs ("]},\"coverage\":", stdout);
+  json_conversion_coverage (&report.coverage);
+  fputs (",\"gpu_lines\":", stdout);
+  json_gpu_lines (&report.gpu_lines);
+  printf (",\"performance\":{\"parse_ms\":%" PRIu64
+          ",\"write_ms\":%" PRIu64 ",\"total_ms\":%" PRIu64,
+          parse_ms, write_ms, total_ms);
+  if (peak_rss)
+    printf (",\"peak_rss_bytes\":%" PRIu64, peak_rss);
+  printf ("},\"diagnostics\":%" PRIu64 "}\n",
+          diagnostic_count (error));
+  if (fflush (stdout) != 0 || ferror (stdout))
+    {
+      fputs ("cannot write adapter report\n", stderr);
+      goto done;
+    }
+  result = 0;
+
+done:
+  if (dwg.header.version && dwg.num_objects < 1000)
+    dwg_free (&dwg);
+  return result;
+}
+
 int
 main (int argc, char **argv)
 {
-  if (!validate_environment () || !validate_arguments (argc, argv))
+  if (!validate_arguments (argc, argv)
+      || !validate_environment (argc >= 2 ? argv[1] : ""))
     {
       print_usage ();
       return 2;
     }
+  if (strcmp (argv[1], "convert") == 0)
+    return convert_dwg (argv[2], argv[3]);
   return inspect_dwg (argv[2]);
 }

@@ -5,7 +5,7 @@ VS Code 읽기 전용 뷰어입니다.
 
 현재는 제품 기능보다 엔진의 생존 가능성을 먼저 검증하는 단계입니다.
 `acadrust` 변환기는 범위 읽기가 가능한 Scene Cache를 생성하며,
-LibreDWG 검사 어댑터는 더 낮은 메모리의 대체 파서 경로를 검증합니다.
+LibreDWG 어댑터는 더 낮은 메모리의 검사와 부분 변환 경로를 검증합니다.
 브라우저 기반 Webview 프로토타입은 캐시 전체를 메모리에 올리지 않고
 첫 화면용 버퍼만 읽어 WebGL2로 그립니다.
 
@@ -48,10 +48,16 @@ target/release/dwg-converter benchmark /path/to/drawing.dwg --pretty
 ```
 
 비공개 결과는 Git에서 제외되는 `benchmarks/results/`에만 저장합니다.
-LibreDWG 검사 후보는 전역 설치 없이
+LibreDWG 후보는 전역 설치 없이
 [`adapters/libredwg`](adapters/libredwg/README.md)에서 준비할 수 있습니다.
 모든 후보는 같은 [`engine-adapter`](specs/engine-adapter.md) 계약으로
 연결해 비교합니다.
+
+LibreDWG의 현재 직접 변환기는 LINE을 화면 버퍼로 만들고
+LINE/ARC/CIRCLE/INSERT/MINSERT/ELLIPSE 원본 레코드를 보존하는 검증용
+단계입니다. 기준 도면에서 시간·메모리 목표는 통과했지만, 폴리라인·곡선
+화면 표시와 한글 문자 캐시가 완료되기 전에는 기본 엔진으로 선택하지
+않습니다.
 
 ## 최소 Scene Cache 생성
 

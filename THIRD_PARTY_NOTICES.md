@@ -12,7 +12,8 @@
 - Project: https://www.gnu.org/software/libredwg/
 - Version: 0.13.4
 - License: GNU General Public License 3.0 or later
-- Usage: process-isolated DWG parsing candidate
+- Usage: optional process-isolated DWG parsing and Scene Cache conversion
+  candidate
 
 LibreDWG is not linked into the MPL-2.0 Rust or Webview components. The optional
 adapter binary links to LibreDWG and must be distributed under terms compatible
