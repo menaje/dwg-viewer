@@ -223,3 +223,49 @@ export function boundsIntersect2D(left, right) {
     left.min[1] > right.max[1]
   );
 }
+
+export function transformedBounds2D(
+  source,
+  matrix,
+  matrixOffset = 0,
+  target = new Float64Array(4),
+) {
+  const centerX = source.min[0] * 0.5 + source.max[0] * 0.5;
+  const centerY = source.min[1] * 0.5 + source.max[1] * 0.5;
+  const centerZ = source.min[2] * 0.5 + source.max[2] * 0.5;
+  const extentX = (source.max[0] - source.min[0]) * 0.5;
+  const extentY = (source.max[1] - source.min[1]) * 0.5;
+  const extentZ = (source.max[2] - source.min[2]) * 0.5;
+  const worldCenterX =
+    matrix[matrixOffset] * centerX +
+    matrix[matrixOffset + 4] * centerY +
+    matrix[matrixOffset + 8] * centerZ +
+    matrix[matrixOffset + 12];
+  const worldCenterY =
+    matrix[matrixOffset + 1] * centerX +
+    matrix[matrixOffset + 5] * centerY +
+    matrix[matrixOffset + 9] * centerZ +
+    matrix[matrixOffset + 13];
+  const worldExtentX =
+    Math.abs(matrix[matrixOffset]) * extentX +
+    Math.abs(matrix[matrixOffset + 4]) * extentY +
+    Math.abs(matrix[matrixOffset + 8]) * extentZ;
+  const worldExtentY =
+    Math.abs(matrix[matrixOffset + 1]) * extentX +
+    Math.abs(matrix[matrixOffset + 5]) * extentY +
+    Math.abs(matrix[matrixOffset + 9]) * extentZ;
+  target[0] = worldCenterX - worldExtentX;
+  target[1] = worldCenterY - worldExtentY;
+  target[2] = worldCenterX + worldExtentX;
+  target[3] = worldCenterY + worldExtentY;
+  return target;
+}
+
+export function packedBoundsIntersect2D(packed, bounds) {
+  return !(
+    packed[2] < bounds.min[0] ||
+    packed[0] > bounds.max[0] ||
+    packed[3] < bounds.min[1] ||
+    packed[1] > bounds.max[1]
+  );
+}

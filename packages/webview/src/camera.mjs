@@ -1,0 +1,118 @@
+const DEFAULT_MINIMUM_SCALE = 1e-6;
+const DEFAULT_MAXIMUM_SCALE = 100;
+
+function requirePositive(value, label) {
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`${label} must be a positive finite number`);
+  }
+  return value;
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
+
+export class CameraController2D {
+  constructor(
+    fitCamera,
+    {
+      minimumScale = DEFAULT_MINIMUM_SCALE,
+      maximumScale = DEFAULT_MAXIMUM_SCALE,
+    } = {},
+  ) {
+    if (!fitCamera || !Array.isArray(fitCamera.origin)) {
+      throw new TypeError("CameraController2D requires a fitted camera");
+    }
+    this.fitOrigin = [...fitCamera.origin];
+    this.fitWorldHeight = requirePositive(
+      fitCamera.worldHeight,
+      "fit camera world height",
+    );
+    this.minimumWorldHeight =
+      this.fitWorldHeight * requirePositive(minimumScale, "minimum scale");
+    this.maximumWorldHeight =
+      this.fitWorldHeight * requirePositive(maximumScale, "maximum scale");
+    if (this.minimumWorldHeight > this.maximumWorldHeight) {
+      throw new RangeError("camera minimum scale is above its maximum scale");
+    }
+    this.origin = [...this.fitOrigin];
+    this.worldHeight = this.fitWorldHeight;
+  }
+
+  get zoom() {
+    return this.fitWorldHeight / this.worldHeight;
+  }
+
+  view() {
+    return Object.freeze({
+      origin: [...this.origin],
+      worldHeight: this.worldHeight,
+      zoom: this.zoom,
+    });
+  }
+
+  reset() {
+    this.origin = [...this.fitOrigin];
+    this.worldHeight = this.fitWorldHeight;
+    return this.view();
+  }
+
+  panByPixels(deltaX, deltaY, width, height) {
+    requirePositive(width, "camera viewport width");
+    requirePositive(height, "camera viewport height");
+    const worldPerPixel = this.worldHeight / height;
+    this.origin[0] -= deltaX * worldPerPixel;
+    this.origin[1] += deltaY * worldPerPixel;
+    return this.view();
+  }
+
+  zoomAt(factor, screenX, screenY, width, height) {
+    requirePositive(factor, "camera zoom factor");
+    requirePositive(width, "camera viewport width");
+    requirePositive(height, "camera viewport height");
+    const aspect = width / height;
+    const normalizedX = screenX / width - 0.5;
+    const normalizedY = 0.5 - screenY / height;
+    const oldHeight = this.worldHeight;
+    const newHeight = clamp(
+      oldHeight * factor,
+      this.minimumWorldHeight,
+      this.maximumWorldHeight,
+    );
+    const oldOffsetX = normalizedX * aspect * oldHeight;
+    const oldOffsetY = normalizedY * oldHeight;
+    const newOffsetX = normalizedX * aspect * newHeight;
+    const newOffsetY = normalizedY * newHeight;
+    this.origin[0] += oldOffsetX - newOffsetX;
+    this.origin[1] += oldOffsetY - newOffsetY;
+    this.worldHeight = newHeight;
+    return this.view();
+  }
+}
+
+export function cameraViewportBounds(camera) {
+  if (
+    !camera ||
+    !Array.isArray(camera.origin) ||
+    !Number.isFinite(camera.worldHeight) ||
+    !Number.isFinite(camera.worldWidth)
+  ) {
+    throw new TypeError("camera viewport bounds require a rendered camera");
+  }
+  const halfWidth = camera.worldWidth * 0.5;
+  const halfHeight = camera.worldHeight * 0.5;
+  return Object.freeze({
+    min: [
+      camera.origin[0] - halfWidth,
+      camera.origin[1] - halfHeight,
+      -Infinity,
+    ],
+    max: [
+      camera.origin[0] + halfWidth,
+      camera.origin[1] + halfHeight,
+      Infinity,
+    ],
+  });
+}
+
+export { DEFAULT_MAXIMUM_SCALE, DEFAULT_MINIMUM_SCALE };

@@ -1,11 +1,30 @@
 const DEFAULT_MAXIMUM_BYTES = 128 * 1024 * 1024;
 
 export class GpuBatchCache {
-  constructor(reader, { maximumBytes = DEFAULT_MAXIMUM_BYTES } = {}) {
+  constructor(
+    readerOrLoader,
+    {
+      maximumBytes = DEFAULT_MAXIMUM_BYTES,
+      onEvict = () => {},
+    } = {},
+  ) {
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
       throw new RangeError("GPU batch cache maximumBytes must be positive");
     }
-    this.reader = reader;
+    if (
+      typeof readerOrLoader !== "function" &&
+      typeof readerOrLoader?.readBatchVertices !== "function"
+    ) {
+      throw new TypeError("GPU batch cache requires a batch loader");
+    }
+    if (typeof onEvict !== "function") {
+      throw new TypeError("GPU batch cache onEvict must be a function");
+    }
+    this.loader =
+      typeof readerOrLoader === "function"
+        ? readerOrLoader
+        : (batch) => readerOrLoader.readBatchVertices(batch);
+    this.onEvict = onEvict;
     this.maximumBytes = maximumBytes;
     this.entries = new Map();
     this.pending = new Map();
@@ -26,17 +45,21 @@ export class GpuBatchCache {
 
     const generation = this.generation;
     let promise;
-    promise = this.reader
-      .readBatchVertices(batch)
+    promise = Promise.resolve()
+      .then(() => this.loader(batch))
       .then((value) => {
         if (this.pending.get(batch.id) === promise) {
           this.pending.delete(batch.id);
         }
         if (generation !== this.generation) {
+          this.onEvict(value, batch.id);
           return value;
         }
         if (value.byteLength > this.maximumBytes) {
-          return value;
+          this.onEvict(value, batch.id);
+          throw new RangeError(
+            `GPU batch ${batch.id} exceeds the cache byte budget`,
+          );
         }
         this.entries.set(batch.id, { value, byteLength: value.byteLength });
         this.bytes += value.byteLength;
@@ -57,8 +80,22 @@ export class GpuBatchCache {
     return this.entries.has(batchId);
   }
 
+  delete(batchId) {
+    const entry = this.entries.get(batchId);
+    if (!entry) {
+      return false;
+    }
+    this.entries.delete(batchId);
+    this.bytes -= entry.byteLength;
+    this.onEvict(entry.value, batchId);
+    return true;
+  }
+
   clear() {
     this.generation += 1;
+    for (const [batchId, entry] of this.entries) {
+      this.onEvict(entry.value, batchId);
+    }
     this.entries.clear();
     this.pending.clear();
     this.bytes = 0;
@@ -80,6 +117,7 @@ export class GpuBatchCache {
       }
       this.entries.delete(batchId);
       this.bytes -= entry.byteLength;
+      this.onEvict(entry.value, batchId);
     }
   }
 }

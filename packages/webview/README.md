@@ -15,11 +15,15 @@ VS Code Webview.
 - Stores instance transforms in packed `Float64Array` collections.
 - Rebases world coordinates around the camera before WebGL2 `f32` upload.
 - Renders overview lines with batched, instanced draw calls.
-- Provides a 128 MiB byte-budgeted LRU for later viewport detail refinement.
+- Supports anchored wheel/button zoom, pointer pan and fitted-view reset.
+- Selects LOD 1 model and transformed block batches against the viewport.
+- Streams at most two detail reads concurrently and coalesces redraws.
+- Caps one visible detail set at 32 MiB and cached GPU detail at 96 MiB.
+- Cancels stale queued work and safely releases in-flight results on disposal.
 
 The current page is an engine verification harness, not the final VS Code
-extension UI. Pan/zoom, viewport detail selection, text, SHX/BigFont and curved
-geometry refinement remain follow-up work.
+extension UI. Layer controls, text, SHX/BigFont and curved geometry refinement
+remain follow-up work.
 
 ## Run
 
@@ -39,4 +43,5 @@ pnpm --filter @dwg-viewer/webview check
 ```
 
 Tests cover bounded range reads, cache validation, nested block transforms,
-large-coordinate camera rebasing and LRU eviction/request coalescing.
+large-coordinate camera rebasing, camera controls, viewport detail selection,
+GPU resource ranges and LRU eviction/request coalescing.

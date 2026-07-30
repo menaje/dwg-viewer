@@ -66,6 +66,42 @@ h1 {
   background: #2673df;
 }
 
+.toolbar,
+.view-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.view-controls {
+  border: 1px solid #283242;
+  border-radius: 0.7rem;
+  padding: 0.2rem;
+  background: #101722;
+}
+
+.view-controls button {
+  min-width: 2.2rem;
+  cursor: pointer;
+  border: 0;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.65rem;
+  background: transparent;
+  color: #dce4ef;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.view-controls button:hover:not(:disabled) {
+  background: #263449;
+}
+
+.view-controls button:disabled {
+  cursor: default;
+  color: #586274;
+}
+
 .file-button input {
   display: none;
 }
@@ -90,6 +126,12 @@ canvas {
   height: 100%;
   min-height: 28rem;
   display: block;
+  cursor: grab;
+  touch-action: none;
+}
+
+canvas.panning {
+  cursor: grabbing;
 }
 
 .empty-state {
@@ -162,5 +204,10 @@ dd {
 
   header {
     align-items: flex-start;
+  }
+
+  .toolbar {
+    align-items: flex-end;
+    flex-direction: column-reverse;
   }
 }

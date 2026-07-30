@@ -13,10 +13,17 @@
           <p class="eyebrow">DWG Viewer · Scene Cache v1.2</p>
           <h1>대형 도면 첫 화면 검증기</h1>
         </div>
-        <label class="file-button">
-          캐시 선택
-          <input id="cache-file" type="file" accept=".cache,.dwg.cache" />
-        </label>
+        <div class="toolbar">
+          <nav class="view-controls" aria-label="도면 화면 조절">
+            <button type="button" data-view-action="zoom-out" disabled aria-label="축소">−</button>
+            <button type="button" data-view-action="fit" disabled>전체 보기</button>
+            <button type="button" data-view-action="zoom-in" disabled aria-label="확대">+</button>
+          </nav>
+          <label class="file-button">
+            캐시 선택
+            <input id="cache-file" type="file" accept=".cache,.dwg.cache" />
+          </label>
+        </div>
       </header>
       <section id="drop-zone" class="viewport">
         <canvas id="drawing"></canvas>

@@ -4,6 +4,7 @@ import test from "node:test";
 import { GpuBatchCache } from "../src/batch-cache.mjs";
 
 test("evicts least-recently-used detail buffers above its byte budget", async () => {
+  const evicted = [];
   const reader = {
     async readBatchVertices(batch) {
       return {
@@ -13,13 +14,19 @@ test("evicts least-recently-used detail buffers above its byte budget", async ()
       };
     },
   };
-  const cache = new GpuBatchCache(reader, { maximumBytes: 100 });
+  const cache = new GpuBatchCache(reader, {
+    maximumBytes: 100,
+    onEvict(value, batchId) {
+      evicted.push([batchId, value.byteLength]);
+    },
+  });
   await cache.get({ id: 1, bytes: 60 });
   await cache.get({ id: 2, bytes: 60 });
 
   assert.equal(cache.has(1), false);
   assert.equal(cache.has(2), true);
   assert.equal(cache.snapshot().bytes, 60);
+  assert.deepEqual(evicted, [[1, 60]]);
 });
 
 test("coalesces simultaneous requests for the same GPU batch", async () => {
@@ -42,6 +49,7 @@ test("coalesces simultaneous requests for the same GPU batch", async () => {
 
 test("does not retain an in-flight batch after the cache is cleared", async () => {
   let finishRead;
+  const evicted = [];
   const reader = {
     readBatchVertices() {
       return new Promise((resolve) => {
@@ -49,8 +57,13 @@ test("does not retain an in-flight batch after the cache is cleared", async () =
       });
     },
   };
-  const cache = new GpuBatchCache(reader);
+  const cache = new GpuBatchCache(reader, {
+    onEvict(value, batchId) {
+      evicted.push([batchId, value.byteLength]);
+    },
+  });
   const read = cache.get({ id: 9 });
+  await Promise.resolve();
 
   cache.clear();
   finishRead({
@@ -66,4 +79,5 @@ test("does not retain an in-flight batch after the cache is cleared", async () =
     bytes: 0,
     maximumBytes: 128 * 1024 * 1024,
   });
+  assert.deepEqual(evicted, [[9, 32]]);
 });

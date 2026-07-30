@@ -4,6 +4,9 @@ import test from "node:test";
 import { buildInstanceGraph } from "../src/instance-graph.mjs";
 import {
   batchRelativeInstanceMatrix,
+  packedBoundsIntersect2D,
+  rotationZMat4,
+  transformedBounds2D,
   transformPoint,
 } from "../src/math.mjs";
 import { MemoryRangeSource } from "../src/range-source.mjs";
@@ -59,4 +62,26 @@ test("camera rebasing keeps a small batch offset at a large world coordinate", (
 
   assert.equal(relative[12], 0.375);
   assert.equal(relative[13], 0.75);
+});
+
+test("transforms an AABB for viewport intersection without expanding corners", () => {
+  const rotation = rotationZMat4(Math.PI / 2);
+  rotation[12] = 10;
+  rotation[13] = 20;
+  const transformed = transformedBounds2D(
+    { min: [-2, -1, 0], max: [2, 1, 0] },
+    rotation,
+  );
+
+  assert.ok(Math.abs(transformed[0] - 9) < 1e-12);
+  assert.ok(Math.abs(transformed[1] - 18) < 1e-12);
+  assert.ok(Math.abs(transformed[2] - 11) < 1e-12);
+  assert.ok(Math.abs(transformed[3] - 22) < 1e-12);
+  assert.equal(
+    packedBoundsIntersect2D(transformed, {
+      min: [10.5, 21, -Infinity],
+      max: [12, 23, Infinity],
+    }),
+    true,
+  );
 });

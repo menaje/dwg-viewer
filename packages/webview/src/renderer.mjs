@@ -177,8 +177,23 @@ function makeLayerPixels(layers) {
   return pixels;
 }
 
+function makeCameraFromView(origin, worldHeight, width, height) {
+  const safeWidth = Math.max(width, 1);
+  const safeHeight = Math.max(height, 1);
+  const safeWorldHeight = Math.max(worldHeight, Number.EPSILON);
+  const worldWidth = safeWorldHeight * (safeWidth / safeHeight);
+  return Object.freeze({
+    origin: [...origin],
+    worldHeight: safeWorldHeight,
+    worldWidth,
+    width: safeWidth,
+    height: safeHeight,
+    projection: orthographic2D(safeWidth, safeHeight, safeWorldHeight),
+  });
+}
+
 function makeCamera(bounds, width, height, padding = 1.08) {
-  const center = [
+  const origin = [
     bounds.min[0] * 0.5 + bounds.max[0] * 0.5,
     bounds.min[1] * 0.5 + bounds.max[1] * 0.5,
     bounds.min[2] * 0.5 + bounds.max[2] * 0.5,
@@ -187,11 +202,7 @@ function makeCamera(bounds, width, height, padding = 1.08) {
   const drawingHeight = Math.max(bounds.max[1] - bounds.min[1], 1e-6);
   const aspect = Math.max(width, 1) / Math.max(height, 1);
   const worldHeight = Math.max(drawingHeight, drawingWidth / aspect) * padding;
-  return Object.freeze({
-    origin: center,
-    worldHeight,
-    projection: orthographic2D(width, height, worldHeight),
-  });
+  return makeCameraFromView(origin, worldHeight, width, height);
 }
 
 function instancesForBatch(batch, instanceGraph) {
@@ -240,11 +251,15 @@ export class WebGlLineRenderer {
     this.instanceBuffer = gl.createBuffer();
     this.layerTexture = gl.createTexture();
     this.vertexResources = new Set();
+    this.detailResources = new Map();
+    this.detailSelections = new Map();
+    this.overviewScene = null;
     if (!this.instanceBuffer || !this.layerTexture) {
       throw new Error("cannot allocate WebGL buffers");
     }
     this.projectionLocation = gl.getUniformLocation(this.program, "u_projection");
     this.layerCountLocation = gl.getUniformLocation(this.program, "u_layerCount");
+    this.layerTextureLocation = gl.getUniformLocation(this.program, "u_layerColors");
     this.layerCount = 0;
   }
 
@@ -337,7 +352,6 @@ export class WebGlLineRenderer {
   }
 
   renderOverview({ batches, layers, instanceGraph, vertices }) {
-    const gl = this.gl;
     const size = this.resize();
     this.setLayers(layers);
     const bounds = calculateOverviewBounds(batches, instanceGraph);
@@ -346,13 +360,151 @@ export class WebGlLineRenderer {
     }
     const camera = makeCamera(bounds, size.width, size.height);
     const resource = this.uploadVertices(vertices.buffer);
+    this.overviewScene = Object.freeze({
+      batches,
+      bounds,
+      camera,
+      instanceGraph,
+      resource,
+    });
+    return Object.freeze({ ...this.redraw(camera), resource });
+  }
+
+  addDetailBatch(batch, vertices) {
+    const existing = this.detailResources.get(batch.id);
+    if (existing) {
+      return existing;
+    }
+    if (
+      vertices.vertexCount !== batch.vertexCount ||
+      vertices.byteLength !== batch.vertexCount * VERTEX_STRIDE
+    ) {
+      throw new Error(`GPU detail batch ${batch.id} has an invalid vertex payload`);
+    }
+    const entry = Object.freeze({
+      batch,
+      resource: this.uploadVertices(vertices.buffer),
+      byteLength: vertices.byteLength,
+    });
+    this.detailResources.set(batch.id, entry);
+    return entry;
+  }
+
+  deleteDetailBatch(batchId) {
+    const entry = this.detailResources.get(batchId);
+    if (!entry) {
+      return false;
+    }
+    this.detailResources.delete(batchId);
+    this.deleteVertices(entry.resource);
+    return true;
+  }
+
+  setDetailSelections(candidates) {
+    this.detailSelections = new Map(
+      candidates.map((candidate) => [candidate.batch.id, candidate]),
+    );
+  }
+
+  drawBatch(
+    batch,
+    resource,
+    instanceGraph,
+    camera,
+    metrics,
+    {
+      detail = false,
+      firstVertex = batch.firstVertex,
+      instanceIndices = null,
+    } = {},
+  ) {
+    const gl = this.gl;
+    const instances = instancesForBatch(batch, instanceGraph);
+    const totalInstances = instanceIndices?.length ?? instances.count;
+    if (totalInstances === 0) {
+      return;
+    }
+    gl.bindVertexArray(resource.vertexArray);
+    for (
+      let firstInstance = 0;
+      firstInstance < totalInstances;
+      firstInstance += MAX_INSTANCES_PER_DRAW
+    ) {
+      const instanceCount = Math.min(
+        MAX_INSTANCES_PER_DRAW,
+        totalInstances - firstInstance,
+      );
+      const packed = new Float32Array(instanceCount * 16);
+      for (let index = 0; index < instanceCount; index += 1) {
+        const matrixIndex =
+          instanceIndices?.[firstInstance + index] ?? firstInstance + index;
+        if (matrixIndex >= instances.count) {
+          throw new Error(
+            `GPU batch ${batch.id} references an invalid instance index`,
+          );
+        }
+        batchRelativeInstanceMatrix(
+          instances.data,
+          batch.origin,
+          camera.origin,
+          matrixIndex * 16,
+          packed,
+          index * 16,
+        );
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
+      gl.bufferData(gl.ARRAY_BUFFER, packed, gl.DYNAMIC_DRAW);
+      gl.drawArraysInstanced(
+        gl.LINES,
+        firstVertex,
+        batch.vertexCount,
+        instanceCount,
+      );
+      metrics.drawCalls += 1;
+      metrics.submittedInstances += instanceCount;
+      metrics.submittedVertices += batch.vertexCount * instanceCount;
+      metrics.instanceUploadBytes += packed.byteLength;
+      metrics.maximumInstanceBufferBytes = Math.max(
+        metrics.maximumInstanceBufferBytes,
+        packed.byteLength,
+      );
+      if (detail) {
+        metrics.detailDrawCalls += 1;
+        metrics.detailSubmittedVertices += batch.vertexCount * instanceCount;
+      }
+    }
+  }
+
+  redraw(view = this.overviewScene?.camera) {
+    if (!this.overviewScene || !view) {
+      throw new Error("cannot redraw before the overview is initialized");
+    }
+    const gl = this.gl;
+    const size = this.resize();
+    const camera = makeCameraFromView(
+      view.origin,
+      view.worldHeight,
+      size.width,
+      size.height,
+    );
+    let cachedDetailGpuBytes = 0;
+    for (const entry of this.detailResources.values()) {
+      cachedDetailGpuBytes += entry.byteLength;
+    }
     const metrics = {
       drawCalls: 0,
+      detailDrawCalls: 0,
+      detailBatches: 0,
       submittedInstances: 0,
       submittedVertices: 0,
+      detailSubmittedVertices: 0,
       instanceUploadBytes: 0,
-      gpuVertexBytes: resource.byteLength,
-      bounds,
+      maximumInstanceBufferBytes: 0,
+      gpuVertexBytes:
+        this.overviewScene.resource.byteLength + cachedDetailGpuBytes,
+      cachedDetailGpuBytes,
+      cachedDetailBatches: this.detailResources.size,
+      bounds: this.overviewScene.bounds,
       camera,
     };
 
@@ -364,54 +516,43 @@ export class WebGlLineRenderer {
     gl.useProgram(this.program);
     gl.uniformMatrix4fv(this.projectionLocation, false, camera.projection);
     gl.uniform1i(this.layerCountLocation, this.layerCount);
+    gl.uniform1i(this.layerTextureLocation, 0);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.layerTexture);
-    gl.bindVertexArray(resource.vertexArray);
 
-    for (const batch of batches) {
+    for (const batch of this.overviewScene.batches) {
       if (batch.lodLevel !== 0) {
         break;
       }
-      const instances = instancesForBatch(batch, instanceGraph);
-      if (instances.count === 0) {
+      this.drawBatch(
+        batch,
+        this.overviewScene.resource,
+        this.overviewScene.instanceGraph,
+        camera,
+        metrics,
+      );
+    }
+    for (const [batchId, candidate] of this.detailSelections) {
+      const entry = this.detailResources.get(batchId);
+      if (!entry) {
         continue;
       }
-      for (
-        let firstInstance = 0;
-        firstInstance < instances.count;
-        firstInstance += MAX_INSTANCES_PER_DRAW
-      ) {
-        const instanceCount = Math.min(
-          MAX_INSTANCES_PER_DRAW,
-          instances.count - firstInstance,
-        );
-        const packed = new Float32Array(instanceCount * 16);
-        for (let index = 0; index < instanceCount; index += 1) {
-          batchRelativeInstanceMatrix(
-            instances.data,
-            batch.origin,
-            camera.origin,
-            (firstInstance + index) * 16,
-            packed,
-            index * 16,
-          );
-        }
-        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
-        gl.bufferData(gl.ARRAY_BUFFER, packed, gl.DYNAMIC_DRAW);
-        gl.drawArraysInstanced(
-          gl.LINES,
-          batch.firstVertex,
-          batch.vertexCount,
-          instanceCount,
-        );
-        metrics.drawCalls += 1;
-        metrics.submittedInstances += instanceCount;
-        metrics.submittedVertices += batch.vertexCount * instanceCount;
-        metrics.instanceUploadBytes += packed.byteLength;
-      }
+      this.drawBatch(
+        entry.batch,
+        entry.resource,
+        this.overviewScene.instanceGraph,
+        camera,
+        metrics,
+        {
+          detail: true,
+          firstVertex: 0,
+          instanceIndices: candidate.instanceIndices,
+        },
+      );
+      metrics.detailBatches += 1;
     }
     gl.bindVertexArray(null);
-    return Object.freeze({ ...metrics, resource });
+    return Object.freeze(metrics);
   }
 
   dispose() {
@@ -421,6 +562,9 @@ export class WebGlLineRenderer {
     this.gl.deleteBuffer(this.instanceBuffer);
     this.gl.deleteTexture(this.layerTexture);
     this.gl.deleteProgram(this.program);
+    this.detailResources.clear();
+    this.detailSelections.clear();
+    this.overviewScene = null;
   }
 }
 
@@ -429,4 +573,5 @@ export {
   calculateOverviewBounds,
   instancesForBatch,
   makeCamera,
+  makeCameraFromView,
 };
