@@ -37,6 +37,13 @@ Webview receives only visible chunks and display metadata.
 - Unsupported entities are reported; they are never silently dropped.
 - Cache identity includes the source fingerprint and converter format version.
 
+## Implemented cache slice
+
+Scene Cache v1 currently writes the drawing/layer/block tables and source
+precision LINE, ARC, CIRCLE and INSERT records. The records retain owner handles
+so block definitions remain shared instead of being expanded per insertion.
+Viewport chunks, polylines, splines and text are the next format increments.
+
 ## Performance gates
 
 | Metric | Target | Hard limit |

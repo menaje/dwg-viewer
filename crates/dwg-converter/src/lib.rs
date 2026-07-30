@@ -8,6 +8,8 @@ use acadrust::DwgReader;
 use anyhow::{Context, Result};
 use serde::Serialize;
 
+pub mod scene_cache;
+
 const REPORT_SCHEMA: &str = "dwg-inspection/1";
 const MAX_SAMPLE_CHARS: usize = 160;
 
@@ -271,7 +273,7 @@ impl TextSummary {
 }
 
 #[derive(Debug)]
-struct BoundsAccumulator {
+pub(crate) struct BoundsAccumulator {
     min: [f64; 3],
     max: [f64; 3],
     has_value: bool,
@@ -288,7 +290,7 @@ impl Default for BoundsAccumulator {
 }
 
 impl BoundsAccumulator {
-    fn include_entity(&mut self, entity: &EntityType) {
+    pub(crate) fn include_entity(&mut self, entity: &EntityType) {
         let value = entity.as_entity().bounding_box();
         let min = [value.min.x, value.min.y, value.min.z];
         let max = [value.max.x, value.max.y, value.max.z];
@@ -308,7 +310,7 @@ impl BoundsAccumulator {
         self.has_value = true;
     }
 
-    fn finish(self) -> Option<Bounds3> {
+    pub(crate) fn finish(self) -> Option<Bounds3> {
         self.has_value.then_some(Bounds3 {
             min: self.min,
             max: self.max,
@@ -336,12 +338,12 @@ fn truncate_sample(value: &str) -> String {
     result
 }
 
-fn duration_ms(duration: Duration) -> u64 {
+pub(crate) fn duration_ms(duration: Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
 }
 
 #[cfg(unix)]
-fn peak_rss_bytes() -> Option<u64> {
+pub(crate) fn peak_rss_bytes() -> Option<u64> {
     let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
     // SAFETY: getrusage initializes the provided rusage structure on success.
     let result = unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) };
@@ -362,7 +364,7 @@ fn peak_rss_bytes() -> Option<u64> {
 }
 
 #[cfg(windows)]
-fn peak_rss_bytes() -> Option<u64> {
+pub(crate) fn peak_rss_bytes() -> Option<u64> {
     use windows_sys::Win32::System::ProcessStatus::{
         GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
     };
@@ -387,7 +389,7 @@ fn peak_rss_bytes() -> Option<u64> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn peak_rss_bytes() -> Option<u64> {
+pub(crate) fn peak_rss_bytes() -> Option<u64> {
     None
 }
 

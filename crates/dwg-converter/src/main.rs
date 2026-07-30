@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use dwg_converter::scene_cache::{convert_dwg, validate_scene_cache, ConvertOptions};
 use dwg_converter::{inspect_dwg, InspectOptions};
 use serde::Serialize;
 
@@ -44,6 +45,33 @@ enum Command {
         #[arg(long, default_value_t = 20)]
         notification_samples: usize,
     },
+
+    /// Parse a DWG and write the minimal packed scene-cache format.
+    Convert {
+        /// Input DWG path.
+        input: PathBuf,
+
+        /// Destination cache path. Existing files are never overwritten.
+        output: PathBuf,
+
+        /// Format the JSON conversion report for human reading.
+        #[arg(long)]
+        pretty: bool,
+
+        /// Include the source file name in the report.
+        #[arg(long)]
+        include_input_name: bool,
+    },
+
+    /// Validate cache bounds, directories and record sizes.
+    ValidateCache {
+        /// Scene-cache path.
+        cache: PathBuf,
+
+        /// Format the JSON validation report for human reading.
+        #[arg(long)]
+        pretty: bool,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -58,7 +86,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             let report = ErrorReport {
-                schema: "dwg-inspection/1",
+                schema: "dwg-converter-error/1",
                 status: "error",
                 error: format!("{error:#}"),
             };
@@ -97,6 +125,31 @@ fn run(cli: Cli) -> Result<()> {
                 std::fs::write(&output_path, json.as_bytes())
                     .with_context(|| format!("cannot write report: {}", output_path.display()))?;
             }
+            println!("{json}");
+        }
+        Command::Convert {
+            input,
+            output,
+            pretty,
+            include_input_name,
+        } => {
+            let report = convert_dwg(&input, &output, &ConvertOptions { include_input_name })?;
+            let json = if pretty {
+                serde_json::to_string_pretty(&report)
+            } else {
+                serde_json::to_string(&report)
+            }
+            .context("cannot serialize conversion report")?;
+            println!("{json}");
+        }
+        Command::ValidateCache { cache, pretty } => {
+            let report = validate_scene_cache(&cache)?;
+            let json = if pretty {
+                serde_json::to_string_pretty(&report)
+            } else {
+                serde_json::to_string(&report)
+            }
+            .context("cannot serialize validation report")?;
             println!("{json}");
         }
     }

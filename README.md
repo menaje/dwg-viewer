@@ -33,6 +33,32 @@ cargo run --release -p dwg-converter -- inspect /path/to/drawing.dwg \
   --text-samples 5
 ```
 
+## 최소 Scene Cache 생성
+
+현재 캐시 작성기는 LINE, ARC, CIRCLE, INSERT를 레이어 및 공유 블록 정보와
+함께 little-endian 이진 형식으로 저장합니다. 기존 출력은 안전을 위해
+덮어쓰지 않습니다.
+
+```bash
+cargo run --release -p dwg-converter -- convert \
+  /path/to/drawing.dwg \
+  /path/to/drawing.dwg.cache \
+  --pretty
+```
+
+생성 직후 헤더, 섹션 범위, 중복, 레코드 크기와 문자열 테이블을 자동
+검증합니다. 기존 캐시를 별도로 검사할 수도 있습니다.
+
+```bash
+cargo run --release -p dwg-converter -- validate-cache \
+  /path/to/drawing.dwg.cache \
+  --pretty
+```
+
+캐시 형식은 [`specs/scene-cache.md`](specs/scene-cache.md)에 정의되어
+있습니다. 생성된 캐시에도 도면 정보가 포함될 수 있으므로 Git에 올리지
+않습니다.
+
 ## 성능 합격 기준
 
 기준 대형 도면에서 다음을 목표로 합니다.
