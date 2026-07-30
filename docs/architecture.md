@@ -6,16 +6,19 @@ The primary pipeline under validation is:
 
 ```text
 DWG
-  -> native Rust converter
+  -> process-isolated native converter
   -> versioned chunked binary scene cache
   -> VS Code Webview
   -> batched and instanced GPU renderer
 ```
 
 `acadrust` is the current parser baseline, not a permanent engine decision. It
-must pass the time, memory and Korean DWG corpus gates before becoming a
-permanent dependency. Native LibreDWG and ACadSharp are evaluated through the
-same process-isolated adapter protocol when the baseline misses a hard gate.
+misses the reference drawing's memory hard gate. LibreDWG 0.13.4 is now the
+leading replacement candidate: its inspection adapter passes the current time
+and memory targets and matches the normalized geometry and Korean text
+fingerprint. It does not become the primary engine until direct Scene Cache
+conversion proves entity preservation and bounded conversion memory. ACadSharp
+remains a fallback candidate through the same adapter protocol.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -34,6 +37,15 @@ excluded from aggregates, temporary caches are deleted per run, target gates
 use the median and hard gates use the maximum. External engine wrappers must
 produce the same inspection report and Scene Cache contract; documentation
 feature tables alone do not select the primary parser.
+
+On the macOS arm64 reference environment, process-isolated LibreDWG inspection
+measured 759 ms median wall time and 591,904,768 bytes median peak RSS. The
+acadrust baseline measured 878 ms and 935,641,088 bytes. After normalizing
+LibreDWG's separate block markers, owned vertices, table records and attached
+attributes, the drawing summary, entity-type counts, Hangul counts and
+corruption markers match exactly. The LibreDWG decision remains incomplete
+because the adapter currently implements inspection, not Scene Cache
+conversion.
 
 The implemented Webview first-frame path opens the cache with `Blob.slice`
 or HTTP byte ranges. It validates the 64-byte header and section directory

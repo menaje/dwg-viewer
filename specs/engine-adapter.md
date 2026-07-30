@@ -1,7 +1,8 @@
 # DWG engine adapter protocol v1
 
-Status: built-in acadrust adapter and benchmark runner implemented; LibreDWG
-and ACadSharp adapters are tracked by GitHub issue #9.
+Status: built-in acadrust adapter, benchmark runner and LibreDWG inspection
+adapter implemented; LibreDWG conversion and ACadSharp are tracked by GitHub
+issue #9.
 
 ## Purpose
 
@@ -68,6 +69,13 @@ The benchmark runner requests zero text and diagnostic samples. Before
 comparing repeated outputs it also removes the input name, text samples,
 diagnostic samples, largest-block name, absolute bound coordinates and all
 performance fields. It retains only whether a valid drawing bound exists.
+
+The common inspection fields describe logical drawing entities. Engine-specific
+raw object-model counts may be added under distinct fields, but block markers,
+owned polyline vertices and attached attributes must not inflate the common
+`drawing.entities`, `drawing.objects`, `entity_types` or `text` values. The
+LibreDWG adapter exposes those raw values separately as `drawing.raw_*` and
+`embedded_text`.
 
 ## Conversion report
 

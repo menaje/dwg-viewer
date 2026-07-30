@@ -4,9 +4,10 @@
 VS Code 읽기 전용 뷰어입니다.
 
 현재는 제품 기능보다 엔진의 생존 가능성을 먼저 검증하는 단계입니다.
-네이티브 변환기는 `acadrust`로 DWG를 검사하고 범위 읽기가 가능한
-Scene Cache를 생성합니다. 브라우저 기반 Webview 프로토타입은 캐시
-전체를 메모리에 올리지 않고 첫 화면용 버퍼만 읽어 WebGL2로 그립니다.
+`acadrust` 변환기는 범위 읽기가 가능한 Scene Cache를 생성하며,
+LibreDWG 검사 어댑터는 더 낮은 메모리의 대체 파서 경로를 검증합니다.
+브라우저 기반 Webview 프로토타입은 캐시 전체를 메모리에 올리지 않고
+첫 화면용 버퍼만 읽어 WebGL2로 그립니다.
 
 ## 원칙
 
@@ -47,8 +48,10 @@ target/release/dwg-converter benchmark /path/to/drawing.dwg --pretty
 ```
 
 비공개 결과는 Git에서 제외되는 `benchmarks/results/`에만 저장합니다.
-LibreDWG와 ACadSharp 후보도 같은
-[`engine-adapter`](specs/engine-adapter.md) 계약으로 연결해 비교합니다.
+LibreDWG 검사 후보는 전역 설치 없이
+[`adapters/libredwg`](adapters/libredwg/README.md)에서 준비할 수 있습니다.
+모든 후보는 같은 [`engine-adapter`](specs/engine-adapter.md) 계약으로
+연결해 비교합니다.
 
 ## 최소 Scene Cache 생성
 
@@ -113,7 +116,7 @@ pnpm test:webview
 - 변환기 처리: 5초 이하
 - 첫 화면: 목표 5초, 최대 8초
 - 전체 정밀화: 15초 이하
-- 전체 최고 메모리: 800MB 이하
+- 전체 최고 메모리: 목표 600MB, 최대 800MB
 - Webview 안정 메모리: 300MB 이하
 - 배열 할당 실패와 블록 누락: 0건
 - 한글 문자열 손실: 0건
