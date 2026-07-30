@@ -1,4 +1,4 @@
-# Scene Cache v1
+# Scene Cache v1.1
 
 Status: minimal writer implemented; expansion tracked by GitHub issue #3.
 
@@ -56,6 +56,17 @@ Section kinds currently written:
 | 11 | ARC records |
 | 12 | CIRCLE records |
 | 13 | INSERT records |
+| 14 | normalized polyline headers |
+| 15 | normalized polyline vertex pool |
+| 16 | ELLIPSE records |
+| 17 | SPLINE headers |
+| 18 | SPLINE knot pool |
+| 19 | SPLINE weight pool |
+| 20 | SPLINE control-point pool |
+| 21 | SPLINE fit-point pool |
+
+Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
+The validator continues to accept v1.0 caches.
 
 ## Shared primitive prefix
 
@@ -92,9 +103,36 @@ Individual records contain offsets and lengths into the trailing UTF-8 blob.
 Layer and block data is stored once; primitive and INSERT records reference it
 by index or owner handle.
 
+## Polyline normalization
+
+LWPOLYLINE, 2D POLYLINE and 3D POLYLINE share a 112-byte header and a
+64-byte vertex pool. Each header stores:
+
+- the shared 32-byte primitive prefix;
+- first vertex index and vertex count;
+- source kind and flags;
+- elevation, thickness and OCS normal;
+- default and constant widths.
+
+Each pooled vertex preserves its `f64` position, bulge, start/end widths,
+curve-fit tangent, source flags and vertex ID. Header ranges are validated
+against the vertex-pool count.
+
+## Spline normalization
+
+A 208-byte SPLINE header retains degree, flags, knot parameterization, OCS
+normal, tolerances and begin/end tangents. It references four typed pools:
+
+- `f64` knots;
+- `f64` rational weights;
+- `f64[3]` control points;
+- `f64[3]` fit points.
+
+All offset/count pairs are checked against their corresponding pool before the
+cache is accepted.
+
 ## Deferred v1 work
 
-- LWPOLYLINE/POLYLINE, ELLIPSE and SPLINE buffers;
 - text runs and SHX glyph references;
 - linetype override table;
 - viewport-spatial chunk directory and rebased GPU buffers;

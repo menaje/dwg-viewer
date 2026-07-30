@@ -14,7 +14,7 @@ use crate::{duration_ms, peak_rss_bytes, Bounds3, BoundsAccumulator, InputSummar
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 0;
+pub const CACHE_VERSION_MINOR: u16 = 1;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -25,6 +25,12 @@ const LINE_RECORD_SIZE: u32 = 80;
 const ARC_RECORD_SIZE: u32 = 112;
 const CIRCLE_RECORD_SIZE: u32 = 96;
 const INSERT_RECORD_SIZE: u32 = 136;
+const POLYLINE_HEADER_RECORD_SIZE: u32 = 112;
+const POLYLINE_VERTEX_RECORD_SIZE: u32 = 64;
+const ELLIPSE_RECORD_SIZE: u32 = 128;
+const SPLINE_HEADER_RECORD_SIZE: u32 = 208;
+const SPLINE_SCALAR_RECORD_SIZE: u32 = 8;
+const SPLINE_POINT_RECORD_SIZE: u32 = 24;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
 const SECTION_FLAG_STRING_TABLE: u32 = 1;
 const MAX_CACHE_STRING_BYTES: u64 = 1024 * 1024;
@@ -70,6 +76,16 @@ pub struct PrimitiveCounts {
     pub arcs: u64,
     pub circles: u64,
     pub inserts: u64,
+    pub lwpolylines: u64,
+    pub polylines_2d: u64,
+    pub polylines_3d: u64,
+    pub polyline_vertices: u64,
+    pub ellipses: u64,
+    pub splines: u64,
+    pub spline_knots: u64,
+    pub spline_weights: u64,
+    pub spline_control_points: u64,
+    pub spline_fit_points: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -114,6 +130,14 @@ enum SectionKind {
     Arcs = 11,
     Circles = 12,
     Inserts = 13,
+    PolylineHeaders = 14,
+    PolylineVertices = 15,
+    Ellipses = 16,
+    SplineHeaders = 17,
+    SplineKnots = 18,
+    SplineWeights = 19,
+    SplineControlPoints = 20,
+    SplineFitPoints = 21,
 }
 
 impl SectionKind {
@@ -126,6 +150,14 @@ impl SectionKind {
             Self::Arcs => "arcs",
             Self::Circles => "circles",
             Self::Inserts => "inserts",
+            Self::PolylineHeaders => "polyline_headers",
+            Self::PolylineVertices => "polyline_vertices",
+            Self::Ellipses => "ellipses",
+            Self::SplineHeaders => "spline_headers",
+            Self::SplineKnots => "spline_knots",
+            Self::SplineWeights => "spline_weights",
+            Self::SplineControlPoints => "spline_control_points",
+            Self::SplineFitPoints => "spline_fit_points",
         }
     }
 
@@ -138,6 +170,14 @@ impl SectionKind {
             11 => Some(Self::Arcs),
             12 => Some(Self::Circles),
             13 => Some(Self::Inserts),
+            14 => Some(Self::PolylineHeaders),
+            15 => Some(Self::PolylineVertices),
+            16 => Some(Self::Ellipses),
+            17 => Some(Self::SplineHeaders),
+            18 => Some(Self::SplineKnots),
+            19 => Some(Self::SplineWeights),
+            20 => Some(Self::SplineControlPoints),
+            21 => Some(Self::SplineFitPoints),
             _ => None,
         }
     }
@@ -151,6 +191,12 @@ impl SectionKind {
             Self::Arcs => ARC_RECORD_SIZE,
             Self::Circles => CIRCLE_RECORD_SIZE,
             Self::Inserts => INSERT_RECORD_SIZE,
+            Self::PolylineHeaders => POLYLINE_HEADER_RECORD_SIZE,
+            Self::PolylineVertices => POLYLINE_VERTEX_RECORD_SIZE,
+            Self::Ellipses => ELLIPSE_RECORD_SIZE,
+            Self::SplineHeaders => SPLINE_HEADER_RECORD_SIZE,
+            Self::SplineKnots | Self::SplineWeights => SPLINE_SCALAR_RECORD_SIZE,
+            Self::SplineControlPoints | Self::SplineFitPoints => SPLINE_POINT_RECORD_SIZE,
         }
     }
 
@@ -362,10 +408,11 @@ fn validate_scene_cache_reader<R: Read + Seek>(
     }
 
     validate_section_ranges(&entries, align_up(directory_end, 8), actual_file_size)?;
-    validate_required_sections(&entries)?;
+    validate_required_sections(&entries, minor)?;
     for entry in &entries {
         validate_section_layout(&mut reader, entry)?;
     }
+    validate_cross_section_references(&mut reader, &entries)?;
 
     Ok(CacheValidationReport {
         schema: "dwg-scene-cache-validation/1",
@@ -420,8 +467,8 @@ fn validate_section_ranges(
     Ok(())
 }
 
-fn validate_required_sections(entries: &[RawSectionEntry]) -> Result<()> {
-    let required = [
+fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -> Result<()> {
+    let mut required = vec![
         SectionKind::Drawing,
         SectionKind::Layers,
         SectionKind::Blocks,
@@ -430,6 +477,18 @@ fn validate_required_sections(entries: &[RawSectionEntry]) -> Result<()> {
         SectionKind::Circles,
         SectionKind::Inserts,
     ];
+    if minor_version >= 1 {
+        required.extend([
+            SectionKind::PolylineHeaders,
+            SectionKind::PolylineVertices,
+            SectionKind::Ellipses,
+            SectionKind::SplineHeaders,
+            SectionKind::SplineKnots,
+            SectionKind::SplineWeights,
+            SectionKind::SplineControlPoints,
+            SectionKind::SplineFitPoints,
+        ]);
+    }
     for kind in required {
         let count = entries
             .iter()
@@ -582,13 +641,107 @@ fn validate_utf8_reference<R: Read + Seek>(
     Ok(())
 }
 
+fn validate_cross_section_references<R: Read + Seek>(
+    reader: &mut R,
+    entries: &[RawSectionEntry],
+) -> Result<()> {
+    if let Some(headers) = find_section(entries, SectionKind::PolylineHeaders) {
+        let vertices = find_section(entries, SectionKind::PolylineVertices)
+            .context("polyline headers exist without a vertex pool")?;
+        for index in 0..headers.record_count {
+            let mut record = [0_u8; POLYLINE_HEADER_RECORD_SIZE as usize];
+            read_record(reader, headers, index, &mut record)?;
+            validate_pool_range(
+                "polyline vertices",
+                slice_u64(&record, 32),
+                u64::from(slice_u32(&record, 40)),
+                vertices.record_count,
+            )?;
+        }
+    }
+
+    if let Some(headers) = find_section(entries, SectionKind::SplineHeaders) {
+        let knots = find_section(entries, SectionKind::SplineKnots)
+            .context("spline headers exist without a knot pool")?;
+        let controls = find_section(entries, SectionKind::SplineControlPoints)
+            .context("spline headers exist without a control-point pool")?;
+        let weights = find_section(entries, SectionKind::SplineWeights)
+            .context("spline headers exist without a weight pool")?;
+        let fits = find_section(entries, SectionKind::SplineFitPoints)
+            .context("spline headers exist without a fit-point pool")?;
+
+        for index in 0..headers.record_count {
+            let mut record = [0_u8; SPLINE_HEADER_RECORD_SIZE as usize];
+            read_record(reader, headers, index, &mut record)?;
+            validate_pool_range(
+                "spline knots",
+                slice_u64(&record, 48),
+                slice_u64(&record, 56),
+                knots.record_count,
+            )?;
+            validate_pool_range(
+                "spline control points",
+                slice_u64(&record, 64),
+                slice_u64(&record, 72),
+                controls.record_count,
+            )?;
+            validate_pool_range(
+                "spline weights",
+                slice_u64(&record, 80),
+                slice_u64(&record, 88),
+                weights.record_count,
+            )?;
+            validate_pool_range(
+                "spline fit points",
+                slice_u64(&record, 96),
+                slice_u64(&record, 104),
+                fits.record_count,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn find_section(entries: &[RawSectionEntry], kind: SectionKind) -> Option<&RawSectionEntry> {
+    entries.iter().find(|entry| entry.kind == kind as u32)
+}
+
+fn read_record<R: Read + Seek>(
+    reader: &mut R,
+    section: &RawSectionEntry,
+    index: u64,
+    buffer: &mut [u8],
+) -> Result<()> {
+    let offset = section
+        .offset
+        .checked_add(
+            index
+                .checked_mul(u64::from(section.record_size))
+                .context("record offset overflow")?,
+        )
+        .context("record offset overflow")?;
+    reader.seek(SeekFrom::Start(offset))?;
+    reader.read_exact(buffer)?;
+    Ok(())
+}
+
+fn validate_pool_range(name: &str, first: u64, count: u64, pool_count: u64) -> Result<()> {
+    let end = first
+        .checked_add(count)
+        .with_context(|| format!("{name} range overflow"))?;
+    if end > pool_count {
+        anyhow::bail!("{name} reference exceeds its pool");
+    }
+    Ok(())
+}
+
 fn write_scene_cache<W: Write + Seek>(
     writer: &mut W,
     document: &CadDocument,
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
     let counts = PrimitiveCounts::from_document(document);
-    let section_count = 7_u32;
+    let section_count = 15_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
         directory_offset + u64::from(section_count) * u64::from(DIRECTORY_ENTRY_SIZE),
@@ -632,6 +785,22 @@ fn write_scene_cache<W: Write + Seek>(
         &layer_indices,
         &block_indices,
     )?);
+    sections.push(write_polyline_header_section(
+        writer,
+        document,
+        &layer_indices,
+    )?);
+    sections.push(write_polyline_vertex_section(writer, document)?);
+    sections.push(write_ellipse_section(writer, document, &layer_indices)?);
+    sections.push(write_spline_header_section(
+        writer,
+        document,
+        &layer_indices,
+    )?);
+    sections.push(write_spline_knot_section(writer, document)?);
+    sections.push(write_spline_weight_section(writer, document)?);
+    sections.push(write_spline_control_point_section(writer, document)?);
+    sections.push(write_spline_fit_point_section(writer, document)?);
 
     let file_size = writer.stream_position()?;
     writer.seek(SeekFrom::Start(0))?;
@@ -665,10 +834,38 @@ impl PrimitiveCounts {
                 EntityType::Arc(_) => counts.arcs += 1,
                 EntityType::Circle(_) => counts.circles += 1,
                 EntityType::Insert(_) => counts.inserts += 1,
+                EntityType::LwPolyline(polyline) => {
+                    counts.lwpolylines += 1;
+                    counts.polyline_vertices += polyline.vertices.len() as u64;
+                }
+                EntityType::Polyline2D(polyline) => {
+                    counts.polylines_2d += 1;
+                    counts.polyline_vertices += polyline.vertices.len() as u64;
+                }
+                EntityType::Polyline(polyline) => {
+                    counts.polylines_3d += 1;
+                    counts.polyline_vertices += polyline.vertices.len() as u64;
+                }
+                EntityType::Ellipse(_) => counts.ellipses += 1,
+                EntityType::Spline(spline) => {
+                    counts.splines += 1;
+                    counts.spline_knots += spline.knots.len() as u64;
+                    counts.spline_weights += spline.weights.len() as u64;
+                    counts.spline_control_points += spline.control_points.len() as u64;
+                    counts.spline_fit_points += spline.fit_points.len() as u64;
+                }
                 _ => {}
             }
         }
-        counts.serialized_entities = counts.lines + counts.arcs + counts.circles + counts.inserts;
+        counts.serialized_entities = counts.lines
+            + counts.arcs
+            + counts.circles
+            + counts.inserts
+            + counts.lwpolylines
+            + counts.polylines_2d
+            + counts.polylines_3d
+            + counts.ellipses
+            + counts.splines;
         counts.deferred_entities = counts
             .total_entities
             .saturating_sub(counts.serialized_entities);
@@ -995,6 +1192,388 @@ fn write_insert_section<W: Write + Seek>(
     )
 }
 
+fn write_polyline_header_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+    layer_indices: &HashMap<String, u32>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut first_vertex = 0_u64;
+    let mut count = 0_u64;
+
+    for entity in document.entities() {
+        let data = match entity {
+            EntityType::LwPolyline(polyline) => Some(PolylineHeaderData {
+                kind: 1,
+                flags: u16::from(polyline.is_closed) | if polyline.plinegen { 1 << 7 } else { 0 },
+                vertex_count: polyline.vertices.len(),
+                elevation: polyline.elevation,
+                thickness: polyline.thickness,
+                normal: polyline.normal,
+                default_start_width: 0.0,
+                default_end_width: 0.0,
+                constant_width: polyline.constant_width,
+            }),
+            EntityType::Polyline2D(polyline) => Some(PolylineHeaderData {
+                kind: 2,
+                flags: polyline.flags.bits(),
+                vertex_count: polyline.vertices.len(),
+                elevation: polyline.elevation,
+                thickness: polyline.thickness,
+                normal: polyline.normal,
+                default_start_width: polyline.start_width,
+                default_end_width: polyline.end_width,
+                constant_width: 0.0,
+            }),
+            EntityType::Polyline(polyline) => Some(PolylineHeaderData {
+                kind: 3,
+                flags: polyline.flags.bits(),
+                vertex_count: polyline.vertices.len(),
+                elevation: 0.0,
+                thickness: 0.0,
+                normal: Vector3::UNIT_Z,
+                default_start_width: 0.0,
+                default_end_width: 0.0,
+                constant_width: 0.0,
+            }),
+            _ => None,
+        };
+        let Some(data) = data else {
+            continue;
+        };
+
+        write_common(writer, entity, layer_indices)?;
+        write_u64(writer, first_vertex)?;
+        write_u32(
+            writer,
+            u32::try_from(data.vertex_count)
+                .context("polyline contains too many vertices for scene cache")?,
+        )?;
+        write_u16(writer, data.kind)?;
+        write_u16(writer, data.flags)?;
+        write_f64(writer, data.elevation)?;
+        write_f64(writer, data.thickness)?;
+        write_vec3(writer, data.normal)?;
+        write_f64(writer, data.default_start_width)?;
+        write_f64(writer, data.default_end_width)?;
+        write_f64(writer, data.constant_width)?;
+
+        first_vertex = first_vertex
+            .checked_add(u64::try_from(data.vertex_count)?)
+            .context("polyline vertex index overflow")?;
+        count += 1;
+    }
+
+    finish_fixed_section(
+        writer,
+        SectionKind::PolylineHeaders,
+        POLYLINE_HEADER_RECORD_SIZE,
+        offset,
+        count,
+    )
+}
+
+struct PolylineHeaderData {
+    kind: u16,
+    flags: u16,
+    vertex_count: usize,
+    elevation: f64,
+    thickness: f64,
+    normal: Vector3,
+    default_start_width: f64,
+    default_end_width: f64,
+    constant_width: f64,
+}
+
+fn write_polyline_vertex_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+
+    for entity in document.entities() {
+        match entity {
+            EntityType::LwPolyline(polyline) => {
+                for vertex in &polyline.vertices {
+                    write_polyline_vertex(
+                        writer,
+                        &PolylineVertexRecord {
+                            position: Vector3::new(
+                                vertex.location.x,
+                                vertex.location.y,
+                                polyline.elevation,
+                            ),
+                            bulge: vertex.bulge,
+                            start_width: vertex.start_width,
+                            end_width: vertex.end_width,
+                            curve_tangent: 0.0,
+                            flags: 0,
+                            id: 0,
+                        },
+                    )?;
+                    count += 1;
+                }
+            }
+            EntityType::Polyline2D(polyline) => {
+                for vertex in &polyline.vertices {
+                    write_polyline_vertex(
+                        writer,
+                        &PolylineVertexRecord {
+                            position: vertex.location,
+                            bulge: vertex.bulge,
+                            start_width: vertex.start_width,
+                            end_width: vertex.end_width,
+                            curve_tangent: vertex.curve_tangent,
+                            flags: u32::from(vertex.flags.bits()),
+                            id: vertex.id,
+                        },
+                    )?;
+                    count += 1;
+                }
+            }
+            EntityType::Polyline(polyline) => {
+                for vertex in &polyline.vertices {
+                    write_polyline_vertex(
+                        writer,
+                        &PolylineVertexRecord {
+                            position: vertex.location,
+                            bulge: 0.0,
+                            start_width: 0.0,
+                            end_width: 0.0,
+                            curve_tangent: 0.0,
+                            flags: u32::from(vertex.flags.bits()),
+                            id: 0,
+                        },
+                    )?;
+                    count += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    finish_fixed_section(
+        writer,
+        SectionKind::PolylineVertices,
+        POLYLINE_VERTEX_RECORD_SIZE,
+        offset,
+        count,
+    )
+}
+
+struct PolylineVertexRecord {
+    position: Vector3,
+    bulge: f64,
+    start_width: f64,
+    end_width: f64,
+    curve_tangent: f64,
+    flags: u32,
+    id: i32,
+}
+
+fn write_polyline_vertex<W: Write>(writer: &mut W, vertex: &PolylineVertexRecord) -> Result<()> {
+    write_vec3(writer, vertex.position)?;
+    write_f64(writer, vertex.bulge)?;
+    write_f64(writer, vertex.start_width)?;
+    write_f64(writer, vertex.end_width)?;
+    write_f64(writer, vertex.curve_tangent)?;
+    write_u32(writer, vertex.flags)?;
+    write_i32(writer, vertex.id)?;
+    Ok(())
+}
+
+fn write_ellipse_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+    layer_indices: &HashMap<String, u32>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+    for entity in document.entities() {
+        if let EntityType::Ellipse(ellipse) = entity {
+            write_common(writer, entity, layer_indices)?;
+            write_vec3(writer, ellipse.center)?;
+            write_vec3(writer, ellipse.major_axis)?;
+            write_vec3(writer, ellipse.normal)?;
+            write_f64(writer, ellipse.minor_axis_ratio)?;
+            write_f64(writer, ellipse.start_parameter)?;
+            write_f64(writer, ellipse.end_parameter)?;
+            count += 1;
+        }
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::Ellipses,
+        ELLIPSE_RECORD_SIZE,
+        offset,
+        count,
+    )
+}
+
+fn write_spline_header_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+    layer_indices: &HashMap<String, u32>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut knot_index = 0_u64;
+    let mut weight_index = 0_u64;
+    let mut control_index = 0_u64;
+    let mut fit_index = 0_u64;
+    let mut count = 0_u64;
+
+    for entity in document.entities() {
+        let EntityType::Spline(spline) = entity else {
+            continue;
+        };
+        write_common(writer, entity, layer_indices)?;
+        write_i32(writer, spline.degree)?;
+        let mut flags = 0_u32;
+        if spline.flags.closed {
+            flags |= 1;
+        }
+        if spline.flags.periodic {
+            flags |= 1 << 1;
+        }
+        if spline.flags.rational {
+            flags |= 1 << 2;
+        }
+        if spline.flags.planar {
+            flags |= 1 << 3;
+        }
+        if spline.flags.linear {
+            flags |= 1 << 4;
+        }
+        write_u32(writer, flags)?;
+        write_i32(writer, spline.knot_parameterization)?;
+        write_u32(writer, 0)?;
+
+        write_u64(writer, knot_index)?;
+        write_u64(writer, spline.knots.len() as u64)?;
+        write_u64(writer, control_index)?;
+        write_u64(writer, spline.control_points.len() as u64)?;
+        write_u64(writer, weight_index)?;
+        write_u64(writer, spline.weights.len() as u64)?;
+        write_u64(writer, fit_index)?;
+        write_u64(writer, spline.fit_points.len() as u64)?;
+
+        write_vec3(writer, spline.normal)?;
+        write_f64(writer, spline.knot_tolerance)?;
+        write_f64(writer, spline.control_tolerance)?;
+        write_f64(writer, spline.fit_tolerance)?;
+        write_vec3(writer, spline.begin_tangent)?;
+        write_vec3(writer, spline.end_tangent)?;
+
+        knot_index = knot_index
+            .checked_add(spline.knots.len() as u64)
+            .context("spline knot index overflow")?;
+        weight_index = weight_index
+            .checked_add(spline.weights.len() as u64)
+            .context("spline weight index overflow")?;
+        control_index = control_index
+            .checked_add(spline.control_points.len() as u64)
+            .context("spline control-point index overflow")?;
+        fit_index = fit_index
+            .checked_add(spline.fit_points.len() as u64)
+            .context("spline fit-point index overflow")?;
+        count += 1;
+    }
+
+    finish_fixed_section(
+        writer,
+        SectionKind::SplineHeaders,
+        SPLINE_HEADER_RECORD_SIZE,
+        offset,
+        count,
+    )
+}
+
+fn write_spline_knot_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+) -> Result<SectionEntry> {
+    write_spline_scalar_section(writer, document, SectionKind::SplineKnots, |spline| {
+        &spline.knots
+    })
+}
+
+fn write_spline_weight_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+) -> Result<SectionEntry> {
+    write_spline_scalar_section(writer, document, SectionKind::SplineWeights, |spline| {
+        &spline.weights
+    })
+}
+
+fn write_spline_scalar_section<'a, W, F>(
+    writer: &mut W,
+    document: &'a CadDocument,
+    kind: SectionKind,
+    values: F,
+) -> Result<SectionEntry>
+where
+    W: Write + Seek,
+    F: Fn(&'a acadrust::entities::Spline) -> &'a [f64],
+{
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+    for entity in document.entities() {
+        if let EntityType::Spline(spline) = entity {
+            for value in values(spline) {
+                write_f64(writer, *value)?;
+                count += 1;
+            }
+        }
+    }
+    finish_fixed_section(writer, kind, SPLINE_SCALAR_RECORD_SIZE, offset, count)
+}
+
+fn write_spline_control_point_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+) -> Result<SectionEntry> {
+    write_spline_point_section(
+        writer,
+        document,
+        SectionKind::SplineControlPoints,
+        |spline| &spline.control_points,
+    )
+}
+
+fn write_spline_fit_point_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+) -> Result<SectionEntry> {
+    write_spline_point_section(writer, document, SectionKind::SplineFitPoints, |spline| {
+        &spline.fit_points
+    })
+}
+
+fn write_spline_point_section<'a, W, F>(
+    writer: &mut W,
+    document: &'a CadDocument,
+    kind: SectionKind,
+    points: F,
+) -> Result<SectionEntry>
+where
+    W: Write + Seek,
+    F: Fn(&'a acadrust::entities::Spline) -> &'a [Vector3],
+{
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+    for entity in document.entities() {
+        if let EntityType::Spline(spline) = entity {
+            for point in points(spline) {
+                write_vec3(writer, *point)?;
+                count += 1;
+            }
+        }
+    }
+    finish_fixed_section(writer, kind, SPLINE_POINT_RECORD_SIZE, offset, count)
+}
+
 fn write_common<W: Write>(
     writer: &mut W,
     entity: &EntityType,
@@ -1163,8 +1742,8 @@ fn slice_u64(bytes: &[u8], offset: usize) -> u64 {
 mod tests {
     use std::io::Cursor;
 
-    use acadrust::entities::{Arc, Circle, EntityType, Insert, Line};
-    use acadrust::types::Vector3;
+    use acadrust::entities::{Arc, Circle, Ellipse, EntityType, Insert, Line, LwPolyline, Spline};
+    use acadrust::types::{Vector2, Vector3};
 
     use super::*;
 
@@ -1195,6 +1774,25 @@ mod tests {
                 Vector3::new(9.0, 10.0, 0.0),
             )))
             .unwrap();
+        document
+            .add_entity(EntityType::LwPolyline(LwPolyline::from_points(vec![
+                Vector2::new(1.0, 2.0),
+                Vector2::new(3.0, 4.0),
+            ])))
+            .unwrap();
+        document
+            .add_entity(EntityType::Ellipse(Ellipse::from_center_axes(
+                Vector3::new(2.0, 3.0, 0.0),
+                Vector3::new(5.0, 0.0, 0.0),
+                0.5,
+            )))
+            .unwrap();
+        document
+            .add_entity(EntityType::Spline(Spline::from_control_points(
+                1,
+                vec![Vector3::new(0.0, 0.0, 0.0), Vector3::new(1.0, 1.0, 0.0)],
+            )))
+            .unwrap();
 
         let mut cursor = Cursor::new(Vec::new());
         let summary = write_scene_cache(&mut cursor, &document, 1234).unwrap();
@@ -1203,13 +1801,13 @@ mod tests {
         assert_eq!(&bytes[0..8], &CACHE_MAGIC);
         assert_eq!(read_u16(&bytes, 8), CACHE_VERSION_MAJOR);
         assert_eq!(read_u32(&bytes, 12), HEADER_SIZE);
-        assert_eq!(read_u32(&bytes, 16), 7);
+        assert_eq!(read_u32(&bytes, 16), 15);
         assert_eq!(read_u64(&bytes, 48), 1234);
-        assert_eq!(summary.counts.serialized_entities, 4);
+        assert_eq!(summary.counts.serialized_entities, 7);
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
-        assert_eq!(validation.sections.len(), 7);
+        assert_eq!(validation.sections.len(), 15);
         assert_eq!(validation.source_size, 1234);
 
         let line = directory_entry(&bytes, SectionKind::Lines);
@@ -1222,6 +1820,14 @@ mod tests {
         let insert = directory_entry(&bytes, SectionKind::Inserts);
         assert_eq!(insert.1, INSERT_RECORD_SIZE);
         assert_eq!(insert.3, 1);
+
+        let polyline_vertices = directory_entry(&bytes, SectionKind::PolylineVertices);
+        assert_eq!(polyline_vertices.1, POLYLINE_VERTEX_RECORD_SIZE);
+        assert_eq!(polyline_vertices.3, 2);
+
+        let spline_knots = directory_entry(&bytes, SectionKind::SplineKnots);
+        assert_eq!(spline_knots.1, SPLINE_SCALAR_RECORD_SIZE);
+        assert_eq!(spline_knots.3, 4);
     }
 
     #[test]
@@ -1250,6 +1856,27 @@ mod tests {
         let error = validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64)
             .unwrap_err();
         assert!(error.to_string().contains("outside its UTF-8 blob"));
+    }
+
+    #[test]
+    fn validation_rejects_a_polyline_vertex_range_outside_its_pool() {
+        let mut document = CadDocument::new();
+        document
+            .add_entity(EntityType::LwPolyline(LwPolyline::from_points(vec![
+                Vector2::new(1.0, 2.0),
+                Vector2::new(3.0, 4.0),
+            ])))
+            .unwrap();
+        let mut cursor = Cursor::new(Vec::new());
+        write_scene_cache(&mut cursor, &document, 0).unwrap();
+        let mut bytes = cursor.into_inner();
+        let headers = directory_entry(&bytes, SectionKind::PolylineHeaders);
+        let first_vertex_count = usize::try_from(headers.2).unwrap() + 40;
+        bytes[first_vertex_count..first_vertex_count + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        let error = validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64)
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds its pool"));
     }
 
     #[test]

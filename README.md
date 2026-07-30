@@ -35,9 +35,9 @@ cargo run --release -p dwg-converter -- inspect /path/to/drawing.dwg \
 
 ## 최소 Scene Cache 생성
 
-현재 캐시 작성기는 LINE, ARC, CIRCLE, INSERT를 레이어 및 공유 블록 정보와
-함께 little-endian 이진 형식으로 저장합니다. 기존 출력은 안전을 위해
-덮어쓰지 않습니다.
+현재 캐시 작성기는 LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE,
+ELLIPSE, SPLINE을 레이어 및 공유 블록 정보와 함께 little-endian 이진
+형식으로 저장합니다. 기존 출력은 안전을 위해 덮어쓰지 않습니다.
 
 ```bash
 cargo run --release -p dwg-converter -- convert \
