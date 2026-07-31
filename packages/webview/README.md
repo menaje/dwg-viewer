@@ -1,6 +1,6 @@
 # Webview renderer
 
-Scene Cache v1.10 range reader, WebGL2 line/fill/point renderer and bounded CAD text
+Scene Cache v1.11 range reader, WebGL2 line/fill/point renderer and bounded CAD text
 overlay for the VS Code Webview.
 
 ## Implemented
@@ -44,6 +44,8 @@ overlay for the VS Code Webview.
 - Range-reads v1.8 POINT/SOLID, v1.9 3DFACE and v1.10 WIPEOUT source only
   after the first line frame, preserving shared block instances without
   expanding geometry per INSERT.
+- Range-reads normalized v1.11 `SORTENTSTABLE` tables and entries only on
+  demand. The first frame reads neither draw-order section.
 - Draws `PDMODE` point markers in screen space and converts SOLID OCS corners
   to bounded fill triangles or `FILLMODE`-off outlines.
 - Draws only the visible, non-degenerate WCS edges of 3DFACE records while
@@ -90,4 +92,5 @@ They also cover delayed Korean text reads, SHX/BigFont cache limits and the
 v1.7 HATCH range, triangulation, dashed-pattern, block-clipping,
 large-coordinate and render-order contracts, plus v1.8 POINT/SOLID, v1.9
 3DFACE and v1.10 WIPEOUT range, WCS/OCS, clip-boundary, frame-setting,
-instance-sharing and GPU-budget behavior.
+instance-sharing and GPU-budget behavior, plus v1.11 draw-order normalization,
+contiguous ranges and lazy reads.

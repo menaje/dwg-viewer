@@ -24,9 +24,10 @@ limit, so adding a writer cannot make the candidate eligible.
 
 Selection does not mean that the viewer is feature-complete. The follow-on
 WIPEOUT milestone preserves every logical source entity in the reference
-drawing, but draw-order-aware background masking and exact CAD text layout
-remain product work on the LibreDWG path rather than reasons to keep the
-engine choice open.
+drawing. Scene Cache v1.11 also preserves the complete `SORTENTSTABLE` source
+needed for correct masking, but block-local/nested ordering, background
+composition and exact CAD text layout remain product work on the LibreDWG
+path rather than reasons to keep the engine choice open.
 
 ## Reproducible evidence
 
@@ -40,6 +41,7 @@ absolute coordinates. Private reports remain under the ignored
 | --- | --- | ---: | ---: | --- |
 | LibreDWG 0.14 | Scene Cache v1.7 conversion | 2,930 / 2,941 / 2,957 ms | 591,560,704 / 591,659,008 / 591,740,928 B | pass |
 | LibreDWG 0.14 | Scene Cache v1.10 conversion | 2,880 / 2,886 / 2,890 ms | 591,691,776 / 591,724,544 / 591,724,544 B | pass |
+| LibreDWG 0.14 | Scene Cache v1.11 conversion | 2,983 / 2,999 / 3,009 ms | 591,773,696 / 591,822,848 / 591,822,848 B | pass |
 | acadrust 0.4.1 | Scene Cache v1.7 conversion | 7,556 / 7,642 / 7,904 ms | 968,900,608 / 969,310,208 / 969,392,128 B | memory hard fail |
 | ACadSharp 3.6.51 | parser inspection preflight | 4,012 / 4,014 / 4,098 ms | 1,441,251,328 / 1,452,392,448 / 1,452,474,368 B | memory hard fail |
 
@@ -136,6 +138,20 @@ An actual v1.10 Chromium run produced the reference drawing's first usable
 line frame in 502.8 ms and reported all 16 source masks as deferred with no
 console warning or error.
 
+Scene Cache v1.11 adds kinds 44–45 for normalized draw-order tables and
+entity/sort-handle pairs. The reference drawing contains 508 tables and
+54,667 entries. Two directory entries, 20,320 table bytes and 874,672 entry
+bytes grow the cache by exactly 895,072 bytes (0.51%) to 177,049,408 bytes;
+kinds 1–43 remain byte-identical to v1.10. The built-in acadrust oracle and
+LibreDWG writer produce byte-identical kind-44 and kind-45 payloads.
+
+Three isolated conversions completed in 2,983 / 2,999 / 3,009 ms with
+591,773,696 / 591,822,848 / 591,822,848 bytes peak RSS (minimum / median /
+maximum). Output was deterministic and both target gates passed. Opening the
+cache still uses two reads; the larger directory adds only 80 bytes. The
+Webview does not read either draw-order body section until requested, at
+which point two bounded reads total 894,992 bytes.
+
 The stable 0.14 release replaces the earlier 0.13.4 qualification pin. Its
 normalized conversion report and cache are byte-identical to 0.13.4 on the
 reference drawing, while median conversion wall time improves from 4,140 ms to
@@ -195,9 +211,9 @@ engineering distribution policy, not legal advice.
 
 ## Consequences
 
-- Add block-local and nested-INSERT draw ordering before enabling WIPEOUT
-  background masks; retain the completed source/frame path as the regression
-  baseline.
+- Convert the preserved v1.11 sort tables into block-local and nested-INSERT
+  mask-order buckets before enabling WIPEOUT background fills; retain the
+  completed source/frame path as the regression baseline.
 - Continue Korean SHX/BigFont and exact MTEXT/OCS work in issues #5 and #7.
 - Use acadrust only for public cross-engine fixtures and regression oracles.
 - Keep the ACadSharp inspection adapter, package lock and parser preflight test;
@@ -219,3 +235,4 @@ engineering distribution policy, not legal advice.
 - [Autodesk WIPEOUT DXF group codes](https://help.autodesk.com/cloudhelp/2021/ENU/AutoCAD-DXF/files/GUID-2229F9C4-3C80-4C67-9EDA-45ED684808DC.htm)
 - [Autodesk WIPEOUTFRAME system variable](https://help.autodesk.com/view/ACD/2024/ENU/?guid=GUID-AF1A9E90-35FB-4A49-AA39-E3456B4F264D)
 - [Autodesk object draw order](https://help.autodesk.com/cloudhelp/2020/ENU/AutoCAD-LT-MAC/files/GUID-8203C80A-3D51-49F0-B756-56FDF5D96697.htm)
+- [Autodesk SORTENTSTABLE DXF contract](https://help.autodesk.com/cloudhelp/2024/ENU/AutoCAD-DXF/files/GUID-462F4378-F850-4E89-90F2-3C1880F55779.htm)

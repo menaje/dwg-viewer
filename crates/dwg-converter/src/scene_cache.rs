@@ -18,7 +18,7 @@ use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, Inp
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 10;
+pub const CACHE_VERSION_MINOR: u16 = 11;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -52,6 +52,8 @@ const SOLID_ENTITY_RECORD_SIZE: u32 = 168;
 const FACE_ENTITY_RECORD_SIZE: u32 = 136;
 const WIPEOUT_ENTITY_RECORD_SIZE: u32 = 168;
 const WIPEOUT_CLIP_VERTEX_RECORD_SIZE: u32 = 16;
+const DRAW_ORDER_TABLE_RECORD_SIZE: u32 = 40;
+const DRAW_ORDER_ENTRY_RECORD_SIZE: u32 = 16;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
 const SECTION_FLAG_STRING_TABLE: u32 = 1;
 const MAX_CACHE_STRING_BYTES: u64 = 1024 * 1024;
@@ -79,6 +81,8 @@ const MAX_HATCH_PATTERN_LINES: usize = 262_144;
 const MAX_HATCH_PATTERN_DASHES: usize = 1_048_576;
 const MAX_WIPEOUT_SOURCE_RECORDS: usize = 65_536;
 const MAX_WIPEOUT_CLIP_VERTICES: usize = 1_048_576;
+const MAX_DRAW_ORDER_TABLES: usize = 65_536;
+const MAX_DRAW_ORDER_ENTRIES: usize = 1_048_576;
 const CURVE_EPSILON: f64 = 1.0e-12;
 const HATCH_FLAG_SOLID: u32 = 1;
 const HATCH_FLAG_ASSOCIATIVE: u32 = 1 << 1;
@@ -268,6 +272,8 @@ enum SectionKind {
     FaceEntities = 41,
     WipeoutEntities = 42,
     WipeoutClipVertices = 43,
+    DrawOrderTables = 44,
+    DrawOrderEntries = 45,
 }
 
 impl SectionKind {
@@ -305,6 +311,8 @@ impl SectionKind {
             Self::FaceEntities => "face_entities",
             Self::WipeoutEntities => "wipeout_entities",
             Self::WipeoutClipVertices => "wipeout_clip_vertices",
+            Self::DrawOrderTables => "draw_order_tables",
+            Self::DrawOrderEntries => "draw_order_entries",
         }
     }
 
@@ -342,6 +350,8 @@ impl SectionKind {
             41 => Some(Self::FaceEntities),
             42 => Some(Self::WipeoutEntities),
             43 => Some(Self::WipeoutClipVertices),
+            44 => Some(Self::DrawOrderTables),
+            45 => Some(Self::DrawOrderEntries),
             _ => None,
         }
     }
@@ -378,6 +388,8 @@ impl SectionKind {
             Self::FaceEntities => FACE_ENTITY_RECORD_SIZE,
             Self::WipeoutEntities => WIPEOUT_ENTITY_RECORD_SIZE,
             Self::WipeoutClipVertices => WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
+            Self::DrawOrderTables => DRAW_ORDER_TABLE_RECORD_SIZE,
+            Self::DrawOrderEntries => DRAW_ORDER_ENTRY_RECORD_SIZE,
         }
     }
 
@@ -490,6 +502,19 @@ struct HatchLoopRow {
     source_edge_count: u32,
     flags: u32,
     signed_area: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DrawOrderEntryRow {
+    entity_handle: u64,
+    sort_handle: u64,
+}
+
+#[derive(Debug)]
+struct DrawOrderTableRow {
+    table_handle: u64,
+    owner_handle: u64,
+    entries: Vec<DrawOrderEntryRow>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -835,6 +860,9 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
             SectionKind::WipeoutEntities,
             SectionKind::WipeoutClipVertices,
         ]);
+    }
+    if minor_version >= 11 {
+        required.extend([SectionKind::DrawOrderTables, SectionKind::DrawOrderEntries]);
     }
     for kind in required {
         let count = entries
@@ -1503,6 +1531,41 @@ fn validate_cross_section_references<R: Read + Seek>(
         }
     }
 
+    if let Some(tables) = find_section(entries, SectionKind::DrawOrderTables) {
+        let draw_entries = find_section(entries, SectionKind::DrawOrderEntries)
+            .context("draw-order tables exist without an entry pool")?;
+        if tables.record_count > MAX_DRAW_ORDER_TABLES as u64
+            || draw_entries.record_count > MAX_DRAW_ORDER_ENTRIES as u64
+        {
+            anyhow::bail!("draw-order source exceeds its record limit");
+        }
+        let mut expected_first_entry = 0_u64;
+        for index in 0..tables.record_count {
+            let mut record = [0_u8; DRAW_ORDER_TABLE_RECORD_SIZE as usize];
+            read_record(reader, tables, index, &mut record)?;
+            let first_entry = slice_u64(&record, 16);
+            let entry_count = slice_u64(&record, 24);
+            if first_entry != expected_first_entry
+                || slice_u32(&record, 32) != 0
+                || slice_u32(&record, 36) != 0
+            {
+                anyhow::bail!("draw-order table contains invalid metadata");
+            }
+            validate_pool_range(
+                "draw-order entries",
+                first_entry,
+                entry_count,
+                draw_entries.record_count,
+            )?;
+            expected_first_entry = first_entry
+                .checked_add(entry_count)
+                .context("draw-order entry range overflow")?;
+        }
+        if expected_first_entry != draw_entries.record_count {
+            anyhow::bail!("draw-order entry pool is not fully covered");
+        }
+    }
+
     if let Some(batches) = find_section(entries, SectionKind::GpuLineBatches) {
         let vertices = find_section(entries, SectionKind::GpuLineVertices)
             .context("GPU line batches exist without a vertex pool")?;
@@ -1647,12 +1710,46 @@ fn validate_pool_range(name: &str, first: u64, count: u64, pool_count: u64) -> R
     Ok(())
 }
 
+fn collect_draw_order_tables(document: &CadDocument) -> Result<Vec<DrawOrderTableRow>> {
+    let mut rows = Vec::new();
+    let mut entry_count = 0_usize;
+    for object in document.objects.values() {
+        let ObjectType::SortEntitiesTable(table) = object else {
+            continue;
+        };
+        if rows.len() >= MAX_DRAW_ORDER_TABLES {
+            anyhow::bail!("draw-order source exceeds its table limit");
+        }
+        let mut entries = table
+            .entries()
+            .map(|entry| DrawOrderEntryRow {
+                entity_handle: entry.entity_handle.value(),
+                sort_handle: entry.sort_handle.value(),
+            })
+            .collect::<Vec<_>>();
+        entries.sort_unstable_by_key(|entry| (entry.entity_handle, entry.sort_handle));
+        entry_count = entry_count
+            .checked_add(entries.len())
+            .context("draw-order entry count overflow")?;
+        if entry_count > MAX_DRAW_ORDER_ENTRIES {
+            anyhow::bail!("draw-order source exceeds its entry limit");
+        }
+        rows.push(DrawOrderTableRow {
+            table_handle: table.handle.value(),
+            owner_handle: table.block_owner_handle.value(),
+            entries,
+        });
+    }
+    rows.sort_unstable_by_key(|row| (row.owner_handle, row.table_handle));
+    Ok(rows)
+}
+
 fn write_scene_cache<W: Write + Seek>(
     writer: &mut W,
     document: &CadDocument,
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
-    let section_count = 32_u32;
+    let section_count = 34_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
         directory_offset + u64::from(section_count) * u64::from(DIRECTORY_ENTRY_SIZE),
@@ -1672,6 +1769,7 @@ fn write_scene_cache<W: Write + Seek>(
         })
         .collect::<Result<_>>()?;
     let block_targets = collect_block_instance_targets(document)?;
+    let draw_order_tables = collect_draw_order_tables(document)?;
     let counts = PrimitiveCounts::from_document(document, &block_targets);
     let wipeout_frame = drawing_wipeout_frame(document)?;
     let text_style_indices: HashMap<String, u32> = document
@@ -1767,6 +1865,8 @@ fn write_scene_cache<W: Write + Seek>(
         &layer_indices,
     )?);
     sections.push(write_wipeout_clip_vertex_section(writer, document)?);
+    sections.push(write_draw_order_table_section(writer, &draw_order_tables)?);
+    sections.push(write_draw_order_entry_section(writer, &draw_order_tables)?);
 
     let file_size = writer.stream_position()?;
     writer.seek(SeekFrom::Start(0))?;
@@ -3451,6 +3551,58 @@ fn write_wipeout_clip_vertex_section<W: Write + Seek>(
         writer,
         SectionKind::WipeoutClipVertices,
         WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
+        offset,
+        count,
+    )
+}
+
+fn write_draw_order_table_section<W: Write + Seek>(
+    writer: &mut W,
+    tables: &[DrawOrderTableRow],
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut first_entry = 0_u64;
+    for table in tables {
+        let entry_count =
+            u64::try_from(table.entries.len()).context("draw-order table is too large")?;
+        write_u64(writer, table.table_handle)?;
+        write_u64(writer, table.owner_handle)?;
+        write_u64(writer, first_entry)?;
+        write_u64(writer, entry_count)?;
+        write_u32(writer, 0)?;
+        write_u32(writer, 0)?;
+        first_entry = first_entry
+            .checked_add(entry_count)
+            .context("draw-order entry count overflow")?;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::DrawOrderTables,
+        DRAW_ORDER_TABLE_RECORD_SIZE,
+        offset,
+        tables.len() as u64,
+    )
+}
+
+fn write_draw_order_entry_section<W: Write + Seek>(
+    writer: &mut W,
+    tables: &[DrawOrderTableRow],
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+    for table in tables {
+        for entry in &table.entries {
+            write_u64(writer, entry.entity_handle)?;
+            write_u64(writer, entry.sort_handle)?;
+            count = count
+                .checked_add(1)
+                .context("draw-order entry count overflow")?;
+        }
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::DrawOrderEntries,
+        DRAW_ORDER_ENTRY_RECORD_SIZE,
         offset,
         count,
     )
@@ -5907,7 +6059,7 @@ mod tests {
         PolylineEdge, Solid, Spline, Text, Wipeout, WipeoutClipMode, WipeoutClipType,
         WipeoutDisplayFlags,
     };
-    use acadrust::objects::WipeoutVariables;
+    use acadrust::objects::{SortEntitiesTable, WipeoutVariables};
     use acadrust::tables::BlockRecord;
     use acadrust::types::{Color, Handle, Vector2, Vector3};
 
@@ -5968,7 +6120,7 @@ mod tests {
         assert_eq!(read_u16(&bytes, 8), CACHE_VERSION_MAJOR);
         assert_eq!(read_u16(&bytes, 10), CACHE_VERSION_MINOR);
         assert_eq!(read_u32(&bytes, 12), HEADER_SIZE);
-        assert_eq!(read_u32(&bytes, 16), 32);
+        assert_eq!(read_u32(&bytes, 16), 34);
         assert_eq!(read_u64(&bytes, 48), 1234);
         assert_eq!(summary.counts.serialized_entities, 7);
         assert_eq!(summary.gpu_lines.model_segments, 43);
@@ -5979,7 +6131,7 @@ mod tests {
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
-        assert_eq!(validation.sections.len(), 32);
+        assert_eq!(validation.sections.len(), 34);
         assert_eq!(validation.source_size, 1234);
 
         let line = directory_entry(&bytes, SectionKind::Lines);
@@ -6007,6 +6159,42 @@ mod tests {
         let gpu_vertices = directory_entry(&bytes, SectionKind::GpuLineVertices);
         assert_eq!(gpu_vertices.1, GPU_LINE_VERTEX_RECORD_SIZE);
         assert_eq!(gpu_vertices.3, 86);
+    }
+
+    #[test]
+    fn draw_order_tables_are_normalized_and_lossless() {
+        let mut document = CadDocument::new();
+        let mut table = SortEntitiesTable::for_block(Handle::new(0x1f));
+        table.handle = Handle::new(0x900);
+        table.add_entry(Handle::new(0x302), Handle::new(0x101));
+        table.add_entry(Handle::new(0x301), Handle::new(0x102));
+        document
+            .objects
+            .insert(table.handle, ObjectType::SortEntitiesTable(table));
+
+        let mut cursor = Cursor::new(Vec::new());
+        write_scene_cache(&mut cursor, &document, 1234).unwrap();
+        let bytes = cursor.into_inner();
+        validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
+
+        let tables = directory_entry(&bytes, SectionKind::DrawOrderTables);
+        assert_eq!(tables.1, DRAW_ORDER_TABLE_RECORD_SIZE);
+        assert_eq!(tables.3, 1);
+        let table_offset = tables.2 as usize;
+        assert_eq!(read_u64(&bytes, table_offset), 0x900);
+        assert_eq!(read_u64(&bytes, table_offset + 8), 0x1f);
+        assert_eq!(read_u64(&bytes, table_offset + 16), 0);
+        assert_eq!(read_u64(&bytes, table_offset + 24), 2);
+        assert_eq!(read_u32(&bytes, table_offset + 32), 0);
+
+        let entries = directory_entry(&bytes, SectionKind::DrawOrderEntries);
+        assert_eq!(entries.1, DRAW_ORDER_ENTRY_RECORD_SIZE);
+        assert_eq!(entries.3, 2);
+        let entry_offset = entries.2 as usize;
+        assert_eq!(read_u64(&bytes, entry_offset), 0x301);
+        assert_eq!(read_u64(&bytes, entry_offset + 8), 0x102);
+        assert_eq!(read_u64(&bytes, entry_offset + 16), 0x302);
+        assert_eq!(read_u64(&bytes, entry_offset + 24), 0x101);
     }
 
     #[test]

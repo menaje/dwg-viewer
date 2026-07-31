@@ -5,7 +5,7 @@ This optional process-isolated adapter measures LibreDWG with the same
 acadrust engine. It traverses LibreDWG's object model directly instead of
 creating a full JSON dump.
 
-The `convert` path writes Scene Cache v1.10 without a whole-drawing intermediate
+The `convert` path writes Scene Cache v1.11 without a whole-drawing intermediate
 model. It repeatedly traverses LibreDWG objects and streams sections and
 bounded GPU batches directly to a new cache file. For large drawings, it
 spills fixed-size detail records into private unnamed temporary files, sorts
@@ -55,6 +55,8 @@ This is a deliberately partial conversion milestone:
   polygonal clip vertices, definition handles and the drawing-wide frame
   setting; enabled frames are displayed while masks remain explicitly
   deferred until draw-order-aware rendering exists;
+- `SORTENTSTABLE` objects retain their block owner plus entity/sort-handle
+  pairs in deterministic, bounded sections that the Webview reads lazily;
 - after the first line frame, the Webview fills solid/gradient rings and
   clips pattern strokes to the current viewport in one persistent worker;
 - a preceding one-shot worker builds instanced POINT markers, SOLID
@@ -175,6 +177,15 @@ with 591,691,776 / 591,724,544 / 591,724,544 bytes peak RSS (minimum /
 median / maximum). Output was deterministic and both time and memory target
 gates passed.
 
+Scene Cache v1.11 adds 508 normalized draw-order table records and 54,667
+entity/sort-handle pairs. Two directory entries plus the new bodies grow the
+deterministic cache by exactly 895,072 bytes to 177,049,408 bytes; kinds 1–43
+remain byte-identical to v1.10. The acadrust oracle produces byte-identical
+kind-44 and kind-45 payloads. Three isolated conversions completed in
+2,983 / 2,999 / 3,009 ms with
+591,773,696 / 591,822,848 / 591,822,848 bytes peak RSS (minimum / median /
+maximum), passing both gates with deterministic output.
+
 Public LibreDWG fixtures provide a reproducible cross-engine check. Both
 writers validated `example_2018.dwg` as one pattern HATCH with two definition
 lines and four dash values; the complete kind-37 and kind-38 payloads were
@@ -228,6 +239,12 @@ setting is off, so it adds zero GPU bytes; all 16 background masks remain
 explicitly reported as awaiting draw-order rendering. The existing
 POINT/SOLID/3DFACE payload remains 73,920 bytes and no source, owner or GPU cap
 is reached.
+
+With v1.11, the two additional directory entries add only 80 bytes to the
+first-frame path. A direct range qualification opens the cache in two reads
+totaling 1,424 bytes and reads neither draw-order body. Requesting draw order
+later performs two bounded reads totaling 894,992 bytes for all 508 tables
+and 54,667 entries.
 
 An actual v1.10 Chromium qualification produced the first usable line frame
 in 502.8 ms. It reported all 16 WIPEOUT sources, zero frames and 16

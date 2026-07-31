@@ -41,9 +41,9 @@ test("accepts the Scene Cache v1.3 header", async () => {
 test("rejects a newer unsupported Scene Cache minor version", async () => {
   await assert.rejects(
     SceneCacheReader.open(
-      new MemoryRangeSource(makeFixtureCache({ minorVersion: 11 })),
+      new MemoryRangeSource(makeFixtureCache({ minorVersion: 12 })),
     ),
-    /unsupported scene-cache version 1\.11/,
+    /unsupported scene-cache version 1\.12/,
   );
 });
 
@@ -254,6 +254,67 @@ test("rejects a v1.10 WIPEOUT source table above its record cap", async () => {
   await assert.rejects(
     reader.readWipeoutEntities(),
     /exceeds the 65536-record limit/,
+  );
+});
+
+test("reads normalized Scene Cache v1.11 draw order lazily", async () => {
+  const source = new TrackedRangeSource(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 11 })),
+  );
+  const reader = await SceneCacheReader.open(source);
+  const tableSection = reader.getSection(SectionKind.DrawOrderTables);
+  const entrySection = reader.getSection(SectionKind.DrawOrderEntries);
+  await reader.readRenderMetadata();
+
+  assert.equal(
+    source.requests.some(
+      (request) =>
+        request.offset === tableSection.offset ||
+        request.offset === entrySection.offset,
+    ),
+    false,
+  );
+
+  const requestsBeforeDrawOrder = source.requests.length;
+  const drawOrder = await reader.readDrawOrder();
+  assert.equal(source.requests.length - requestsBeforeDrawOrder, 2);
+  assert.equal(drawOrder.length, 2);
+  assert.equal(drawOrder.entryCount, 3);
+  assert.equal(drawOrder.get(0).ownerHandle, 100n);
+  assert.deepEqual(
+    drawOrder.get(0).entries.map((entry) => [
+      entry.entityHandle,
+      entry.sortHandle,
+    ]),
+    [
+      [0x301n, 0x102n],
+      [0x302n, 0x101n],
+    ],
+  );
+  assert.equal(drawOrder.readTable(1, {}).firstEntry, 2);
+  assert.equal(drawOrder.readEntry(2, {}).entityHandle, 0x401n);
+});
+
+test("rejects a non-contiguous v1.11 draw-order range", async () => {
+  const buffer = makeFixtureCache({ minorVersion: 11 });
+  const view = new DataView(buffer);
+  const sectionCount = view.getUint32(16, true);
+  const directoryOffset = Number(view.getBigUint64(32, true));
+  let tableOffset;
+  for (let index = 0; index < sectionCount; index += 1) {
+    const offset = directoryOffset + index * DIRECTORY_ENTRY_SIZE;
+    if (view.getUint32(offset, true) === SectionKind.DrawOrderTables) {
+      tableOffset = Number(view.getBigUint64(offset + 8, true));
+      break;
+    }
+  }
+  assert.notEqual(tableOffset, undefined);
+  view.setBigUint64(tableOffset + 16, 1n, true);
+
+  const reader = await SceneCacheReader.open(new MemoryRangeSource(buffer));
+  await assert.rejects(
+    reader.readDrawOrder(),
+    /invalid metadata/,
   );
 });
 

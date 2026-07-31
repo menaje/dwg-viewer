@@ -1,6 +1,6 @@
 export const CACHE_MAGIC = new Uint8Array([68, 87, 71, 83, 67, 78, 49, 0]);
 export const CACHE_VERSION_MAJOR = 1;
-export const MAX_CACHE_VERSION_MINOR = 10;
+export const MAX_CACHE_VERSION_MINOR = 11;
 export const HEADER_SIZE = 64;
 export const DIRECTORY_ENTRY_SIZE = 40;
 export const GPU_LINE_BATCH_RECORD_SIZE = 128;
@@ -20,6 +20,8 @@ export const SOLID_ENTITY_RECORD_SIZE = 168;
 export const FACE_ENTITY_RECORD_SIZE = 136;
 export const WIPEOUT_ENTITY_RECORD_SIZE = 168;
 export const WIPEOUT_CLIP_VERTEX_RECORD_SIZE = 16;
+export const DRAW_ORDER_TABLE_RECORD_SIZE = 40;
+export const DRAW_ORDER_ENTRY_RECORD_SIZE = 16;
 
 export const SectionKind = Object.freeze({
   Drawing: 1,
@@ -54,6 +56,8 @@ export const SectionKind = Object.freeze({
   FaceEntities: 41,
   WipeoutEntities: 42,
   WipeoutClipVertices: 43,
+  DrawOrderTables: 44,
+  DrawOrderEntries: 45,
 });
 
 export const GpuLineBatchKind = Object.freeze({
@@ -79,6 +83,8 @@ const FIXED_RECORD_SIZES = new Map([
   [SectionKind.FaceEntities, FACE_ENTITY_RECORD_SIZE],
   [SectionKind.WipeoutEntities, WIPEOUT_ENTITY_RECORD_SIZE],
   [SectionKind.WipeoutClipVertices, WIPEOUT_CLIP_VERTEX_RECORD_SIZE],
+  [SectionKind.DrawOrderTables, DRAW_ORDER_TABLE_RECORD_SIZE],
+  [SectionKind.DrawOrderEntries, DRAW_ORDER_ENTRY_RECORD_SIZE],
 ]);
 const MAX_METADATA_SECTION_BYTES = 64 * 1024 * 1024;
 const MAX_CACHE_STRING_BYTES = 1024 * 1024;
@@ -93,6 +99,8 @@ const MAX_SOLID_SOURCE_RECORDS = 131_072;
 const MAX_FACE_SOURCE_RECORDS = 131_072;
 const MAX_WIPEOUT_SOURCE_RECORDS = 65_536;
 const MAX_WIPEOUT_CLIP_VERTICES = 1_048_576;
+const MAX_DRAW_ORDER_TABLES = 65_536;
+const MAX_DRAW_ORDER_ENTRIES = 1_048_576;
 const STRING_TABLE_HEADER_SIZE = 16;
 const STRING_TABLE_FLAG = 1;
 
@@ -952,6 +960,73 @@ export class WipeoutSourceTable {
   }
 }
 
+export class DrawOrderSourceTable {
+  constructor(tableBuffer, tableCount, entryBuffer, entryCount) {
+    this.tableBuffer = tableBuffer;
+    this.tableView = new DataView(tableBuffer);
+    this.tableCount = tableCount;
+    this.entryBuffer = entryBuffer;
+    this.entryView = new DataView(entryBuffer);
+    this.entryCount = entryCount;
+  }
+
+  get length() {
+    return this.tableCount;
+  }
+
+  readTable(index, target) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.tableCount) {
+      throw new RangeError(`draw-order table index is out of range: ${index}`);
+    }
+    if (!target || typeof target !== "object") {
+      throw new TypeError("draw-order table target must be an object");
+    }
+    const offset = index * DRAW_ORDER_TABLE_RECORD_SIZE;
+    target.index = index;
+    target.handle = this.tableView.getBigUint64(offset, true);
+    target.ownerHandle = this.tableView.getBigUint64(offset + 8, true);
+    target.firstEntry = readSafeU64(
+      this.tableView,
+      offset + 16,
+      `draw-order table ${index} first entry`,
+    );
+    target.entryCount = readSafeU64(
+      this.tableView,
+      offset + 24,
+      `draw-order table ${index} entry count`,
+    );
+    return target;
+  }
+
+  readEntry(index, target) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.entryCount) {
+      throw new RangeError(`draw-order entry index is out of range: ${index}`);
+    }
+    if (!target || typeof target !== "object") {
+      throw new TypeError("draw-order entry target must be an object");
+    }
+    const offset = index * DRAW_ORDER_ENTRY_RECORD_SIZE;
+    target.index = index;
+    target.entityHandle = this.entryView.getBigUint64(offset, true);
+    target.sortHandle = this.entryView.getBigUint64(offset + 8, true);
+    return target;
+  }
+
+  get(index) {
+    const table = this.readTable(index, {});
+    const entries = new Array(table.entryCount);
+    for (let entry = 0; entry < table.entryCount; entry += 1) {
+      entries[entry] = Object.freeze(
+        this.readEntry(table.firstEntry + entry, {}),
+      );
+    }
+    return Object.freeze({
+      ...table,
+      entries: Object.freeze(entries),
+    });
+  }
+}
+
 export class SceneCacheReader {
   constructor(source, header, sections) {
     this.source = source;
@@ -1164,6 +1239,23 @@ export class SceneCacheReader {
       validateRecordSection(
         wipeoutClipVertices,
         WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
+      );
+    }
+    if (minor >= 11) {
+      const drawOrderTables = sections.get(SectionKind.DrawOrderTables);
+      const drawOrderEntries = sections.get(SectionKind.DrawOrderEntries);
+      if (!drawOrderTables || !drawOrderEntries) {
+        throw new Error(
+          "Scene Cache v1.11 is missing required draw-order sections",
+        );
+      }
+      validateRecordSection(
+        drawOrderTables,
+        DRAW_ORDER_TABLE_RECORD_SIZE,
+      );
+      validateRecordSection(
+        drawOrderEntries,
+        DRAW_ORDER_ENTRY_RECORD_SIZE,
       );
     }
 
@@ -2100,6 +2192,104 @@ export class SceneCacheReader {
         entities.recordCount,
         clipVertexBuffer,
         clipVertices.recordCount,
+      );
+    });
+  }
+
+  async readDrawOrder() {
+    return this.memoize("draw-order", async () => {
+      if (this.header.minor < 11) {
+        return new DrawOrderSourceTable(
+          new ArrayBuffer(0),
+          0,
+          new ArrayBuffer(0),
+          0,
+        );
+      }
+      const tables = this.getSection(SectionKind.DrawOrderTables);
+      const entries = this.getSection(SectionKind.DrawOrderEntries);
+      validateRecordSection(tables, DRAW_ORDER_TABLE_RECORD_SIZE);
+      validateRecordSection(entries, DRAW_ORDER_ENTRY_RECORD_SIZE);
+      if (tables.recordCount > MAX_DRAW_ORDER_TABLES) {
+        throw new Error(
+          `draw-order tables exceed the ${MAX_DRAW_ORDER_TABLES}-record limit`,
+        );
+      }
+      if (entries.recordCount > MAX_DRAW_ORDER_ENTRIES) {
+        throw new Error(
+          `draw-order entries exceed the ${MAX_DRAW_ORDER_ENTRIES}-record limit`,
+        );
+      }
+      const [tableBuffer, entryBuffer] = await Promise.all([
+        this.readWholeMetadataSection(tables),
+        this.readWholeMetadataSection(entries),
+      ]);
+      const tableView = new DataView(tableBuffer);
+      const entryView = new DataView(entryBuffer);
+      let expectedFirstEntry = 0;
+      let previousOwner = -1n;
+      let previousTable = -1n;
+      for (let index = 0; index < tables.recordCount; index += 1) {
+        const offset = index * DRAW_ORDER_TABLE_RECORD_SIZE;
+        const handle = tableView.getBigUint64(offset, true);
+        const ownerHandle = tableView.getBigUint64(offset + 8, true);
+        const firstEntry = readSafeU64(
+          tableView,
+          offset + 16,
+          `draw-order table ${index} first entry`,
+        );
+        const entryCount = readSafeU64(
+          tableView,
+          offset + 24,
+          `draw-order table ${index} entry count`,
+        );
+        if (
+          firstEntry !== expectedFirstEntry ||
+          tableView.getUint32(offset + 32, true) !== 0 ||
+          tableView.getUint32(offset + 36, true) !== 0 ||
+          ownerHandle < previousOwner ||
+          (ownerHandle === previousOwner && handle < previousTable)
+        ) {
+          throw new Error(`draw-order table ${index} has invalid metadata`);
+        }
+        expectedFirstEntry = checkedAdd(
+          firstEntry,
+          entryCount,
+          `draw-order table ${index} entry range`,
+        );
+        if (expectedFirstEntry > entries.recordCount) {
+          throw new Error(
+            `draw-order table ${index} has an invalid entry range`,
+          );
+        }
+        let previousEntity = -1n;
+        let previousSort = -1n;
+        for (let entry = firstEntry; entry < expectedFirstEntry; entry += 1) {
+          const entryOffset = entry * DRAW_ORDER_ENTRY_RECORD_SIZE;
+          const entityHandle = entryView.getBigUint64(entryOffset, true);
+          const sortHandle = entryView.getBigUint64(entryOffset + 8, true);
+          if (
+            entityHandle < previousEntity ||
+            (entityHandle === previousEntity && sortHandle < previousSort)
+          ) {
+            throw new Error(
+              `draw-order table ${index} entries are not normalized`,
+            );
+          }
+          previousEntity = entityHandle;
+          previousSort = sortHandle;
+        }
+        previousOwner = ownerHandle;
+        previousTable = handle;
+      }
+      if (expectedFirstEntry !== entries.recordCount) {
+        throw new Error("draw-order entry pool is not fully covered");
+      }
+      return new DrawOrderSourceTable(
+        tableBuffer,
+        tables.recordCount,
+        entryBuffer,
+        entries.recordCount,
       );
     });
   }

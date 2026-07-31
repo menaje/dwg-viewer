@@ -1,5 +1,7 @@
 import {
   DIRECTORY_ENTRY_SIZE,
+  DRAW_ORDER_ENTRY_RECORD_SIZE,
+  DRAW_ORDER_TABLE_RECORD_SIZE,
   FACE_ENTITY_RECORD_SIZE,
   GPU_LINE_BATCH_RECORD_SIZE,
   GPU_LINE_VERTEX_RECORD_SIZE,
@@ -846,6 +848,49 @@ function makeVertexSection() {
   };
 }
 
+function makeDrawOrderTableSection() {
+  const buffer = new ArrayBuffer(DRAW_ORDER_TABLE_RECORD_SIZE * 2);
+  const view = new DataView(buffer);
+  writeU64(view, 0, 0x900);
+  writeU64(view, 8, 100);
+  writeU64(view, 16, 0);
+  writeU64(view, 24, 2);
+  const second = DRAW_ORDER_TABLE_RECORD_SIZE;
+  writeU64(view, second, 0x901);
+  writeU64(view, second + 8, 101);
+  writeU64(view, second + 16, 2);
+  writeU64(view, second + 24, 1);
+  return {
+    kind: SectionKind.DrawOrderTables,
+    recordSize: DRAW_ORDER_TABLE_RECORD_SIZE,
+    recordCount: 2,
+    flags: 0,
+    buffer,
+  };
+}
+
+function makeDrawOrderEntrySection() {
+  const rows = [
+    [0x301, 0x102],
+    [0x302, 0x101],
+    [0x401, 0x401],
+  ];
+  const buffer = new ArrayBuffer(DRAW_ORDER_ENTRY_RECORD_SIZE * rows.length);
+  const view = new DataView(buffer);
+  rows.forEach(([entityHandle, sortHandle], index) => {
+    const offset = index * DRAW_ORDER_ENTRY_RECORD_SIZE;
+    writeU64(view, offset, entityHandle);
+    writeU64(view, offset + 8, sortHandle);
+  });
+  return {
+    kind: SectionKind.DrawOrderEntries,
+    recordSize: DRAW_ORDER_ENTRY_RECORD_SIZE,
+    recordCount: rows.length,
+    flags: 0,
+    buffer,
+  };
+}
+
 export function makeFixtureCache({
   minorVersion = 2,
   includeText = minorVersion >= 4,
@@ -891,6 +936,9 @@ export function makeFixtureCache({
           makeWipeoutEntitySection(wipeoutRecordCount),
           makeWipeoutClipVertexSection(),
         ]
+      : []),
+    ...(minorVersion >= 11
+      ? [makeDrawOrderTableSection(), makeDrawOrderEntrySection()]
       : []),
   ];
   const directoryOffset = HEADER_SIZE;

@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MPL-2.0
  *
- * A bounded-memory Scene Cache v1.10 writer for GNU LibreDWG. Geometry and
+ * A bounded-memory Scene Cache v1.11 writer for GNU LibreDWG. Geometry and
  * source text are traversed repeatedly and written directly to the
  * destination; the writer never creates a JSON or whole-drawing in-memory
  * representation. Large detail passes use private temporary files for an
@@ -74,6 +74,8 @@
 #define MAX_HATCH_PATTERN_DASHES 1048576u
 #define MAX_WIPEOUT_SOURCE_RECORDS 65536u
 #define MAX_WIPEOUT_CLIP_VERTICES 1048576u
+#define MAX_DRAW_ORDER_TABLES 65536u
+#define MAX_DRAW_ORDER_ENTRIES 1048576u
 #define HATCH_FLAG_SOLID 1u
 #define HATCH_FLAG_ASSOCIATIVE (1u << 1)
 #define HATCH_FLAG_DOUBLE (1u << 2)
@@ -115,7 +117,9 @@ enum
   SECTION_SOLID_ENTITIES = 40,
   SECTION_FACE_ENTITIES = 41,
   SECTION_WIPEOUT_ENTITIES = 42,
-  SECTION_WIPEOUT_CLIP_VERTICES = 43
+  SECTION_WIPEOUT_CLIP_VERTICES = 43,
+  SECTION_DRAW_ORDER_TABLES = 44,
+  SECTION_DRAW_ORDER_ENTRIES = 45
 };
 
 enum
@@ -148,7 +152,9 @@ enum
   SOLID_ENTITY_RECORD_SIZE = 168,
   FACE_ENTITY_RECORD_SIZE = 136,
   WIPEOUT_ENTITY_RECORD_SIZE = 168,
-  WIPEOUT_CLIP_VERTEX_RECORD_SIZE = 16
+  WIPEOUT_CLIP_VERTEX_RECORD_SIZE = 16,
+  DRAW_ORDER_TABLE_RECORD_SIZE = 40,
+  DRAW_ORDER_ENTRY_RECORD_SIZE = 16
 };
 
 typedef struct
@@ -457,6 +463,21 @@ typedef struct
   size_t index;
 } GroupRank;
 
+typedef struct
+{
+  const Dwg_Object *object;
+  const Dwg_Object_SORTENTSTABLE *table;
+  uint64_t table_handle;
+  uint64_t owner_handle;
+  uint32_t entry_count;
+} DrawOrderTableSource;
+
+typedef struct
+{
+  uint64_t entity_handle;
+  uint64_t sort_handle;
+} DrawOrderEntrySource;
+
 static const uint8_t CACHE_MAGIC[8]
     = { 'D', 'W', 'G', 'S', 'C', 'N', '1', '\0' };
 
@@ -492,7 +513,9 @@ static const uint32_t SECTION_KINDS[LIBREDWG_SCENE_SECTION_COUNT]
         SECTION_SOLID_ENTITIES,
         SECTION_FACE_ENTITIES,
         SECTION_WIPEOUT_ENTITIES,
-        SECTION_WIPEOUT_CLIP_VERTICES };
+        SECTION_WIPEOUT_CLIP_VERTICES,
+        SECTION_DRAW_ORDER_TABLES,
+        SECTION_DRAW_ORDER_ENTRIES };
 
 static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
     = { DRAWING_RECORD_SIZE,
@@ -526,7 +549,9 @@ static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
         SOLID_ENTITY_RECORD_SIZE,
         FACE_ENTITY_RECORD_SIZE,
         WIPEOUT_ENTITY_RECORD_SIZE,
-        WIPEOUT_CLIP_VERTEX_RECORD_SIZE };
+        WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
+        DRAW_ORDER_TABLE_RECORD_SIZE,
+        DRAW_ORDER_ENTRY_RECORD_SIZE };
 
 static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
     = { "drawing",
@@ -560,7 +585,9 @@ static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
         "solid_entities",
         "face_entities",
         "wipeout_entities",
-        "wipeout_clip_vertices" };
+        "wipeout_clip_vertices",
+        "draw_order_tables",
+        "draw_order_entries" };
 
 static void
 set_error (CacheWriter *writer, const char *message)
@@ -6639,6 +6666,211 @@ write_wipeout_clip_vertex_section (CacheWriter *writer,
 }
 
 static int
+draw_order_table_compare (const void *left, const void *right)
+{
+  const DrawOrderTableSource *a = (const DrawOrderTableSource *)left;
+  const DrawOrderTableSource *b = (const DrawOrderTableSource *)right;
+  if (a->owner_handle != b->owner_handle)
+    return a->owner_handle < b->owner_handle ? -1 : 1;
+  if (a->table_handle != b->table_handle)
+    return a->table_handle < b->table_handle ? -1 : 1;
+  return 0;
+}
+
+static int
+draw_order_entry_compare (const void *left, const void *right)
+{
+  const DrawOrderEntrySource *a = (const DrawOrderEntrySource *)left;
+  const DrawOrderEntrySource *b = (const DrawOrderEntrySource *)right;
+  if (a->entity_handle != b->entity_handle)
+    return a->entity_handle < b->entity_handle ? -1 : 1;
+  if (a->sort_handle != b->sort_handle)
+    return a->sort_handle < b->sort_handle ? -1 : 1;
+  return 0;
+}
+
+static int
+collect_draw_order_tables (CacheWriter *writer, const Dwg_Data *dwg,
+                           DrawOrderTableSource **result,
+                           size_t *result_count,
+                           uint64_t *result_entry_count)
+{
+  DrawOrderTableSource *sources;
+  size_t count = 0;
+  size_t index = 0;
+  size_t object_index;
+  uint64_t total_entries = 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      if (object->fixedtype == DWG_TYPE_SORTENTSTABLE
+          && object->tio.object
+          && object->tio.object->tio.SORTENTSTABLE)
+        count++;
+    }
+  if (count > MAX_DRAW_ORDER_TABLES)
+    {
+      set_error (writer, "draw-order source exceeds its table limit");
+      return 0;
+    }
+  sources
+      = count ? (DrawOrderTableSource *)calloc (
+                    count, sizeof (DrawOrderTableSource))
+              : NULL;
+  if (count && !sources)
+    {
+      set_error (writer, "cannot allocate bounded draw-order tables");
+      return 0;
+    }
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Object_SORTENTSTABLE *table;
+      uint64_t entry_count;
+      if (object->fixedtype != DWG_TYPE_SORTENTSTABLE
+          || !object->tio.object
+          || !(table = object->tio.object->tio.SORTENTSTABLE))
+        continue;
+      entry_count = (uint32_t)table->num_ents;
+      if (entry_count > MAX_DRAW_ORDER_ENTRIES
+          || total_entries > MAX_DRAW_ORDER_ENTRIES - entry_count
+          || (entry_count && (!table->ents || !table->sort_ents)))
+        {
+          free (sources);
+          set_error (writer, "draw-order source exceeds its entry limit");
+          return 0;
+        }
+      sources[index].object = object;
+      sources[index].table = table;
+      sources[index].table_handle = (uint64_t)object->handle.value;
+      sources[index].owner_handle
+          = reference_handle (table->block_owner);
+      sources[index].entry_count = (uint32_t)entry_count;
+      total_entries += entry_count;
+      index++;
+    }
+  if (count > 1)
+    qsort (sources, count, sizeof (DrawOrderTableSource),
+           draw_order_table_compare);
+  *result = sources;
+  *result_count = count;
+  *result_entry_count = total_entries;
+  return 1;
+}
+
+static int
+write_draw_order_table_section (CacheWriter *writer,
+                                const Dwg_Data *dwg,
+                                SectionEntry *entry)
+{
+  DrawOrderTableSource *sources = NULL;
+  size_t source_count = 0;
+  uint64_t total_entries = 0;
+  uint64_t first_entry = 0;
+  uint64_t offset;
+  size_t index;
+  int success = 0;
+  if (!collect_draw_order_tables (
+          writer, dwg, &sources, &source_count, &total_entries)
+      || !align_writer (writer, &offset))
+    goto done;
+  for (index = 0; index < source_count; index++)
+    {
+      const DrawOrderTableSource *source = &sources[index];
+      if (!write_u64 (writer, source->table_handle)
+          || !write_u64 (writer, source->owner_handle)
+          || !write_u64 (writer, first_entry)
+          || !write_u64 (writer, source->entry_count)
+          || !write_u32 (writer, 0) || !write_u32 (writer, 0))
+        goto done;
+      first_entry += source->entry_count;
+    }
+  if (first_entry != total_entries)
+    {
+      set_error (writer, "draw-order table ranges are inconsistent");
+      goto done;
+    }
+  success = finish_fixed_section (
+      writer, entry, SECTION_DRAW_ORDER_TABLES,
+      DRAW_ORDER_TABLE_RECORD_SIZE, "draw_order_tables", offset,
+      source_count);
+
+done:
+  free (sources);
+  return success;
+}
+
+static int
+write_draw_order_entry_section (CacheWriter *writer,
+                                const Dwg_Data *dwg,
+                                SectionEntry *entry)
+{
+  DrawOrderTableSource *sources = NULL;
+  DrawOrderEntrySource *entries = NULL;
+  size_t source_count = 0;
+  uint64_t total_entries = 0;
+  uint64_t count = 0;
+  uint64_t offset;
+  size_t source_index;
+  int success = 0;
+  if (!collect_draw_order_tables (
+          writer, dwg, &sources, &source_count, &total_entries)
+      || !align_writer (writer, &offset))
+    goto done;
+  for (source_index = 0; source_index < source_count; source_index++)
+    {
+      const DrawOrderTableSource *source = &sources[source_index];
+      uint32_t entry_index;
+      entries
+          = source->entry_count
+                ? (DrawOrderEntrySource *)malloc (
+                      source->entry_count * sizeof (DrawOrderEntrySource))
+                : NULL;
+      if (source->entry_count && !entries)
+        {
+          set_error (writer, "cannot allocate bounded draw-order entries");
+          goto done;
+        }
+      for (entry_index = 0; entry_index < source->entry_count;
+           entry_index++)
+        {
+          entries[entry_index].entity_handle
+              = reference_handle (source->table->ents[entry_index]);
+          entries[entry_index].sort_handle
+              = reference_handle (source->table->sort_ents[entry_index]);
+        }
+      if (source->entry_count > 1)
+        qsort (entries, source->entry_count,
+               sizeof (DrawOrderEntrySource), draw_order_entry_compare);
+      for (entry_index = 0; entry_index < source->entry_count;
+           entry_index++)
+        {
+          if (!write_u64 (writer, entries[entry_index].entity_handle)
+              || !write_u64 (writer, entries[entry_index].sort_handle))
+            goto done;
+          count++;
+        }
+      free (entries);
+      entries = NULL;
+    }
+  if (count != total_entries)
+    {
+      set_error (writer, "draw-order entry count is inconsistent");
+      goto done;
+    }
+  success = finish_fixed_section (
+      writer, entry, SECTION_DRAW_ORDER_ENTRIES,
+      DRAW_ORDER_ENTRY_RECORD_SIZE, "draw_order_entries", offset, count);
+
+done:
+  free (entries);
+  free (sources);
+  return success;
+}
+
+static int
 count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
                     LibreDwgGpuLineSummary *summary,
                     OverviewPlan *overview)
@@ -7684,6 +7916,10 @@ libredwg_write_scene_cache (
           &writer, dwg, &tables, &sections[30])
       || !write_wipeout_clip_vertex_section (
           &writer, dwg, &sections[31])
+      || !write_draw_order_table_section (
+          &writer, dwg, &sections[32])
+      || !write_draw_order_entry_section (
+          &writer, dwg, &sections[33])
       || !position (&writer, &file_size)
       || !write_header (
           &writer, file_size, source_size, source_version,

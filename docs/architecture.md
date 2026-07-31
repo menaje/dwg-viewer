@@ -40,7 +40,9 @@ second geometry copy. Scene Cache v1.9 adds lossless 3DFACE WCS corners and
 invisible-edge flags to the same deferred worker. Scene Cache v1.10 adds
 lossless WIPEOUT image bases, clip boundaries and drawing-wide frame metadata;
 the worker displays enabled frames while keeping background masks deferred
-until block-local and nested-INSERT draw order is available. Remaining exact
+until block-local and nested-INSERT draw order is available. Scene Cache v1.11
+preserves bounded, normalized `SORTENTSTABLE` tables and entries in two lazy
+sections without adding them to the first-frame read path. Remaining exact
 CAD text layout and draw-order work are product-completeness gates on this
 selected engine, not an open parser choice.
 
@@ -151,6 +153,18 @@ remain explicitly deferred at the Webview layer until draw-order rendering is
 implemented. Three clean process-isolated conversions completed in
 2,880 / 2,886 / 2,890 ms with
 591,691,776 / 591,724,544 / 591,724,544 bytes peak RSS (minimum / median /
+maximum). Output was deterministic and both conversion target gates passed.
+
+Scene Cache v1.11 adds two more directory entries plus 508 fixed 40-byte
+draw-order table records and 54,667 fixed 16-byte entity/sort-handle pairs.
+The deterministic cache grows by exactly 895,072 bytes to 177,049,408 bytes
+while kinds 1–43 remain byte-identical to v1.10. Tables are normalized by
+block owner/table handle and entries by entity/sort handle because source
+entry enumeration order has no draw-order meaning. The acadrust oracle and
+LibreDWG writer produce byte-identical kind-44 and kind-45 payloads.
+
+Three isolated conversions completed in 2,983 / 2,999 / 3,009 ms with
+591,773,696 / 591,822,848 / 591,822,848 bytes peak RSS (minimum / median /
 maximum). Output was deterministic and both conversion target gates passed.
 
 The 0.14 cache and normalized conversion report are byte-identical to the
@@ -264,6 +278,13 @@ reported all 16 WIPEOUT sources, zero frames and 16 deferred masks, used
 warning or error. The public fixture reported both enabled WIPEOUT frames and
 both deferred masks without a console error.
 
+With v1.11, the first-frame path grows only by the two 40-byte directory
+entries and still does not touch draw-order bodies. A direct range
+qualification opened the 177 MB cache in two reads totaling 1,424 bytes, then
+loaded all 508 tables and 54,667 entries in two independent reads totaling
+894,992 bytes. The sections remain outside the primitive worker and first
+usable line-frame path.
+
 An actual Chromium qualification produced the first usable line frame in
 449.1 ms. At drawing fit, the 1.5-pixel rule omitted all 6,442 visible
 definition passes and emitted no pattern buffer. After eight zoom-in actions
@@ -279,8 +300,8 @@ The external sort keeps either one 8,192-record run or its small merge windows
 resident, while two private unnamed files consume about 312 MB of temporary
 disk at peak for the reference drawing and disappear on close.
 
-The parser itself accounts for almost all measured RSS: the current v1.10
-conversion maximum is only 8,275,456 bytes below the 600,000,000-byte target.
+The parser itself accounts for almost all measured RSS: the current v1.11
+conversion maximum is only 8,177,152 bytes below the 600,000,000-byte target.
 Therefore future LibreDWG coverage must retain streaming or disk-backed
 bounded passes; a whole-drawing geometry vector would erase the margin.
 
@@ -394,6 +415,14 @@ reads WIPEOUT source later and appends enabled frames to the shared surface
 outline buffer. Actual masks remain source-only because the current
 type-grouped renderer cannot preserve block-local `SORTENTSTABLE` and nested
 INSERT order.
+
+The v1.11 draw-order slice preserves each `SORTENTSTABLE` handle, associated
+block owner and normalized entity/sort-handle pairs under fixed record caps.
+The Webview validates contiguous table ranges and deterministic ordering only
+when a later renderer stage requests them. The source contract intentionally
+does not turn masks on: the next stage must collapse the preserved sort keys
+through nested INSERT traversal into bounded mask-order buckets and use those
+buckets consistently for WebGL geometry and the Canvas text overlay.
 
 POINT source is capped at 262,144 records and 8 MiB of GPU vertices. SOLID
 and 3DFACE source are each capped at 131,072 records. WIPEOUT is capped at
