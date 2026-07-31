@@ -4,6 +4,10 @@ import {
   BlobRangeSource,
   TrackedRangeSource,
 } from "./range-source.mjs";
+import {
+  createWorkerHostRangeSource,
+  WORKER_RANGE_RESPONSE,
+} from "./host-range-source.mjs";
 import { SceneCacheReader } from "./scene-cache.mjs";
 
 self.addEventListener(
@@ -13,14 +17,22 @@ self.addEventListener(
       requestId,
       type,
       file,
+      hostSource,
       wipeoutFrame,
       maskOrder = null,
     } = event.data;
+    if (type === WORKER_RANGE_RESPONSE) {
+      return;
+    }
+    let messageSource;
     try {
       if (type !== "initialize") {
         throw new Error("unsupported primitive worker request");
       }
-      const rangeSource = new TrackedRangeSource(new BlobRangeSource(file));
+      messageSource = hostSource
+        ? createWorkerHostRangeSource(hostSource)
+        : new BlobRangeSource(file);
+      const rangeSource = new TrackedRangeSource(messageSource);
       const reader = await SceneCacheReader.open(rangeSource);
       if (reader.header.minor < 8) {
         throw new Error("deferred primitive display requires Scene Cache v1.8");
@@ -60,6 +72,7 @@ self.addEventListener(
         error: error instanceof Error ? error.message : String(error),
       });
     } finally {
+      messageSource?.dispose?.();
       self.close();
     }
   },

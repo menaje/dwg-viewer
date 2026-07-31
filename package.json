@@ -6,9 +6,10 @@
   "license": "MPL-2.0",
   "packageManager": "pnpm@11.12.0",
   "scripts": {
-    "check": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @dwg-viewer/webview check",
+    "check": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @dwg-viewer/webview check && pnpm --filter dwg-viewer-vscode check",
     "format": "cargo fmt --all",
-    "test": "cargo test --workspace && pnpm --filter @dwg-viewer/webview test",
-    "test:webview": "pnpm --filter @dwg-viewer/webview test"
+    "test": "cargo test --workspace && pnpm --filter @dwg-viewer/webview test && pnpm --filter dwg-viewer-vscode test",
+    "test:webview": "pnpm --filter @dwg-viewer/webview test",
+    "test:vscode": "pnpm --filter dwg-viewer-vscode test"
   }
 }

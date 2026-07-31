@@ -8,12 +8,20 @@ import {
   BlobRangeSource,
   TrackedRangeSource,
 } from "./range-source.mjs";
+import {
+  createWorkerHostRangeSource,
+  WORKER_RANGE_RESPONSE,
+} from "./host-range-source.mjs";
 import { SceneCacheReader } from "./scene-cache.mjs";
 
 let patternState = null;
 
 self.addEventListener("message", async (event) => {
   const { requestId, type } = event.data;
+  if (type === WORKER_RANGE_RESPONSE) {
+    return;
+  }
+  let messageSource;
   try {
     if (type === "render-pattern") {
       if (!patternState) {
@@ -36,8 +44,16 @@ self.addEventListener("message", async (event) => {
       throw new Error("unsupported HATCH worker request");
     }
 
-    const { file, camera, maskOrder = null } = event.data;
-    const rangeSource = new TrackedRangeSource(new BlobRangeSource(file));
+    const {
+      file,
+      hostSource,
+      camera,
+      maskOrder = null,
+    } = event.data;
+    messageSource = hostSource
+      ? createWorkerHostRangeSource(hostSource)
+      : new BlobRangeSource(file);
+    const rangeSource = new TrackedRangeSource(messageSource);
     const reader = await SceneCacheReader.open(rangeSource);
     if (reader.header.minor < 6) {
       throw new Error("HATCH fills require Scene Cache v1.6");
@@ -93,5 +109,7 @@ self.addEventListener("message", async (event) => {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
     });
+  } finally {
+    messageSource?.dispose?.();
   }
 });

@@ -14,6 +14,10 @@ Thumbs.db
 node_modules/
 /.pnpm-store/
 *.vsix
+/apps/vscode-extension/dist/
+/apps/vscode-extension/media/
+/apps/vscode-extension/LICENSE
+/apps/vscode-extension/THIRD_PARTY_NOTICES.md
 
 # Editors
 /.vscode/*

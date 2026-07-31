@@ -32,10 +32,16 @@
             SHX 글꼴
             <input id="font-files" type="file" accept=".shx" multiple />
           </label>
-          <label class="file-button">
+          <label id="cache-picker" class="file-button">
             캐시 선택
             <input id="cache-file" type="file" accept=".cache,.dwg.cache" />
           </label>
+          <button id="host-retry" class="host-action" type="button" hidden>
+            재시도
+          </button>
+          <button id="host-rebuild" class="host-action" type="button" hidden>
+            캐시 다시 만들기
+          </button>
         </div>
       </header>
       <section id="drop-zone" class="viewport">

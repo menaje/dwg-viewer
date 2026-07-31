@@ -75,6 +75,26 @@ h1 {
   background: #24344c;
 }
 
+.host-action {
+  cursor: pointer;
+  border: 1px solid #40506a;
+  border-radius: 0.7rem;
+  padding: 0.65rem 1rem;
+  background: #172131;
+  color: #dce4ef;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.host-action:hover {
+  background: #24344c;
+}
+
+.host-action[hidden] {
+  display: none;
+}
+
 .toolbar,
 .view-controls {
   display: flex;

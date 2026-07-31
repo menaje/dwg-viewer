@@ -193,6 +193,36 @@ Webview 단위 검사는 다음 명령으로 실행합니다.
 pnpm test:webview
 ```
 
+## VS Code에서 DWG 열기
+
+`apps/vscode-extension`은 `.dwg`를 읽기 전용 Custom Editor로 엽니다.
+원본은 외부로 전송하지 않으며, 별도로 설치한 GPL LibreDWG 어댑터를
+로컬 보조 프로세스로 실행해 해시 캐시를 만듭니다. MPL 개발 VSIX에는
+GPL 연결 바이너리를 포함하지 않습니다.
+
+```bash
+pnpm --filter dwg-viewer-vscode package:vsix
+```
+
+생성된 VSIX를 설치한 뒤 VS Code 설정
+`dwgViewer.libredwgAdapterPath`에 `libredwg-adapter`의 절대 경로를
+지정합니다. 확장 호스트는 캐시 전체를 메모리로 읽지 않고 Webview가
+요청하는 구간만 전달합니다. 요청 하나는 최대 8MiB, 동시 파일 읽기는
+최대 4개로 제한됩니다. 편집기를 닫거나 진행 알림에서 취소하면 변환
+프로세스, 임시 파일, 캐시 파일 핸들과 대기 중 요청을 정리합니다.
+
+확장 및 Webview 검사는 다음 명령으로 함께 실행합니다.
+
+```bash
+pnpm check
+```
+
+VS Code 1.131의 격리된 Extension Development Host에서 24,680,147바이트
+기준 도면을 실제로 열어 검증했습니다. 새 177,049,408바이트 캐시를
+만든 경우 호스트 시작부터 첫 화면까지 4,771ms, Webview 렌더 단계는
+427ms였고, 같은 캐시를 다시 열 때는 각각 653ms와 531ms였습니다.
+두 경로 모두 Renderer 경고와 오류는 0건이었습니다.
+
 ## 성능 합격 기준
 
 기준 대형 도면에서 다음을 목표로 합니다.

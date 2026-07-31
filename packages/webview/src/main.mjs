@@ -1,4 +1,9 @@
 import { ViewportInteraction } from "./interaction.mjs";
+import {
+  createVsCodeRangeSource,
+  installWorkerRangeProxy,
+  WORKER_RANGE_REQUEST,
+} from "./host-range-source.mjs";
 import { applyMaskOrderToInstanceGraph } from "./instance-graph.mjs";
 import { buildMaskOrderPlan } from "./mask-order.mjs";
 import { WebviewMemoryTelemetry } from "./memory-telemetry.mjs";
@@ -9,6 +14,7 @@ import { CanvasTextOverlay } from "./text-overlay.mjs";
 import { loadFirstFrame } from "./viewer.mjs";
 
 const fileInput = document.querySelector("#cache-file");
+const cachePicker = document.querySelector("#cache-picker");
 const fontInput = document.querySelector("#font-files");
 const dropZone = document.querySelector("#drop-zone");
 const status = document.querySelector("#status");
@@ -23,6 +29,8 @@ const layerList = document.querySelector("#layer-list");
 const layerSummary = document.querySelector("#layer-summary");
 const layersShowAll = document.querySelector("#layers-show-all");
 const layersHideAll = document.querySelector("#layers-hide-all");
+const hostRetry = document.querySelector("#host-retry");
+const hostRebuild = document.querySelector("#host-rebuild");
 let activeScene;
 let activeInteraction;
 let activeTextStatus;
@@ -40,6 +48,11 @@ let patternRequestRevision = 0;
 let openRevision = 0;
 const glyphCache = new ShxGlyphCache();
 const HATCH_PATTERN_DEBOUNCE_MS = 160;
+const vscodeApi =
+  typeof globalThis.acquireVsCodeApi === "function"
+    ? globalThis.acquireVsCodeApi()
+    : null;
+let activeHostRangeSource;
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -374,14 +387,54 @@ function patternCameraKey(camera) {
     .join(":");
 }
 
-function createHatchWorker() {
-  const worker = new Worker(
-    new URL("./hatch-worker.mjs", import.meta.url),
-    { type: "module" },
+async function createViewerWorker(relativeUrl) {
+  const workerUrl = new URL(relativeUrl, import.meta.url);
+  if (!vscodeApi) {
+    const worker = new Worker(workerUrl, { type: "module" });
+    return {
+      worker,
+      terminate() {
+        worker.terminate();
+      },
+    };
+  }
+  const response = await fetch(workerUrl);
+  if (!response.ok) {
+    throw new Error(`작업 모듈을 읽을 수 없습니다 (${response.status})`);
+  }
+  const blobUrl = URL.createObjectURL(
+    new Blob([await response.arrayBuffer()], { type: "text/javascript" }),
   );
+  const worker = new Worker(blobUrl, { type: "module" });
+  return {
+    worker,
+    terminate() {
+      worker.terminate();
+      URL.revokeObjectURL(blobUrl);
+    },
+  };
+}
+
+function workerSourcePayload(workerSource) {
+  return workerSource.kind === "host"
+    ? { hostSource: { size: workerSource.source.size } }
+    : { file: workerSource.file };
+}
+
+async function createHatchWorker(workerSource) {
+  const workerHandle = await createViewerWorker("./hatch-worker.mjs");
+  const { worker } = workerHandle;
+  const removeRangeProxy =
+    workerSource.kind === "host"
+      ? installWorkerRangeProxy(worker, workerSource.source)
+      : () => {};
   const pending = new Map();
   let nextRequestId = 1;
   let closed = false;
+  const terminate = () => {
+    removeRangeProxy();
+    workerHandle.terminate();
+  };
   const rejectPending = (error) => {
     for (const request of pending.values()) {
       request.reject(error);
@@ -389,6 +442,9 @@ function createHatchWorker() {
     pending.clear();
   };
   worker.addEventListener("message", (event) => {
+    if (event.data?.type === WORKER_RANGE_REQUEST) {
+      return;
+    }
     const request = pending.get(event.data.requestId);
     if (!request) {
       return;
@@ -405,6 +461,7 @@ function createHatchWorker() {
       return;
     }
     closed = true;
+    terminate();
     rejectPending(new Error(event.message || "HATCH worker failed"));
   });
   return {
@@ -426,21 +483,37 @@ function createHatchWorker() {
         return;
       }
       closed = true;
-      worker.terminate();
+      terminate();
       rejectPending(new DOMException("HATCH 작업 취소됨", "AbortError"));
     },
   };
 }
 
-function createPrimitiveWorker() {
-  const worker = new Worker(
-    new URL("./primitive-worker.mjs", import.meta.url),
-    { type: "module" },
-  );
+async function createPrimitiveWorker(workerSource) {
+  const workerHandle = await createViewerWorker("./primitive-worker.mjs");
+  const { worker } = workerHandle;
+  const removeRangeProxy =
+    workerSource.kind === "host"
+      ? installWorkerRangeProxy(worker, workerSource.source)
+      : () => {};
   let settled = false;
   let rejectRequest;
+  let messageListener;
+  let errorListener;
+  const terminate = () => {
+    if (messageListener) {
+      worker.removeEventListener("message", messageListener);
+      messageListener = undefined;
+    }
+    if (errorListener) {
+      worker.removeEventListener("error", errorListener);
+      errorListener = undefined;
+    }
+    removeRangeProxy();
+    workerHandle.terminate();
+  };
   return {
-    initialize(file, wipeoutFrame, maskOrder) {
+    initialize(wipeoutFrame, maskOrder) {
       if (settled) {
         return Promise.reject(
           new DOMException("후처리 작업 취소됨", "AbortError"),
@@ -448,40 +521,37 @@ function createPrimitiveWorker() {
       }
       return new Promise((resolve, reject) => {
         rejectRequest = reject;
-        worker.addEventListener(
-          "message",
-          (event) => {
-            if (settled) {
-              return;
-            }
-            settled = true;
-            worker.terminate();
-            rejectRequest = undefined;
-            if (event.data.ok) {
-              resolve(event.data);
-            } else {
-              reject(new Error(event.data.error));
-            }
-          },
-          { once: true },
-        );
-        worker.addEventListener(
-          "error",
-          (event) => {
-            if (settled) {
-              return;
-            }
-            settled = true;
-            worker.terminate();
-            rejectRequest = undefined;
-            reject(new Error(event.message || "후처리 worker failed"));
-          },
-          { once: true },
-        );
+        messageListener = (event) => {
+          if (
+            settled ||
+            event.data?.type === WORKER_RANGE_REQUEST
+          ) {
+            return;
+          }
+          settled = true;
+          terminate();
+          rejectRequest = undefined;
+          if (event.data.ok) {
+            resolve(event.data);
+          } else {
+            reject(new Error(event.data.error));
+          }
+        };
+        errorListener = (event) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          terminate();
+          rejectRequest = undefined;
+          reject(new Error(event.message || "후처리 worker failed"));
+        };
+        worker.addEventListener("message", messageListener);
+        worker.addEventListener("error", errorListener);
         worker.postMessage({
           requestId: 1,
           type: "initialize",
-          file,
+          ...workerSourcePayload(workerSource),
           wipeoutFrame,
           maskOrder,
         });
@@ -492,7 +562,7 @@ function createPrimitiveWorker() {
         return;
       }
       settled = true;
-      worker.terminate();
+      terminate();
       rejectRequest?.(
         new DOMException("후처리 작업 취소됨", "AbortError"),
       );
@@ -502,7 +572,7 @@ function createPrimitiveWorker() {
 }
 
 async function initializePrimitives(
-  file,
+  workerSource,
   scene,
   revision,
   maskOrder = activeMaskOrder,
@@ -513,12 +583,15 @@ async function initializePrimitives(
   activePrimitiveStatus = Object.freeze({ state: "loading" });
   status.textContent =
     "점·솔리드·3D 면·가림 객체 원본을 별도 작업 공간에서 읽는 중";
-  const worker = createPrimitiveWorker();
+  const worker = await createPrimitiveWorker(workerSource);
+  if (revision !== openRevision || activeScene !== scene) {
+    worker.cancel();
+    return;
+  }
   activePrimitiveWorker = worker;
   let result;
   try {
     result = await worker.initialize(
-      file,
       scene.metadata.drawing.wipeoutFrame,
       maskOrder,
     );
@@ -553,7 +626,7 @@ async function initializePrimitives(
 }
 
 async function initializeHatchFills(
-  file,
+  workerSource,
   scene,
   revision,
   maskOrder = activeMaskOrder,
@@ -563,15 +636,20 @@ async function initializeHatchFills(
   }
   activeHatchStatus = Object.freeze({ state: "loading" });
   status.textContent = "해치 원본을 별도 작업 공간에서 읽는 중";
-  const worker = createHatchWorker();
+  const worker = await createHatchWorker(workerSource);
+  if (revision !== openRevision || activeScene !== scene) {
+    worker.cancel();
+    return;
+  }
   activeHatchWorker = worker;
   const initialPatternCameraKey = patternCameraKey(scene.render.camera);
   const result = await worker.request("initialize", {
-    file,
+    ...workerSourcePayload(workerSource),
     camera: workerCamera(scene.render.camera),
     maskOrder,
   });
   if (revision !== openRevision || activeScene !== scene) {
+    worker.cancel();
     return;
   }
   scene.renderer.setHatchFills(result.fill);
@@ -666,13 +744,13 @@ function scheduleHatchPatterns(scene, camera, revision) {
 }
 
 async function initializeDeferredGeometry(
-  file,
+  workerSource,
   scene,
   revision,
   maskOrder = activeMaskOrder,
 ) {
   try {
-    await initializePrimitives(file, scene, revision, maskOrder);
+    await initializePrimitives(workerSource, scene, revision, maskOrder);
   } catch (error) {
     if (revision === openRevision && activeScene === scene) {
       activePrimitiveStatus = Object.freeze({
@@ -687,7 +765,7 @@ async function initializeDeferredGeometry(
     return;
   }
   try {
-    await initializeHatchFills(file, scene, revision, maskOrder);
+    await initializeHatchFills(workerSource, scene, revision, maskOrder);
   } catch (error) {
     if (revision === openRevision && activeScene === scene) {
       activeHatchStatus = Object.freeze({
@@ -726,7 +804,7 @@ async function registerFontFiles(files) {
   }
 }
 
-async function openFile(file) {
+async function openCache(source, workerSource) {
   const revision = ++openRevision;
   status.textContent = "준비 중";
   metrics.innerHTML = "";
@@ -753,7 +831,9 @@ async function openFile(file) {
   activeInteraction = undefined;
   activeScene?.renderer.dispose();
   activeScene = undefined;
-  const source = new TrackedRangeSource(new BlobRangeSource(file));
+  activeHostRangeSource?.dispose();
+  activeHostRangeSource =
+    workerSource.kind === "host" ? workerSource.source : undefined;
   const renderer = new WebGlLineRenderer(canvas);
   try {
     const scene = await loadFirstFrame(source, canvas, {
@@ -822,7 +902,7 @@ async function openFile(file) {
     });
     setControlsEnabled(true);
     initializeDeferredGeometry(
-      file,
+      workerSource,
       activeScene,
       revision,
       activeMaskOrder,
@@ -847,10 +927,108 @@ async function openFile(file) {
     }
     activeInteraction = undefined;
     activeScene = undefined;
+    if (
+      workerSource.kind === "host" &&
+      activeHostRangeSource === workerSource.source
+    ) {
+      activeHostRangeSource.dispose();
+      activeHostRangeSource = undefined;
+    }
     dropZone.classList.remove("loaded");
     status.textContent = `열기 실패: ${error.message}`;
     throw error;
   }
+}
+
+function openFile(file) {
+  return openCache(
+    new TrackedRangeSource(new BlobRangeSource(file)),
+    { kind: "blob", file },
+  );
+}
+
+function openHostedCache(message) {
+  const source = createVsCodeRangeSource(vscodeApi, {
+    cacheId: message.cacheId,
+    size: message.size,
+  });
+  return openCache(
+    new TrackedRangeSource(source),
+    { kind: "host", source },
+  );
+}
+
+function setHostedState(state, detail = "") {
+  if (!vscodeApi) {
+    return;
+  }
+  switch (state) {
+    case "preparing":
+      status.textContent = "로컬 DWG 변환을 준비하는 중";
+      hostRetry.hidden = true;
+      hostRebuild.hidden = true;
+      break;
+    case "converting":
+      status.textContent = "로컬에서 DWG를 변환하는 중";
+      hostRetry.hidden = true;
+      hostRebuild.hidden = true;
+      break;
+    case "validating":
+      status.textContent = "변환 결과를 검사하는 중";
+      hostRetry.hidden = true;
+      hostRebuild.hidden = true;
+      break;
+    case "error":
+      status.textContent = detail
+        ? `도면을 열 수 없습니다: ${detail.slice(0, 300)}`
+        : "도면을 열 수 없습니다";
+      hostRetry.hidden = false;
+      hostRebuild.hidden = false;
+      break;
+    case "ready":
+      hostRetry.hidden = true;
+      hostRebuild.hidden = false;
+      break;
+  }
+}
+
+if (vscodeApi) {
+  cachePicker.hidden = true;
+  document.querySelector("h1").textContent = "DWG 도면 뷰어";
+  document.querySelector(".empty-state strong").textContent =
+    "로컬 DWG 도면을 준비하고 있습니다.";
+  document.querySelector(".empty-state span").textContent =
+    "도면은 외부로 전송되지 않습니다.";
+  setHostedState("preparing");
+  window.addEventListener("message", (event) => {
+    const message = event.data;
+    if (message?.type === "dwg-cache-state/1") {
+      setHostedState(message.state, message.message);
+      return;
+    }
+    if (message?.type !== "dwg-cache-ready/1") {
+      return;
+    }
+    setHostedState("ready");
+    openHostedCache(message)
+      .then(() => {
+        vscodeApi.postMessage({
+          type: "dwg-first-frame-ready/1",
+          cacheId: message.cacheId,
+          firstFrameMs: activeScene?.metrics.timings.firstFrameMs ?? null,
+        });
+      })
+      .catch((error) => {
+        setHostedState("error", error.message);
+        vscodeApi.postMessage({
+          type: "dwg-viewer-error/1",
+          code: "CACHE_RENDER_FAILED",
+          cacheId: message.cacheId,
+          error: error.message.slice(0, 500),
+        });
+      });
+  });
+  vscodeApi.postMessage({ type: "dwg-webview-ready/1" });
 }
 
 fileInput.addEventListener("change", () => {
@@ -936,6 +1114,20 @@ layersHideAll.addEventListener("click", () => {
   setAllLayersVisible(false);
 });
 
+hostRetry.addEventListener("click", () => {
+  if (vscodeApi) {
+    setHostedState("preparing");
+    vscodeApi.postMessage({ type: "dwg-cache-retry/1" });
+  }
+});
+
+hostRebuild.addEventListener("click", () => {
+  if (vscodeApi) {
+    setHostedState("preparing");
+    vscodeApi.postMessage({ type: "dwg-cache-rebuild/1" });
+  }
+});
+
 window.addEventListener("beforeunload", () => {
   openRevision += 1;
   patternRequestRevision += 1;
@@ -951,6 +1143,8 @@ window.addEventListener("beforeunload", () => {
   activeScene?.renderer.dispose();
   activeInteraction = undefined;
   activeScene = undefined;
+  activeHostRangeSource?.dispose();
+  activeHostRangeSource = undefined;
   activeMemoryTelemetry = undefined;
   glyphCache.dispose();
   resetLayerPanel();

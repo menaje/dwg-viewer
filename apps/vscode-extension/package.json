@@ -1,0 +1,75 @@
+{
+  "name": "dwg-viewer-vscode",
+  "displayName": "DWG Viewer",
+  "description": "Free, local-first, read-only DWG viewing in VS Code",
+  "version": "0.1.0",
+  "publisher": "menaje",
+  "license": "MPL-2.0",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/menaje/dwg-viewer.git",
+    "directory": "apps/vscode-extension"
+  },
+  "engines": {
+    "vscode": "^1.125.0"
+  },
+  "categories": [
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "dwg",
+    "cad",
+    "viewer",
+    "libredwg"
+  ],
+  "main": "./dist/src/extension.js",
+  "activationEvents": [
+    "onCustomEditor:dwgViewer.dwg"
+  ],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "dwgViewer.dwg",
+        "displayName": "DWG Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.dwg"
+          },
+          {
+            "filenamePattern": "*.DWG"
+          }
+        ],
+        "priority": "default"
+      }
+    ],
+    "configuration": {
+      "title": "DWG Viewer",
+      "properties": {
+        "dwgViewer.libredwgAdapterPath": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "description": "Absolute path to the separately installed GPL LibreDWG adapter executable."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build:webview": "node scripts/build-webview.mjs",
+    "prepare:package": "node scripts/prepare-package.mjs",
+    "compile": "tsc -p tsconfig.json",
+    "build": "pnpm run build:webview && pnpm run compile && pnpm run prepare:package",
+    "test": "pnpm run compile && node --test dist/test/*.test.js",
+    "check": "pnpm run build && node --test dist/test/*.test.js",
+    "package:vsix": "pnpm run build && vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.2",
+    "@types/vscode": "1.125.0",
+    "@vscode/vsce": "3.9.2",
+    "esbuild": "0.28.1",
+    "typescript": "7.0.2"
+  }
+}

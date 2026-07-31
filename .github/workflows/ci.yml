@@ -23,7 +23,7 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-  webview:
+  webview-and-vscode:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -36,5 +36,9 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-      - name: Check and test
+      - name: Check Webview
         run: pnpm --filter @dwg-viewer/webview check
+      - name: Check VS Code extension
+        run: pnpm --filter dwg-viewer-vscode check
+      - name: Package VSIX
+        run: pnpm --filter dwg-viewer-vscode package:vsix
