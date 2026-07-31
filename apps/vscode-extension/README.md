@@ -38,14 +38,20 @@ Subsequent opens reuse it until the drawing or converter changes.
 
 LibreDWG Native runs behind the versioned `dwg-scene-engine/1` interface.
 Engine and backend capabilities, bounded progress phases, conversion options
-and implementation revision are part of the cache contract. Native and a
-future WASM Worker candidate receive separate cache identities and still feed
-the same range reader and renderer.
+and implementation revision are part of the cache contract. Native and any
+future reworked WASM Worker receive separate cache identities and would still
+feed the same range reader and renderer.
 
-WASM is not a selectable backend in this build. The common cache path has a
-WASM-shaped contract test, but a real Worker must pass the repository's
-geometry, Korean text, cancellation, memory, performance, license and package
-gates before any setting or fallback is added.
+WASM is not a selectable backend in this build. The actual LibreDWG 0.14
+MEMFS prototype produced byte-identical output on a small public fixture and
+proved Worker termination, but failed the 800 MB total-memory hard gate and
+did not complete that fixture in a real Chromium Worker within 30 seconds. On
+the large reference drawing, all string tables matched Native but text
+placement, GPU line and HATCH geometry sections were not byte-identical.
+The common cache path retains a WASM-shaped contract test only; a redesigned
+disk-backed candidate must repeat every geometry, Korean text, cancellation,
+memory, performance, license and package gate before any setting or fallback
+is added.
 
 ## SHX and Korean BigFont folders
 

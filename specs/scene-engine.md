@@ -102,3 +102,15 @@ selection, fallback and the VSIX until it:
 6. completes its license and package review.
 
 LibreDWG Native remains the only product backend while those gates are open.
+
+The 2026-08-01 real LibreDWG 0.14 qualification closed the current candidate
+as rejected, rather than admitting it. Its small public-fixture cache was
+byte-identical to Native and Worker termination took 2.12 ms. On the large
+drawing all source string tables remained identical, but kinds 22, 30–31 and
+33–34 did not; full-cache comparison peaked at 2,983,854,080 bytes RSS. The
+same small fixture did not complete within 30 seconds in an actual Chromium
+Worker. Compiler memory settings alone did not satisfy both time and memory
+gates. A future candidate must first replace in-memory output and temporary
+files with direct disk-backed Worker storage, then repeat all six admission
+checks. Reproduction instructions and measurements are in
+[`adapters/libredwg/wasm`](../adapters/libredwg/wasm/README.md).

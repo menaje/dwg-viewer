@@ -6,10 +6,11 @@
   "license": "MPL-2.0",
   "packageManager": "pnpm@11.12.0",
   "scripts": {
-    "check": "pnpm run check:adapter-package && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @dwg-viewer/webview check && pnpm --filter dwg-viewer-vscode check",
+    "check": "pnpm run check:adapter-package && pnpm run check:wasm-probe && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @dwg-viewer/webview check && pnpm --filter dwg-viewer-vscode check",
     "check:adapter-package": "node --test adapters/libredwg/package.test.mjs",
+    "check:wasm-probe": "node --test adapters/libredwg/wasm/probe.test.mjs",
     "format": "cargo fmt --all",
-    "test": "pnpm run check:adapter-package && cargo test --workspace && pnpm --filter @dwg-viewer/webview test && pnpm --filter dwg-viewer-vscode test",
+    "test": "pnpm run check:adapter-package && pnpm run check:wasm-probe && cargo test --workspace && pnpm --filter @dwg-viewer/webview test && pnpm --filter dwg-viewer-vscode test",
     "test:webview": "pnpm --filter @dwg-viewer/webview test",
     "test:vscode": "pnpm --filter dwg-viewer-vscode test"
   }

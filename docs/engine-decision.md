@@ -207,6 +207,27 @@ The memory margin to the 600,000,000-byte target is small. New LibreDWG
 coverage must keep the current bounded streaming or disk-backed design; a
 whole-drawing geometry array is not allowed.
 
+## WASM backend qualification
+
+Issue #17 compiled the exact LibreDWG 0.14 parser and the same Scene Cache
+v1.11 writer with checksum-pinned Emscripten 4.0.15. This avoided the
+whole-drawing JavaScript model used by earlier third-party WASM candidates.
+The generated WASM is 5,374,358 bytes.
+
+The 37,961-byte public fixture produced a byte-identical Native/WASM cache.
+The large drawing preserved the directory, record counts, every source string
+table and 29 of 34 section bodies, but text placement, GPU line and HATCH
+loop/vertex sections differed. Conversion itself took 3.57–3.86 seconds.
+Default MEMFS execution peaked at 2.72 GB before copying the output and
+2.98 GB while fingerprinting the complete cache. A real Chromium Worker
+loaded the module and fixture in 33.7 ms but did not finish the small
+conversion within 30 seconds. Node Worker termination completed in 2.12 ms.
+
+The current candidate therefore passes small-fixture output and cancellation,
+but fails large-output equality, browser execution and the 800 MB memory hard
+gate. Compiler memory settings did not solve both time and memory. Reproduction
+is under [`adapters/libredwg/wasm`](../adapters/libredwg/wasm/README.md).
+
 ## License and distribution boundary
 
 The selected engine is free software, but it is not permissively licensed.
@@ -261,14 +282,18 @@ engineering distribution policy, not legal advice.
 - Keep the source-complete GPL package and two-platform qualification workflow
   as the issue #6 release boundary; complete signing/review before publication.
 - Keep LibreDWG Native as the product default behind
-  [`dwg-scene-engine/1`](../specs/scene-engine.md). Evaluate a WASM Worker only
-  through the same Scene Cache and renderer, with a distinct backend cache
-  identity until byte-identical output is proven.
+  [`dwg-scene-engine/1`](../specs/scene-engine.md). Do not expose the rejected
+  LibreDWG 0.14 MEMFS Worker in settings, fallback or the VSIX. Reconsider WASM
+  only after direct disk-backed Worker storage removes the measured memory
+  amplification and the same Scene Cache and renderer pass browser,
+  performance, Korean-text and package qualification again.
 
 ## Primary sources
 
 - [GNU LibreDWG 0.14 stable release](https://github.com/LibreDWG/libredwg/releases/tag/0.14)
 - [GNU LibreDWG GPL-3.0-or-later statement](https://www.gnu.org/software/libredwg/manual/LibreDWG.html)
+- [LibreDWG WASM API issue #1073](https://github.com/LibreDWG/libredwg/issues/1073)
+- [Emscripten filesystem API and MEMFS/WORKERFS](https://emscripten.org/docs/api_reference/Filesystem-API.html)
 - [ACadSharp source and DWG support table](https://github.com/DomCR/ACadSharp)
 - [ACadSharp MIT license](https://github.com/DomCR/ACadSharp/blob/v3.6.51/LICENSE)
 - [ACadSharp 3.6.51 package](https://www.nuget.org/packages/ACadSharp/3.6.51)

@@ -55,6 +55,8 @@ target/release/dwg-converter benchmark /path/to/drawing.dwg --pretty
 비공개 결과는 Git에서 제외되는 `benchmarks/results/`에만 저장합니다.
 LibreDWG 후보는 전역 설치 없이
 [`adapters/libredwg`](adapters/libredwg/README.md)에서 준비할 수 있습니다.
+실제 LibreDWG 0.14 WASM Worker 후보의 재현 방법과 탈락 근거는
+[`adapters/libredwg/wasm`](adapters/libredwg/wasm/README.md)에 있습니다.
 ACadSharp 파서 탈락 결과도
 [`adapters/acadsharp`](adapters/acadsharp/README.md)에서 재현할 수 있습니다.
 모든 후보는 같은 [`engine-adapter`](specs/engine-adapter.md) 계약으로
@@ -231,10 +233,14 @@ LibreDWG 실행 파일은 정적으로 연결하고 정확한 LibreDWG 소스·G
 [`dwg-scene-engine/1`](specs/scene-engine.md) 공통 계약 뒤에서
 실행합니다. 캐시 키는 도면 지문뿐 아니라 엔진·버전·Native/WASM
 백엔드·변환 옵션·실행 구현 리비전을 포함하므로 서로 검증되지 않은
-백엔드의 캐시가 섞이지 않습니다. WASM은 현재 계약 검증 후보일 뿐이며,
-[이슈 #17](https://github.com/menaje/dwg-viewer/issues/17)의 시간·메모리·
-한글·형상 기준을 통과하기 전에는 설정이나 자동 대체 경로로 노출하지
-않습니다.
+백엔드의 캐시가 섞이지 않습니다. 실제 LibreDWG 0.14 WASM 빌드는 작은
+공개 도면에서 Native와 바이트가 같은 캐시를 만들고 Worker 취소도
+통과했습니다. 그러나 기준 대형 도면에서는 문자열 테이블은 같아도 문자
+배치·GPU·HATCH 형상 5개 섹션이 달랐고, 전체 출력을 비교할 때 최고 RSS가
+2,983,854,080바이트까지 증가했습니다. 실제 Chromium Worker에서는 작은
+도면도 30초 안에 끝내지 못했습니다.
+따라서 [이슈 #17](https://github.com/menaje/dwg-viewer/issues/17)의 현재
+WASM 후보는 탈락했으며 설정, 자동 대체 경로, VSIX에 포함하지 않습니다.
 
 한글 SHX/BigFont는 뷰어의 `글꼴` 패널에서 로컬 폴더를 한 번 추가하면
 이후 필요한 파일을 자동 연결합니다. 도면과 폴더의 절대 경로는

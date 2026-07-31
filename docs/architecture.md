@@ -8,7 +8,7 @@ The accepted product pipeline is:
 DWG
   -> dwg-scene-engine/1
        -> process-isolated LibreDWG Native converter (default)
-       -> WASM Worker candidate (qualification only)
+       -> rejected LibreDWG WASM Worker probe (qualification only)
   -> versioned chunked binary scene cache
   -> VS Code Webview
   -> batched and instanced GPU renderer
@@ -53,16 +53,42 @@ selected engine, not an open parser choice.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
-render-cache cloning and geometry merging amplify memory.
+render-cache cloning and geometry merging amplify memory. Issue #17 also
+compiled the project's own bounded Scene Cache writer with exact LibreDWG 0.14
+and Emscripten 4.0.15, so the WASM decision no longer rests only on that
+third-party architecture.
+
+The direct WASM probe produced a byte-identical v1.11 cache for a 37,961-byte
+public fixture and terminated its Node Worker in 2.12 ms. On the
+24,680,147-byte reference drawing it wrote a 177,049,408-byte cache with the
+same directory and record counts in 3,567–3,856 ms. All string tables,
+including Korean source text, were byte-identical. However, text entity
+placement (kind 22), GPU line batches/vertices (30–31) and HATCH
+loops/vertices (33–34) differed; the other 29 section bodies were identical.
+The large run ended with a 506,658,816-byte WASM heap,
+2,221,260,800-byte direct-process RSS after explicit garbage collection, and
+2,723,463,168-byte RSS with a 2,723,479,552-byte peak in the reproducible Node
+Worker probe before copying the complete output. Full-cache fingerprinting
+raised the maximum observed RSS to 2,983,854,080 bytes. The default MEMFS path
+retains input, output and spatial-sort temporary files beside the parser
+graph. Fixed 512/768 MiB heaps and one large linear growth step did not
+complete in 39–77 seconds. In an actual Chromium Worker the module and public
+input were ready in 33.7 ms, but conversion of that small fixture did not
+finish within 30 seconds. Therefore the current WASM backend fails the
+large-output-equality, concurrent-memory and browser-execution gates and is
+not a product fallback.
 
 The extension now places LibreDWG Native behind the common `SceneEngine`
 interface without adding work to the drawing-open path. Cache identity includes
 the source fingerprint, Scene Cache version, engine ID/version, backend
 ID/kind, converter revision and canonical conversion options. Native and a
-future WASM backend therefore cannot silently reuse each other's cache.
+future redesigned WASM backend therefore cannot silently reuse each other's
+cache.
 Progress events are bound to the same engine/backend identity, while terminal
 failure and cancellation remain explicit. The WASM-shaped test implementation
-only qualifies this boundary; it is not exposed as a product backend.
+only qualifies this boundary; the rejected real probe is reproducible under
+[`adapters/libredwg/wasm`](../adapters/libredwg/wasm/README.md) and is not
+exposed as a product backend.
 
 ## Process boundary
 
