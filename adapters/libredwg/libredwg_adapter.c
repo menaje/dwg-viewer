@@ -895,6 +895,10 @@ json_gpu_lines (const LibreDwgGpuLineSummary *summary)
           summary->overview_segments);
   printf (",\"approximated_curve_segments\":%" PRIu64,
           summary->approximated_curve_segments);
+  printf (",\"hatch_boundary_segments\":%" PRIu64,
+          summary->hatch_boundary_segments);
+  printf (",\"truncated_hatch_entities\":%" PRIu64,
+          summary->truncated_hatch_entities);
   printf (",\"skipped_non_finite_segments\":%" PRIu64,
           summary->skipped_non_finite_segments);
   printf (",\"batches\":%" PRIu64, summary->batches);
@@ -999,7 +1003,8 @@ convert_dwg (const char *path, const char *output_path)
           (uint64_t)metadata.st_size);
   printf ("\"cache\":{\"format_major\":%u,\"format_minor\":%u,"
           "\"size_bytes\":%" PRIu64 ",\"validated\":true,\"sections\":[",
-          1u, 4u, report.cache_size);
+          LIBREDWG_SCENE_CACHE_VERSION_MAJOR,
+          LIBREDWG_SCENE_CACHE_VERSION_MINOR, report.cache_size);
   for (i = 0; i < LIBREDWG_SCENE_SECTION_COUNT; i++)
     {
       if (i)

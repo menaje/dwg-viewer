@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MPL-2.0
  *
- * A bounded-memory Scene Cache v1.4 writer for GNU LibreDWG. Geometry and
+ * A bounded-memory Scene Cache v1.5 writer for GNU LibreDWG. Geometry and
  * source text are traversed repeatedly and written directly to the
  * destination; the writer never creates a JSON or whole-drawing in-memory
  * representation. Large detail passes use private temporary files for an
@@ -36,8 +36,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define CACHE_VERSION_MAJOR 1u
-#define CACHE_VERSION_MINOR 4u
+#define CACHE_VERSION_MAJOR LIBREDWG_SCENE_CACHE_VERSION_MAJOR
+#define CACHE_VERSION_MINOR LIBREDWG_SCENE_CACHE_VERSION_MINOR
 #define CACHE_HEADER_SIZE 64u
 #define DIRECTORY_ENTRY_SIZE 40u
 #define SECTION_FLAG_STRING_TABLE 1u
@@ -51,7 +51,7 @@
 #define GPU_BATCH_FLAG_APPROXIMATED_CURVE 1u
 #define GPU_STYLE_INVISIBLE (1u << 16)
 #define GPU_STYLE_SOURCE_KIND_SHIFT 17u
-#define GPU_STYLE_APPROXIMATED_CURVE (1u << 20)
+#define GPU_STYLE_APPROXIMATED_CURVE (1u << 21)
 #define TEXT_FLAG_HAS_ALIGNMENT_POINT 1u
 #define TEXT_FLAG_HAS_RECTANGLE_HEIGHT (1u << 1)
 #define TEXT_FLAG_ANNOTATIVE (1u << 2)
@@ -65,6 +65,7 @@
 #define SPLINE_SEGMENTS_PER_SPAN 2u
 #define MAX_SPLINE_DEGREE 15u
 #define MAX_SPLINE_SEGMENTS 256u
+#define MAX_HATCH_BOUNDARY_SEGMENTS 65536u
 
 enum
 {
@@ -888,15 +889,39 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
 static uint32_t
 encode_color (const Dwg_Color *color)
 {
-  uint32_t rgb;
-  if (!color || color->index == 256
-      || color->method == DWG_COLOR_METHOD_BYLAYER)
+  uint32_t method;
+  uint32_t packed;
+
+  if (!color)
     return 0;
-  if (color->index == 0 || color->method == DWG_COLOR_METHOD_BYBLOCK)
+
+  /*
+   * LibreDWG's public method enum labels 0xc3 as TRUECOLOR, but its CMC/DXF
+   * readers use 0xc2 for direct RGB and 0xc3 for ACI. Entity ENC colors leave
+   * method unset, so derive it from their packed value as well.
+   *
+   * LibreDWG 0.13.4's common-entity path also decodes ENC alpha before RGB,
+   * unlike its bit_read_ENC helper and the public HATCH qualification fixture.
+   * With both 0x80 and 0x20 present, that fixture therefore exposes packed RGB
+   * through alpha_raw. Prefer it only when it carries a valid direct-RGB
+   * method and the nominal RGB field does not.
+   */
+  packed = (uint32_t)color->rgb;
+  if ((color->flag & 0xa0u) == 0xa0u
+      && (packed >> 24) != 0xc2u
+      && ((uint32_t)color->alpha_raw >> 24) == 0xc2u)
+    packed = (uint32_t)color->alpha_raw;
+
+  method = (uint32_t)color->method;
+  if (!method)
+    method = packed >> 24;
+
+  if (method == 0xc2u)
+    return (3u << 30) | (packed & 0x00ffffffu);
+  if (color->index == 256 || method == DWG_COLOR_METHOD_BYLAYER)
+    return 0;
+  if (color->index == 0 || method == DWG_COLOR_METHOD_BYBLOCK)
     return 1u << 30;
-  rgb = (uint32_t)color->rgb & 0x00ffffffu;
-  if (color->method == DWG_COLOR_METHOD_TRUECOLOR && rgb)
-    return (3u << 30) | rgb;
   return (2u << 30) | ((uint32_t)color->index & 0xffu);
 }
 
@@ -1658,8 +1683,8 @@ copy_embedded_mtext (TextSource *source,
 static int
 read_text_source (const Dwg_Object *object, TextSource *source)
 {
-  const char *value_type = "";
-  const char *value_field = "";
+  const char *value_type;
+  const char *value_field;
   const char *tag_type = "";
   const char *prompt_type = "";
   memset (source, 0, sizeof (*source));
@@ -3933,6 +3958,647 @@ iterate_spline_segments (const Dwg_Object *object,
 }
 
 static int
+hatch_curve_parameters (double start, double end, int is_ccw,
+                        double *first, double *sweep)
+{
+  if (is_ccw)
+    {
+      *first = start;
+      return normalized_curve_sweep (start, end, sweep);
+    }
+  *first = end;
+  return normalized_curve_sweep (end, start, sweep);
+}
+
+static int
+read_hatch_spline_sampling (const Dwg_HATCH_PathSeg *segment,
+                            SplineSampling *sampling)
+{
+  size_t degree;
+  size_t control_count;
+  size_t knot_count;
+  size_t required_knots;
+  size_t nonzero_spans = 0;
+  size_t requested_segments;
+  size_t index;
+  int has_nonzero_weight = 0;
+  double domain_range;
+  if (!segment || !sampling || segment->degree <= 0
+      || (uint64_t)segment->degree > MAX_SPLINE_DEGREE
+      || !segment->control_points || !segment->knots)
+    return 0;
+  degree = (size_t)segment->degree;
+  control_count = (size_t)segment->num_control_points;
+  knot_count = (size_t)segment->num_knots;
+  if (control_count <= degree
+      || control_count > SIZE_MAX - degree - 1u)
+    return 0;
+  required_knots = control_count + degree + 1u;
+  if (knot_count < required_knots)
+    return 0;
+  for (index = 0; index < knot_count; index++)
+    {
+      if (!isfinite (segment->knots[index])
+          || (index
+              && segment->knots[index - 1u]
+                     > segment->knots[index]))
+        return 0;
+    }
+  for (index = 0; index < control_count; index++)
+    {
+      const Dwg_HATCH_ControlPoint *control
+          = &segment->control_points[index];
+      if (!isfinite (control->point.x)
+          || !isfinite (control->point.y)
+          || !isfinite (control->weight))
+        return 0;
+      if (fabs (control->weight) > CURVE_EPSILON)
+        has_nonzero_weight = 1;
+    }
+  if (segment->is_rational && !has_nonzero_weight)
+    return 0;
+  sampling->domain_start = segment->knots[degree];
+  sampling->domain_end = segment->knots[control_count];
+  domain_range = sampling->domain_end - sampling->domain_start;
+  if (!isfinite (domain_range) || domain_range <= CURVE_EPSILON)
+    return 0;
+  for (index = degree; index < control_count; index++)
+    {
+      double span
+          = segment->knots[index + 1u] - segment->knots[index];
+      if (!isfinite (span))
+        return 0;
+      if (span > CURVE_EPSILON)
+        nonzero_spans++;
+    }
+  if (!nonzero_spans)
+    return 0;
+  sampling->segments_per_span
+      = degree == 1u ? 1u : SPLINE_SEGMENTS_PER_SPAN;
+  if (nonzero_spans > SIZE_MAX / sampling->segments_per_span)
+    return 0;
+  requested_segments
+      = nonzero_spans * sampling->segments_per_span;
+  sampling->degree = degree;
+  sampling->control_count = control_count;
+  sampling->nonzero_spans = nonzero_spans;
+  sampling->segment_count
+      = requested_segments > MAX_SPLINE_SEGMENTS
+            ? MAX_SPLINE_SEGMENTS
+            : (unsigned)requested_segments;
+  sampling->uniform_domain
+      = requested_segments > MAX_SPLINE_SEGMENTS;
+  return sampling->segment_count != 0;
+}
+
+static int
+hatch_spline_segment_parameters (
+    const Dwg_HATCH_PathSeg *segment,
+    const SplineSampling *sampling, unsigned segment_index,
+    double *start, double *end)
+{
+  size_t span_ordinal;
+  size_t subdivision;
+  size_t current_span = 0;
+  size_t knot_index;
+  if (!segment || !sampling || !start || !end
+      || segment_index >= sampling->segment_count)
+    return 0;
+  if (sampling->uniform_domain)
+    {
+      double scale
+          = (sampling->domain_end - sampling->domain_start)
+            / (double)sampling->segment_count;
+      *start = sampling->domain_start
+               + scale * (double)segment_index;
+      *end = sampling->domain_start
+             + scale * (double)(segment_index + 1u);
+      return isfinite (*start) && isfinite (*end);
+    }
+  span_ordinal
+      = (size_t)segment_index / sampling->segments_per_span;
+  subdivision
+      = (size_t)segment_index % sampling->segments_per_span;
+  if (span_ordinal >= sampling->nonzero_spans)
+    return 0;
+  for (knot_index = sampling->degree;
+       knot_index < sampling->control_count; knot_index++)
+    {
+      double span_start = segment->knots[knot_index];
+      double span_end = segment->knots[knot_index + 1u];
+      double scale;
+      if (span_end - span_start <= CURVE_EPSILON)
+        continue;
+      if (current_span++ != span_ordinal)
+        continue;
+      scale
+          = (span_end - span_start)
+            / (double)sampling->segments_per_span;
+      *start = span_start + scale * (double)subdivision;
+      *end = span_start + scale * (double)(subdivision + 1u);
+      return isfinite (*start) && isfinite (*end);
+    }
+  return 0;
+}
+
+static int
+evaluate_hatch_spline (const Dwg_HATCH_PathSeg *segment,
+                       const SplineSampling *sampling,
+                       double parameter, double elevation,
+                       double point[3])
+{
+  double points[MAX_SPLINE_DEGREE + 1u][3];
+  double weights[MAX_SPLINE_DEGREE + 1u];
+  size_t span = SIZE_MAX;
+  size_t level;
+  size_t index;
+  size_t axis;
+  if (!segment || !sampling || !point || !isfinite (parameter)
+      || !isfinite (elevation))
+    return 0;
+  if (parameter >= sampling->domain_end - CURVE_EPSILON)
+    span = sampling->control_count - 1u;
+  else
+    {
+      for (index = sampling->degree;
+           index < sampling->control_count; index++)
+        {
+          if (segment->knots[index] <= parameter
+              && parameter < segment->knots[index + 1u])
+            {
+              span = index;
+              break;
+            }
+        }
+    }
+  if (span == SIZE_MAX || span < sampling->degree)
+    return 0;
+  for (index = 0; index <= sampling->degree; index++)
+    {
+      size_t control_index
+          = span - sampling->degree + index;
+      const Dwg_HATCH_ControlPoint *control
+          = &segment->control_points[control_index];
+      double weight
+          = segment->is_rational ? control->weight : 1.0;
+      if (!isfinite (control->point.x)
+          || !isfinite (control->point.y)
+          || !isfinite (weight))
+        return 0;
+      points[index][0] = control->point.x * weight;
+      points[index][1] = control->point.y * weight;
+      points[index][2] = elevation * weight;
+      weights[index] = weight;
+    }
+  for (level = 1; level <= sampling->degree; level++)
+    {
+      for (index = sampling->degree; index >= level; index--)
+        {
+          size_t knot_index
+              = span - sampling->degree + index;
+          double denominator
+              = segment
+                    ->knots[knot_index + sampling->degree - level
+                            + 1u]
+                - segment->knots[knot_index];
+          double alpha;
+          if (fabs (denominator) <= CURVE_EPSILON)
+            alpha = 0.0;
+          else
+            {
+              alpha
+                  = (parameter - segment->knots[knot_index])
+                    / denominator;
+              if (alpha < 0.0)
+                alpha = 0.0;
+              else if (alpha > 1.0)
+                alpha = 1.0;
+            }
+          for (axis = 0; axis < 3; axis++)
+            points[index][axis]
+                = points[index - 1u][axis] * (1.0 - alpha)
+                  + points[index][axis] * alpha;
+          weights[index]
+              = weights[index - 1u] * (1.0 - alpha)
+                + weights[index] * alpha;
+        }
+    }
+  if (!isfinite (weights[sampling->degree])
+      || fabs (weights[sampling->degree]) <= CURVE_EPSILON)
+    return 0;
+  for (axis = 0; axis < 3; axis++)
+    point[axis]
+        = points[sampling->degree][axis]
+          / weights[sampling->degree];
+  return 1;
+}
+
+static size_t
+hatch_spline_fallback_point_count (
+    const Dwg_HATCH_PathSeg *segment, int *use_fit_points)
+{
+  size_t fit_count;
+  size_t control_count;
+  if (!segment)
+    return 0;
+  fit_count = segment->fitpts
+                  ? (size_t)segment->num_fitpts
+                  : 0;
+  control_count = segment->control_points
+                      ? (size_t)segment->num_control_points
+                      : 0;
+  *use_fit_points = fit_count >= 2u;
+  return *use_fit_points ? fit_count : control_count;
+}
+
+static unsigned
+hatch_spline_fallback_segment_count (
+    const Dwg_HATCH_PathSeg *segment)
+{
+  int use_fit_points;
+  size_t point_count = hatch_spline_fallback_point_count (
+      segment, &use_fit_points);
+  size_t source_segments;
+  (void)use_fit_points;
+  if (point_count < 2u)
+    return 0;
+  source_segments
+      = point_count - 1u
+        + (segment->is_periodic ? 1u : 0u);
+  return source_segments > MAX_SPLINE_SEGMENTS
+             ? MAX_SPLINE_SEGMENTS
+             : (unsigned)source_segments;
+}
+
+static int
+hatch_spline_fallback_point (
+    const Dwg_HATCH_PathSeg *segment, int use_fit_points,
+    size_t index, double elevation, double point[3])
+{
+  if (use_fit_points)
+    {
+      if (!segment->fitpts
+          || index >= (size_t)segment->num_fitpts)
+        return 0;
+      point[0] = segment->fitpts[index].x;
+      point[1] = segment->fitpts[index].y;
+    }
+  else
+    {
+      if (!segment->control_points
+          || index >= (size_t)segment->num_control_points)
+        return 0;
+      point[0] = segment->control_points[index].point.x;
+      point[1] = segment->control_points[index].point.y;
+    }
+  point[2] = elevation;
+  return 1;
+}
+
+static int
+hatch_spline_fallback_segment (
+    const Dwg_HATCH_PathSeg *segment, unsigned segment_index,
+    double elevation, double start[3], double end[3])
+{
+  int use_fit_points;
+  size_t point_count = hatch_spline_fallback_point_count (
+      segment, &use_fit_points);
+  size_t source_segments;
+  unsigned output_segments;
+  size_t start_index;
+  size_t end_index;
+  if (point_count < 2u)
+    return 0;
+  source_segments
+      = point_count - 1u
+        + (segment->is_periodic ? 1u : 0u);
+  output_segments
+      = source_segments > MAX_SPLINE_SEGMENTS
+            ? MAX_SPLINE_SEGMENTS
+            : (unsigned)source_segments;
+  if (!output_segments || segment_index >= output_segments)
+    return 0;
+  start_index
+      = (size_t)((uint64_t)segment_index * source_segments
+                 / output_segments)
+        % point_count;
+  end_index
+      = (size_t)((uint64_t)(segment_index + 1u)
+                     * source_segments
+                 / output_segments)
+        % point_count;
+  return hatch_spline_fallback_point (
+             segment, use_fit_points, start_index, elevation, start)
+         && hatch_spline_fallback_point (
+             segment, use_fit_points, end_index, elevation, end);
+}
+
+static int
+emit_hatch_ocs_segment (SegmentIteration *iteration,
+                        const LineSegment *base,
+                        const double normal[3],
+                        const double start_ocs[3],
+                        const double end_ocs[3],
+                        int approximated_curve,
+                        uint64_t *generated)
+{
+  LineSegment segment = *base;
+  if (*generated >= MAX_HATCH_BOUNDARY_SEGMENTS)
+    return 1;
+  ocs_to_wcs (normal, start_ocs, segment.start);
+  ocs_to_wcs (normal, end_ocs, segment.end);
+  segment.approximated_curve
+      = approximated_curve ? 1u : 0u;
+  (*generated)++;
+  return segment_iteration_emit (iteration, &segment);
+}
+
+static int
+iterate_hatch_polyline_path (
+    const Dwg_HATCH_Path *path, double elevation,
+    const double normal[3], const LineSegment *base,
+    SegmentIteration *iteration, uint64_t *generated)
+{
+  size_t count;
+  size_t source_index;
+  size_t source_segments;
+  if (!path || !path->polyline_paths
+      || !path->num_segs_or_paths)
+    return 1;
+  count = (size_t)path->num_segs_or_paths;
+  source_segments
+      = count > 1u
+            ? count - 1u + (path->closed ? 1u : 0u)
+            : 0u;
+  for (source_index = 0; source_index < source_segments;
+       source_index++)
+    {
+      const Dwg_HATCH_PolylinePath *start
+          = &path->polyline_paths[source_index];
+      const Dwg_HATCH_PolylinePath *end
+          = &path->polyline_paths[(source_index + 1u) % count];
+      PolylineVertex start_vertex;
+      PolylineVertex end_vertex;
+      double bulge
+          = path->bulges_present ? start->bulge : 0.0;
+      unsigned subdivisions = bulge_segment_count (bulge);
+      unsigned subdivision;
+      memset (&start_vertex, 0, sizeof (start_vertex));
+      memset (&end_vertex, 0, sizeof (end_vertex));
+      start_vertex.position[0] = start->point.x;
+      start_vertex.position[1] = start->point.y;
+      start_vertex.position[2] = elevation;
+      start_vertex.bulge = bulge;
+      end_vertex.position[0] = end->point.x;
+      end_vertex.position[1] = end->point.y;
+      end_vertex.position[2] = elevation;
+      for (subdivision = 0; subdivision < subdivisions;
+           subdivision++)
+        {
+          double start_ocs[3];
+          double end_ocs[3];
+          if (*generated >= MAX_HATCH_BOUNDARY_SEGMENTS)
+            return 1;
+          if (!bulge_point (
+                  &start_vertex, &end_vertex, elevation, subdivision,
+                  subdivisions, start_ocs)
+              || !bulge_point (
+                  &start_vertex, &end_vertex, elevation,
+                  subdivision + 1u, subdivisions, end_ocs))
+            {
+              segment_iteration_reject (iteration);
+              continue;
+            }
+          if (!emit_hatch_ocs_segment (
+                  iteration, base, normal, start_ocs, end_ocs,
+                  isfinite (bulge)
+                      && fabs (bulge) > CURVE_EPSILON,
+                  generated))
+            return 0;
+        }
+    }
+  return 1;
+}
+
+static int
+iterate_hatch_edge (
+    const Dwg_HATCH_PathSeg *edge, double elevation,
+    const double normal[3], const LineSegment *base,
+    SegmentIteration *iteration, uint64_t *generated)
+{
+  if (!edge || *generated >= MAX_HATCH_BOUNDARY_SEGMENTS)
+    return 1;
+  if (edge->curve_type == 1u)
+    {
+      double start[3]
+          = { edge->first_endpoint.x, edge->first_endpoint.y,
+              elevation };
+      double end[3]
+          = { edge->second_endpoint.x,
+              edge->second_endpoint.y, elevation };
+      return emit_hatch_ocs_segment (
+          iteration, base, normal, start, end, 0, generated);
+    }
+  if (edge->curve_type == 2u)
+    {
+      double first;
+      double sweep;
+      unsigned count;
+      unsigned index;
+      if (!isfinite (edge->radius)
+          || fabs (edge->radius) <= CURVE_EPSILON
+          || !hatch_curve_parameters (
+              edge->start_angle, edge->end_angle, edge->is_ccw,
+              &first, &sweep))
+        return 1;
+      count = curve_segment_count (sweep);
+      for (index = 0; index < count; index++)
+        {
+          double start_angle
+              = first + sweep * (double)index / (double)count;
+          double end_angle
+              = first
+                + sweep * (double)(index + 1u) / (double)count;
+          double start[3]
+              = { edge->center.x
+                      + edge->radius * cos (start_angle),
+                  edge->center.y
+                      + edge->radius * sin (start_angle),
+                  elevation };
+          double end[3]
+              = { edge->center.x
+                      + edge->radius * cos (end_angle),
+                  edge->center.y
+                      + edge->radius * sin (end_angle),
+                  elevation };
+          if (*generated >= MAX_HATCH_BOUNDARY_SEGMENTS)
+            return 1;
+          if (!emit_hatch_ocs_segment (
+                  iteration, base, normal, start, end, 1,
+                  generated))
+            return 0;
+        }
+      return 1;
+    }
+  if (edge->curve_type == 3u)
+    {
+      double first;
+      double sweep;
+      double major[3]
+          = { edge->endpoint.x, edge->endpoint.y, 0.0 };
+      double major_length = hypot (major[0], major[1]);
+      double minor[3];
+      double center[3]
+          = { edge->center.x, edge->center.y, elevation };
+      unsigned count;
+      unsigned index;
+      if (!isfinite (major_length)
+          || major_length <= CURVE_EPSILON
+          || !isfinite (edge->minor_major_ratio)
+          || fabs (edge->minor_major_ratio) <= CURVE_EPSILON
+          || !hatch_curve_parameters (
+              edge->start_angle, edge->end_angle, edge->is_ccw,
+              &first, &sweep))
+        return 1;
+      minor[0] = -major[1] * fabs (edge->minor_major_ratio);
+      minor[1] = major[0] * fabs (edge->minor_major_ratio);
+      minor[2] = 0.0;
+      count = curve_segment_count (sweep);
+      for (index = 0; index < count; index++)
+        {
+          double start_parameter
+              = first + sweep * (double)index / (double)count;
+          double end_parameter
+              = first
+                + sweep * (double)(index + 1u) / (double)count;
+          double start[3];
+          double end[3];
+          if (*generated >= MAX_HATCH_BOUNDARY_SEGMENTS)
+            return 1;
+          ellipse_point (
+              center, major, minor, start_parameter, start);
+          ellipse_point (
+              center, major, minor, end_parameter, end);
+          if (!emit_hatch_ocs_segment (
+                  iteration, base, normal, start, end, 1,
+                  generated))
+            return 0;
+        }
+      return 1;
+    }
+  if (edge->curve_type == 4u)
+    {
+      SplineSampling sampling;
+      unsigned count;
+      unsigned index;
+      memset (&sampling, 0, sizeof (sampling));
+      if (read_hatch_spline_sampling (edge, &sampling))
+        {
+          count = sampling.segment_count;
+          for (index = 0; index < count; index++)
+            {
+              double start_parameter;
+              double end_parameter;
+              double start[3];
+              double end[3];
+              if (*generated >= MAX_HATCH_BOUNDARY_SEGMENTS)
+                return 1;
+              if (!hatch_spline_segment_parameters (
+                      edge, &sampling, index, &start_parameter,
+                      &end_parameter)
+                  || !evaluate_hatch_spline (
+                      edge, &sampling, start_parameter, elevation,
+                      start)
+                  || !evaluate_hatch_spline (
+                      edge, &sampling, end_parameter, elevation,
+                      end))
+                {
+                  segment_iteration_reject (iteration);
+                  continue;
+                }
+              if (!emit_hatch_ocs_segment (
+                      iteration, base, normal, start, end,
+                      sampling.degree > 1u, generated))
+                return 0;
+            }
+          return 1;
+        }
+      count = hatch_spline_fallback_segment_count (edge);
+      for (index = 0; index < count; index++)
+        {
+          double start[3];
+          double end[3];
+          if (*generated >= MAX_HATCH_BOUNDARY_SEGMENTS)
+            return 1;
+          if (!hatch_spline_fallback_segment (
+                  edge, index, elevation, start, end))
+            {
+              segment_iteration_reject (iteration);
+              continue;
+            }
+          if (!emit_hatch_ocs_segment (
+                  iteration, base, normal, start, end, 1,
+                  generated))
+            return 0;
+        }
+    }
+  return 1;
+}
+
+static int
+iterate_hatch_boundary_segments (const Dwg_Object *object,
+                                 const CacheTables *tables,
+                                 SegmentIteration *iteration)
+{
+  const Dwg_Entity_HATCH *hatch;
+  LineSegment base;
+  double normal[3];
+  uint64_t generated = 0;
+  size_t path_count;
+  size_t path_index;
+  if (!object || object->fixedtype != DWG_TYPE_HATCH
+      || !object->tio.entity
+      || !(hatch = object->tio.entity->tio.HATCH)
+      || !hatch->paths || !hatch->num_paths)
+    return 1;
+  if (!initialize_entity_segment (object, tables, 8, 0, &base))
+    return 1;
+  finite_normal_or_unit_z (
+      hatch->extrusion.x, hatch->extrusion.y,
+      hatch->extrusion.z, normal);
+  path_count = (size_t)hatch->num_paths;
+  for (path_index = 0; path_index < path_count; path_index++)
+    {
+      const Dwg_HATCH_Path *path = &hatch->paths[path_index];
+      size_t edge_count;
+      size_t edge_index;
+      if (generated >= MAX_HATCH_BOUNDARY_SEGMENTS)
+        return 1;
+      if ((path->flag & 2u) != 0u)
+        {
+          if (!iterate_hatch_polyline_path (
+                  path, hatch->elevation, normal, &base, iteration,
+                  &generated))
+            return 0;
+          continue;
+        }
+      if (!path->segs || !path->num_segs_or_paths)
+        continue;
+      edge_count = (size_t)path->num_segs_or_paths;
+      for (edge_index = 0; edge_index < edge_count; edge_index++)
+        {
+          if (!iterate_hatch_edge (
+                  &path->segs[edge_index], hatch->elevation, normal,
+                  &base, iteration, &generated))
+            return 0;
+          if (generated >= MAX_HATCH_BOUNDARY_SEGMENTS)
+            return 1;
+        }
+    }
+  return 1;
+}
+
+static int
 iterate_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
                       OverviewPlan *overview,
                       LineSegmentConsumer consumer, void *context,
@@ -3970,6 +4636,10 @@ iterate_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
           && !iterate_spline_segments (
               object, tables, &iteration))
         return 0;
+      if (status == 0
+          && !iterate_hatch_boundary_segments (
+              object, tables, &iteration))
+        return 0;
     }
   if (selected)
     *selected = iteration.emitted;
@@ -3999,6 +4669,8 @@ count_gpu_segment (void *context, const LineSegment *segment)
     counter->summary->model_segments++;
   else
     counter->summary->block_segments++;
+  if (segment->source_kind == 8u)
+    counter->summary->hatch_boundary_segments++;
   if (index < counter->overview->group_count)
     {
       OverviewGroup *group = &counter->overview->groups[index];
@@ -4026,6 +4698,113 @@ count_gpu_segment (void *context, const LineSegment *segment)
   return 1;
 }
 
+static uint64_t
+bounded_hatch_segment_sum (uint64_t total, uint64_t additional)
+{
+  uint64_t marker = (uint64_t)MAX_HATCH_BOUNDARY_SEGMENTS + 1u;
+  if (total >= marker || additional >= marker
+      || additional > marker - total)
+    return marker;
+  return total + additional;
+}
+
+static uint64_t
+hatch_edge_requested_segments (const Dwg_HATCH_PathSeg *edge)
+{
+  double first;
+  double sweep;
+  if (!edge)
+    return 0;
+  if (edge->curve_type == 1u)
+    return 1;
+  if (edge->curve_type == 2u)
+    {
+      if (!isfinite (edge->radius)
+          || fabs (edge->radius) <= CURVE_EPSILON
+          || !hatch_curve_parameters (
+              edge->start_angle, edge->end_angle, edge->is_ccw,
+              &first, &sweep))
+        return 0;
+      return curve_segment_count (sweep);
+    }
+  if (edge->curve_type == 3u)
+    {
+      double major_length
+          = hypot (edge->endpoint.x, edge->endpoint.y);
+      if (!isfinite (major_length)
+          || major_length <= CURVE_EPSILON
+          || !isfinite (edge->minor_major_ratio)
+          || fabs (edge->minor_major_ratio) <= CURVE_EPSILON
+          || !hatch_curve_parameters (
+              edge->start_angle, edge->end_angle, edge->is_ccw,
+              &first, &sweep))
+        return 0;
+      return curve_segment_count (sweep);
+    }
+  if (edge->curve_type == 4u)
+    {
+      SplineSampling sampling;
+      memset (&sampling, 0, sizeof (sampling));
+      if (read_hatch_spline_sampling (edge, &sampling))
+        return sampling.segment_count;
+      return hatch_spline_fallback_segment_count (edge);
+    }
+  return 0;
+}
+
+static uint64_t
+hatch_requested_boundary_segments (const Dwg_Entity_HATCH *hatch)
+{
+  uint64_t total = 0;
+  uint64_t marker = (uint64_t)MAX_HATCH_BOUNDARY_SEGMENTS + 1u;
+  size_t path_count;
+  size_t path_index;
+  if (!hatch || !hatch->paths || !hatch->num_paths)
+    return 0;
+  path_count = (size_t)hatch->num_paths;
+  for (path_index = 0; path_index < path_count; path_index++)
+    {
+      const Dwg_HATCH_Path *path = &hatch->paths[path_index];
+      size_t item_count;
+      size_t item_index;
+      if ((path->flag & 2u) != 0u)
+        {
+          size_t source_segments;
+          if (!path->polyline_paths
+              || path->num_segs_or_paths < 2u)
+            continue;
+          item_count = (size_t)path->num_segs_or_paths;
+          source_segments
+              = item_count - 1u + (path->closed ? 1u : 0u);
+          for (item_index = 0; item_index < source_segments;
+               item_index++)
+            {
+              double bulge
+                  = path->bulges_present
+                        ? path->polyline_paths[item_index].bulge
+                        : 0.0;
+              total = bounded_hatch_segment_sum (
+                  total, bulge_segment_count (bulge));
+              if (total >= marker)
+                return marker;
+            }
+          continue;
+        }
+      if (!path->segs || !path->num_segs_or_paths)
+        continue;
+      item_count = (size_t)path->num_segs_or_paths;
+      for (item_index = 0; item_index < item_count; item_index++)
+        {
+          total = bounded_hatch_segment_sum (
+              total,
+              hatch_edge_requested_segments (&path->segs[item_index]));
+          if (total >= marker)
+            return marker;
+        }
+    }
+  return total;
+}
+
 static int
 count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
                     LibreDwgGpuLineSummary *summary,
@@ -4034,6 +4813,7 @@ count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
   GpuSegmentCounter counter;
   uint64_t skipped = 0;
   uint64_t approximated = 0;
+  size_t i;
   counter.summary = summary;
   counter.overview = overview;
   if (!iterate_gpu_segments (dwg, tables, NULL, count_gpu_segment,
@@ -4041,6 +4821,17 @@ count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
     return 0;
   summary->skipped_non_finite_segments = skipped;
   summary->approximated_curve_segments = approximated;
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      const Dwg_Object *object = &dwg->object[i];
+      if (object->fixedtype == DWG_TYPE_HATCH
+          && object->tio.entity
+          && object->tio.entity->tio.HATCH
+          && hatch_requested_boundary_segments (
+                 object->tio.entity->tio.HATCH)
+                 > MAX_HATCH_BOUNDARY_SEGMENTS)
+        summary->truncated_hatch_entities++;
+    }
   return 1;
 }
 

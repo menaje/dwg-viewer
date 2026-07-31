@@ -55,26 +55,28 @@ LibreDWG 후보는 전역 설치 없이
 연결해 비교합니다.
 
 LibreDWG의 현재 직접 변환기는 LINE, LWPOLYLINE/2D·3D POLYLINE,
-ARC, CIRCLE, ELLIPSE, SPLINE을 화면 버퍼로 만듭니다. 원호·원·타원과
-폴리라인 불지는 회전당 최대 16개, SPLINE은 엔티티당 최대 256개
-선분으로 제한하고, 정밀 원본 레코드와 knot·weight·control/fit point는
-별도로 보존합니다. Scene Cache v1.4는 TEXT, MTEXT, ATTDEF, ATTRIB과
-문자 스타일·SHX/BigFont 파일명을 UTF-8로 함께 보존합니다. 기준 도면의
-시간·메모리와 첫 화면 읽기 목표를 통과했지만, 남은 엔티티 계열과
-정밀 MTEXT/OCS 배치가 완료되기 전에는 기본 엔진으로 선택하지 않습니다.
+ARC, CIRCLE, ELLIPSE, SPLINE과 HATCH 경계를 화면 버퍼로 만듭니다.
+원호·원·타원과 폴리라인 불지는 회전당 최대 16개, SPLINE은 엔티티당
+최대 256개 선분으로 제한하고, 지원되는 독립 곡선의 정밀 원본 레코드와
+knot·weight·control/fit point는 별도로 보존합니다. Scene Cache v1.4는
+TEXT, MTEXT, ATTDEF, ATTRIB과 문자 스타일·SHX/BigFont 파일명을 UTF-8로
+함께 보존하고, v1.5는 HATCH당 최대 65,536개의 제한형 경계 미리보기를
+추가합니다. HATCH 채움과 원본 레코드, 남은 엔티티 계열 및 정밀
+MTEXT/OCS 배치가 완료되기 전에는 기본 엔진으로 선택하지 않습니다.
 
 ## 최소 Scene Cache 생성
 
 현재 캐시 작성기는 LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE,
 ELLIPSE, SPLINE과 네 문자 계열을 레이어·문자 스타일·공유 블록 정보와
-함께 little-endian 이진 형식으로 저장합니다. Scene Cache v1.4는
+함께 little-endian 이진 형식으로 저장합니다. Scene Cache v1.5는
 원본 정밀 좌표와 별도로
 로컬 원점 기반 `f32` GPU 선 버퍼를 만들며, 첫 화면용 데이터는 최대
 4MiB, 개별 상세 청크는 최대 512KiB로 제한합니다. 블록 형상은 배치
 횟수와 관계없이 한 번만 저장합니다. 원호, 원, 타원, 폴리라인 불지와
 NURBS 스플라인은 상한이 있는 1차 곡선 LOD로 표시하고, 정밀 원본은
-후속 고배율 정밀화를 위해 그대로 보존합니다. 기존 출력은 안전을
-위해 덮어쓰지 않습니다.
+후속 고배율 정밀화를 위해 그대로 보존합니다. HATCH는 경계만 같은
+상한형 청크로 표시하며 채움과 원본 보존은 아직 지원하지 않습니다.
+기존 출력은 안전을 위해 덮어쓰지 않습니다.
 
 ```bash
 cargo run --release -p dwg-converter -- convert \

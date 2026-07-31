@@ -1,7 +1,7 @@
 # Webview renderer
 
-Dependency-free Scene Cache v1.3 reader and WebGL2 line renderer for the
-VS Code Webview.
+Scene Cache v1.5 range reader, WebGL2 line renderer and bounded CAD text
+overlay for the VS Code Webview.
 
 ## Implemented
 
@@ -23,11 +23,15 @@ VS Code Webview.
 - Searches Hangul layer names and toggles individual or all layers without
   rereading geometry or rebuilding GPU buffers.
 - Displays bounded first-pass chords for arcs, circles, ellipses, polyline
-  bulges and NURBS splines emitted by the converter.
+  bulges, NURBS splines and HATCH boundaries emitted by the converter.
+- Loads source text after the first geometry frame and renders selected local
+  SHX/BigFont glyphs through byte-bounded caches, with a Korean system-font
+  fallback when a CAD font is unavailable.
 
 The current page is an engine verification harness, not the final VS Code
-extension UI. Text, SHX/BigFont and view-adaptive high-zoom curve refinement
-remain follow-up work.
+extension UI. Exact MTEXT/OCS layout, HATCH fills/source records, real-world
+Korean SHX corpus expansion and view-adaptive high-zoom refinement remain
+follow-up work.
 
 ## Run
 
@@ -49,3 +53,5 @@ pnpm --filter @dwg-viewer/webview check
 Tests cover bounded range reads, cache validation, nested block transforms,
 large-coordinate camera rebasing, camera controls, viewport detail selection,
 GPU resource ranges, layer visibility and LRU eviction/request coalescing.
+They also cover delayed Korean text reads, SHX/BigFont cache limits and the
+v1.5 header contract.

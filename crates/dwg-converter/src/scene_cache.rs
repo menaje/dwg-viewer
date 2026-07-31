@@ -4,7 +4,9 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use acadrust::entities::{AttributeEntity, EntityCommon, EntityType};
+use acadrust::entities::{
+    AttributeEntity, BoundaryEdge, EntityCommon, EntityType, Hatch, SplineEdge,
+};
 use acadrust::types::{Color, Matrix3, Vector3};
 use acadrust::CadDocument;
 use anyhow::{Context, Result};
@@ -14,7 +16,7 @@ use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, Inp
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 4;
+pub const CACHE_VERSION_MINOR: u16 = 5;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -44,7 +46,7 @@ const SCENE_OVERVIEW_SEGMENTS: usize = 65_536;
 const GPU_BATCH_FLAG_APPROXIMATED_CURVE: u32 = 1;
 const GPU_STYLE_INVISIBLE: u32 = 1 << 16;
 const GPU_STYLE_SOURCE_KIND_SHIFT: u32 = 17;
-const GPU_STYLE_APPROXIMATED_CURVE: u32 = 1 << 20;
+const GPU_STYLE_APPROXIMATED_CURVE: u32 = 1 << 21;
 const TEXT_FLAG_HAS_ALIGNMENT_POINT: u16 = 1;
 const TEXT_FLAG_HAS_RECTANGLE_HEIGHT: u16 = 1 << 1;
 const TEXT_FLAG_ANNOTATIVE: u16 = 1 << 2;
@@ -54,6 +56,7 @@ const CURVE_MAX_ANGLE_RADIANS: f64 = std::f64::consts::PI / 8.0;
 const MAX_CURVE_SEGMENTS: usize = 256;
 const SPLINE_SEGMENTS_PER_SPAN: usize = 2;
 const MAX_SPLINE_DEGREE: usize = 15;
+const MAX_HATCH_BOUNDARY_SEGMENTS: usize = 65_536;
 const CURVE_EPSILON: f64 = 1.0e-12;
 
 #[derive(Debug, Clone, Default)]
@@ -120,6 +123,8 @@ pub struct GpuLineSummary {
     pub block_segments: u64,
     pub overview_segments: u64,
     pub approximated_curve_segments: u64,
+    pub hatch_boundary_segments: u64,
+    pub truncated_hatch_entities: u64,
     pub skipped_non_finite_segments: u64,
     pub batches: u64,
     pub model_overview_batches: u64,
@@ -2519,12 +2524,20 @@ fn build_gpu_line_plan(document: &CadDocument) -> Result<GpuLinePlan<'_>> {
     let mut prepared_groups = Vec::with_capacity(groups.len());
 
     for group in groups {
-        let (segments, approximated, skipped) =
+        let (segments, approximated, hatch_boundaries, truncated_hatches, skipped) =
             build_spatial_segment_refs(&entities, &group.entity_indices)?;
         summary.approximated_curve_segments = summary
             .approximated_curve_segments
             .checked_add(approximated)
             .context("approximated GPU segment count overflow")?;
+        summary.hatch_boundary_segments = summary
+            .hatch_boundary_segments
+            .checked_add(hatch_boundaries)
+            .context("HATCH boundary segment count overflow")?;
+        summary.truncated_hatch_entities = summary
+            .truncated_hatch_entities
+            .checked_add(truncated_hatches)
+            .context("truncated HATCH entity count overflow")?;
         summary.skipped_non_finite_segments = summary
             .skipped_non_finite_segments
             .checked_add(skipped)
@@ -2639,14 +2652,23 @@ fn build_gpu_line_plan(document: &CadDocument) -> Result<GpuLinePlan<'_>> {
 fn build_spatial_segment_refs(
     entities: &[&EntityType],
     entity_indices: &[u32],
-) -> Result<(Vec<SpatialSegmentRef>, u64, u64)> {
+) -> Result<(Vec<SpatialSegmentRef>, u64, u64, u64, u64)> {
     let mut midpoint_bounds = FiniteBounds2::empty();
     let mut valid_segments = 0_usize;
     let mut approximated_segments = 0_u64;
+    let mut hatch_boundary_segments = 0_u64;
+    let mut truncated_hatch_entities = 0_u64;
     let mut skipped_segments = 0_u64;
 
     for &entity_index in entity_indices {
         let entity = entities[entity_index as usize];
+        if let EntityType::Hatch(hatch) = entity {
+            if hatch_boundary_segment_limit(hatch).1 {
+                truncated_hatch_entities = truncated_hatch_entities
+                    .checked_add(1)
+                    .context("truncated HATCH entity count overflow")?;
+            }
+        }
         for segment_index in 0..gpu_entity_segment_count(entity) {
             let geometry = gpu_segment_geometry(entity, segment_index);
             let Some(geometry) = geometry.filter(gpu_segment_is_finite) else {
@@ -2665,6 +2687,11 @@ fn build_spatial_segment_refs(
                 approximated_segments = approximated_segments
                     .checked_add(1)
                     .context("approximated GPU segment count overflow")?;
+            }
+            if matches!(entity, EntityType::Hatch(_)) {
+                hatch_boundary_segments = hatch_boundary_segments
+                    .checked_add(1)
+                    .context("HATCH boundary segment count overflow")?;
             }
         }
     }
@@ -2692,7 +2719,13 @@ fn build_spatial_segment_refs(
         (segment.morton, segment.entity_index, segment.segment_index)
     });
 
-    Ok((segments, approximated_segments, skipped_segments))
+    Ok((
+        segments,
+        approximated_segments,
+        hatch_boundary_segments,
+        truncated_hatch_entities,
+        skipped_segments,
+    ))
 }
 
 fn allocate_overview_quotas(groups: &[PreparedGpuEntityGroup], budget: usize) -> Vec<usize> {
@@ -2987,6 +3020,7 @@ fn gpu_source_kind(entity: &EntityType) -> u32 {
         EntityType::Circle(_) => 5,
         EntityType::Ellipse(_) => 6,
         EntityType::Spline(_) => 7,
+        EntityType::Hatch(_) => 8,
         _ => unreachable!("only GPU line and curve entities reach the vertex writer"),
     }
 }
@@ -3042,6 +3076,7 @@ fn gpu_entity_segment_count(entity: &EntityType) -> usize {
         EntityType::Spline(spline) => spline_sampling(spline)
             .map(|sampling| sampling.segment_count)
             .unwrap_or_else(|| spline_fallback_segment_count(spline)),
+        EntityType::Hatch(hatch) => hatch_boundary_segment_count(hatch),
         _ => 0,
     }
 }
@@ -3214,6 +3249,210 @@ fn gpu_segment_geometry(entity: &EntityType, segment_index: usize) -> Option<Gpu
                 approximated_curve: true,
             })
         }
+        EntityType::Hatch(hatch) => hatch_boundary_segment(hatch, segment_index),
+        _ => None,
+    }
+}
+
+fn hatch_boundary_segment_count(hatch: &Hatch) -> usize {
+    hatch_boundary_segment_limit(hatch).0
+}
+
+fn hatch_boundary_segment_limit(hatch: &Hatch) -> (usize, bool) {
+    let mut total = 0_usize;
+    for edge in hatch.paths.iter().flat_map(|path| &path.edges) {
+        let next = total.saturating_add(hatch_edge_segment_count(edge));
+        if next > MAX_HATCH_BOUNDARY_SEGMENTS {
+            return (MAX_HATCH_BOUNDARY_SEGMENTS, true);
+        }
+        total = next;
+    }
+    (total, false)
+}
+
+fn hatch_edge_segment_count(edge: &BoundaryEdge) -> usize {
+    match edge {
+        BoundaryEdge::Line(_) => 1,
+        BoundaryEdge::CircularArc(edge) => {
+            if !edge.radius.is_finite() || edge.radius.abs() <= CURVE_EPSILON {
+                return 0;
+            }
+            hatch_curve_start_and_sweep(edge.start_angle, edge.end_angle, edge.counter_clockwise)
+                .map(|(_, sweep)| curve_segment_count(sweep))
+                .unwrap_or(0)
+        }
+        BoundaryEdge::EllipticArc(edge) => {
+            let major_axis =
+                Vector3::new(edge.major_axis_endpoint.x, edge.major_axis_endpoint.y, 0.0);
+            if ellipse_axes(
+                major_axis,
+                Vector3::new(0.0, 0.0, 1.0),
+                edge.minor_axis_ratio,
+            )
+            .is_none()
+            {
+                return 0;
+            }
+            hatch_curve_start_and_sweep(edge.start_angle, edge.end_angle, edge.counter_clockwise)
+                .map(|(_, sweep)| curve_segment_count(sweep))
+                .unwrap_or(0)
+        }
+        BoundaryEdge::Spline(edge) => hatch_spline_sampling(edge)
+            .map(|sampling| sampling.segment_count)
+            .unwrap_or_else(|| hatch_spline_fallback_segment_count(edge)),
+        BoundaryEdge::Polyline(edge) => {
+            refined_polyline_segment_count(edge.vertices.len(), edge.is_closed, |index| {
+                edge.vertices[index].z
+            })
+        }
+    }
+}
+
+fn hatch_curve_start_and_sweep(
+    start: f64,
+    end: f64,
+    counter_clockwise: bool,
+) -> Option<(f64, f64)> {
+    if counter_clockwise {
+        normalized_curve_sweep(start, end).map(|sweep| (start, sweep))
+    } else {
+        normalized_curve_sweep(end, start).map(|sweep| (end, sweep))
+    }
+}
+
+fn hatch_boundary_segment(hatch: &Hatch, segment_index: usize) -> Option<GpuSegmentGeometry> {
+    if segment_index >= MAX_HATCH_BOUNDARY_SEGMENTS {
+        return None;
+    }
+    let mut remaining = segment_index;
+    for edge in hatch.paths.iter().flat_map(|path| &path.edges) {
+        let count = hatch_edge_segment_count(edge);
+        if remaining < count {
+            return hatch_edge_segment(hatch, edge, remaining);
+        }
+        remaining = remaining.checked_sub(count)?;
+    }
+    None
+}
+
+fn hatch_edge_segment(
+    hatch: &Hatch,
+    edge: &BoundaryEdge,
+    segment_index: usize,
+) -> Option<GpuSegmentGeometry> {
+    let ocs_to_wcs = safe_ocs_matrix(hatch.normal);
+    match edge {
+        BoundaryEdge::Line(edge) if segment_index == 0 => Some(GpuSegmentGeometry {
+            start: ocs_to_wcs * Vector3::new(edge.start.x, edge.start.y, hatch.elevation),
+            end: ocs_to_wcs * Vector3::new(edge.end.x, edge.end.y, hatch.elevation),
+            approximated_curve: false,
+        }),
+        BoundaryEdge::CircularArc(edge) => {
+            let (start_parameter, sweep) = hatch_curve_start_and_sweep(
+                edge.start_angle,
+                edge.end_angle,
+                edge.counter_clockwise,
+            )?;
+            let segment_count = curve_segment_count(sweep);
+            if segment_index >= segment_count
+                || !edge.radius.is_finite()
+                || edge.radius.abs() <= CURVE_EPSILON
+            {
+                return None;
+            }
+            let center = Vector3::new(edge.center.x, edge.center.y, hatch.elevation);
+            let start_angle = start_parameter + sweep * segment_index as f64 / segment_count as f64;
+            let end_angle =
+                start_parameter + sweep * (segment_index + 1) as f64 / segment_count as f64;
+            Some(GpuSegmentGeometry {
+                start: circular_ocs_point(center, edge.radius, start_angle, ocs_to_wcs),
+                end: circular_ocs_point(center, edge.radius, end_angle, ocs_to_wcs),
+                approximated_curve: true,
+            })
+        }
+        BoundaryEdge::EllipticArc(edge) => {
+            let (start_parameter, sweep) = hatch_curve_start_and_sweep(
+                edge.start_angle,
+                edge.end_angle,
+                edge.counter_clockwise,
+            )?;
+            let major_axis =
+                Vector3::new(edge.major_axis_endpoint.x, edge.major_axis_endpoint.y, 0.0);
+            let (major_axis, minor_axis) = ellipse_axes(
+                major_axis,
+                Vector3::new(0.0, 0.0, 1.0),
+                edge.minor_axis_ratio,
+            )?;
+            let segment_count = curve_segment_count(sweep);
+            if segment_index >= segment_count {
+                return None;
+            }
+            let center = Vector3::new(edge.center.x, edge.center.y, hatch.elevation);
+            let start_parameter =
+                start_parameter + sweep * segment_index as f64 / segment_count as f64;
+            let end_parameter = start_parameter + sweep / segment_count as f64;
+            Some(GpuSegmentGeometry {
+                start: ocs_to_wcs * ellipse_point(center, major_axis, minor_axis, start_parameter),
+                end: ocs_to_wcs * ellipse_point(center, major_axis, minor_axis, end_parameter),
+                approximated_curve: true,
+            })
+        }
+        BoundaryEdge::Spline(edge) => {
+            if let Some(sampling) = hatch_spline_sampling(edge) {
+                let (start_parameter, end_parameter) =
+                    hatch_spline_segment_parameters(edge, sampling, segment_index)?;
+                return Some(GpuSegmentGeometry {
+                    start: ocs_to_wcs
+                        * evaluate_hatch_spline(edge, sampling, start_parameter, hatch.elevation)?,
+                    end: ocs_to_wcs
+                        * evaluate_hatch_spline(edge, sampling, end_parameter, hatch.elevation)?,
+                    approximated_curve: edge.degree > 1,
+                });
+            }
+            let (start, end) = hatch_spline_fallback_segment(edge, segment_index, hatch.elevation)?;
+            Some(GpuSegmentGeometry {
+                start: ocs_to_wcs * start,
+                end: ocs_to_wcs * end,
+                approximated_curve: true,
+            })
+        }
+        BoundaryEdge::Polyline(edge) => {
+            let (source_index, refined_index, subdivisions) = refined_polyline_segment(
+                segment_index,
+                edge.vertices.len(),
+                edge.is_closed,
+                |index| edge.vertices[index].z,
+            )?;
+            let next_index =
+                polyline_next_vertex(source_index, edge.vertices.len(), edge.is_closed)?;
+            let start_vertex = edge.vertices.get(source_index)?;
+            let end_vertex = edge.vertices.get(next_index)?;
+            let start = bulge_point(
+                start_vertex.x,
+                start_vertex.y,
+                end_vertex.x,
+                end_vertex.y,
+                hatch.elevation,
+                start_vertex.z,
+                refined_index,
+                subdivisions,
+            )?;
+            let end = bulge_point(
+                start_vertex.x,
+                start_vertex.y,
+                end_vertex.x,
+                end_vertex.y,
+                hatch.elevation,
+                start_vertex.z,
+                refined_index + 1,
+                subdivisions,
+            )?;
+            Some(GpuSegmentGeometry {
+                start: ocs_to_wcs * start,
+                end: ocs_to_wcs * end,
+                approximated_curve: start_vertex.z.abs() > CURVE_EPSILON,
+            })
+        }
         _ => None,
     }
 }
@@ -3227,6 +3466,188 @@ struct SplineSampling {
     domain_start: f64,
     domain_end: f64,
     uniform_domain: bool,
+}
+
+fn hatch_spline_sampling(edge: &SplineEdge) -> Option<SplineSampling> {
+    let degree = usize::try_from(edge.degree).ok()?;
+    let control_count = edge.control_points.len();
+    if degree == 0
+        || degree > MAX_SPLINE_DEGREE
+        || control_count <= degree
+        || edge.knots.len() < control_count.checked_add(degree)?.checked_add(1)?
+        || edge.knots.iter().any(|value| !value.is_finite())
+        || edge.knots.windows(2).any(|values| values[0] > values[1])
+        || edge
+            .control_points
+            .iter()
+            .any(|point| !point.x.is_finite() || !point.y.is_finite() || !point.z.is_finite())
+        || (edge.rational
+            && edge
+                .control_points
+                .iter()
+                .all(|point| point.z.abs() <= CURVE_EPSILON))
+    {
+        return None;
+    }
+    let domain_start = edge.knots[degree];
+    let domain_end = edge.knots[control_count];
+    if !domain_start.is_finite()
+        || !domain_end.is_finite()
+        || domain_end - domain_start <= CURVE_EPSILON
+    {
+        return None;
+    }
+    let nonzero_spans = (degree..control_count)
+        .filter(|&index| edge.knots[index + 1] - edge.knots[index] > CURVE_EPSILON)
+        .count();
+    if nonzero_spans == 0 {
+        return None;
+    }
+    let segments_per_span = if degree == 1 {
+        1
+    } else {
+        SPLINE_SEGMENTS_PER_SPAN
+    };
+    let requested_segments = nonzero_spans.checked_mul(segments_per_span)?;
+    Some(SplineSampling {
+        degree,
+        nonzero_spans,
+        segments_per_span,
+        segment_count: requested_segments.min(MAX_CURVE_SEGMENTS),
+        domain_start,
+        domain_end,
+        uniform_domain: requested_segments > MAX_CURVE_SEGMENTS,
+    })
+}
+
+fn hatch_spline_segment_parameters(
+    edge: &SplineEdge,
+    sampling: SplineSampling,
+    segment_index: usize,
+) -> Option<(f64, f64)> {
+    if segment_index >= sampling.segment_count {
+        return None;
+    }
+    if sampling.uniform_domain {
+        let scale = (sampling.domain_end - sampling.domain_start) / sampling.segment_count as f64;
+        return Some((
+            sampling.domain_start + scale * segment_index as f64,
+            sampling.domain_start + scale * (segment_index + 1) as f64,
+        ));
+    }
+
+    let span_ordinal = segment_index / sampling.segments_per_span;
+    let subdivision = segment_index % sampling.segments_per_span;
+    if span_ordinal >= sampling.nonzero_spans {
+        return None;
+    }
+    let mut current_span = 0_usize;
+    for knot_index in sampling.degree..edge.control_points.len() {
+        let span_start = edge.knots[knot_index];
+        let span_end = edge.knots[knot_index + 1];
+        if span_end - span_start <= CURVE_EPSILON {
+            continue;
+        }
+        if current_span == span_ordinal {
+            let scale = (span_end - span_start) / sampling.segments_per_span as f64;
+            return Some((
+                span_start + scale * subdivision as f64,
+                span_start + scale * (subdivision + 1) as f64,
+            ));
+        }
+        current_span += 1;
+    }
+    None
+}
+
+fn evaluate_hatch_spline(
+    edge: &SplineEdge,
+    sampling: SplineSampling,
+    parameter: f64,
+    elevation: f64,
+) -> Option<Vector3> {
+    let control_count = edge.control_points.len();
+    let span = if parameter >= sampling.domain_end - CURVE_EPSILON {
+        control_count - 1
+    } else {
+        (sampling.degree..control_count)
+            .find(|&index| edge.knots[index] <= parameter && parameter < edge.knots[index + 1])?
+    };
+    let mut points = [Vector3::ZERO; MAX_SPLINE_DEGREE + 1];
+    let mut weights = [0.0_f64; MAX_SPLINE_DEGREE + 1];
+    for index in 0..=sampling.degree {
+        let control_index = span.checked_sub(sampling.degree)?.checked_add(index)?;
+        let control = edge.control_points.get(control_index)?;
+        let weight = if edge.rational { control.z } else { 1.0 };
+        if !control.x.is_finite()
+            || !control.y.is_finite()
+            || !elevation.is_finite()
+            || !weight.is_finite()
+        {
+            return None;
+        }
+        points[index] = Vector3::new(control.x, control.y, elevation) * weight;
+        weights[index] = weight;
+    }
+
+    for level in 1..=sampling.degree {
+        for index in (level..=sampling.degree).rev() {
+            let knot_index = span - sampling.degree + index;
+            let denominator =
+                edge.knots[knot_index + sampling.degree - level + 1] - edge.knots[knot_index];
+            let alpha = if denominator.abs() <= CURVE_EPSILON {
+                0.0
+            } else {
+                ((parameter - edge.knots[knot_index]) / denominator).clamp(0.0, 1.0)
+            };
+            points[index] = points[index - 1] * (1.0 - alpha) + points[index] * alpha;
+            weights[index] = weights[index - 1] * (1.0 - alpha) + weights[index] * alpha;
+        }
+    }
+    let weight = weights[sampling.degree];
+    if !weight.is_finite() || weight.abs() <= CURVE_EPSILON {
+        return None;
+    }
+    Some(points[sampling.degree] / weight)
+}
+
+fn hatch_spline_fallback_segment_count(edge: &SplineEdge) -> usize {
+    let point_count = if edge.fit_points.len() >= 2 {
+        edge.fit_points.len()
+    } else {
+        edge.control_points.len()
+    };
+    polyline_segment_count(point_count, edge.periodic).min(MAX_CURVE_SEGMENTS)
+}
+
+fn hatch_spline_fallback_segment(
+    edge: &SplineEdge,
+    segment_index: usize,
+    elevation: f64,
+) -> Option<(Vector3, Vector3)> {
+    let use_fit_points = edge.fit_points.len() >= 2;
+    let point_count = if use_fit_points {
+        edge.fit_points.len()
+    } else {
+        edge.control_points.len()
+    };
+    let source_segments = polyline_segment_count(point_count, edge.periodic);
+    let output_segments = source_segments.min(MAX_CURVE_SEGMENTS);
+    if output_segments == 0 || segment_index >= output_segments {
+        return None;
+    }
+    let start_index = segment_index * source_segments / output_segments % point_count;
+    let end_index = (segment_index + 1) * source_segments / output_segments % point_count;
+    let point = |index: usize| {
+        if use_fit_points {
+            let value = edge.fit_points.get(index)?;
+            Some(Vector3::new(value.x, value.y, elevation))
+        } else {
+            let value = edge.control_points.get(index)?;
+            Some(Vector3::new(value.x, value.y, elevation))
+        }
+    };
+    Some((point(start_index)?, point(end_index)?))
 }
 
 fn curve_segment_count(sweep: f64) -> usize {
@@ -3827,8 +4248,9 @@ mod tests {
     use std::io::Cursor;
 
     use acadrust::entities::{
-        Arc, AttributeDefinition, AttributeEntity, Circle, Ellipse, EntityType, Insert, Line,
-        LwPolyline, MText, Spline, Text,
+        Arc, AttributeDefinition, AttributeEntity, BoundaryEdge, BoundaryPath, Circle,
+        CircularArcEdge, Ellipse, EntityType, Hatch, Insert, Line, LineEdge, LwPolyline, MText,
+        PolylineEdge, Spline, Text,
     };
     use acadrust::tables::BlockRecord;
     use acadrust::types::{Vector2, Vector3};
@@ -4062,6 +4484,70 @@ mod tests {
         let spline_midpoint = gpu_segment_geometry(&spline, 0).unwrap().end;
         assert!((spline_midpoint.x - 1.5).abs() < 1.0e-9);
         assert!((spline_midpoint.y - 0.75).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn hatch_boundaries_are_bounded_ocs_gpu_lines() {
+        let mut hatch = Hatch::new();
+        let mut path = BoundaryPath::new();
+        path.add_edge(BoundaryEdge::Line(LineEdge {
+            start: Vector2::new(0.0, 0.0),
+            end: Vector2::new(2.0, 0.0),
+        }));
+        path.add_edge(BoundaryEdge::CircularArc(CircularArcEdge {
+            center: Vector2::new(2.0, 1.0),
+            radius: 1.0,
+            start_angle: -std::f64::consts::FRAC_PI_2,
+            end_angle: std::f64::consts::FRAC_PI_2,
+            counter_clockwise: true,
+        }));
+        path.add_edge(BoundaryEdge::Polyline(PolylineEdge {
+            vertices: vec![Vector3::new(2.0, 2.0, 1.0), Vector3::new(0.0, 2.0, 0.0)],
+            is_closed: false,
+        }));
+        hatch.add_path(path);
+        let entity = EntityType::Hatch(hatch);
+
+        assert_eq!(gpu_entity_segment_count(&entity), 17);
+        let line = gpu_segment_geometry(&entity, 0).unwrap();
+        assert_eq!(line.start, Vector3::new(0.0, 0.0, 0.0));
+        assert_eq!(line.end, Vector3::new(2.0, 0.0, 0.0));
+        assert!(!line.approximated_curve);
+        let arc_end = gpu_segment_geometry(&entity, 8).unwrap().end;
+        assert!((arc_end.x - 2.0).abs() < 1.0e-9);
+        assert!((arc_end.y - 2.0).abs() < 1.0e-9);
+        assert!(gpu_segment_geometry(&entity, 17).is_none());
+
+        let mut document = CadDocument::new();
+        document.add_entity(entity).unwrap();
+        let mut cursor = Cursor::new(Vec::new());
+        let summary = write_scene_cache(&mut cursor, &document, 0).unwrap();
+        let bytes = cursor.into_inner();
+        assert_eq!(summary.counts.serialized_entities, 0);
+        assert_eq!(summary.counts.deferred_entities, 1);
+        assert_eq!(summary.gpu_lines.model_segments, 17);
+        assert_eq!(summary.gpu_lines.hatch_boundary_segments, 17);
+        assert_eq!(summary.gpu_lines.truncated_hatch_entities, 0);
+        let vertices = directory_entry(&bytes, SectionKind::GpuLineVertices);
+        let style = read_u32(&bytes, vertices.2 as usize + 28);
+        assert_eq!((style >> GPU_STYLE_SOURCE_KIND_SHIFT) & 0xf, 8);
+    }
+
+    #[test]
+    fn pathological_hatch_boundaries_report_the_display_cap() {
+        let edge = BoundaryEdge::Line(LineEdge {
+            start: Vector2::new(0.0, 0.0),
+            end: Vector2::new(1.0, 0.0),
+        });
+        let mut hatch = Hatch::new();
+        let mut path = BoundaryPath::new();
+        path.edges = vec![edge; MAX_HATCH_BOUNDARY_SEGMENTS + 1];
+        hatch.add_path(path);
+
+        assert_eq!(
+            hatch_boundary_segment_limit(&hatch),
+            (MAX_HATCH_BOUNDARY_SEGMENTS, true)
+        );
     }
 
     #[test]

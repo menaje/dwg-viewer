@@ -40,10 +40,19 @@ test("accepts the Scene Cache v1.3 header", async () => {
 test("rejects a newer unsupported Scene Cache minor version", async () => {
   await assert.rejects(
     SceneCacheReader.open(
-      new MemoryRangeSource(makeFixtureCache({ minorVersion: 5 })),
+      new MemoryRangeSource(makeFixtureCache({ minorVersion: 6 })),
     ),
-    /unsupported scene-cache version 1\.5/,
+    /unsupported scene-cache version 1\.6/,
   );
+});
+
+test("accepts the Scene Cache v1.5 HATCH-boundary header", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 5 })),
+  );
+
+  assert.equal(reader.header.major, 1);
+  assert.equal(reader.header.minor, 5);
 });
 
 test("preserves v1.4 Korean source text, style fonts and MTEXT columns", async () => {

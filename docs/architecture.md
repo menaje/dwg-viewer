@@ -22,9 +22,12 @@ geometry plus bounded ARC/CIRCLE/ELLIPSE and bulge chords, while preserving
 source records for a partial entity set. Bounded SPLINE evaluation and
 fit/control-point fallback now use the same cache contract. Scene Cache v1.4
 also proves UTF-8 TEXT, MTEXT, ATTDEF and attached ATTRIB preservation plus a
-bounded SHX/BigFont display path. It does not become the primary engine until
-the remaining source families and exact CAD text-layout fidelity are proved.
-ACadSharp remains a fallback candidate through the same adapter protocol.
+bounded SHX/BigFont display path. Scene Cache v1.5 adds a bounded preview of
+HATCH line, circular, elliptic, bulge and spline boundaries without adding a
+whole-drawing fill mesh. It does not become the primary engine until HATCH
+source/fill fidelity, the remaining source families and exact CAD text layout
+are proved. ACadSharp remains a fallback candidate through the same adapter
+protocol.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -61,6 +64,15 @@ text raised logical source coverage from 371,396 to 373,655 of 378,400
 entities (98.75%). The remaining 4,745 logical entities are reported rather
 than silently dropped.
 
+The Scene Cache v1.5 HATCH-boundary milestone measured 3,526 ms median
+conversion wall time and 592,216,064 bytes median peak RSS; measured maximums
+were 3,601 ms and 592,232,448 bytes. It added 35,550 bounded HATCH boundary
+segments with zero capped HATCH entities and zero non-finite skips. Full-detail
+segments rose from 1,624,205 to 1,659,755. The deterministic cache grew by
+2,277,760 bytes to 173,480,720 bytes, while the 4 MiB overview and 512 KiB
+detail-batch caps stayed unchanged. HATCH source/fill records are deliberately
+still deferred, so logical source coverage remains 373,655 of 378,400.
+
 The new text-style and text-source payload is 793,407 bytes on the reference
 drawing. Its 2,289 records include 2,259 logical TEXT/MTEXT/ATTDEF records and
 30 attached ATTRIB records. The cache reproduces the inspection fingerprint
@@ -76,12 +88,16 @@ validation and loading took about 5 ms more. This is a qualification
 measurement rather than a browser-memory guarantee, but it confirms that the
 cache is not read wholesale.
 
+With v1.5 boundary batches, the same first-frame path remains eight reads and
+5,001,477 bytes. The 2,560-byte increase is only the larger GPU batch
+directory; overview vertices remain exactly 4,194,304 bytes.
+
 The external sort keeps either one 8,192-record run or its small merge windows
 resident, while two private unnamed files consume about 312 MB of temporary
 disk at peak for the reference drawing and disappear on close.
 
 The parser itself accounts for almost all measured RSS: the current conversion
-maximum is only 7,964,160 bytes below the 600,000,000-byte target. Therefore
+maximum is only 7,767,552 bytes below the 600,000,000-byte target. Therefore
 future LibreDWG coverage must retain streaming or disk-backed bounded passes;
 a whole-drawing geometry vector would erase the margin.
 
@@ -104,12 +120,14 @@ batch around the camera before converting matrices to `f32`.
 
 ## Implemented cache slice
 
-Scene Cache v1.4 writes the drawing/layer/block/text-style tables and
+Scene Cache v1.5 writes the drawing/layer/block/text-style tables and
 source-precision LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE, ELLIPSE,
 SPLINE, TEXT, MTEXT, ATTDEF and ATTRIB records. The records retain owner
 handles so block definitions remain shared instead of being expanded per
 insertion. Text values, tags, prompts, font filenames and BigFont filenames
 remain UTF-8, while MTEXT column heights use a separate packed `f64` pool.
+HATCH currently contributes display boundaries only and therefore remains
+reported as deferred source data.
 
 The v1.2 display slice added local-origin `f32` line buffers. It keeps model
 space and block definitions separate, assigns every non-empty block a bounded
@@ -126,6 +144,14 @@ or control-point chords. Approximation bits stay attached to the GPU vertices,
 and the source-precision records remain available for later view-adaptive
 high-zoom refinement. Batch-local position error is recorded as a conservative
 `f32` upper bound without a second geometry traversal.
+
+The v1.5 display slice extends the same path to HATCH boundaries. Each HATCH
+is traversed directly from the parser object and contributes at most 65,536
+segments; straight edges, circular/elliptic arcs, bulges and rational spline
+edges all stay in the existing overview, Morton detail and byte-bounded cache
+pipeline. Reports count rendered boundary segments and capped HATCH entities.
+Solid, gradient and clipped pattern fills are intentionally left for a
+separate source-backed renderer.
 
 Large-drawing detail records are ordered by group and a 32-bit interleaved XY
 Morton key computed from each segment midpoint within that group's finite

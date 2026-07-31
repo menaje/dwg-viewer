@@ -10,6 +10,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define LIBREDWG_SCENE_CACHE_VERSION_MAJOR 1u
+#define LIBREDWG_SCENE_CACHE_VERSION_MINOR 5u
 #define LIBREDWG_SCENE_SECTION_COUNT 20
 
 typedef struct
@@ -43,6 +45,8 @@ typedef struct
   uint64_t block_segments;
   uint64_t overview_segments;
   uint64_t approximated_curve_segments;
+  uint64_t hatch_boundary_segments;
+  uint64_t truncated_hatch_entities;
   uint64_t skipped_non_finite_segments;
   uint64_t batches;
   uint64_t model_overview_batches;

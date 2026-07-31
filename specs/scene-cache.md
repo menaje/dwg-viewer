@@ -1,7 +1,7 @@
-# Scene Cache v1.4
+# Scene Cache v1.5
 
-Status: source geometry and text writer implemented; expansion tracked by
-GitHub issues #3 and #9.
+Status: source geometry/text writer and bounded HATCH-boundary preview
+implemented; expansion tracked by GitHub issues #3 and #9.
 
 The cache is a little-endian, versioned binary container designed for range
 reads and browser `ArrayBuffer`/`DataView` access. Geometry is never encoded as
@@ -75,7 +75,9 @@ Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
 Version 1.2 adds kinds 30–31 for straight and polyline GPU lines. Version 1.3
 extends those GPU sections with bounded curve chords without changing their
 binary record sizes. Version 1.4 adds kinds 4 and 22–23 for source text and
-font-style metadata. The validator continues to accept older v1 caches.
+font-style metadata. Version 1.5 adds bounded HATCH boundary chords and expands
+the packed GPU source-kind field without changing a record size. The validator
+continues to accept older v1 caches.
 
 ## Shared primitive prefix
 
@@ -231,6 +233,16 @@ CIRCLE, ELLIPSE, polyline bulges and NURBS SPLINE entities. Model-space
 geometry and each block definition remain separate. A block's vertices are
 stored once regardless of how many INSERT entities reference it.
 
+Scene Cache v1.5 also emits HATCH boundary paths. Straight edges remain exact
+within the derived `f32` display buffer; circular, elliptic, bulge and spline
+edges use the same bounded chord rules as the corresponding standalone
+entities. One HATCH contributes at most 65,536 boundary segments. The
+conversion report exposes both `hatch_boundary_segments` and
+`truncated_hatch_entities`, so the safety cap cannot silently hide a
+pathological boundary. Fill patterns, solid/gradient fills and HATCH
+source-precision records are not implemented yet; HATCH therefore remains in
+`coverage.deferred_entities`.
+
 Circular and bulge curves use no more than 16 segments per revolution. Valid
 splines use two segments per non-empty knot span and no more than 256 segments
 per entity. Invalid spline definitions fall back to their fit-point or
@@ -291,12 +303,13 @@ vertex buffer:
 | 24 | `u32` | entity handle high 32 bits |
 | 28 | `u32` | packed line weight, visibility, source kind and approximation flag |
 
-The packed style stores the signed line-weight bits in bits 0–15, invisibility
-in bit 16, source kind in bits 17–19 and the curved-chord approximation flag
-in bit 20. Source kinds are 0 LINE, 1 LWPOLYLINE, 2 2D POLYLINE, 3 3D
-POLYLINE, 4 ARC, 5 CIRCLE, 6 ELLIPSE and 7 SPLINE. Precise curve parameters,
-bulges and OCS metadata remain available in the source sections for later
-high-zoom refinement.
+For v1.5, the packed style stores the signed line-weight bits in bits 0–15,
+invisibility in bit 16, source kind in bits 17–20 and the curved-chord
+approximation flag in bit 21. Source kinds are 0 LINE, 1 LWPOLYLINE, 2 2D
+POLYLINE, 3 3D POLYLINE, 4 ARC, 5 CIRCLE, 6 ELLIPSE, 7 SPLINE and 8 HATCH
+boundary. In v1.2–v1.4, source kind occupies bits 17–19 and approximation is
+bit 20. Precise standalone curve parameters, bulges and OCS metadata remain
+available in the source sections for later high-zoom refinement.
 
 ## Deferred v1 work
 
@@ -305,6 +318,7 @@ high-zoom refinement.
 - automatic trusted SHX font discovery and project font mapping;
 - linetype override table;
 - view-adaptive high-zoom refinement beyond the bounded v1.3 curve chords;
+- HATCH source records plus solid, gradient and clipped pattern fills;
 - entity-selection index and source fingerprint.
 
 Cache files can contain project names and drawing text. They are local,
@@ -312,17 +326,18 @@ generated artifacts and must not be committed.
 
 ## LibreDWG qualification writer
 
-The optional LibreDWG adapter currently writes a valid but partial v1.4 cache
+The optional LibreDWG adapter currently writes a valid but partial v1.5 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
 pools. It also preserves text styles and UTF-8 TEXT, MTEXT, ATTDEF and attached
 ATTRIB source records. Its GPU sections render LINE and normalized polyline
-segments plus bounded ARC/CIRCLE/ELLIPSE, bulge and SPLINE chords. Circular
-curves use the same 16-segments-per-revolution limit; SPLINE evaluation and
-malformed-input fallback use the 256-segments-per-entity limit. All omitted
-logical entities are exposed in the conversion report rather than silently
-treated as supported.
+segments plus bounded ARC/CIRCLE/ELLIPSE, bulge, SPLINE and HATCH-boundary
+chords. Circular curves use the same 16-segments-per-revolution limit; SPLINE
+evaluation and malformed-input fallback use the 256-segments-per-entity limit.
+HATCH fills and source records remain deferred. All omitted logical entities
+and any HATCH boundary cap are exposed in the conversion report rather than
+silently treated as supported.
 
 This qualification writer keeps the same 4 MiB overview and 512 KiB detail
 limits and uses disk-backed group-local XY Morton ordering for detail batches.
