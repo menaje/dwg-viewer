@@ -15,7 +15,8 @@ temporary files are mode `0600`, close-on-exec, and removed automatically.
 HATCH sections use repeated bounded passes and retain at most one 65,536-point
 ring (about 1.5 MiB) while streaming. Pattern-definition lines and dash values
 are streamed in separate bounded passes, and no whole-drawing fill or pattern
-mesh is built in the converter.
+mesh is built in the converter. DIMENSION picture blocks reuse the existing
+fixed-size block-instance stream and do not copy their geometry.
 
 This is a deliberately partial conversion milestone:
 
@@ -23,6 +24,8 @@ This is a deliberately partial conversion milestone:
 - LINE, ARC, CIRCLE, INSERT/MINSERT, LWPOLYLINE, 2D/3D POLYLINE and
   ELLIPSE source records plus SPLINE headers and knot/weight/control/fit pools
   are preserved;
+- all seven DIMENSION families use their resolved anonymous picture block as
+  a one-by-one identity instance; unresolved targets remain deferred;
 - text-style names, SHX/BigFont filenames and UTF-8 TEXT, MTEXT, ATTDEF and
   attached ATTRIB source records are preserved, including bounded MTEXT column
   height pools;
@@ -134,12 +137,24 @@ explicit in the report. Adding 621 POINT and 350 SOLID records raises logical
 source coverage to 378,179 of 378,400 entities (99.94%); 221 remain deferred.
 The 392 solid and 3,161 pattern HATCH counts are unchanged.
 
+The DIMENSION follow-on resolves all 171 picture-block references while
+preserving `coverage.inserts` as the 3,659 source INSERT/MINSERT count.
+Coverage rises to 378,350 of 378,400 entities (99.99%), leaving 50 deferred.
+The unchanged kind-13 format contains 3,830 records and grows by exactly
+23,256 bytes; the complete deterministic cache is 176,136,872 bytes. GPU
+batch and vertex sections are byte-identical to the preceding cache. Three
+isolated measured conversions completed in 2,921 / 3,215 / 3,860 ms with
+590,036,992 / 591,691,776 / 591,708,160 bytes peak RSS (minimum / median /
+maximum), passing both gates with deterministic output.
+
 Public LibreDWG fixtures provide a reproducible cross-engine check. Both
 writers validated `example_2018.dwg` as one pattern HATCH with two definition
 lines and four dash values; the complete kind-37 and kind-38 payloads were
 byte-identical. The same fixture also matched at 46 POINT and 15 SOLID records,
-with byte-identical kind-39 and kind-40 payloads. `2018/Dynblocks.dwg` matched
-at one solid and three pattern
+with byte-identical kind-39 and kind-40 payloads. Both engines also resolve all
+nine DIMENSION picture blocks, producing 19 kind-13 records from ten source
+INSERTs and nine dimension references. `2018/Dynblocks.dwg` matched at one
+solid and three pattern
 HATCHes, eight loops, 104 fill vertices and four definition lines, again with
 byte-identical pattern sections. `2004/HatchG.dwg` matched at two gradient
 HATCHes, two loops and 269 fill vertices. None of those fixtures reached a cap
@@ -155,9 +170,17 @@ in about 414 ms with about 137 MB process RSS. It triangulated 379 usable
 solid fills into 5,585 triangles and a 536,160-byte GPU buffer. At drawing fit,
 the 1.5-pixel density rule correctly omitted all pattern strokes.
 
+With DIMENSION picture references, the first-frame path remains eight reads
+and grows by only 23,256 bytes to 5,025,093 bytes. Every one of the 171 source
+references is reachable. Repeated owners create 2,668 picture occurrences and
+380 nested downstream instances, growing the graph from 94,814 to 97,862
+packed matrices (390,144 additional bytes). A local qualification completed
+metadata validation, graph construction and overview loading in 345.6 ms at
+123,076,608 bytes peak RSS.
+
 The v1.8 POINT/SOLID qualification used six range reads totaling 686,107 bytes
-after the first line frame, including the block and INSERT metadata needed by
-its isolated worker. It completed source validation, instance-graph
+after the first line frame, including the block and block-instance metadata
+needed by its isolated worker. It completed source validation, instance-graph
 construction and mesh generation in 289.2 ms at about 111 MB process RSS. All
 621 POINT and 350 SOLID records rendered without a cap or invalid-owner skip;
 the transferred GPU payload was 66,624 bytes. The worker then exited before
@@ -168,6 +191,11 @@ An actual v1.8 Chromium qualification produced the first usable line frame in
 506.2 ms. At drawing fit, all 621 POINT and 350 SOLID records were active,
 HATCH fills and patterns completed, GPU vertex buffers totaled 4.57 MiB and
 the browser console contained no warnings or errors.
+
+The DIMENSION follow-on Chromium qualification produced the first usable line
+frame in 450.0 ms. GPU vertex buffers remained 4.57 MiB because the picture
+geometry was already cached, and the console again contained no warnings or
+errors.
 
 The earlier v1.7 Chromium qualification produced the first usable line frame in
 449.1 ms. At drawing fit, all 6,442 visible definition passes were below the

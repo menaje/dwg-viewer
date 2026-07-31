@@ -865,6 +865,7 @@ json_conversion_coverage (const LibreDwgPrimitiveCounts *counts)
   printf (",\"arcs\":%" PRIu64, counts->arcs);
   printf (",\"circles\":%" PRIu64, counts->circles);
   printf (",\"inserts\":%" PRIu64, counts->inserts);
+  printf (",\"dimensions\":%" PRIu64, counts->dimensions);
   printf (",\"lwpolylines\":%" PRIu64, counts->lwpolylines);
   printf (",\"polylines_2d\":%" PRIu64, counts->polylines_2d);
   printf (",\"polylines_3d\":%" PRIu64, counts->polylines_3d);

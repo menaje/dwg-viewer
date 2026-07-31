@@ -1,8 +1,9 @@
 # Scene Cache v1.8
 
-Status: source geometry/text writer, bounded HATCH rings and asynchronous
-solid/gradient fill, viewport-clipped pattern, POINT marker and SOLID
-fill/outline paths implemented; expansion tracked by GitHub issues #3 and #9.
+Status: source geometry/text writer, resolved DIMENSION picture-block
+instances, bounded HATCH rings and asynchronous solid/gradient fill,
+viewport-clipped pattern, POINT marker and SOLID fill/outline paths
+implemented; expansion tracked by GitHub issues #3 and #9.
 
 The cache is a little-endian, versioned binary container designed for range
 reads and browser `ArrayBuffer`/`DataView` access. Geometry is never encoded as
@@ -58,7 +59,7 @@ Section kinds currently written:
 | 10 | LINE records |
 | 11 | ARC records |
 | 12 | CIRCLE records |
-| 13 | INSERT records |
+| 13 | block-instance records (INSERT/MINSERT and resolved DIMENSION pictures) |
 | 14 | normalized polyline headers |
 | 15 | normalized polyline vertex pool |
 | 16 | ELLIPSE records |
@@ -89,9 +90,10 @@ font-style metadata. Version 1.5 adds bounded HATCH boundary chords and expands
 the packed GPU source-kind field without changing a record size. Version 1.6
 adds kinds 32–36 for bounded source-backed HATCH fills. Version 1.7 adds kinds
 37–38 for resolved pattern-definition lines and dash values. Version 1.8 adds
-kinds 39–40 for POINT and SOLID source records. The validator continues to
-accept older v1 caches, while a v1.8 writer always emits all 29 sections,
-including empty pools.
+kinds 39–40 for POINT and SOLID source records. Resolved DIMENSION picture
+blocks reuse the unchanged kind-13 record and therefore require no version
+bump or new section. The validator continues to accept older v1 caches, while
+a v1.8 writer always emits all 29 sections, including empty pools.
 
 ## Shared primitive prefix
 
@@ -125,8 +127,41 @@ Layer, block, text-style and text-entity sections begin with:
 | 8 | `u64` | UTF-8 blob offset relative to the section |
 
 Individual records contain offsets and lengths into the trailing UTF-8 blob.
-Layer and block data is stored once; primitive and INSERT records reference it
-by index or owner handle.
+Layer and block data is stored once; primitive and block-instance records
+reference it by index or owner handle.
+
+## Shared block-instance records
+
+Kind 13 is a 136-byte stream consumed by the same recursive instance graph for
+ordinary INSERT/MINSERT entities and resolved DIMENSION picture blocks:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u8[32]` | shared primitive prefix |
+| 32 | `u32` | target block-table index, or `0xffffffff` |
+| 36 | `u16` | column count |
+| 38 | `u16` | row count |
+| 40 | `f64[3]` | insertion point |
+| 64 | `f64[3]` | XYZ scale |
+| 88 | `f64` | rotation in radians |
+| 96 | `f64[3]` | OCS normal |
+| 120 | `f64` | column spacing |
+| 128 | `f64` | row spacing |
+
+An ordinary INSERT/MINSERT retains its source transform and contributes to
+`coverage.inserts`. A DIMENSION whose group-code-2 picture block resolves to
+the block table contributes to `coverage.dimensions` and writes a one-by-one
+identity reference: insertion point equals the target block base point, scale
+is `[1,1,1]`, rotation and spacing are zero, and normal is `[0,0,1]`. Because
+the instance transform subtracts the target base point, this record applies
+the DIMENSION owner's world transform without copying or moving the picture
+geometry. Its shared prefix retains the DIMENSION handle, owner, layer, color
+and visibility. A missing or non-finite target is not serialized and remains
+explicit in `coverage.deferred_entities`.
+
+DIMENSION picture blocks may themselves contain nested block references. The
+existing cycle, depth and global-instance limits therefore apply unchanged,
+as do the packed `Float64Array` matrices and shared GPU geometry.
 
 ## Text styles and source text
 
@@ -535,19 +570,20 @@ The optional LibreDWG adapter currently writes a valid but partial v1.8 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
-pools. It also preserves text styles and UTF-8 TEXT, MTEXT, ATTDEF and attached
-ATTRIB source records. Its GPU sections render LINE and normalized polyline
-segments plus bounded ARC/CIRCLE/ELLIPSE, bulge, SPLINE and HATCH-boundary
-chords. Circular curves use the same 16-segments-per-revolution limit; SPLINE
+pools. Resolved DIMENSION picture blocks use the same kind-13 instance stream.
+It also preserves text styles and UTF-8 TEXT, MTEXT, ATTDEF and attached ATTRIB
+source records. Its GPU sections render LINE and normalized polyline segments
+plus bounded ARC/CIRCLE/ELLIPSE, bulge, SPLINE and HATCH-boundary chords.
+Circular curves use the same 16-segments-per-revolution limit; SPLINE
 evaluation and malformed-input fallback use the 256-segments-per-entity limit.
 It also writes the seven bounded HATCH source/fill/pattern sections and the
 POINT/SOLID source sections, including `PDMODE`, `PDSIZE` and `FILLMODE`. The
 Webview range-reads those sections after the first line frame, builds POINT
 markers and SOLID geometry in a one-shot worker, triangulates solid and
 gradient HATCH rings, and regenerates clipped HATCH pattern strokes in the
-persistent worker. All omitted logical entities, skipped paths and safety caps
-are exposed in the conversion report rather than silently treated as
-supported.
+persistent worker. All omitted logical entities, unresolved DIMENSION blocks,
+skipped paths and safety caps are exposed in the conversion report rather than
+silently treated as supported.
 
 This qualification writer keeps the same 4 MiB overview and 512 KiB detail
 limits and uses disk-backed group-local XY Morton ordering for detail batches.

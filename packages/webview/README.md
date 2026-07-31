@@ -10,8 +10,8 @@ overlay for the VS Code Webview.
 - Validates section bounds, record sizes, string tables and GPU batch ranges.
 - Limits the overview to 8 MiB on read; current converters emit at most 4 MiB.
 - Limits each detail read to 512 KiB.
-- Resolves nested INSERT and MINSERT references while keeping block geometry
-  shared.
+- Resolves nested INSERT, MINSERT and DIMENSION picture-block references while
+  keeping block geometry shared.
 - Stores instance transforms in packed `Float64Array` collections.
 - Rebases world coordinates around the camera before WebGL2 `f32` upload.
 - Renders overview lines with batched, instanced draw calls.
@@ -75,9 +75,10 @@ stays local to the browser.
 pnpm --filter @dwg-viewer/webview check
 ```
 
-Tests cover bounded range reads, cache validation, nested block transforms,
-large-coordinate camera rebasing, camera controls, viewport detail selection,
-GPU resource ranges, layer visibility and LRU eviction/request coalescing.
+Tests cover bounded range reads, cache validation, nested/DIMENSION block
+transforms, invalid targets, cycles and instance/depth caps, large-coordinate
+camera rebasing, camera controls, viewport detail selection, GPU resource
+ranges, layer visibility and LRU eviction/request coalescing.
 They also cover delayed Korean text reads, SHX/BigFont cache limits and the
 v1.7 HATCH range, triangulation, dashed-pattern, block-clipping,
 large-coordinate and render-order contracts, plus v1.8 POINT/SOLID range,

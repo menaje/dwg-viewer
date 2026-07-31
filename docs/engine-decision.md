@@ -23,9 +23,9 @@ writer will not be implemented: parsing alone already exceeds the memory hard
 limit, so adding a writer cannot make the candidate eligible.
 
 Selection does not mean that the viewer is feature-complete. The follow-on
-Scene Cache v1.8 POINT/SOLID milestone leaves 221 source entities plus exact
-CAD text layout as product work on the LibreDWG path rather than reasons to
-keep the engine choice open.
+DIMENSION picture-block milestone leaves 50 source entities plus exact CAD
+text layout as product work on the LibreDWG path rather than reasons to keep
+the engine choice open.
 
 ## Reproducible evidence
 
@@ -70,6 +70,27 @@ coverage to 378,179 of 378,400 entities (99.94%). Its deterministic
 bytes. It therefore preserves the engine-selection result while reducing the
 deferred count from 1,192 to 221.
 
+The DIMENSION follow-on reuses the unchanged v1.8 kind-13 block-instance
+record. All 171 picture-block references in the reference drawing resolve,
+raising coverage to 378,350 of 378,400 entities (99.99%) and reducing the
+deferred count to 50. The deterministic cache grows by exactly 23,256 bytes
+to 176,136,872 bytes; the GPU batch and vertex sections are byte-identical to
+the preceding cache. Three isolated measured conversions completed in
+2,921 / 3,215 / 3,860 ms with 590,036,992 / 591,691,776 / 591,708,160 bytes
+peak RSS (minimum / median / maximum). Output was deterministic and both gates
+passed, so the extra bounded lookup and stream pass do not change the
+engine-selection result.
+
+The first-frame reader still performs eight reads. Metadata grows by the same
+23,256 bytes, from 5,001,837 to 5,025,093 bytes including the unchanged 4 MiB
+overview. Nested ownership expands the 171 source references into 2,668
+direct picture occurrences and 380 downstream nested instances; the total
+instance graph grows from 94,814 to 97,862 matrices, or 390,144 packed bytes.
+A local Node qualification completed the path in 345.6 ms at about 123 MB
+process RSS. An actual Chromium run produced the first usable line frame in
+450.0 ms with the same 4.57 MiB GPU vertex footprint and no console warning or
+error.
+
 The stable 0.14 release replaces the earlier 0.13.4 qualification pin. Its
 normalized conversion report and cache are byte-identical to 0.13.4 on the
 reference drawing, while median conversion wall time improves from 4,140 ms to
@@ -86,7 +107,9 @@ used as a reproducible product dependency.
 - Korean strings and CP949 support are available in the native parse path,
   while SHX/BigFont glyph parsing stays lazy in the Webview.
 - Public cross-engine fixtures validate all current HATCH modes and exact
-  pattern-section payloads; POINT and SOLID sections also match byte for byte.
+  pattern-section payloads; POINT and SOLID sections also match byte for byte,
+  and both engines resolve all nine DIMENSION picture blocks in
+  `example_2018.dwg`.
 
 The memory margin to the 600,000,000-byte target is small. New LibreDWG
 coverage must keep the current bounded streaming or disk-backed design; a
@@ -126,8 +149,7 @@ engineering distribution policy, not legal advice.
 
 ## Consequences
 
-- Finish DIMENSION, 3DFACE and WIPEOUT source/display decisions on the
-  LibreDWG writer.
+- Finish 3DFACE and WIPEOUT source/display decisions on the LibreDWG writer.
 - Continue Korean SHX/BigFont and exact MTEXT/OCS work in issues #5 and #7.
 - Use acadrust only for public cross-engine fixtures and regression oracles.
 - Keep the ACadSharp inspection adapter, package lock and parser preflight test;

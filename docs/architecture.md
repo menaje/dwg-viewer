@@ -33,9 +33,11 @@ whole-drawing fill mesh. Scene Cache v1.6 adds bounded HATCH source rings and
 worker-side solid/gradient fills. Scene Cache v1.7 adds resolved
 pattern-definition and dash pools plus viewport-clipped pattern rendering in
 the persistent HATCH worker. Scene Cache v1.8 adds lossless POINT and SOLID
-source records plus a bounded one-shot display worker. Remaining source
-families and exact CAD text layout are product-completeness gates on this
-selected engine, not an open parser choice.
+source records plus a bounded one-shot display worker. Resolved DIMENSION
+picture blocks reuse the existing kind-13 instance stream, so their nested
+block geometry reaches every renderer without a cache-version change or a
+second geometry copy. Remaining source families and exact CAD text layout are
+product-completeness gates on this selected engine, not an open parser choice.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -115,6 +117,17 @@ deterministic cache is 176,113,616 bytes, exactly 128,432 bytes larger than
 v1.7. Logical source coverage rises from 377,208 to 378,179 of 378,400
 entities (99.94%), leaving 221 deferred. Both conversion gates still pass.
 
+The DIMENSION picture-block follow-on keeps the v1.8 format and all 29
+sections. It resolves all 171 DIMENSION references in the reference drawing
+as one-by-one identity block instances, while `coverage.inserts` remains the
+3,659 source INSERT/MINSERT count. Coverage rises to 378,350 of 378,400
+entities (99.99%), leaving 50 deferred. Kind 13 grows from 497,624 to 520,880
+bytes and the deterministic cache grows by exactly the same 23,256 bytes to
+176,136,872 bytes. Kinds 30–31 are byte-identical before and after the change.
+Three isolated measured processes completed in 2,921 / 3,215 / 3,860 ms with
+590,036,992 / 591,691,776 / 591,708,160 bytes peak RSS (minimum / median /
+maximum). Output was deterministic and both conversion gates passed.
+
 The 0.14 cache and normalized conversion report are byte-identical to the
 0.13.4 result on the reference drawing, while median conversion time improves
 from 4,140 ms to 2,941 ms. Nightly `0.14.xxxx` prereleases are not used as the
@@ -130,7 +143,9 @@ Cross-engine conversion of public LibreDWG fixtures covers every HATCH mode.
 `example_2018.dwg` produces one pattern HATCH, two definition lines and four
 dash values; kinds 37–38 are byte-identical between acadrust and LibreDWG. Its
 46 POINT and 15 SOLID records also produce byte-identical kind-39 and kind-40
-payloads.
+payloads. The fixture's nine DIMENSION picture blocks resolve in both engines
+and produce 19 total kind-13 records: ten source INSERTs plus nine dimension
+references.
 `2018/Dynblocks.dwg` matches at one solid plus three pattern HATCHes, eight
 loops, 104 fill vertices and four definition lines, with identical pattern
 sections. `2004/HatchG.dwg` matches at two gradient HATCHes, two loops and 269
@@ -183,6 +198,17 @@ An actual Chromium run produced the first usable line frame in 506.2 ms,
 reported all 621 POINT and 350 SOLID records, used 4.57 MiB of GPU vertex
 buffers at drawing fit and emitted no console warning or error.
 
+The DIMENSION follow-on does not add a read. The same eight-read path grows
+from 5,001,837 to 5,025,093 bytes, exactly matching the 23,256-byte kind-13
+increase while the overview remains 4 MiB. Every one of the 171 source
+references is reachable. Repeated block ownership expands them into 2,668
+direct picture occurrences plus 380 nested downstream instances, moving the
+graph from 94,814 to 97,862 packed matrices. The exact matrix payload increase
+is 390,144 bytes. A local Node qualification completed metadata validation,
+graph construction and overview loading in 345.6 ms at 123,076,608 bytes peak
+RSS. An actual Chromium run produced the first usable line frame in 450.0 ms,
+kept GPU vertex buffers at 4.57 MiB and emitted no warning or error.
+
 An actual Chromium qualification produced the first usable line frame in
 449.1 ms. At drawing fit, the 1.5-pixel rule omitted all 6,442 visible
 definition passes and emitted no pattern buffer. After eight zoom-in actions
@@ -205,8 +231,9 @@ a whole-drawing geometry vector would erase the margin.
 
 The implemented Webview first-frame path opens the cache with `Blob.slice`
 or HTTP byte ranges. It validates the 64-byte header and section directory
-before reading metadata, resolves nested INSERT/MINSERT transforms into packed
-matrix arrays and uploads one bounded overview vertex prefix to WebGL2.
+before reading metadata, resolves nested INSERT/MINSERT and DIMENSION-picture
+transforms into packed matrix arrays and uploads one bounded overview vertex
+prefix to WebGL2.
 World-space transforms remain `f64` on the CPU; the renderer rebases each
 batch around the camera before converting matrices to `f32`.
 
@@ -224,11 +251,12 @@ batch around the camera before converting matrices to `f32`.
 
 Scene Cache v1.8 writes the drawing/layer/block/text-style tables and
 source-precision LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE, ELLIPSE,
-SPLINE, TEXT, MTEXT, ATTDEF, ATTRIB, POINT and SOLID records. The records
+SPLINE, TEXT, MTEXT, ATTDEF, ATTRIB, POINT and SOLID records. Resolved
+DIMENSION picture blocks share the kind-13 block-instance stream. The records
 retain owner handles so block definitions remain shared instead of being
-expanded per insertion. Text values, tags, prompts, font filenames and BigFont
-filenames remain UTF-8, while MTEXT column heights use a separate packed `f64`
-pool.
+expanded per insertion. Text values, tags, prompts, font filenames and
+BigFont filenames remain UTF-8, while MTEXT column heights use a separate
+packed `f64` pool.
 HATCH adds source records plus bounded closed `f64` ring, gradient-color and
 seed-point pools. Pattern-definition lines preserve parser-resolved angles,
 bases, offsets and dash/gap/dot sequences in separate typed pools. Original
@@ -277,7 +305,7 @@ current viewport. Definitions below 1.5 screen pixels are omitted before
 intersection work. For shared block definitions, only the union of visible
 instance intervals is generated and the GPU draw uses an explicit visible
 instance-index set, so a heavily reused block does not expand into one mesh
-per INSERT.
+per block instance.
 
 Pattern work is capped at 2,048 loops, 65,536 segments per HATCH, 250,000
 segments globally and eight million edge intersection tests; the packed
@@ -288,9 +316,11 @@ User-defined double patterns add the perpendicular pass; predefined
 definition lines are already resolved by the native parser.
 
 The v1.8 POINT/SOLID slice also stays outside the line first frame. A
-one-shot worker range-reads the two source sections plus block and INSERT
-metadata, reuses the instance graph, transfers only the packed display
-buffers and exits. POINT keeps WCS location and drawing `PDMODE`/`PDSIZE`;
+one-shot worker range-reads the two source sections plus block-table and
+block-instance metadata, reuses the instance graph including DIMENSION picture
+references,
+transfers only the packed display buffers and exits. POINT keeps WCS location
+and drawing `PDMODE`/`PDSIZE`;
 its shader draws bounded screen-space glyphs. SOLID keeps four OCS corners
 and drawing `FILLMODE`; the worker applies the arbitrary-axis transform and
 emits either fill triangles or three/four outline edges.

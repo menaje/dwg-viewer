@@ -1406,8 +1406,58 @@ is_logical_entity (const Dwg_Object *object)
     }
 }
 
+static const Dwg_DIMENSION_common *
+dimension_common (const Dwg_Object *object)
+{
+  if (!object || !object->tio.entity)
+    return NULL;
+  switch (object->fixedtype)
+    {
+    case DWG_TYPE_DIMENSION_LINEAR:
+    case DWG_TYPE_DIMENSION_ALIGNED:
+    case DWG_TYPE_DIMENSION_ANG2LN:
+    case DWG_TYPE_DIMENSION_ANG3PT:
+    case DWG_TYPE_DIMENSION_RADIUS:
+    case DWG_TYPE_DIMENSION_DIAMETER:
+    case DWG_TYPE_DIMENSION_ORDINATE:
+      return object->tio.entity->tio.DIMENSION_common;
+    default:
+      return NULL;
+    }
+}
+
+static int
+dimension_block_target (const Dwg_Object *object,
+                        const CacheTables *tables, uint64_t *target_handle,
+                        double base_point[3])
+{
+  const Dwg_DIMENSION_common *dimension = dimension_common (object);
+  uint64_t handle;
+  uint32_t block_index;
+  Dwg_Object_BLOCK_HEADER *block;
+  if (!dimension)
+    return 0;
+  handle = reference_handle (dimension->block);
+  block_index = find_handle_index (tables->block_indices,
+                                   tables->block_count, handle);
+  if (block_index == UINT32_MAX || block_index >= tables->block_count
+      || !tables->blocks[block_index].object
+      || !tables->blocks[block_index].object->tio.object
+      || !(block = tables->blocks[block_index]
+                       .object->tio.object->tio.BLOCK_HEADER))
+    return 0;
+  base_point[0] = block->base_pt.x;
+  base_point[1] = block->base_pt.y;
+  base_point[2] = block->base_pt.z;
+  if (!isfinite (base_point[0]) || !isfinite (base_point[1])
+      || !isfinite (base_point[2]))
+    return 0;
+  *target_handle = handle;
+  return 1;
+}
+
 static LibreDwgPrimitiveCounts
-count_primitives (const Dwg_Data *dwg)
+count_primitives (const Dwg_Data *dwg, const CacheTables *tables)
 {
   LibreDwgPrimitiveCounts counts;
   size_t i;
@@ -1488,6 +1538,21 @@ count_primitives (const Dwg_Data *dwg)
           if (object->tio.entity && object->tio.entity->tio.SOLID)
             counts.solids++;
           break;
+        case DWG_TYPE_DIMENSION_LINEAR:
+        case DWG_TYPE_DIMENSION_ALIGNED:
+        case DWG_TYPE_DIMENSION_ANG2LN:
+        case DWG_TYPE_DIMENSION_ANG3PT:
+        case DWG_TYPE_DIMENSION_RADIUS:
+        case DWG_TYPE_DIMENSION_DIAMETER:
+        case DWG_TYPE_DIMENSION_ORDINATE:
+          {
+            uint64_t target_handle;
+            double base_point[3];
+            if (dimension_block_target (object, tables, &target_handle,
+                                        base_point))
+              counts.dimensions++;
+          }
+          break;
         default:
           break;
         }
@@ -1501,6 +1566,7 @@ count_primitives (const Dwg_Data *dwg)
     }
   counts.serialized_entities = counts.lines + counts.arcs + counts.circles
                                + counts.inserts + counts.lwpolylines
+                               + counts.dimensions
                                + counts.polylines_2d
                                + counts.polylines_3d + counts.ellipses
                                + counts.splines + counts.texts
@@ -2575,6 +2641,24 @@ write_insert_section (CacheWriter *writer, const Dwg_Data *dwg,
                   bounded_u16_or_one (insert->num_cols),
                   bounded_u16_or_one (insert->num_rows),
                   insert->col_spacing, insert->row_spacing))
+            return 0;
+          count++;
+        }
+      else
+        {
+          uint64_t target_handle;
+          if (!dimension_block_target (object, tables, &target_handle,
+                                       insert_point))
+            continue;
+          scale[0] = 1.0;
+          scale[1] = 1.0;
+          scale[2] = 1.0;
+          normal[0] = 0.0;
+          normal[1] = 0.0;
+          normal[2] = 1.0;
+          if (!write_insert_record (writer, object, tables, insert_point,
+                                    scale, 0.0, normal, target_handle, 1, 1,
+                                    0.0, 0.0))
             return 0;
           count++;
         }
@@ -7138,7 +7222,7 @@ libredwg_write_scene_cache (
                         "cannot prepare bounded scene-cache tables");
       return 0;
     }
-  counts = count_primitives (dwg);
+  counts = count_primitives (dwg, &tables);
   if (!initialize_overview_plan (&tables, &overview))
     {
       if (error_message && error_message_size)

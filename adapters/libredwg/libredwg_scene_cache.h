@@ -30,6 +30,7 @@ typedef struct
   uint64_t arcs;
   uint64_t circles;
   uint64_t inserts;
+  uint64_t dimensions;
   uint64_t lwpolylines;
   uint64_t polylines_2d;
   uint64_t polylines_3d;

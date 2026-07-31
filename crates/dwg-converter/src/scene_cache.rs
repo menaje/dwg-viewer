@@ -5,7 +5,8 @@ use std::path::Path;
 use std::time::Instant;
 
 use acadrust::entities::{
-    AttributeEntity, BoundaryEdge, EntityCommon, EntityType, Hatch, HatchPatternLine, SplineEdge,
+    AttributeEntity, BoundaryEdge, Dimension, EntityCommon, EntityType, Hatch, HatchPatternLine,
+    SplineEdge,
 };
 use acadrust::types::{Color, Matrix3, Vector3};
 use acadrust::CadDocument;
@@ -124,6 +125,7 @@ pub struct PrimitiveCounts {
     pub arcs: u64,
     pub circles: u64,
     pub inserts: u64,
+    pub dimensions: u64,
     pub lwpolylines: u64,
     pub polylines_2d: u64,
     pub polylines_3d: u64,
@@ -141,6 +143,12 @@ pub struct PrimitiveCounts {
     pub hatches: u64,
     pub points: u64,
     pub solids: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BlockInstanceTarget {
+    index: u32,
+    base_point: Vector3,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -1502,7 +1510,6 @@ fn write_scene_cache<W: Write + Seek>(
     document: &CadDocument,
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
-    let counts = PrimitiveCounts::from_document(document);
     let section_count = 29_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
@@ -1522,17 +1529,8 @@ fn write_scene_cache<W: Write + Seek>(
             ))
         })
         .collect::<Result<_>>()?;
-    let block_indices: HashMap<String, u32> = document
-        .block_records
-        .iter()
-        .enumerate()
-        .map(|(index, block)| -> Result<_> {
-            Ok((
-                block.name.to_uppercase(),
-                u32::try_from(index).context("too many blocks for scene cache")?,
-            ))
-        })
-        .collect::<Result<_>>()?;
+    let block_targets = collect_block_instance_targets(document)?;
+    let counts = PrimitiveCounts::from_document(document, &block_targets);
     let text_style_indices: HashMap<String, u32> = document
         .text_styles
         .iter()
@@ -1557,7 +1555,7 @@ fn write_scene_cache<W: Write + Seek>(
         writer,
         document,
         &layer_indices,
-        &block_indices,
+        &block_targets,
     )?);
     sections.push(write_polyline_header_section(
         writer,
@@ -1641,7 +1639,10 @@ fn write_scene_cache<W: Write + Seek>(
 }
 
 impl PrimitiveCounts {
-    fn from_document(document: &CadDocument) -> Self {
+    fn from_document(
+        document: &CadDocument,
+        block_targets: &HashMap<String, BlockInstanceTarget>,
+    ) -> Self {
         let mut counts = Self {
             total_entities: document.entity_count() as u64,
             ..Self::default()
@@ -1654,6 +1655,11 @@ impl PrimitiveCounts {
                 EntityType::Insert(insert) => {
                     counts.inserts += 1;
                     counts.attributes += insert.attributes.len() as u64;
+                }
+                EntityType::Dimension(dimension) => {
+                    if dimension_instance_target(dimension, block_targets).is_some() {
+                        counts.dimensions += 1;
+                    }
                 }
                 EntityType::LwPolyline(polyline) => {
                     counts.lwpolylines += 1;
@@ -1689,6 +1695,7 @@ impl PrimitiveCounts {
             + counts.arcs
             + counts.circles
             + counts.inserts
+            + counts.dimensions
             + counts.lwpolylines
             + counts.polylines_2d
             + counts.polylines_3d
@@ -1705,6 +1712,35 @@ impl PrimitiveCounts {
             .saturating_sub(counts.serialized_entities);
         counts
     }
+}
+
+fn collect_block_instance_targets(
+    document: &CadDocument,
+) -> Result<HashMap<String, BlockInstanceTarget>> {
+    document
+        .block_records
+        .iter()
+        .enumerate()
+        .map(|(index, block)| -> Result<_> {
+            Ok((
+                block.name.to_uppercase(),
+                BlockInstanceTarget {
+                    index: u32::try_from(index).context("too many blocks for scene cache")?,
+                    base_point: block.base_point,
+                },
+            ))
+        })
+        .collect()
+}
+
+fn dimension_instance_target(
+    dimension: &Dimension,
+    block_targets: &HashMap<String, BlockInstanceTarget>,
+) -> Option<BlockInstanceTarget> {
+    let target = block_targets
+        .get(&dimension.base().block_name.to_uppercase())
+        .copied()?;
+    vector_is_finite(target.base_point).then_some(target)
 }
 
 fn write_header<W: Write>(
@@ -3123,31 +3159,54 @@ fn write_insert_section<W: Write + Seek>(
     writer: &mut W,
     document: &CadDocument,
     layer_indices: &HashMap<String, u32>,
-    block_indices: &HashMap<String, u32>,
+    block_targets: &HashMap<String, BlockInstanceTarget>,
 ) -> Result<SectionEntry> {
     let offset = aligned_position(writer)?;
     let mut count = 0_u64;
     for entity in document.entities() {
-        if let EntityType::Insert(insert) = entity {
-            write_common(writer, entity, layer_indices)?;
-            write_u32(
-                writer,
-                block_indices
+        match entity {
+            EntityType::Insert(insert) => {
+                let block_index = block_targets
                     .get(&insert.block_name.to_uppercase())
-                    .copied()
-                    .unwrap_or(u32::MAX),
-            )?;
-            write_u16(writer, insert.column_count)?;
-            write_u16(writer, insert.row_count)?;
-            write_vec3(writer, insert.insert_point)?;
-            write_f64(writer, insert.x_scale())?;
-            write_f64(writer, insert.y_scale())?;
-            write_f64(writer, insert.z_scale())?;
-            write_f64(writer, insert.rotation)?;
-            write_vec3(writer, insert.normal)?;
-            write_f64(writer, insert.column_spacing)?;
-            write_f64(writer, insert.row_spacing)?;
-            count += 1;
+                    .map(|target| target.index)
+                    .unwrap_or(u32::MAX);
+                write_block_instance_record(
+                    writer,
+                    entity,
+                    layer_indices,
+                    block_index,
+                    insert.column_count,
+                    insert.row_count,
+                    insert.insert_point,
+                    Vector3::new(insert.x_scale(), insert.y_scale(), insert.z_scale()),
+                    insert.rotation,
+                    insert.normal,
+                    insert.column_spacing,
+                    insert.row_spacing,
+                )?;
+                count += 1;
+            }
+            EntityType::Dimension(dimension) => {
+                let Some(target) = dimension_instance_target(dimension, block_targets) else {
+                    continue;
+                };
+                write_block_instance_record(
+                    writer,
+                    entity,
+                    layer_indices,
+                    target.index,
+                    1,
+                    1,
+                    target.base_point,
+                    Vector3::new(1.0, 1.0, 1.0),
+                    0.0,
+                    Vector3::UNIT_Z,
+                    0.0,
+                    0.0,
+                )?;
+                count += 1;
+            }
+            _ => {}
         }
     }
     finish_fixed_section(
@@ -3157,6 +3216,34 @@ fn write_insert_section<W: Write + Seek>(
         offset,
         count,
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_block_instance_record<W: Write>(
+    writer: &mut W,
+    entity: &EntityType,
+    layer_indices: &HashMap<String, u32>,
+    block_index: u32,
+    columns: u16,
+    rows: u16,
+    insert_point: Vector3,
+    scale: Vector3,
+    rotation: f64,
+    normal: Vector3,
+    column_spacing: f64,
+    row_spacing: f64,
+) -> Result<()> {
+    write_common(writer, entity, layer_indices)?;
+    write_u32(writer, block_index)?;
+    write_u16(writer, columns)?;
+    write_u16(writer, rows)?;
+    write_vec3(writer, insert_point)?;
+    write_vec3(writer, scale)?;
+    write_f64(writer, rotation)?;
+    write_vec3(writer, normal)?;
+    write_f64(writer, column_spacing)?;
+    write_f64(writer, row_spacing)?;
+    Ok(())
 }
 
 fn write_polyline_header_section<W: Write + Seek>(
@@ -5443,8 +5530,8 @@ mod tests {
 
     use acadrust::entities::{
         Arc, AttributeDefinition, AttributeEntity, BoundaryEdge, BoundaryPath, Circle,
-        CircularArcEdge, Ellipse, EntityType, Hatch, HatchPatternLine, Insert, Line, LineEdge,
-        LwPolyline, MText, Point, PolylineEdge, Solid, Spline, Text,
+        CircularArcEdge, Dimension, DimensionLinear, Ellipse, EntityType, Hatch, HatchPatternLine,
+        Insert, Line, LineEdge, LwPolyline, MText, Point, PolylineEdge, Solid, Spline, Text,
     };
     use acadrust::tables::BlockRecord;
     use acadrust::types::{Color, Vector2, Vector3};
@@ -6099,6 +6186,91 @@ mod tests {
     }
 
     #[test]
+    fn dimension_picture_block_reuses_the_block_instance_stream() {
+        let mut document = CadDocument::new();
+        let owner_handle = document.allocate_handle();
+        let mut owner = BlockRecord::new("OWNER");
+        owner.handle = owner_handle;
+        document.block_records.add(owner).unwrap();
+
+        let picture_handle = document.allocate_handle();
+        let mut picture = BlockRecord::new("*D1");
+        picture.handle = picture_handle;
+        picture.base_point = Vector3::new(3.0, 4.0, 0.0);
+        document.block_records.add(picture).unwrap();
+
+        let mut picture_line = Line::from_coords(7.0, 8.0, 0.0, 9.0, 8.0, 0.0);
+        picture_line.common.owner_handle = picture_handle;
+        document.add_entity(EntityType::Line(picture_line)).unwrap();
+
+        let mut dimension = Dimension::Linear(DimensionLinear::new(
+            Vector3::ZERO,
+            Vector3::new(2.0, 0.0, 0.0),
+        ));
+        dimension.base_mut().block_name = "*D1".to_string();
+        dimension.base_mut().common.owner_handle = owner_handle;
+        document
+            .add_entity(EntityType::Dimension(dimension))
+            .unwrap();
+
+        let mut cursor = Cursor::new(Vec::new());
+        let summary = write_scene_cache(&mut cursor, &document, 0).unwrap();
+        let bytes = cursor.into_inner();
+        validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
+
+        assert_eq!(summary.counts.inserts, 0);
+        assert_eq!(summary.counts.dimensions, 1);
+        assert_eq!(summary.counts.serialized_entities, 2);
+        assert_eq!(summary.counts.deferred_entities, 0);
+        assert_eq!(summary.gpu_lines.block_segments, 1);
+
+        let inserts = directory_entry(&bytes, SectionKind::Inserts);
+        assert_eq!(inserts.3, 1);
+        let offset = usize::try_from(inserts.2).unwrap();
+        let picture_index = document
+            .block_records
+            .iter()
+            .position(|block| block.name == "*D1")
+            .unwrap() as u32;
+        assert_eq!(read_u64(&bytes, offset + 8), owner_handle.value());
+        assert_eq!(read_u32(&bytes, offset + 32), picture_index);
+        assert_eq!(read_u16(&bytes, offset + 36), 1);
+        assert_eq!(read_u16(&bytes, offset + 38), 1);
+        assert_eq!(read_f64(&bytes, offset + 40), 3.0);
+        assert_eq!(read_f64(&bytes, offset + 48), 4.0);
+        assert_eq!(read_f64(&bytes, offset + 64), 1.0);
+        assert_eq!(read_f64(&bytes, offset + 72), 1.0);
+        assert_eq!(read_f64(&bytes, offset + 80), 1.0);
+        assert_eq!(read_f64(&bytes, offset + 88), 0.0);
+        assert_eq!(read_f64(&bytes, offset + 96), 0.0);
+        assert_eq!(read_f64(&bytes, offset + 104), 0.0);
+        assert_eq!(read_f64(&bytes, offset + 112), 1.0);
+    }
+
+    #[test]
+    fn unresolved_dimension_picture_block_remains_deferred() {
+        let mut document = CadDocument::new();
+        let mut dimension = Dimension::Linear(DimensionLinear::new(
+            Vector3::ZERO,
+            Vector3::new(2.0, 0.0, 0.0),
+        ));
+        dimension.base_mut().block_name = "*MISSING".to_string();
+        document
+            .add_entity(EntityType::Dimension(dimension))
+            .unwrap();
+
+        let mut cursor = Cursor::new(Vec::new());
+        let summary = write_scene_cache(&mut cursor, &document, 0).unwrap();
+        let bytes = cursor.into_inner();
+        let inserts = directory_entry(&bytes, SectionKind::Inserts);
+
+        assert_eq!(summary.counts.dimensions, 0);
+        assert_eq!(summary.counts.serialized_entities, 0);
+        assert_eq!(summary.counts.deferred_entities, 1);
+        assert_eq!(inserts.3, 0);
+    }
+
+    #[test]
     fn overview_sampling_is_bounded_and_keeps_both_spatial_ends() {
         let segments: Vec<_> = (0..SCENE_OVERVIEW_SEGMENTS + 17)
             .map(|index| SpatialSegmentRef {
@@ -6180,7 +6352,8 @@ mod tests {
             )))
             .unwrap();
 
-        let counts = PrimitiveCounts::from_document(&document);
+        let block_targets = collect_block_instance_targets(&document).unwrap();
+        let counts = PrimitiveCounts::from_document(&document, &block_targets);
         assert_eq!(counts.total_entities, 3);
         assert_eq!(counts.points, 1);
         assert_eq!(counts.solids, 1);

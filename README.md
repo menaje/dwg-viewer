@@ -72,14 +72,17 @@ TEXT, MTEXT, ATTDEF, ATTRIB과 문자 스타일·SHX/BigFont 파일명을 UTF-8�
 그라데이션을 채웁니다. v1.7은 패턴 정의선과 dash 풀을 보존하고
 화면 기반 패턴 선을 생성합니다. v1.8은 POINT의 WCS 좌표와
 PDMODE/PDSIZE, SOLID의 OCS 네 모서리와 FILLMODE를 보존하고 첫 화면 뒤
-표시합니다. 남은 엔티티 계열 및 정밀 MTEXT/OCS 배치는 선택된
-LibreDWG 경로의 제품 완성도 작업으로 계속 진행합니다.
+표시합니다. 해석 가능한 DIMENSION은 별도 형상을 만들지 않고 도면이
+가진 익명 그림 블록을 기존 블록 인스턴스 흐름에 연결합니다. 남은
+엔티티 계열 및 정밀 MTEXT/OCS 배치는 선택된 LibreDWG 경로의 제품
+완성도 작업으로 계속 진행합니다.
 
 ## 최소 Scene Cache 생성
 
-현재 캐시 작성기는 LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE,
-ELLIPSE, SPLINE과 네 문자 계열을 레이어·문자 스타일·공유 블록 정보와
-함께 little-endian 이진 형식으로 저장합니다. Scene Cache v1.8은
+현재 캐시 작성기는 LINE, ARC, CIRCLE, INSERT, 해석 가능한 DIMENSION
+그림 블록 참조, LWPOLYLINE/POLYLINE, ELLIPSE, SPLINE과 네 문자 계열을
+레이어·문자 스타일·공유 블록 정보와 함께 little-endian 이진 형식으로
+저장합니다. Scene Cache v1.8은
 원본 정밀 좌표와 별도로
 로컬 원점 기반 `f32` GPU 선 버퍼를 만들며, 첫 화면용 데이터는 최대
 4MiB, 개별 상세 청크는 최대 512KiB로 제한합니다. 블록 형상은 배치
