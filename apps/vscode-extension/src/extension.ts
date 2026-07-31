@@ -9,9 +9,82 @@ import {
   resolveLibreDwgAdapter,
 } from "./native-cache";
 import { CacheRangeChannel } from "./range-channel";
+import {
+  MAX_SHX_FONT_DIRECTORIES,
+  ShxFontChannel,
+} from "./shx-font-channel";
 import { renderWebviewHtml } from "./webview-html";
 
 const VIEW_TYPE = "dwgViewer.dwg";
+const ADD_SHX_FONT_FOLDERS_COMMAND = "dwgViewer.addShxFontFolders";
+
+function fontDirectoryKey(value: string): string {
+  const resolved = path.resolve(value);
+  return process.platform === "win32"
+    ? resolved.toLocaleLowerCase("en-US")
+    : resolved;
+}
+
+async function addShxFontFolders(): Promise<boolean> {
+  const selected = await vscode.window.showOpenDialog({
+    canSelectFiles: false,
+    canSelectFolders: true,
+    canSelectMany: true,
+    title: "DWG Viewer에서 사용할 SHX·BigFont 폴더 선택",
+    openLabel: "글꼴 폴더 추가",
+  });
+  const directories = (selected ?? [])
+    .filter((uri) => uri.scheme === "file")
+    .map((uri) => path.resolve(uri.fsPath));
+  if (directories.length === 0) {
+    return false;
+  }
+
+  const configuration = vscode.workspace.getConfiguration("dwgViewer");
+  const current = configuration.get<unknown>("shxFontDirectories", []);
+  const currentDirectories = Array.isArray(current)
+    ? current.filter((value): value is string => typeof value === "string")
+    : [];
+  const existingKeys = new Set(
+    currentDirectories
+      .filter((directory) => path.isAbsolute(directory))
+      .map(fontDirectoryKey),
+  );
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  let added = 0;
+  for (const directory of [
+    ...currentDirectories,
+    ...directories,
+  ]) {
+    if (!path.isAbsolute(directory)) {
+      continue;
+    }
+    const resolved = path.resolve(directory);
+    const key = fontDirectoryKey(resolved);
+    if (
+      !seen.has(key) &&
+      merged.length < MAX_SHX_FONT_DIRECTORIES - 1
+    ) {
+      seen.add(key);
+      merged.push(resolved);
+      if (!existingKeys.has(key)) {
+        added += 1;
+      }
+    }
+  }
+  await configuration.update(
+    "shxFontDirectories",
+    merged,
+    vscode.ConfigurationTarget.Global,
+  );
+  void vscode.window.showInformationMessage(
+    added > 0
+      ? `DWG Viewer: SHX 글꼴 폴더 ${added.toLocaleString()}개를 추가했습니다.`
+      : "DWG Viewer: 기존 SHX 글꼴 폴더 설정을 다시 읽습니다.",
+  );
+  return true;
+}
 
 class DwgDocument implements vscode.CustomDocument {
   private readonly sessions = new Set<() => void>();
@@ -36,6 +109,8 @@ interface HostMessage {
   code?: unknown;
   cacheId?: unknown;
   firstFrameMs?: unknown;
+  requestId?: unknown;
+  name?: unknown;
 }
 
 class DwgEditorProvider
@@ -91,6 +166,7 @@ class DwgEditorProvider
     let generation = 0;
     let conversion: AbortController | undefined;
     let rangeChannel: CacheRangeChannel | undefined;
+    let fontChannel: ShxFontChannel | undefined;
     let activeCacheId: string | undefined;
     let activeCacheReused = false;
     let openStartedAt = 0;
@@ -113,9 +189,57 @@ class DwgEditorProvider
     const stopCurrent = async (): Promise<void> => {
       conversion?.abort();
       conversion = undefined;
+      activeCacheId = undefined;
       const channel = rangeChannel;
       rangeChannel = undefined;
+      fontChannel?.dispose();
+      fontChannel = undefined;
       await channel?.dispose();
+    };
+
+    const createFontChannel = (cacheId: string): ShxFontChannel => {
+      const configuration = vscode.workspace.getConfiguration(
+        "dwgViewer",
+        document.uri,
+      );
+      const rawDirectories = configuration.get<unknown>(
+        "shxFontDirectories",
+        [],
+      );
+      const rawMappings = configuration.get<unknown>("shxFontMappings", {});
+      const fontDirectories = Array.isArray(rawDirectories)
+        ? rawDirectories.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [];
+      const fontMappings =
+        typeof rawMappings === "object" &&
+        rawMappings !== null &&
+        !Array.isArray(rawMappings)
+          ? (rawMappings as Record<string, string>)
+          : {};
+      return new ShxFontChannel(
+        cacheId,
+        {
+          drawingDirectory: path.dirname(document.uri.fsPath),
+          fontDirectories,
+          fontMappings,
+        },
+        (message) => webviewPanel.webview.postMessage(message),
+      );
+    };
+
+    const reloadFontConfiguration = (): void => {
+      fontChannel?.dispose();
+      fontChannel = activeCacheId
+        ? createFontChannel(activeCacheId)
+        : undefined;
+      if (activeCacheId) {
+        void webviewPanel.webview.postMessage({
+          type: "dwg-font-configuration-changed/1",
+          cacheId: activeCacheId,
+        });
+      }
     };
 
     const start = async (
@@ -212,6 +336,7 @@ class DwgEditorProvider
         rangeChannel = channel;
         activeCacheId = prepared.cacheId;
         activeCacheReused = prepared.reused;
+        fontChannel = createFontChannel(prepared.cacheId);
         await webviewPanel.webview.postMessage({
           type: "dwg-cache-ready/1",
           cacheId: prepared.cacheId,
@@ -268,6 +393,9 @@ class DwgEditorProvider
         if (rangeChannel?.handleMessage(raw)) {
           return;
         }
+        if (fontChannel?.handleMessage(raw)) {
+          return;
+        }
         switch (raw?.type) {
           case "dwg-webview-ready/1":
             requestStart(false);
@@ -278,6 +406,34 @@ class DwgEditorProvider
           case "dwg-cache-rebuild/1":
             requestStart(true);
             break;
+          case "dwg-font-folder-select/1": {
+            const previousChannel = fontChannel;
+            void Promise.resolve(
+              vscode.commands.executeCommand<boolean>(
+                ADD_SHX_FONT_FOLDERS_COMMAND,
+              ),
+            )
+              .then((changed) => {
+                if (changed && fontChannel === previousChannel) {
+                  reloadFontConfiguration();
+                }
+                return webviewPanel.webview.postMessage({
+                  type: "dwg-font-folder-select-result/1",
+                  changed: Boolean(changed),
+                });
+              })
+              .catch(() => {
+                this.output.appendLine(
+                  "[FONT_CONFIGURATION_FAILED] cannot update SHX font folders",
+                );
+                return webviewPanel.webview.postMessage({
+                  type: "dwg-font-folder-select-result/1",
+                  changed: false,
+                  failed: true,
+                });
+              });
+            break;
+          }
           case "dwg-first-frame-ready/1":
             if (raw.cacheId === activeCacheId) {
               const hostElapsed = Math.max(0, Date.now() - openStartedAt);
@@ -304,6 +460,23 @@ class DwgEditorProvider
         }
       });
 
+    const fontConfigurationSubscription =
+      vscode.workspace.onDidChangeConfiguration((event) => {
+        if (
+          !event.affectsConfiguration(
+            "dwgViewer.shxFontDirectories",
+            document.uri,
+          ) &&
+          !event.affectsConfiguration(
+            "dwgViewer.shxFontMappings",
+            document.uri,
+          )
+        ) {
+          return;
+        }
+        reloadFontConfiguration();
+      });
+
     let resolutionCancellation: vscode.Disposable | undefined;
     const disposeSession = (): void => {
       if (disposed) {
@@ -312,6 +485,7 @@ class DwgEditorProvider
       disposed = true;
       generation += 1;
       messageSubscription.dispose();
+      fontConfigurationSubscription.dispose();
       resolutionCancellation?.dispose();
       resolutionCancellation = undefined;
       void stopCurrent();
@@ -335,6 +509,10 @@ export function activate(context: vscode.ExtensionContext): void {
   const provider = new DwgEditorProvider(context, output);
   context.subscriptions.push(
     output,
+    vscode.commands.registerCommand(
+      ADD_SHX_FONT_FOLDERS_COMMAND,
+      addShxFontFolders,
+    ),
     vscode.window.registerCustomEditorProvider(VIEW_TYPE, provider, {
       supportsMultipleEditorsPerDocument: false,
       webviewOptions: {

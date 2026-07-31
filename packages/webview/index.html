@@ -26,10 +26,19 @@
             >
               레이어
             </button>
+            <button
+              id="fonts-toggle"
+              type="button"
+              disabled
+              aria-expanded="false"
+              aria-controls="font-panel"
+            >
+              글꼴
+            </button>
             <button type="button" data-view-action="zoom-in" disabled aria-label="확대">+</button>
           </nav>
-          <label class="file-button secondary">
-            SHX 글꼴
+          <label id="font-file-button" class="file-button secondary">
+            SHX 파일
             <input id="font-files" type="file" accept=".shx" multiple />
           </label>
           <label id="cache-picker" class="file-button">
@@ -63,6 +72,19 @@
             <button id="layers-hide-all" type="button">전체 끄기</button>
           </div>
           <ul id="layer-list"></ul>
+        </aside>
+        <aside id="font-panel" class="font-panel" aria-label="SHX 글꼴 상태" hidden>
+          <div class="font-panel-heading">
+            <strong>SHX·BigFont</strong>
+            <span id="font-summary"></span>
+          </div>
+          <p id="font-panel-help">
+            도면이 요구하는 글꼴을 확인합니다.
+          </p>
+          <button id="host-font-folder" type="button" hidden>
+            글꼴 폴더 추가
+          </button>
+          <ul id="font-status-list"></ul>
         </aside>
         <div class="empty-state">
           <strong>생성된 DWG 캐시를 여기에 놓으세요.</strong>

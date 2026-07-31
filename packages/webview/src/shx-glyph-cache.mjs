@@ -250,11 +250,34 @@ export class ShxGlyphCache {
     return this.#resolveFont(name) !== undefined;
   }
 
+  fontStatus(name) {
+    const record = this.#resolveFont(name);
+    if (!record) {
+      return Object.freeze({ state: "missing", name: normalizeShxFontName(name) });
+    }
+    return Object.freeze({
+      state: record.error ? "invalid" : "registered",
+      name: record.name,
+      size: record.buffer.byteLength,
+      error: record.error?.message,
+    });
+  }
+
+  unregisterFont(name) {
+    const record = this.#resolveFont(name);
+    if (!record) {
+      return false;
+    }
+    this.#removeFont(record);
+    return true;
+  }
+
   missingFonts(styles) {
     const missing = new Set();
     for (const style of styles) {
       for (const name of [style.fontFile, style.bigFontFile]) {
-        if (name && !this.hasFont(name)) {
+        const record = this.#resolveFont(name);
+        if (name && (!record || record.error)) {
           missing.add(name);
         }
       }
@@ -297,8 +320,7 @@ export class ShxGlyphCache {
     this.glyphBytes = 0;
     this.glyphSegments = 0;
     for (const record of this.fonts) {
-      record.font?.release();
-      record.parsedGlyphs = 0;
+      this.#closeParser(record);
     }
   }
 
@@ -434,14 +456,12 @@ export class ShxGlyphCache {
       });
       record.parsedGlyphs += 1;
       if (record.parsedGlyphs >= this.parserGlyphWindow) {
-        font.release();
-        record.parsedGlyphs = 0;
+        this.#closeParser(record);
       }
       return glyph;
     } catch {
       this.#storeGlyph(key, { glyph: null, bytes: 0, segments: 0 });
-      font.release();
-      record.parsedGlyphs = 0;
+      this.#closeParser(record);
       return undefined;
     }
   }

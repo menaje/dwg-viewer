@@ -10,6 +10,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -207,7 +211,8 @@ canvas.panning {
   backdrop-filter: blur(10px);
 }
 
-.layer-panel {
+.layer-panel,
+.font-panel {
   position: absolute;
   z-index: 2;
   top: 0.75rem;
@@ -225,12 +230,14 @@ canvas.panning {
   backdrop-filter: blur(14px);
 }
 
-.layer-panel[hidden] {
+.layer-panel[hidden],
+.font-panel[hidden] {
   display: none;
 }
 
 .layer-panel-heading,
-.layer-actions {
+.layer-actions,
+.font-panel-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -240,6 +247,104 @@ canvas.panning {
 .layer-panel-heading span {
   color: #8f9bad;
   font-size: 0.75rem;
+}
+
+.font-panel {
+  right: auto;
+  left: 0.75rem;
+  width: min(26rem, calc(100% - 1.5rem));
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+}
+
+.font-panel-heading span {
+  color: #8f9bad;
+  font-size: 0.75rem;
+}
+
+#font-panel-help {
+  color: #aeb9c8;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+#host-font-folder {
+  justify-self: start;
+  cursor: pointer;
+  border: 1px solid #3d73bd;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.7rem;
+  background: #18345b;
+  color: #e6effc;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+#host-font-folder:hover {
+  background: #224a7f;
+}
+
+#font-status-list {
+  overflow: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#font-status-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.2rem 0.75rem;
+  border-top: 1px solid #222d3c;
+  padding: 0.55rem 0.15rem;
+  font-size: 0.78rem;
+}
+
+.font-name,
+.font-resolution {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.font-resolution {
+  grid-column: 1 / -1;
+  color: #8592a5;
+  font-size: 0.7rem;
+}
+
+.font-state {
+  border-radius: 999px;
+  padding: 0.12rem 0.42rem;
+  background: #263246;
+  color: #cbd6e6;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.font-state[data-state="loaded"] {
+  background: #173c2c;
+  color: #8de0b1;
+}
+
+.font-state[data-state="mapped"] {
+  background: #26375b;
+  color: #9fc1ff;
+}
+
+.font-state[data-state="loading"] {
+  background: #493c16;
+  color: #f0d37c;
+}
+
+.font-state[data-state="missing"],
+.font-state[data-state="invalid"],
+.font-state[data-state="unreadable"],
+.font-state[data-state="too-large"],
+.font-state[data-state="budget-exceeded"] {
+  background: #512425;
+  color: #ffb0b0;
 }
 
 #layer-search {

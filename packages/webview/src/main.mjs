@@ -9,13 +9,23 @@ import { buildMaskOrderPlan } from "./mask-order.mjs";
 import { WebviewMemoryTelemetry } from "./memory-telemetry.mjs";
 import { BlobRangeSource, TrackedRangeSource } from "./range-source.mjs";
 import { WebGlLineRenderer } from "./renderer.mjs";
-import { ShxGlyphCache } from "./shx-glyph-cache.mjs";
+import {
+  normalizeShxFontName,
+  ShxGlyphCache,
+} from "./shx-glyph-cache.mjs";
 import { CanvasTextOverlay } from "./text-overlay.mjs";
 import { loadFirstFrame } from "./viewer.mjs";
 
 const fileInput = document.querySelector("#cache-file");
 const cachePicker = document.querySelector("#cache-picker");
 const fontInput = document.querySelector("#font-files");
+const fontFileButton = document.querySelector("#font-file-button");
+const fontsToggle = document.querySelector("#fonts-toggle");
+const fontPanel = document.querySelector("#font-panel");
+const fontSummary = document.querySelector("#font-summary");
+const fontPanelHelp = document.querySelector("#font-panel-help");
+const fontStatusList = document.querySelector("#font-status-list");
+const hostFontFolder = document.querySelector("#host-font-folder");
 const dropZone = document.querySelector("#drop-zone");
 const status = document.querySelector("#status");
 const metrics = document.querySelector("#metrics");
@@ -43,10 +53,18 @@ let activeRenderInstanceGraph;
 let activeMaskStatus;
 let activeMemoryTelemetry;
 let hatchPatternTimer;
+let fontRefreshTimer;
 let lastPatternCameraKey;
 let patternRequestRevision = 0;
 let openRevision = 0;
 const glyphCache = new ShxGlyphCache();
+const fontDiagnostics = new Map();
+const pendingHostFontRequests = new Map();
+const attemptedHostFontKeys = new Set();
+const hostLoadedFontKeys = new Set();
+let activeTextStyles = Object.freeze([]);
+let activeHostCacheId;
+let nextHostFontRequestId = 1;
 const HATCH_PATTERN_DEBOUNCE_MS = 160;
 const vscodeApi =
   typeof globalThis.acquireVsCodeApi === "function"
@@ -58,6 +76,279 @@ function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / 1024 ** 2).toFixed(2)} MiB`;
+}
+
+function displayFontName(value) {
+  if (typeof value !== "string") {
+    return "(이름 없음)";
+  }
+  return value.split(/[\\/]/).at(-1)?.slice(0, 120) || "(이름 없음)";
+}
+
+function requiredFonts(styles) {
+  const required = new Map();
+  for (const style of styles) {
+    for (const name of [style.fontFile, style.bigFontFile]) {
+      const key = normalizeShxFontName(name);
+      if (key && !required.has(key)) {
+        required.set(key, {
+          key,
+          name,
+          displayName: displayFontName(name),
+        });
+      }
+    }
+  }
+  return required;
+}
+
+function fontStateLabel(state) {
+  return (
+    {
+      loaded: "연결됨",
+      mapped: "대체됨",
+      loading: "찾는 중",
+      missing: "누락",
+      invalid: "손상",
+      unreadable: "읽기 실패",
+      "too-large": "크기 초과",
+      "budget-exceeded": "한도 초과",
+    }[state] ?? "확인 중"
+  );
+}
+
+function renderFontDiagnostics() {
+  const entries = [...fontDiagnostics.values()];
+  const ready = entries.filter(({ state }) =>
+    ["loaded", "mapped"].includes(state),
+  ).length;
+  const loading = entries.filter(({ state }) => state === "loading").length;
+  const failures = entries.length - ready - loading;
+  fontSummary.textContent =
+    entries.length === 0
+      ? "요구 글꼴 없음"
+      : `${ready.toLocaleString()} / ${entries.length.toLocaleString()} 연결`;
+  fontsToggle.textContent =
+    failures > 0 ? `글꼴 ${failures.toLocaleString()}` : "글꼴";
+  fontStatusList.replaceChildren();
+
+  if (entries.length === 0) {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    name.className = "font-name";
+    name.textContent = "도면이 참조하는 SHX·BigFont가 없습니다.";
+    item.append(name);
+    fontStatusList.append(item);
+    return;
+  }
+
+  const fragment = document.createDocumentFragment();
+  entries.sort((left, right) =>
+    left.displayName.localeCompare(right.displayName, "ko"),
+  );
+  for (const entry of entries) {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    const state = document.createElement("span");
+    name.className = "font-name";
+    name.title = entry.name;
+    name.textContent = entry.displayName;
+    state.className = "font-state";
+    state.dataset.state = entry.state;
+    state.textContent = fontStateLabel(entry.state);
+    item.append(name, state);
+    const detailText =
+      entry.state === "mapped"
+        ? `${displayFontName(entry.resolvedName)} 파일로 대체`
+        : entry.state === "loaded" && entry.size
+          ? `${entry.source === "drawing" ? "도면 폴더" : entry.source === "configured" ? "등록 폴더" : "현재 세션"} · ${formatBytes(entry.size)}`
+          : entry.error;
+    if (detailText) {
+      const detail = document.createElement("span");
+      detail.className = "font-resolution";
+      detail.textContent = detailText;
+      item.append(detail);
+    }
+    fragment.append(item);
+  }
+  fontStatusList.append(fragment);
+}
+
+function syncFontDiagnostics(styles) {
+  activeTextStyles = Object.freeze([...styles]);
+  const required = requiredFonts(styles);
+  for (const key of [...fontDiagnostics.keys()]) {
+    if (!required.has(key)) {
+      fontDiagnostics.delete(key);
+    }
+  }
+  for (const descriptor of required.values()) {
+    const existing = fontDiagnostics.get(descriptor.key);
+    const cacheStatus = glyphCache.fontStatus(descriptor.name);
+    if (cacheStatus.state === "invalid") {
+      fontDiagnostics.set(descriptor.key, {
+        ...descriptor,
+        state: "invalid",
+        error: "SHX 파일 형식을 해석할 수 없습니다.",
+      });
+    } else if (cacheStatus.state === "registered") {
+      fontDiagnostics.set(descriptor.key, {
+        ...descriptor,
+        ...existing,
+        state:
+          existing?.state === "mapped" ? "mapped" : "loaded",
+        size: existing?.size ?? cacheStatus.size,
+        source: existing?.source ?? "session",
+      });
+    } else if (!existing) {
+      fontDiagnostics.set(descriptor.key, {
+        ...descriptor,
+        state: "missing",
+        error: vscodeApi
+          ? "도면 폴더와 등록된 글꼴 폴더에서 찾지 못했습니다."
+          : "SHX 파일을 선택해 연결할 수 있습니다.",
+      });
+    }
+  }
+  fontsToggle.disabled = false;
+  renderFontDiagnostics();
+}
+
+function requestHostFonts(styles = activeTextStyles, revision = openRevision) {
+  if (!vscodeApi || !activeHostCacheId || revision !== openRevision) {
+    return;
+  }
+  const required = requiredFonts(styles);
+  for (const descriptor of required.values()) {
+    if (
+      glyphCache.hasFont(descriptor.name) ||
+      attemptedHostFontKeys.has(descriptor.key)
+    ) {
+      continue;
+    }
+    attemptedHostFontKeys.add(descriptor.key);
+    const requestId = nextHostFontRequestId;
+    nextHostFontRequestId += 1;
+    pendingHostFontRequests.set(requestId, {
+      ...descriptor,
+      cacheId: activeHostCacheId,
+      revision,
+    });
+    fontDiagnostics.set(descriptor.key, {
+      ...descriptor,
+      state: "loading",
+    });
+    vscodeApi.postMessage({
+      type: "dwg-font-read/1",
+      cacheId: activeHostCacheId,
+      requestId,
+      name: descriptor.name,
+    });
+  }
+  renderFontDiagnostics();
+}
+
+function refreshTextAfterFontChange(revision) {
+  if (revision !== openRevision || !activeScene) {
+    return;
+  }
+  activeInteraction?.refresh();
+  const missing = glyphCache.missingFonts(activeTextStyles);
+  activeTextStatus = Object.freeze({
+    sourceTexts: activeTextStatus?.sourceTexts ?? 0,
+    missingFonts: missing,
+  });
+  syncFontDiagnostics(activeTextStyles);
+  status.textContent =
+    missing.length === 0
+      ? "도면 글꼴 연결 완료"
+      : `도면 글꼴 확인 완료${missingFontSuffix()}(시스템 글꼴 대체)`;
+}
+
+function scheduleFontRefresh(revision) {
+  if (fontRefreshTimer !== undefined) {
+    clearTimeout(fontRefreshTimer);
+  }
+  fontRefreshTimer = setTimeout(() => {
+    fontRefreshTimer = undefined;
+    refreshTextAfterFontChange(revision);
+  }, 40);
+}
+
+function handleHostFontResponse(message) {
+  const pending = pendingHostFontRequests.get(message?.requestId);
+  if (!pending) {
+    return;
+  }
+  pendingHostFontRequests.delete(message.requestId);
+  if (
+    pending.revision !== openRevision ||
+    pending.cacheId !== activeHostCacheId ||
+    message.cacheId !== activeHostCacheId
+  ) {
+    return;
+  }
+  if (message.status === "loaded") {
+    try {
+      const registered = glyphCache.registerFont(pending.name, message.bytes);
+      const mapped =
+        message.source === "mapping" ||
+        normalizeShxFontName(message.resolvedName) !== pending.key;
+      fontDiagnostics.set(pending.key, {
+        ...pending,
+        state: mapped ? "mapped" : "loaded",
+        resolvedName: message.resolvedName,
+        source: message.source,
+        size: registered.size,
+      });
+      hostLoadedFontKeys.add(pending.key);
+      scheduleFontRefresh(pending.revision);
+    } catch {
+      fontDiagnostics.set(pending.key, {
+        ...pending,
+        state: "invalid",
+        error: "SHX 파일을 등록하거나 해석할 수 없습니다.",
+      });
+      renderFontDiagnostics();
+    }
+    return;
+  }
+  const allowedFailures = new Set([
+    "missing",
+    "invalid",
+    "too-large",
+    "budget-exceeded",
+    "unreadable",
+  ]);
+  fontDiagnostics.set(pending.key, {
+    ...pending,
+    state: allowedFailures.has(message.status)
+      ? message.status
+      : "unreadable",
+    error:
+      typeof message.error === "string"
+        ? message.error.slice(0, 200)
+        : "글꼴을 연결하지 못했습니다.",
+  });
+  renderFontDiagnostics();
+}
+
+function handleFontConfigurationChanged(message) {
+  if (
+    !activeHostCacheId ||
+    message.cacheId !== activeHostCacheId ||
+    !activeScene
+  ) {
+    return;
+  }
+  for (const key of hostLoadedFontKeys) {
+    glyphCache.unregisterFont(key);
+  }
+  hostLoadedFontKeys.clear();
+  pendingHostFontRequests.clear();
+  attemptedHostFontKeys.clear();
+  syncFontDiagnostics(activeTextStyles);
+  requestHostFonts(activeTextStyles, openRevision);
 }
 
 function missingFontSuffix() {
@@ -294,6 +585,8 @@ async function initializeTextOverlay(
     missingFonts: missing,
   });
   activeInteraction?.refresh();
+  syncFontDiagnostics(styles);
+  requestHostFonts(styles, revision);
   status.textContent =
     missing.length === 0
       ? `문자 ${textEntities.length.toLocaleString()}개 표시 준비 완료`
@@ -784,6 +1077,9 @@ async function registerFontFiles(files) {
   }
   status.textContent = `SHX 글꼴 ${files.length.toLocaleString()}개 읽는 중`;
   const registered = await glyphCache.registerFiles(files);
+  for (const font of registered) {
+    hostLoadedFontKeys.delete(normalizeShxFontName(font.name));
+  }
   if (activeScene) {
     if (activeScene.renderer.textOverlay) {
       activeInteraction?.refresh();
@@ -791,6 +1087,7 @@ async function registerFontFiles(files) {
       await initializeTextOverlay(activeScene, openRevision);
     }
     const styles = await activeScene.reader.readTextStyles();
+    syncFontDiagnostics(styles);
     const missing = glyphCache.missingFonts(styles);
     activeTextStatus = Object.freeze({
       sourceTexts: activeTextStatus?.sourceTexts ?? 0,
@@ -811,6 +1108,15 @@ async function openCache(source, workerSource) {
   setControlsEnabled(false);
   resetLayerPanel();
   activeTextStatus = undefined;
+  activeTextStyles = Object.freeze([]);
+  fontDiagnostics.clear();
+  pendingHostFontRequests.clear();
+  attemptedHostFontKeys.clear();
+  fontsToggle.disabled = true;
+  fontsToggle.textContent = "글꼴";
+  fontsToggle.setAttribute("aria-expanded", "false");
+  fontPanel.hidden = true;
+  renderFontDiagnostics();
   activeHatchStatus = undefined;
   activePrimitiveStatus = undefined;
   activeMaskOrder = undefined;
@@ -822,6 +1128,10 @@ async function openCache(source, workerSource) {
   if (hatchPatternTimer !== undefined) {
     clearTimeout(hatchPatternTimer);
     hatchPatternTimer = undefined;
+  }
+  if (fontRefreshTimer !== undefined) {
+    clearTimeout(fontRefreshTimer);
+    fontRefreshTimer = undefined;
   }
   activeHatchWorker?.cancel();
   activeHatchWorker = undefined;
@@ -941,6 +1251,7 @@ async function openCache(source, workerSource) {
 }
 
 function openFile(file) {
+  activeHostCacheId = undefined;
   return openCache(
     new TrackedRangeSource(new BlobRangeSource(file)),
     { kind: "blob", file },
@@ -948,6 +1259,7 @@ function openFile(file) {
 }
 
 function openHostedCache(message) {
+  activeHostCacheId = message.cacheId;
   const source = createVsCodeRangeSource(vscodeApi, {
     cacheId: message.cacheId,
     size: message.size,
@@ -994,6 +1306,10 @@ function setHostedState(state, detail = "") {
 
 if (vscodeApi) {
   cachePicker.hidden = true;
+  fontFileButton.hidden = true;
+  hostFontFolder.hidden = false;
+  fontPanelHelp.textContent =
+    "도면 폴더와 등록한 폴더에서 필요한 글꼴만 찾아 첫 화면 뒤에 연결합니다.";
   document.querySelector("h1").textContent = "DWG 도면 뷰어";
   document.querySelector(".empty-state strong").textContent =
     "로컬 DWG 도면을 준비하고 있습니다.";
@@ -1002,6 +1318,25 @@ if (vscodeApi) {
   setHostedState("preparing");
   window.addEventListener("message", (event) => {
     const message = event.data;
+    if (message?.type === "dwg-font-read-response/1") {
+      handleHostFontResponse(message);
+      return;
+    }
+    if (message?.type === "dwg-font-configuration-changed/1") {
+      handleFontConfigurationChanged(message);
+      return;
+    }
+    if (message?.type === "dwg-font-folder-select-result/1") {
+      hostFontFolder.disabled = false;
+      if (message.failed) {
+        fontPanelHelp.textContent =
+          "글꼴 폴더 설정을 저장하지 못했습니다. VS Code 설정을 확인하세요.";
+      } else if (!message.changed) {
+        fontPanelHelp.textContent =
+          "글꼴 폴더 선택이 취소되었습니다. 기존 설정은 유지됩니다.";
+      }
+      return;
+    }
     if (message?.type === "dwg-cache-state/1") {
       setHostedState(message.state, message.message);
       return;
@@ -1095,8 +1430,29 @@ layersToggle.addEventListener("click", () => {
   layerPanel.hidden = !opening;
   layersToggle.setAttribute("aria-expanded", String(opening));
   if (opening) {
+    fontPanel.hidden = true;
+    fontsToggle.setAttribute("aria-expanded", "false");
     layerSearch.focus();
   }
+});
+
+fontsToggle.addEventListener("click", () => {
+  const opening = fontPanel.hidden;
+  fontPanel.hidden = !opening;
+  fontsToggle.setAttribute("aria-expanded", String(opening));
+  if (opening) {
+    layerPanel.hidden = true;
+    layersToggle.setAttribute("aria-expanded", "false");
+  }
+});
+
+hostFontFolder.addEventListener("click", () => {
+  if (!vscodeApi) {
+    return;
+  }
+  hostFontFolder.disabled = true;
+  fontPanelHelp.textContent = "추가할 SHX·BigFont 폴더를 선택하세요.";
+  vscodeApi.postMessage({ type: "dwg-font-folder-select/1" });
 });
 
 layerSearch.addEventListener("input", () => {
@@ -1135,6 +1491,11 @@ window.addEventListener("beforeunload", () => {
     clearTimeout(hatchPatternTimer);
     hatchPatternTimer = undefined;
   }
+  if (fontRefreshTimer !== undefined) {
+    clearTimeout(fontRefreshTimer);
+    fontRefreshTimer = undefined;
+  }
+  pendingHostFontRequests.clear();
   activeHatchWorker?.cancel();
   activeHatchWorker = undefined;
   activePrimitiveWorker?.cancel();

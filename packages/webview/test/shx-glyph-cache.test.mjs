@@ -203,3 +203,40 @@ test("isolates a malformed character lookup", () => {
   assert.equal(cache.getGlyph({ fontFile: "mixed.shx" }, 65), undefined);
   assert.ok(cache.getGlyph({ fontFile: "mixed.shx" }, 66));
 });
+
+test("reports and removes a font whose parser cannot be opened", () => {
+  const cache = new ShxGlyphCache({
+    fontFactory() {
+      throw new Error("invalid SHX header");
+    },
+  });
+  cache.registerFont("broken.shx", new Uint8Array([1]));
+
+  assert.equal(cache.fontStatus("broken.shx").state, "registered");
+  assert.equal(
+    cache.getGlyph({ fontFile: "broken.shx" }, 65),
+    undefined,
+  );
+  assert.equal(cache.fontStatus("broken.shx").state, "invalid");
+  assert.deepEqual(
+    cache.missingFonts([{ fontFile: "broken.shx", bigFontFile: "" }]),
+    ["broken.shx"],
+  );
+  assert.equal(cache.unregisterFont("broken.shx"), true);
+  assert.equal(cache.fontStatus("broken.shx").state, "missing");
+  assert.equal(cache.stats.registeredFontBytes, 0);
+});
+
+test("closes parser windows without retaining parsed-font bytes", () => {
+  const cache = new ShxGlyphCache({
+    parserGlyphWindow: 1,
+  });
+  cache.registerFont("window.shx", textFontBuffer([65, 66]));
+
+  assert.ok(cache.getGlyph({ fontFile: "window.shx" }, 65));
+  assert.equal(cache.stats.parsedFontBytes, 0);
+  assert.ok(cache.getGlyph({ fontFile: "window.shx" }, 66));
+  assert.equal(cache.stats.parsedFontBytes, 0);
+  cache.clearGlyphs();
+  assert.equal(cache.stats.parsedFontBytes, 0);
+});

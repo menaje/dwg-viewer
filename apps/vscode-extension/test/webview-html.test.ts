@@ -72,3 +72,20 @@ test("renders the repository Webview template with the strict policy", async () 
   assert.doesNotMatch(html, /node_modules/u);
   assert.doesNotMatch(html, /importmap/u);
 });
+
+test("repository Webview CSS keeps host-only controls hidden", async () => {
+  const repositoryStyles = await readFile(
+    path.resolve(
+      __dirname,
+      "../../../..",
+      "packages",
+      "webview",
+      "styles.css",
+    ),
+    "utf8",
+  );
+  assert.match(
+    repositoryStyles,
+    /\[hidden\]\s*\{\s*display:\s*none\s*!important;/u,
+  );
+});

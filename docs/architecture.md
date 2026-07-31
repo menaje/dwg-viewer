@@ -478,16 +478,29 @@ culling. One redraw is capped at 50,000 source records, 10,000 visible
 occurrences, 250,000 SHX line segments and 50,000 system-font fallback
 glyphs.
 
-The MIT-licensed `@mlightcad/shx-parser` is used only after a user selects
-local SHX files. Primary SHX and paired BigFont names are normalized by
-basename, extension and case. Hangul is mapped to paired legacy BigFont codes
-through an on-demand EUC-KR reverse index. Glyphs are parsed lazily into compact
-`Float32Array` line pairs and retained in a byte-bounded LRU. Limits are
+The MIT-licensed `@mlightcad/shx-parser` is used only after the first geometry
+frame. The standalone browser harness accepts user-selected SHX files. In the
+VS Code Custom Editor, the extension host extracts the required names from the
+already-loaded style table, searches only the drawing directory and up to 31
+additional explicitly configured non-recursive directories, stopping directory
+indexing as soon as each requested name is found, and transfers matched files
+one at a time. User mappings can replace a requested basename with another
+indexed basename or an explicit absolute SHX path. The Webview
+receives no resolved host filesystem path beyond any original reference already
+embedded in the DWG style table.
+
+Host font reads are isolated by cache ID and capped at 128 requests, 32 MiB per
+file and 64 MiB transferred per drawing. Primary SHX and paired BigFont names
+are normalized by basename, extension and case. Hangul is mapped to paired
+legacy BigFont codes through an on-demand EUC-KR reverse index. Glyphs are
+parsed lazily into compact `Float32Array` line pairs and retained in a
+byte-bounded LRU. Webview limits are
 32 MiB per font file, 64 MiB registered font bytes, 48 MiB concurrently parsed
 font bytes, 4,096 compiled glyphs, 64 MiB compiled glyph bytes and 8,192
 segments per glyph. One malformed glyph is negatively cached without disabling
-the rest of its font. Missing fonts or glyphs use an upright local system-font
-fallback so Korean text remains readable.
+the rest of its font. A malformed font is isolated and reported separately.
+Missing fonts or glyphs use an upright local system-font fallback so Korean
+text remains readable.
 
 Layer visibility is stored in a compact one-dimensional GPU texture indexed by
 the existing layer index on every vertex. Hiding a layer therefore updates only

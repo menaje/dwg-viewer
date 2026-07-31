@@ -25,11 +25,48 @@ absolute path. A separately distributed adapter may also be placed at
 The first open creates a private cache under VS Code's extension storage.
 Subsequent opens reuse it until the drawing or converter changes.
 
+## SHX and Korean BigFont folders
+
+After the first geometry frame, the extension reads the drawing's text styles
+and resolves only the SHX and BigFont filenames those styles request. The
+drawing's own folder is searched first. Additional local folders can be added
+from the viewer's **글꼴 → 글꼴 폴더 추가** action, from the command palette
+command **DWG Viewer: SHX 글꼴 폴더 추가**, or in settings:
+
+```json
+{
+  "dwgViewer.shxFontDirectories": [
+    "/absolute/path/to/cad-fonts"
+  ]
+}
+```
+
+Folders are indexed non-recursively, in priority order, only until a requested
+name is found, and never before the first frame. A requested CAD font can be
+mapped to a replacement filename in those folders, or to an explicitly
+configured absolute file:
+
+```json
+{
+  "dwgViewer.shxFontMappings": {
+    "whgtxt.shx": "korean.shx",
+    "oldfont.shx": "/absolute/path/to/replacement.shx"
+  }
+}
+```
+
+The font panel reports connected, substituted, missing, unreadable, malformed
+and over-budget fonts without exposing absolute paths to the Webview. Font
+requests are isolated to the active cache, served serially, and capped at 128
+files, 32 MiB per file and 64 MiB transferred per drawing. Parsed fonts and
+compiled glyphs remain under the Webview's separate byte-bounded caches.
+
 ## Current scope
 
 - Read-only model-space viewing
 - Bounded cache range reads (maximum 8 MiB per request)
-- Layer visibility, pan, zoom, hatch, text, and SHX font selection
+- Layer visibility, pan, zoom, hatch, and text
+- Delayed SHX/BigFont discovery, mapping, diagnostics, and Korean fallback
 - Conversion cancellation when the editor closes
 - Retry and forced cache rebuild
 

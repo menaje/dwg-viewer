@@ -26,9 +26,16 @@
   ],
   "main": "./dist/src/extension.js",
   "activationEvents": [
-    "onCustomEditor:dwgViewer.dwg"
+    "onCustomEditor:dwgViewer.dwg",
+    "onCommand:dwgViewer.addShxFontFolders"
   ],
   "contributes": {
+    "commands": [
+      {
+        "command": "dwgViewer.addShxFontFolders",
+        "title": "DWG Viewer: SHX 글꼴 폴더 추가"
+      }
+    ],
     "customEditors": [
       {
         "viewType": "dwgViewer.dwg",
@@ -52,6 +59,26 @@
           "default": "",
           "scope": "machine",
           "description": "Absolute path to the separately installed GPL LibreDWG adapter executable."
+        },
+        "dwgViewer.shxFontDirectories": {
+          "type": "array",
+          "default": [],
+          "scope": "machine",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 31,
+          "uniqueItems": true,
+          "description": "Absolute folders searched non-recursively for SHX and BigFont files after the first drawing frame."
+        },
+        "dwgViewer.shxFontMappings": {
+          "type": "object",
+          "default": {},
+          "scope": "machine",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Map a DWG-requested SHX name to a replacement filename in the configured folders or to an absolute SHX file path."
         }
       }
     }
