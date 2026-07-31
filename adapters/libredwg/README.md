@@ -99,8 +99,8 @@ LIBREDWG_SOURCE_ARCHIVE=/path/to/libredwg-0.14.tar.xz \
   /existing/output-parent/libredwg-adapter
 ```
 
-If LibreDWG 0.14 or newer already exists in an isolated prefix, only the
-adapter needs to be built:
+If the exact LibreDWG 0.14 release already exists in an isolated prefix, only
+the adapter needs to be built:
 
 ```bash
 LIBREDWG_PREFIX=/path/to/libredwg-prefix \

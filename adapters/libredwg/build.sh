@@ -3,6 +3,8 @@
 
 set -eu
 
+LIBREDWG_VERSION=0.14
+
 usage() {
   echo "usage: LIBREDWG_PREFIX=/path/to/prefix $0 OUTPUT" >&2
   exit 2
@@ -33,7 +35,7 @@ fi
 PKG_CONFIG_PATH="$LIBREDWG_PREFIX/lib/pkgconfig:$LIBREDWG_PREFIX/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export PKG_CONFIG_PATH
 
-"$pkg_config" --atleast-version=0.14 libredwg
+"$pkg_config" --exact-version="$LIBREDWG_VERSION" libredwg
 engine_version=$("$pkg_config" --modversion libredwg)
 cflags=$("$pkg_config" --cflags libredwg)
 libdir=$("$pkg_config" --variable=libdir libredwg)

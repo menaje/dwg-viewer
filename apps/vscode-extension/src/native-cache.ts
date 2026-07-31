@@ -1,44 +1,29 @@
 import { spawn } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import {
-  access,
-  chmod,
-  mkdir,
-  rename,
-  rm,
-  stat,
-} from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { access, stat } from "node:fs/promises";
 import path from "node:path";
+import {
+  abortSceneEngineError,
+  createSceneEngineProgress,
+  SCENE_CACHE_SCHEMA_VERSION,
+  SCENE_ENGINE_CONTRACT,
+  SceneEngineError,
+  type SceneEngine,
+  type SceneEngineConversionRequest,
+  type SceneEngineDescriptor,
+  type SceneEngineProgressPhase,
+  type SceneEngineSnapshot,
+} from "./scene-engine";
 
 export const ADAPTER_PROTOCOL = "dwg-engine-adapter/1";
-export const CACHE_SCHEMA_VERSION = "dwg-scene-cache/1.11";
+export const CACHE_SCHEMA_VERSION = SCENE_CACHE_SCHEMA_VERSION;
 export const DOCTOR_REPORT_SCHEMA = "dwg-engine-doctor/1";
+export const LIBREDWG_NATIVE_ENGINE_VERSION = "0.14";
 const MAX_STDOUT_BYTES = 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
 const MAX_DOCTOR_STDOUT_BYTES = 64 * 1024;
 const DEFAULT_DOCTOR_TIMEOUT_MS = 5_000;
 const TERMINATION_GRACE_MS = 1_500;
-
-export class NativeCacheError extends Error {
-  constructor(
-    readonly code: string,
-    readonly userMessage: string,
-    options?: ErrorOptions,
-  ) {
-    super(code, options);
-    this.name = "NativeCacheError";
-  }
-}
-
-export function abortError(): Error {
-  const error = new Error("Operation aborted");
-  error.name = "AbortError";
-  return error;
-}
-
-export function isAbortError(error: unknown): boolean {
-  return error instanceof Error && error.name === "AbortError";
-}
 
 export interface AdapterSelection {
   configuredPath?: string;
@@ -67,7 +52,7 @@ export async function resolveLibreDwgAdapter(
     bundledPath;
 
   if (!path.isAbsolute(candidate)) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_PATH_NOT_ABSOLUTE",
       "LibreDWG 변환기 경로를 절대 경로로 설정해 주세요.",
     );
@@ -80,7 +65,7 @@ export async function resolveLibreDwgAdapter(
       throw new Error("not a file");
     }
   } catch (error) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_NOT_FOUND",
       "LibreDWG 변환기를 찾을 수 없습니다. DWG Viewer 설정에서 변환기 경로를 지정해 주세요.",
       { cause: error },
@@ -89,26 +74,8 @@ export async function resolveLibreDwgAdapter(
   return candidate;
 }
 
-export interface CacheIdentity {
-  sourcePath: string;
-  sourceSize: bigint;
-  sourceMtimeNs: bigint;
-  adapterPath: string;
-  adapterSize: bigint;
-  adapterMtimeNs: bigint;
-}
-
-export function computeCacheId(identity: CacheIdentity): string {
+function hashFields(fields: readonly string[]): string {
   const hash = createHash("sha256");
-  const fields = [
-    CACHE_SCHEMA_VERSION,
-    path.resolve(identity.sourcePath),
-    identity.sourceSize.toString(),
-    identity.sourceMtimeNs.toString(),
-    path.resolve(identity.adapterPath),
-    identity.adapterSize.toString(),
-    identity.adapterMtimeNs.toString(),
-  ];
   for (const field of fields) {
     const encoded = Buffer.from(field, "utf8");
     const length = Buffer.allocUnsafe(4);
@@ -136,7 +103,7 @@ export function parseAdapterReport(
   try {
     report = JSON.parse(output.trim()) as AdapterReport;
   } catch (error) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_REPORT_INVALID",
       "LibreDWG 변환기가 올바른 완료 보고서를 반환하지 않았습니다.",
       { cause: error },
@@ -157,7 +124,7 @@ export function parseAdapterReport(
     !sizeMatches ||
     actualCacheBytes <= 0n
   ) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_REPORT_REJECTED",
       "LibreDWG 변환 결과의 무결성 검사를 통과하지 못했습니다.",
     );
@@ -206,7 +173,7 @@ export function parseLibreDwgDoctorReport(
   try {
     report = JSON.parse(output.trim()) as RawDoctorReport;
   } catch (error) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_DOCTOR_REPORT_INVALID",
       "LibreDWG 변환기가 올바른 진단 보고서를 반환하지 않았습니다.",
       { cause: error },
@@ -219,7 +186,7 @@ export function parseLibreDwgDoctorReport(
     report.status !== "ok" ||
     report.protocol !== ADAPTER_PROTOCOL ||
     report.engine?.id !== "libredwg" ||
-    !isSafeIdentifier(report.engine.version) ||
+    report.engine.version !== LIBREDWG_NATIVE_ENGINE_VERSION ||
     report.engine.license !== "GPL-3.0-or-later" ||
     (linkage !== "static" &&
       linkage !== "dynamic" &&
@@ -228,7 +195,7 @@ export function parseLibreDwgDoctorReport(
     !isSafeIdentifier(report.target?.platform) ||
     !isSafeIdentifier(report.target?.architecture)
   ) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_DOCTOR_REPORT_REJECTED",
       "선택한 LibreDWG 변환기는 이 버전의 DWG Viewer와 호환되지 않습니다.",
     );
@@ -255,7 +222,7 @@ export async function diagnoseLibreDwgAdapter(
   }: DiagnoseAdapterOptions = {},
 ): Promise<LibreDwgDoctorReport> {
   if (signal.aborted) {
-    throw abortError();
+    throw abortSceneEngineError();
   }
   if (
     !Number.isSafeInteger(timeoutMs) ||
@@ -278,7 +245,7 @@ export async function diagnoseLibreDwgAdapter(
       cwd: path.dirname(adapterPath),
     });
   } catch (error) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_START_FAILED",
       "LibreDWG 변환기를 시작하지 못했습니다.",
       { cause: error },
@@ -369,10 +336,10 @@ export async function diagnoseLibreDwgAdapter(
     clearTimeout(terminationTimer);
   }
   if (signal.aborted) {
-    throw abortError();
+    throw abortSceneEngineError();
   }
   if (timedOut) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_DOCTOR_TIMEOUT",
       "LibreDWG 변환기 진단이 제한 시간 안에 끝나지 않았습니다.",
     );
@@ -381,14 +348,14 @@ export async function diagnoseLibreDwgAdapter(
     throw outputError;
   }
   if (result.error) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_START_FAILED",
       "LibreDWG 변환기를 시작하지 못했습니다.",
       { cause: result.error },
     );
   }
   if (result.code !== 0) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_DOCTOR_FAILED",
       "LibreDWG 변환기 자체 진단에 실패했습니다.",
     );
@@ -414,7 +381,7 @@ function appendBounded(
 ): number {
   const nextBytes = currentBytes + chunk.byteLength;
   if (nextBytes > maximumBytes) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_OUTPUT_LIMIT",
       "LibreDWG 변환기가 허용 범위를 넘는 출력을 반환했습니다.",
     );
@@ -431,7 +398,7 @@ export async function runLibreDwgAdapter({
   onPhase,
 }: RunAdapterOptions): Promise<void> {
   if (signal.aborted) {
-    throw abortError();
+    throw abortSceneEngineError();
   }
 
   let child;
@@ -447,7 +414,7 @@ export async function runLibreDwgAdapter({
       cwd: path.dirname(outputPath),
     });
   } catch (error) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_START_FAILED",
       "LibreDWG 변환기를 시작하지 못했습니다.",
       { cause: error },
@@ -533,20 +500,20 @@ export async function runLibreDwgAdapter({
     clearTimeout(terminationTimer);
   }
   if (signal.aborted) {
-    throw abortError();
+    throw abortSceneEngineError();
   }
   if (outputError) {
     throw outputError;
   }
   if (result.error) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_START_FAILED",
       "LibreDWG 변환기를 시작하지 못했습니다.",
       { cause: result.error },
     );
   }
   if (result.code !== 0) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "ADAPTER_CONVERSION_FAILED",
       "DWG 변환에 실패했습니다. 변환기 호환성과 도면 상태를 확인해 주세요.",
     );
@@ -557,7 +524,7 @@ export async function runLibreDwgAdapter({
   try {
     outputMetadata = await stat(outputPath, { bigint: true });
   } catch (error) {
-    throw new NativeCacheError(
+    throw new SceneEngineError(
       "CACHE_OUTPUT_MISSING",
       "LibreDWG 변환기가 캐시 파일을 만들지 못했습니다.",
       { cause: error },
@@ -569,169 +536,80 @@ export async function runLibreDwgAdapter({
   );
 }
 
-export interface PreparedCache {
-  cacheId: string;
-  cachePath: string;
-  size: number;
-  reused: boolean;
-}
+export const LIBREDWG_NATIVE_ENGINE_DESCRIPTOR = Object.freeze({
+  schema: SCENE_ENGINE_CONTRACT,
+  engineId: "libredwg",
+  engineVersion: LIBREDWG_NATIVE_ENGINE_VERSION,
+  backendId: "native",
+  backendKind: "native-process",
+  displayName: "LibreDWG Native",
+  cacheSchema: CACHE_SCHEMA_VERSION,
+  capabilities: Object.freeze({
+    localExecution: true,
+    packedSceneCache: true,
+    progressivePreview: false,
+    cancellable: true,
+    features: Object.freeze([
+      "linework",
+      "blocks",
+      "hatch",
+      "wipeout",
+      "text",
+      "shx-bigfont",
+    ] as const),
+    conversionOptions: Object.freeze([] as const),
+  }),
+}) satisfies SceneEngineDescriptor;
 
-export interface PrepareCacheOptions {
-  force?: boolean;
-  signal: AbortSignal;
-  onPhase?: (
-    phase: "checking" | "converting" | "validating" | "ready",
-  ) => void;
-}
+export class LibreDwgNativeSceneEngine implements SceneEngine {
+  readonly descriptor = LIBREDWG_NATIVE_ENGINE_DESCRIPTOR;
 
-export class NativeCacheManager {
-  constructor(
-    private readonly cacheRoot: string,
-    private readonly adapterPath: string,
-  ) {}
+  constructor(readonly adapterPath: string) {}
 
-  async prepare(
-    sourcePath: string,
-    { force = false, signal, onPhase }: PrepareCacheOptions,
-  ): Promise<PreparedCache> {
-    if (signal.aborted) {
-      throw abortError();
-    }
-    onPhase?.("checking");
-    await mkdir(this.cacheRoot, { recursive: true, mode: 0o700 });
-
-    let sourceMetadata;
-    let adapterMetadata;
-    try {
-      [sourceMetadata, adapterMetadata] = await Promise.all([
-        stat(sourcePath, { bigint: true }),
-        stat(this.adapterPath, { bigint: true }),
-      ]);
-    } catch (error) {
-      throw new NativeCacheError(
-        "INPUT_METADATA_FAILED",
-        "도면 또는 LibreDWG 변환기 정보를 읽지 못했습니다.",
-        { cause: error },
+  async snapshot(): Promise<SceneEngineSnapshot> {
+    const metadata = await stat(this.adapterPath, { bigint: true });
+    if (!metadata.isFile()) {
+      throw new SceneEngineError(
+        "ENGINE_NOT_FILE",
+        "LibreDWG Native 변환기 파일을 읽을 수 없습니다.",
       );
     }
-    if (!sourceMetadata.isFile()) {
-      throw new NativeCacheError(
-        "INPUT_NOT_FILE",
-        "선택한 DWG 파일을 읽을 수 없습니다.",
-      );
-    }
-
-    const cacheId = computeCacheId({
-      sourcePath,
-      sourceSize: sourceMetadata.size,
-      sourceMtimeNs: sourceMetadata.mtimeNs,
-      adapterPath: this.adapterPath,
-      adapterSize: adapterMetadata.size,
-      adapterMtimeNs: adapterMetadata.mtimeNs,
+    return Object.freeze({
+      revision: hashFields([
+        path.resolve(this.adapterPath),
+        metadata.size.toString(),
+        metadata.mtimeNs.toString(),
+      ]),
     });
-    const cachePath = path.join(this.cacheRoot, `${cacheId}.dwg.cache`);
-
-    if (force) {
-      await rm(cachePath, { force: true });
-    } else {
-      const existing = await this.readExistingCache(cacheId, cachePath);
-      if (existing) {
-        onPhase?.("ready");
-        return existing;
-      }
-    }
-
-    const temporaryPath = path.join(
-      this.cacheRoot,
-      `${cacheId}.${randomBytes(8).toString("hex")}.tmp`,
-    );
-    try {
-      await runLibreDwgAdapter({
-        adapterPath: this.adapterPath,
-        inputPath: sourcePath,
-        outputPath: temporaryPath,
-        signal,
-        onPhase,
-      });
-      if (signal.aborted) {
-        throw abortError();
-      }
-      const [finalSourceMetadata, finalAdapterMetadata] = await Promise.all([
-        stat(sourcePath, { bigint: true }),
-        stat(this.adapterPath, { bigint: true }),
-      ]);
-      if (
-        finalSourceMetadata.size !== sourceMetadata.size ||
-        finalSourceMetadata.mtimeNs !== sourceMetadata.mtimeNs ||
-        finalAdapterMetadata.size !== adapterMetadata.size ||
-        finalAdapterMetadata.mtimeNs !== adapterMetadata.mtimeNs
-      ) {
-        throw new NativeCacheError(
-          "CACHE_INPUT_CHANGED",
-          "변환 중 도면 또는 LibreDWG 변환기가 변경되었습니다. 다시 시도해 주세요.",
-        );
-      }
-      try {
-        await rename(temporaryPath, cachePath);
-      } catch (error) {
-        const racedCache = await this.readExistingCache(cacheId, cachePath);
-        if (racedCache) {
-          onPhase?.("ready");
-          return racedCache;
-        }
-        throw new NativeCacheError(
-          "CACHE_COMMIT_FAILED",
-          "변환 캐시를 저장하지 못했습니다.",
-          { cause: error },
-        );
-      }
-      if (process.platform !== "win32") {
-        await chmod(cachePath, 0o600);
-      }
-      const prepared = await this.readExistingCache(cacheId, cachePath);
-      if (!prepared) {
-        throw new NativeCacheError(
-          "CACHE_COMMIT_FAILED",
-          "변환 캐시를 저장하지 못했습니다.",
-        );
-      }
-      onPhase?.("ready");
-      return { ...prepared, reused: false };
-    } finally {
-      await rm(temporaryPath, { force: true }).catch(() => undefined);
-    }
   }
 
-  private async readExistingCache(
-    cacheId: string,
-    cachePath: string,
-  ): Promise<PreparedCache | undefined> {
-    try {
-      const metadata = await stat(cachePath);
-      if (!metadata.isFile() || metadata.size <= 0) {
-        await rm(cachePath, { force: true });
-        return undefined;
-      }
-      if (!Number.isSafeInteger(metadata.size)) {
-        throw new NativeCacheError(
-          "CACHE_TOO_LARGE",
-          "변환 캐시가 지원 가능한 크기를 넘었습니다.",
-        );
-      }
-      return {
-        cacheId,
-        cachePath,
-        size: metadata.size,
-        reused: true,
-      };
-    } catch (error) {
-      if (
-        error instanceof NativeCacheError ||
-        (error as NodeJS.ErrnoException).code !== "ENOENT"
-      ) {
-        throw error;
-      }
-      return undefined;
+  async convert({
+    sourcePath,
+    outputPath,
+    signal,
+    options,
+    onProgress,
+  }: SceneEngineConversionRequest): Promise<void> {
+    if (Object.keys(options).length > 0) {
+      throw new SceneEngineError(
+        "ENGINE_OPTIONS_UNSUPPORTED",
+        "LibreDWG Native가 지원하지 않는 변환 옵션이 지정되었습니다.",
+      );
     }
+    const emit = (phase: SceneEngineProgressPhase): void => {
+      try {
+        onProgress?.(createSceneEngineProgress(this.descriptor, phase));
+      } catch {
+        // Progress observers must not interrupt or leak the converter process.
+      }
+    };
+    await runLibreDwgAdapter({
+      adapterPath: this.adapterPath,
+      inputPath: sourcePath,
+      outputPath,
+      signal,
+      onPhase: (phase) =>
+        emit(phase === "converting" ? "parsing" : "validating"),
+    });
   }
 }

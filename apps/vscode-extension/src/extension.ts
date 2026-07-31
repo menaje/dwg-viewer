@@ -4,12 +4,17 @@ import path from "node:path";
 import * as vscode from "vscode";
 import {
   diagnoseLibreDwgAdapter,
-  isAbortError,
-  NativeCacheError,
-  NativeCacheManager,
+  LibreDwgNativeSceneEngine,
   resolveLibreDwgAdapter,
 } from "./native-cache";
 import { CacheRangeChannel } from "./range-channel";
+import { SceneCacheManager } from "./scene-cache-manager";
+import {
+  isSceneEngineAbort,
+  SceneEngineError,
+  type SceneEngineDescriptor,
+  type SceneEngineProgressPhase,
+} from "./scene-engine";
 import {
   MAX_SHX_FONT_DIRECTORIES,
   ShxFontChannel,
@@ -27,7 +32,7 @@ function adapterErrorDetails(error: unknown): {
   code: string;
   message: string;
 } {
-  return error instanceof NativeCacheError
+  return error instanceof SceneEngineError
     ? { code: error.code, message: error.userMessage }
     : {
         code: "ADAPTER_DIAGNOSIS_FAILED",
@@ -280,6 +285,7 @@ class DwgEditorProvider
     let fontChannel: ShxFontChannel | undefined;
     let activeCacheId: string | undefined;
     let activeCacheReused = false;
+    let activeEngine: SceneEngineDescriptor | undefined;
     let openStartedAt = 0;
     // LibreDWG can approach 600 MiB RSS, so retries never overlap processes.
     let startQueue: Promise<void> = Promise.resolve();
@@ -301,6 +307,7 @@ class DwgEditorProvider
       conversion?.abort();
       conversion = undefined;
       activeCacheId = undefined;
+      activeEngine = undefined;
       const channel = rangeChannel;
       rangeChannel = undefined;
       fontChannel?.dispose();
@@ -380,9 +387,13 @@ class DwgEditorProvider
           environmentPath: process.env.DWG_VIEWER_LIBREDWG_ADAPTER,
           extensionPath: this.context.extensionPath,
         });
-        const manager = new NativeCacheManager(
+        const engine = new LibreDwgNativeSceneEngine(adapterPath);
+        const manager = new SceneCacheManager(
           path.join(this.context.globalStorageUri.fsPath, "cache"),
-          adapterPath,
+          engine,
+        );
+        this.output.appendLine(
+          `[ENGINE_SELECTED] id=${engine.descriptor.engineId} version=${engine.descriptor.engineVersion} backend=${engine.descriptor.backendId}`,
         );
         const prepared = await vscode.window.withProgress(
           {
@@ -401,19 +412,32 @@ class DwgEditorProvider
               return await manager.prepare(document.uri.fsPath, {
                 force,
                 signal: controller.signal,
-                onPhase: (phase) => {
-                  const phaseText = {
+                onProgress: (event) => {
+                  const phaseText: Record<
+                    SceneEngineProgressPhase,
+                    string
+                  > = {
                     checking: "기존 캐시 확인 중…",
-                    converting: "로컬에서 DWG 변환 중…",
+                    parsing: `${engine.descriptor.displayName}에서 DWG 해석 중…`,
+                    "preview-ready": "첫 화면 데이터 준비 완료",
                     validating: "변환 결과 검사 중…",
-                    ready: "캐시 준비 완료",
-                  }[phase];
-                  progress.report({ message: phaseText });
+                    "cache-ready": "캐시 준비 완료",
+                    failed: "변환 엔진 실행 실패",
+                    cancelled: "변환 취소됨",
+                  };
+                  const message = phaseText[event.phase];
+                  progress.report({ message });
                   if (
-                    phase === "converting" ||
-                    phase === "validating"
+                    event.phase === "parsing" ||
+                    event.phase === "preview-ready" ||
+                    event.phase === "validating"
                   ) {
-                    void postState(phase, phaseText);
+                    void postState(
+                      event.phase === "parsing"
+                        ? "converting"
+                        : "validating",
+                      message,
+                    );
                   }
                 },
               });
@@ -447,18 +471,22 @@ class DwgEditorProvider
         rangeChannel = channel;
         activeCacheId = prepared.cacheId;
         activeCacheReused = prepared.reused;
+        activeEngine = prepared.engine;
         fontChannel = createFontChannel(prepared.cacheId);
         await webviewPanel.webview.postMessage({
           type: "dwg-cache-ready/1",
           cacheId: prepared.cacheId,
           size: prepared.size,
           reused: prepared.reused,
+          engineId: prepared.engine.engineId,
+          engineVersion: prepared.engine.engineVersion,
+          engineBackend: prepared.engine.backendId,
         });
       } catch (error) {
         if (
           disposed ||
           currentGeneration !== generation ||
-          isAbortError(error)
+          isSceneEngineAbort(error)
         ) {
           if (!disposed && currentGeneration === generation) {
             await postState(
@@ -470,11 +498,11 @@ class DwgEditorProvider
           return;
         }
         const code =
-          error instanceof NativeCacheError
+          error instanceof SceneEngineError
             ? error.code
             : "VIEWER_PREPARATION_FAILED";
         const message =
-          error instanceof NativeCacheError
+          error instanceof SceneEngineError
             ? error.userMessage
             : "도면 뷰어를 준비하지 못했습니다.";
         this.output.appendLine(`[${code}] cache preparation failed`);
@@ -583,6 +611,8 @@ class DwgEditorProvider
               this.output.appendLine(
                 `[FIRST_FRAME_READY] cache=${
                   activeCacheReused ? "reused" : "created"
+                } engine=${activeEngine?.engineId ?? "unknown"} backend=${
+                  activeEngine?.backendId ?? "unknown"
                 } host_to_frame_ms=${hostElapsed} webview_frame_ms=${webviewElapsed}`,
               );
             }

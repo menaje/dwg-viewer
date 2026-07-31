@@ -260,6 +260,10 @@ engineering distribution policy, not legal advice.
   materially changes the measured memory architecture.
 - Keep the source-complete GPL package and two-platform qualification workflow
   as the issue #6 release boundary; complete signing/review before publication.
+- Keep LibreDWG Native as the product default behind
+  [`dwg-scene-engine/1`](../specs/scene-engine.md). Evaluate a WASM Worker only
+  through the same Scene Cache and renderer, with a distinct backend cache
+  identity until byte-identical output is proven.
 
 ## Primary sources
 

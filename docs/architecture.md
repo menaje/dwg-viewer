@@ -2,11 +2,13 @@
 
 ## Decision
 
-The primary pipeline under validation is:
+The accepted product pipeline is:
 
 ```text
 DWG
-  -> process-isolated native converter
+  -> dwg-scene-engine/1
+       -> process-isolated LibreDWG Native converter (default)
+       -> WASM Worker candidate (qualification only)
   -> versioned chunked binary scene cache
   -> VS Code Webview
   -> batched and instanced GPU renderer
@@ -19,6 +21,9 @@ ACadSharp 3.6.51 is excluded because its parser-only preflight peaks around
 1.45 GB, above the 800 MB hard limit. The complete evidence and GPL
 distribution boundary are recorded in
 [`engine-decision.md`](engine-decision.md).
+The engine/backend capability, progress and cache-isolation boundary is
+recorded in
+[`scene-engine.md`](../specs/scene-engine.md).
 
 LibreDWG passes the conversion time and memory targets and matches the
 normalized geometry and Korean text fingerprint. It renders LINE and
@@ -49,6 +54,15 @@ selected engine, not an open parser choice.
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
 render-cache cloning and geometry merging amplify memory.
+
+The extension now places LibreDWG Native behind the common `SceneEngine`
+interface without adding work to the drawing-open path. Cache identity includes
+the source fingerprint, Scene Cache version, engine ID/version, backend
+ID/kind, converter revision and canonical conversion options. Native and a
+future WASM backend therefore cannot silently reuse each other's cache.
+Progress events are bound to the same engine/backend identity, while terminal
+failure and cancellation remain explicit. The WASM-shaped test implementation
+only qualifies this boundary; it is not exposed as a product backend.
 
 ## Process boundary
 

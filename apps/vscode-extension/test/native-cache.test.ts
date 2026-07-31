@@ -11,23 +11,29 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
-  computeCacheId,
   diagnoseLibreDwgAdapter,
-  isAbortError,
-  NativeCacheManager,
+  LIBREDWG_NATIVE_ENGINE_DESCRIPTOR,
+  LibreDwgNativeSceneEngine,
   parseAdapterReport,
   parseLibreDwgDoctorReport,
   resolveLibreDwgAdapter,
 } from "../src/native-cache";
+import {
+  computeCacheId,
+  SceneCacheManager,
+} from "../src/scene-cache-manager";
+import {
+  isSceneEngineAbort,
+  type SceneEngineProgressPhase,
+} from "../src/scene-engine";
 
 test("cache identity is deterministic and changes with source metadata", () => {
   const identity = {
     sourcePath: "/drawings/example.dwg",
     sourceSize: 100n,
     sourceMtimeNs: 200n,
-    adapterPath: "/tools/libredwg-adapter",
-    adapterSize: 300n,
-    adapterMtimeNs: 400n,
+    engine: LIBREDWG_NATIVE_ENGINE_DESCRIPTOR,
+    engineRevision: "adapter-revision-1",
   };
   const first = computeCacheId(identity);
   assert.equal(first, computeCacheId(identity));
@@ -35,6 +41,44 @@ test("cache identity is deterministic and changes with source metadata", () => {
   assert.notEqual(
     first,
     computeCacheId({ ...identity, sourceMtimeNs: 201n }),
+  );
+  assert.notEqual(
+    first,
+    computeCacheId({
+      ...identity,
+      engine: {
+        ...identity.engine,
+        engineVersion: "0.14-test",
+      },
+    }),
+  );
+  assert.notEqual(
+    first,
+    computeCacheId({
+      ...identity,
+      engine: {
+        ...identity.engine,
+        backendId: "wasm-probe",
+        backendKind: "wasm-worker",
+      },
+    }),
+  );
+  assert.notEqual(
+    first,
+    computeCacheId({
+      ...identity,
+      conversionOptions: { tessellation: 0.25 },
+    }),
+  );
+  assert.equal(
+    computeCacheId({
+      ...identity,
+      conversionOptions: { alpha: true, tessellation: 0.25 },
+    }),
+    computeCacheId({
+      ...identity,
+      conversionOptions: { tessellation: 0.25, alpha: true },
+    }),
   );
 });
 
@@ -100,6 +144,16 @@ test("doctor report requires the adapter, cache, engine, and license contract", 
         JSON.stringify({
           ...compatible,
           engine: { ...compatible.engine, license: "unknown" },
+        }),
+    ),
+    /ADAPTER_DOCTOR_REPORT_REJECTED/u,
+  );
+  assert.throws(
+    () =>
+      parseLibreDwgDoctorReport(
+        JSON.stringify({
+          ...compatible,
+          engine: { ...compatible.engine, version: "0.15" },
         }),
       ),
     /ADAPTER_DOCTOR_REPORT_REJECTED/u,
@@ -215,18 +269,44 @@ else report();
     );
     await chmod(adapterPath, 0o700);
 
-    const manager = new NativeCacheManager(cacheRoot, adapterPath);
+    const manager = new SceneCacheManager(
+      cacheRoot,
+      new LibreDwgNativeSceneEngine(adapterPath),
+    );
+    const unsupportedPhases: SceneEngineProgressPhase[] = [];
+    await assert.rejects(
+      manager.prepare(sourcePath, {
+        signal: new AbortController().signal,
+        conversionOptions: { tessellation: 0.25 },
+        onProgress: ({ phase }) => unsupportedPhases.push(phase),
+      }),
+      /ENGINE_OPTIONS_UNSUPPORTED/u,
+    );
+    assert.deepEqual(unsupportedPhases, ["failed"]);
+
+    const firstPhases: SceneEngineProgressPhase[] = [];
     const first = await manager.prepare(sourcePath, {
       signal: new AbortController().signal,
+      onProgress: ({ phase }) => firstPhases.push(phase),
     });
     assert.equal(first.reused, false);
     assert.equal(await readFile(first.cachePath, "utf8"), "cache");
+    assert.deepEqual(firstPhases, [
+      "checking",
+      "parsing",
+      "validating",
+      "cache-ready",
+    ]);
+    assert.equal(first.engine.backendId, "native");
 
+    const reusedPhases: SceneEngineProgressPhase[] = [];
     const second = await manager.prepare(sourcePath, {
       signal: new AbortController().signal,
+      onProgress: ({ phase }) => reusedPhases.push(phase),
     });
     assert.equal(second.reused, true);
     assert.equal(second.cacheId, first.cacheId);
+    assert.deepEqual(reusedPhases, ["checking", "cache-ready"]);
 
     const rebuilt = await manager.prepare(sourcePath, {
       force: true,
@@ -235,20 +315,28 @@ else report();
     assert.equal(rebuilt.reused, false);
 
     await writeFile(sourcePath, "change");
+    const changedPhases: SceneEngineProgressPhase[] = [];
     const changedInput = manager.prepare(sourcePath, {
       signal: new AbortController().signal,
+      onProgress: ({ phase }) => changedPhases.push(phase),
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
     await writeFile(sourcePath, "changed");
     await assert.rejects(changedInput, /CACHE_INPUT_CHANGED/u);
+    assert.equal(changedPhases.at(-1), "failed");
 
     await writeFile(sourcePath, "slow");
     const controller = new AbortController();
+    const cancelledPhases: SceneEngineProgressPhase[] = [];
     const cancelled = manager.prepare(sourcePath, {
       signal: controller.signal,
+      onProgress: ({ phase }) => cancelledPhases.push(phase),
     });
     setTimeout(() => controller.abort(), 100);
-    await assert.rejects(cancelled, (error) => isAbortError(error));
+    await assert.rejects(cancelled, (error) =>
+      isSceneEngineAbort(error),
+    );
+    assert.equal(cancelledPhases.at(-1), "cancelled");
     assert.equal(
       (await readdir(cacheRoot)).some((name) => name.endsWith(".tmp")),
       false,

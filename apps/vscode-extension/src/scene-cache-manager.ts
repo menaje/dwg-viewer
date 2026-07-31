@@ -1,0 +1,311 @@
+import { createHash, randomBytes } from "node:crypto";
+import {
+  chmod,
+  mkdir,
+  rename,
+  rm,
+  stat,
+} from "node:fs/promises";
+import path from "node:path";
+import {
+  abortSceneEngineError,
+  canonicalSceneConversionOptions,
+  createSceneEngineProgress,
+  EMPTY_SCENE_CONVERSION_OPTIONS,
+  isSceneEngineAbort,
+  normalizeSceneConversionOptions,
+  SCENE_CACHE_SCHEMA_VERSION,
+  SCENE_ENGINE_CONTRACT,
+  SCENE_ENGINE_PROGRESS_SCHEMA,
+  SceneEngineError,
+  type SceneConversionOptions,
+  type SceneEngine,
+  type SceneEngineDescriptor,
+  type SceneEngineProgressEvent,
+  type SceneEngineProgressPhase,
+} from "./scene-engine";
+
+export interface CacheIdentity {
+  sourcePath: string;
+  sourceSize: bigint;
+  sourceMtimeNs: bigint;
+  engine: SceneEngineDescriptor;
+  engineRevision: string;
+  conversionOptions?: SceneConversionOptions;
+}
+
+function hashFields(fields: readonly string[]): string {
+  const hash = createHash("sha256");
+  for (const field of fields) {
+    const encoded = Buffer.from(field, "utf8");
+    const length = Buffer.allocUnsafe(4);
+    length.writeUInt32LE(encoded.byteLength);
+    hash.update(length);
+    hash.update(encoded);
+  }
+  return hash.digest("hex");
+}
+
+export function computeCacheId(identity: CacheIdentity): string {
+  return hashFields([
+    identity.engine.schema,
+    identity.engine.cacheSchema,
+    path.resolve(identity.sourcePath),
+    identity.sourceSize.toString(),
+    identity.sourceMtimeNs.toString(),
+    identity.engine.engineId,
+    identity.engine.engineVersion,
+    identity.engine.backendId,
+    identity.engine.backendKind,
+    identity.engineRevision,
+    canonicalSceneConversionOptions(
+      identity.conversionOptions ?? EMPTY_SCENE_CONVERSION_OPTIONS,
+    ),
+  ]);
+}
+
+export interface PreparedCache {
+  cacheId: string;
+  cachePath: string;
+  size: number;
+  reused: boolean;
+  engine: SceneEngineDescriptor;
+}
+
+export interface PrepareCacheOptions {
+  force?: boolean;
+  signal: AbortSignal;
+  conversionOptions?: SceneConversionOptions;
+  onProgress?: (event: SceneEngineProgressEvent) => void;
+}
+
+export class SceneCacheManager {
+  constructor(
+    private readonly cacheRoot: string,
+    private readonly engine: SceneEngine,
+  ) {
+    if (
+      engine.descriptor.schema !== SCENE_ENGINE_CONTRACT ||
+      engine.descriptor.cacheSchema !== SCENE_CACHE_SCHEMA_VERSION
+    ) {
+      throw new TypeError("scene engine descriptor is incompatible");
+    }
+  }
+
+  async prepare(
+    sourcePath: string,
+    {
+      force = false,
+      signal,
+      conversionOptions = EMPTY_SCENE_CONVERSION_OPTIONS,
+      onProgress,
+    }: PrepareCacheOptions,
+  ): Promise<PreparedCache> {
+    try {
+      if (signal.aborted) {
+        throw abortSceneEngineError();
+      }
+      const normalizedOptions =
+        normalizeSceneConversionOptions(conversionOptions);
+      const supportedOptions = new Set(
+        this.engine.descriptor.capabilities.conversionOptions,
+      );
+      const unsupportedOption = Object.keys(normalizedOptions).find(
+        (name) => !supportedOptions.has(name),
+      );
+      if (unsupportedOption) {
+        throw new SceneEngineError(
+          "ENGINE_OPTIONS_UNSUPPORTED",
+          `변환 엔진이 지원하지 않는 옵션입니다: ${unsupportedOption}`,
+        );
+      }
+      this.notify(onProgress, "checking");
+      await mkdir(this.cacheRoot, { recursive: true, mode: 0o700 });
+
+      let sourceMetadata;
+      let engineSnapshot;
+      try {
+        [sourceMetadata, engineSnapshot] = await Promise.all([
+          stat(sourcePath, { bigint: true }),
+          this.engine.snapshot(),
+        ]);
+      } catch (error) {
+        throw new SceneEngineError(
+          "INPUT_METADATA_FAILED",
+          "도면 또는 변환 엔진 정보를 읽지 못했습니다.",
+          { cause: error },
+        );
+      }
+      if (!sourceMetadata.isFile()) {
+        throw new SceneEngineError(
+          "INPUT_NOT_FILE",
+          "선택한 DWG 파일을 읽을 수 없습니다.",
+        );
+      }
+
+      const cacheId = computeCacheId({
+        sourcePath,
+        sourceSize: sourceMetadata.size,
+        sourceMtimeNs: sourceMetadata.mtimeNs,
+        engine: this.engine.descriptor,
+        engineRevision: engineSnapshot.revision,
+        conversionOptions: normalizedOptions,
+      });
+      const cachePath = path.join(
+        this.cacheRoot,
+        `${cacheId}.dwg.cache`,
+      );
+
+      if (force) {
+        await rm(cachePath, { force: true });
+      } else {
+        const existing = await this.readExistingCache(cacheId, cachePath);
+        if (existing) {
+          this.notify(onProgress, "cache-ready");
+          return existing;
+        }
+      }
+
+      const temporaryPath = path.join(
+        this.cacheRoot,
+        `${cacheId}.${randomBytes(8).toString("hex")}.tmp`,
+      );
+      try {
+        await this.engine.convert({
+          sourcePath,
+          outputPath: temporaryPath,
+          signal,
+          options: normalizedOptions,
+          onProgress: (event) => this.forward(onProgress, event),
+        });
+        if (signal.aborted) {
+          throw abortSceneEngineError();
+        }
+        const [finalSourceMetadata, finalEngineSnapshot] = await Promise.all([
+          stat(sourcePath, { bigint: true }),
+          this.engine.snapshot(),
+        ]);
+        if (
+          finalSourceMetadata.size !== sourceMetadata.size ||
+          finalSourceMetadata.mtimeNs !== sourceMetadata.mtimeNs ||
+          finalEngineSnapshot.revision !== engineSnapshot.revision
+        ) {
+          throw new SceneEngineError(
+            "CACHE_INPUT_CHANGED",
+            "변환 중 도면 또는 변환 엔진이 변경되었습니다. 다시 시도해 주세요.",
+          );
+        }
+        try {
+          await rename(temporaryPath, cachePath);
+        } catch (error) {
+          const racedCache = await this.readExistingCache(
+            cacheId,
+            cachePath,
+          );
+          if (racedCache) {
+            this.notify(onProgress, "cache-ready");
+            return racedCache;
+          }
+          throw new SceneEngineError(
+            "CACHE_COMMIT_FAILED",
+            "변환 캐시를 저장하지 못했습니다.",
+            { cause: error },
+          );
+        }
+        if (process.platform !== "win32") {
+          await chmod(cachePath, 0o600);
+        }
+        const prepared = await this.readExistingCache(cacheId, cachePath);
+        if (!prepared) {
+          throw new SceneEngineError(
+            "CACHE_COMMIT_FAILED",
+            "변환 캐시를 저장하지 못했습니다.",
+          );
+        }
+        this.notify(onProgress, "cache-ready");
+        return { ...prepared, reused: false };
+      } finally {
+        await rm(temporaryPath, { force: true }).catch(() => undefined);
+      }
+    } catch (error) {
+      this.notify(
+        onProgress,
+        signal.aborted || isSceneEngineAbort(error)
+          ? "cancelled"
+          : "failed",
+      );
+      throw error;
+    }
+  }
+
+  private notify(
+    observer: PrepareCacheOptions["onProgress"],
+    phase: SceneEngineProgressPhase,
+  ): void {
+    try {
+      observer?.(createSceneEngineProgress(this.engine.descriptor, phase));
+    } catch {
+      // Progress observers are diagnostic and cannot affect engine lifetime.
+    }
+  }
+
+  private forward(
+    observer: PrepareCacheOptions["onProgress"],
+    event: SceneEngineProgressEvent,
+  ): void {
+    const descriptor = this.engine.descriptor;
+    if (
+      event.schema !== SCENE_ENGINE_PROGRESS_SCHEMA ||
+      event.engineId !== descriptor.engineId ||
+      event.engineVersion !== descriptor.engineVersion ||
+      event.backendId !== descriptor.backendId ||
+      event.backendKind !== descriptor.backendKind ||
+      (event.phase !== "parsing" &&
+        event.phase !== "preview-ready" &&
+        event.phase !== "validating")
+    ) {
+      return;
+    }
+    if (
+      event.phase === "preview-ready" &&
+      !descriptor.capabilities.progressivePreview
+    ) {
+      return;
+    }
+    this.notify(observer, event.phase);
+  }
+
+  private async readExistingCache(
+    cacheId: string,
+    cachePath: string,
+  ): Promise<PreparedCache | undefined> {
+    try {
+      const metadata = await stat(cachePath);
+      if (!metadata.isFile() || metadata.size <= 0) {
+        await rm(cachePath, { force: true });
+        return undefined;
+      }
+      if (!Number.isSafeInteger(metadata.size)) {
+        throw new SceneEngineError(
+          "CACHE_TOO_LARGE",
+          "변환 캐시가 지원 가능한 크기를 넘었습니다.",
+        );
+      }
+      return {
+        cacheId,
+        cachePath,
+        size: metadata.size,
+        reused: true,
+        engine: this.engine.descriptor,
+      };
+    } catch (error) {
+      if (
+        error instanceof SceneEngineError ||
+        (error as NodeJS.ErrnoException).code !== "ENOENT"
+      ) {
+        throw error;
+      }
+      return undefined;
+    }
+  }
+}

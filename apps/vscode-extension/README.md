@@ -34,6 +34,19 @@ viewer error screen exposes the same select-and-diagnose action.
 The first open creates a private cache under VS Code's extension storage.
 Subsequent opens reuse it until the drawing or converter changes.
 
+## Engine boundary
+
+LibreDWG Native runs behind the versioned `dwg-scene-engine/1` interface.
+Engine and backend capabilities, bounded progress phases, conversion options
+and implementation revision are part of the cache contract. Native and a
+future WASM Worker candidate receive separate cache identities and still feed
+the same range reader and renderer.
+
+WASM is not a selectable backend in this build. The common cache path has a
+WASM-shaped contract test, but a real Worker must pass the repository's
+geometry, Korean text, cancellation, memory, performance, license and package
+gates before any setting or fallback is added.
+
 ## SHX and Korean BigFont folders
 
 After the first geometry frame, the extension reads the drawing's text styles

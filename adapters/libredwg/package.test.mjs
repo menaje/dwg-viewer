@@ -86,9 +86,21 @@ test("rejects traversal, absolute, backslash, and duplicate archive paths", () =
 });
 
 test("keeps package and source preparation pins synchronized", async () => {
-  const [prepareScript, buildScript] = await Promise.all([
+  const [prepareScript, buildScript, nativeEngineSource] = await Promise.all([
     readFile(path.join(import.meta.dirname, "prepare.sh"), "utf8"),
     readFile(path.join(import.meta.dirname, "build.sh"), "utf8"),
+    readFile(
+      path.join(
+        import.meta.dirname,
+        "..",
+        "..",
+        "apps",
+        "vscode-extension",
+        "src",
+        "native-cache.ts",
+      ),
+      "utf8",
+    ),
   ]);
   assert.match(
     prepareScript,
@@ -100,7 +112,19 @@ test("keeps package and source preparation pins synchronized", async () => {
   );
   assert.match(prepareScript, /--disable-shared/u);
   assert.match(prepareScript, /--enable-static/u);
+  assert.match(
+    buildScript,
+    new RegExp(`LIBREDWG_VERSION=${LIBREDWG_VERSION.replace(".", "\\.")}`, "u"),
+  );
+  assert.match(buildScript, /--exact-version="\$LIBREDWG_VERSION"/u);
   assert.match(buildScript, /static_library=.*libredwg\.a/u);
   assert.match(buildScript, /"\$static_library" -lm/u);
   assert.match(buildScript, /"\$strip" "\$output"/u);
+  assert.match(
+    nativeEngineSource,
+    new RegExp(
+      `LIBREDWG_NATIVE_ENGINE_VERSION = "${LIBREDWG_VERSION.replace(".", "\\.")}"`,
+      "u",
+    ),
+  );
 });
