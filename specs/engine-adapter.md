@@ -1,8 +1,9 @@
 # DWG engine adapter protocol v1
 
-Status: built-in acadrust adapter, benchmark runner and a partial LibreDWG
-inspection/conversion adapter implemented. LibreDWG coverage expansion and
-ACadSharp are tracked by GitHub issue #9.
+Status: accepted engine decision. The built-in acadrust adapter, LibreDWG
+inspection/conversion adapter and ACadSharp inspection preflight are
+implemented. LibreDWG 0.14 is selected; see
+[`docs/engine-decision.md`](../docs/engine-decision.md).
 
 ## Purpose
 
@@ -74,8 +75,8 @@ The common inspection fields describe logical drawing entities. Engine-specific
 raw object-model counts may be added under distinct fields, but block markers,
 owned polyline vertices and attached attributes must not inflate the common
 `drawing.entities`, `drawing.objects`, `entity_types` or `text` values. The
-LibreDWG adapter exposes those raw values separately as `drawing.raw_*` and
-`embedded_text`.
+LibreDWG and ACadSharp adapters expose those raw values separately as
+`drawing.raw_*` and `embedded_text`.
 
 ## Conversion report
 
@@ -112,7 +113,7 @@ The report records:
 - peak RSS when every measured process reports it;
 - whether all measured compatibility fingerprints are identical.
 
-Conversion gates use process wall time and peak RSS:
+Full conversion gates use process wall time and peak RSS:
 
 | Metric | Target | Hard limit | Rule |
 | --- | ---: | ---: | --- |
@@ -122,6 +123,11 @@ Conversion gates use process wall time and peak RSS:
 A missing RSS measurement produces `incomplete`. A non-deterministic
 fingerprint or any hard-limit violation produces `hard_fail`. Passing hard
 limits but missing a target produces `target_miss`.
+
+Parsing is a mandatory subset of conversion. When conversion has not been
+implemented, the runner applies the peak-RSS gate to the inspection process.
+Exceeding the hard limit rejects the candidate immediately; otherwise the
+decision remains `incomplete` until conversion wall time and memory exist.
 
 The built-in acadrust benchmark refuses to run from a debug build. External
 adapters are responsible for identifying and using their optimized build.

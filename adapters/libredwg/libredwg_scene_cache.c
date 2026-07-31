@@ -997,7 +997,7 @@ encode_color (const Dwg_Color *color)
    * readers use 0xc2 for direct RGB and 0xc3 for ACI. Entity ENC colors leave
    * method unset, so derive it from their packed value as well.
    *
-   * LibreDWG 0.13.4's common-entity path also decodes ENC alpha before RGB,
+   * LibreDWG's common-entity path also decodes ENC alpha before RGB,
    * unlike its bit_read_ENC helper and the public HATCH qualification fixture.
    * With both 0x80 and 0x20 present, that fixture therefore exposes packed RGB
    * through alpha_raw. Prefer it only when it carries a valid direct-RGB
@@ -1521,7 +1521,8 @@ write_drawing_section (CacheWriter *writer, Dwg_Data *dwg,
     }
   if (!align_writer (writer, &offset)
       || !write_u32 (writer, source_version)
-      || !write_u32 (writer, (uint32_t)dwg->header.is_maint)
+      || !write_u32 (writer,
+                     (uint32_t)LIBREDWG_MAINTENANCE_VERSION (dwg))
       || !write_i32 (writer, (int32_t)dwg->header_vars.INSUNITS)
       || !write_u32 (writer, 0)
       || !write_u64 (writer, counts->total_entities)
@@ -7103,8 +7104,9 @@ libredwg_write_scene_cache (
       || !write_hatch_pattern_dash_section (
           &writer, dwg, &sections[26])
       || !position (&writer, &file_size)
-      || !write_header (&writer, file_size, source_size, source_version,
-                        (uint32_t)dwg->header.is_maint)
+      || !write_header (
+          &writer, file_size, source_size, source_version,
+          (uint32_t)LIBREDWG_MAINTENANCE_VERSION (dwg))
       || !write_directory (&writer, sections)
       || fflush (file) != 0)
     {

@@ -25,3 +25,5 @@ node_modules/
 /artifacts/
 /benchmarks/results/
 /adapters/libredwg/bin/
+/adapters/acadsharp/bin/
+/adapters/acadsharp/obj/

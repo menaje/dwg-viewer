@@ -14,6 +14,13 @@
 #define LIBREDWG_SCENE_CACHE_VERSION_MINOR 7u
 #define LIBREDWG_SCENE_SECTION_COUNT 27
 
+#if LIBREDWG_VERSION >= 14
+#define LIBREDWG_MAINTENANCE_VERSION(dwg_ptr) \
+  ((dwg_ptr)->header.maint_rel_version)
+#else
+#define LIBREDWG_MAINTENANCE_VERSION(dwg_ptr) ((dwg_ptr)->header.is_maint)
+#endif
+
 typedef struct
 {
   uint64_t total_entities;

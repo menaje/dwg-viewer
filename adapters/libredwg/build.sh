@@ -28,7 +28,7 @@ fi
 PKG_CONFIG_PATH="$LIBREDWG_PREFIX/lib/pkgconfig:$LIBREDWG_PREFIX/lib64/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export PKG_CONFIG_PATH
 
-"$pkg_config" --atleast-version=0.13.4 libredwg
+"$pkg_config" --atleast-version=0.14 libredwg
 cflags=$("$pkg_config" --cflags libredwg)
 libs=$("$pkg_config" --libs libredwg)
 

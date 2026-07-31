@@ -48,13 +48,14 @@ This is a deliberately partial conversion milestone:
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
 - bounded SHX/BigFont and system-font fallback display is implemented in the
-  Webview; exact MTEXT/OCS fidelity remains open in GitHub issue #9.
+  Webview; exact MTEXT/OCS fidelity remains open in GitHub issues #5 and #7.
 
-The partial writer produces a structurally valid cache, but it is not yet the
-primary production converter. Its large-drawing detail batches now use the
-same group-local midpoint quantization and 16-bit XY Morton key as the acadrust
-writer, with original source order as the deterministic tie breaker. The
-first-frame overview remains capped at 65,536 segments and 4 MiB.
+This writer is the selected primary engine path, but its remaining source
+families and exact text layout are not yet release-ready. Its large-drawing
+detail batches use the same group-local midpoint quantization and 16-bit XY
+Morton key as the acadrust writer, with original source order as the
+deterministic tie breaker. The first-frame overview remains capped at 65,536
+segments and 4 MiB.
 
 ## Portable build
 
@@ -71,7 +72,7 @@ adapters/libredwg/prepare.sh \
 Both paths must not already exist. A C11 compiler, `make`, `curl`, `tar` and a
 SHA-256 utility are required.
 
-If LibreDWG 0.13.4 or newer already exists in an isolated prefix, only the
+If LibreDWG 0.14 or newer already exists in an isolated prefix, only the
 adapter needs to be built:
 
 ```bash
@@ -80,7 +81,9 @@ LIBREDWG_PREFIX=/path/to/libredwg-prefix \
 ```
 
 The output binary links to LibreDWG; distributing that binary must comply with
-LibreDWG's GPL-3.0-or-later license.
+LibreDWG's GPL-3.0-or-later license. An MPL-only VSIX must not bundle the
+prebuilt adapter until the GPL-enabled release artifact described in
+[`docs/engine-decision.md`](../../docs/engine-decision.md) is reviewed.
 
 ## Benchmark
 
@@ -90,7 +93,7 @@ Run both phases through the same process-isolated benchmark:
 target/release/dwg-converter benchmark /path/to/drawing.dwg \
   --adapter /path/to/libredwg-adapter \
   --engine-id libredwg \
-  --engine-version 0.13.4 \
+  --engine-version 0.14 \
   --engine-license GPL-3.0-or-later \
   --scope all \
   --pretty
@@ -112,8 +115,8 @@ main `drawing.entities`, `drawing.objects`, `entity_types` and `text` fields to
 the shared logical inspection contract.
 
 On the private 24 MB reference drawing, the Scene Cache v1.7 milestone had a
-4,140 ms median process wall time and 591,904,768-byte median peak RSS across
-three isolated measured runs. The maximums were 4,200 ms and 592,035,840 bytes,
+2,941 ms median process wall time and 591,659,008-byte median peak RSS across
+three isolated measured runs. The maximums were 2,957 ms and 591,740,928 bytes,
 so both target gates pass. The deterministic 175,985,184-byte cache contains
 1,659,755 full-detail segments, including 35,550 HATCH boundary segments; no
 HATCH reached the boundary or fill-vertex cap and no non-finite display

@@ -772,7 +772,8 @@ inspect_dwg (const char *path)
   fputs ("\"drawing\":{", stdout);
   fputs ("\"version\":", stdout);
   json_string (version_code);
-  printf (",\"maintenance_version\":%u", (unsigned int)dwg.header.is_maint);
+  printf (",\"maintenance_version\":%u",
+          (unsigned int)LIBREDWG_MAINTENANCE_VERSION (&dwg));
   printf (",\"entities\":%" PRIu64, entities);
   printf (",\"raw_entities\":%" PRIu64, raw_entities);
   printf (",\"structural_entities\":%" PRIu64, structural_entities);

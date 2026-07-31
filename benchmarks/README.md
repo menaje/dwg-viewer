@@ -33,7 +33,7 @@ adapters/libredwg/prepare.sh \
 target/release/dwg-converter benchmark /path/to/drawing.dwg \
   --adapter /private/tmp/libredwg-adapter \
   --engine-id libredwg \
-  --engine-version 0.13.4 \
+  --engine-version 0.14 \
   --engine-license GPL-3.0-or-later \
   --scope all \
   --output benchmarks/results/libredwg.json

@@ -479,5 +479,6 @@ supported.
 
 This qualification writer keeps the same 4 MiB overview and 512 KiB detail
 limits and uses disk-backed group-local XY Morton ordering for detail batches.
-The remaining unsupported source families and exact CAD text-layout fidelity
-must be closed before the LibreDWG writer can replace the primary converter.
+LibreDWG is the selected primary engine path. The remaining unsupported source
+families and exact CAD text-layout fidelity must be closed before that path is
+release-ready.

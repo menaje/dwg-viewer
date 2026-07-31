@@ -3,9 +3,11 @@
 대형 DWG와 국내 한글 SHX/BigFont 도면을 로컬에서 여는 무료·오픈소스
 VS Code 읽기 전용 뷰어입니다.
 
-현재는 제품 기능보다 엔진의 생존 가능성을 먼저 검증하는 단계입니다.
-`acadrust` 변환기는 범위 읽기가 가능한 Scene Cache를 생성하며,
-LibreDWG 어댑터는 더 낮은 메모리의 검사와 직접 변환 경로를 검증합니다.
+엔진 비교 결과 GNU LibreDWG 0.14를 주 엔진 경로로 선택했습니다.
+`acadrust`는 교차 회귀 기준으로 유지하고, ACadSharp 3.6.51은 파싱만으로
+메모리 하드 한도를 넘어 대형 도면 경로에서 제외했습니다. 결정 근거와
+GPL 배포 경계는 [`docs/engine-decision.md`](docs/engine-decision.md)에
+정리되어 있습니다.
 브라우저 기반 Webview 프로토타입은 캐시 전체를 메모리에 올리지 않고
 첫 화면용 버퍼만 읽어 WebGL2로 그린 뒤 한글 문자 원본을 별도 범위로
 읽습니다. HATCH 원본과 채움·패턴 선도 첫 선 화면 이후 별도 워커에서
@@ -52,6 +54,8 @@ target/release/dwg-converter benchmark /path/to/drawing.dwg --pretty
 비공개 결과는 Git에서 제외되는 `benchmarks/results/`에만 저장합니다.
 LibreDWG 후보는 전역 설치 없이
 [`adapters/libredwg`](adapters/libredwg/README.md)에서 준비할 수 있습니다.
+ACadSharp 파서 탈락 결과도
+[`adapters/acadsharp`](adapters/acadsharp/README.md)에서 재현할 수 있습니다.
 모든 후보는 같은 [`engine-adapter`](specs/engine-adapter.md) 계약으로
 연결해 비교합니다.
 
@@ -66,7 +70,7 @@ TEXT, MTEXT, ATTDEF, ATTRIB과 문자 스타일·SHX/BigFont 파일명을 UTF-8�
 시드 점을 제한형 원본 레코드로 보존하고, Webview에서 솔리드와
 그라데이션을 채웁니다. v1.7은 패턴 정의선과 dash 풀을 보존하고
 화면 기반 패턴 선을 생성합니다. 남은 엔티티 계열 및 정밀 MTEXT/OCS
-배치가 완료되기 전에는 기본 엔진으로 선택하지 않습니다.
+배치는 선택된 LibreDWG 경로의 제품 완성도 작업으로 계속 진행합니다.
 
 ## 최소 Scene Cache 생성
 

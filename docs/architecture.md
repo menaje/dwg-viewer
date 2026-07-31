@@ -12,12 +12,17 @@ DWG
   -> batched and instanced GPU renderer
 ```
 
-`acadrust` is the current parser baseline, not a permanent engine decision. It
-misses the reference drawing's memory hard gate. LibreDWG 0.13.4 is now the
-leading replacement candidate: its inspection adapter passes the current time
-and memory targets and matches the normalized geometry and Korean text
-fingerprint. Its first direct Scene Cache writer also passes the conversion
-time and memory targets. It now renders LINE and LWPOLYLINE/2D/3D POLYLINE
+The engine decision is now accepted: LibreDWG 0.14 is the primary parser and
+converter for continued product development. `acadrust` remains a cross-engine
+regression oracle but misses the reference drawing's memory hard gate.
+ACadSharp 3.6.51 is excluded because its parser-only preflight peaks around
+1.45 GB, above the 800 MB hard limit. The complete evidence and GPL
+distribution boundary are recorded in
+[`engine-decision.md`](engine-decision.md).
+
+LibreDWG passes the conversion time and memory targets and matches the
+normalized geometry and Korean text fingerprint. It renders LINE and
+LWPOLYLINE/2D/3D POLYLINE
 geometry plus bounded ARC/CIRCLE/ELLIPSE and bulge chords, while preserving
 source records for a partial entity set. Bounded SPLINE evaluation and
 fit/control-point fallback now use the same cache contract. Scene Cache v1.4
@@ -27,9 +32,9 @@ HATCH line, circular, elliptic, bulge and spline boundaries without adding a
 whole-drawing fill mesh. Scene Cache v1.6 adds bounded HATCH source rings and
 worker-side solid/gradient fills. Scene Cache v1.7 adds resolved
 pattern-definition and dash pools plus viewport-clipped pattern rendering in
-the persistent HATCH worker. It does not become the primary engine until the
-remaining source families and exact CAD text layout are proved. ACadSharp
-remains a fallback candidate through the same adapter protocol.
+the persistent HATCH worker. Remaining source families and exact CAD text
+layout are product-completeness gates on this selected engine, not an open
+parser choice.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -49,8 +54,13 @@ use the median and hard gates use the maximum. External engine wrappers must
 produce the same inspection report and Scene Cache contract; documentation
 feature tables alone do not select the primary parser.
 
+If an inspect-only candidate already exceeds the 800,000,000-byte memory hard
+limit, the runner rejects it before a cache writer exists. Parsing is a
+mandatory subset of conversion. A candidate below that limit still remains
+incomplete until the full conversion phase is measured.
+
 On the macOS arm64 reference environment, the current process-isolated
-LibreDWG inspection measured 731 ms median wall time and 591,757,312 bytes
+LibreDWG 0.14 inspection measured 810 ms median wall time and 591,380,480 bytes
 median peak RSS. The acadrust baseline measured 878 ms and 935,641,088 bytes.
 After normalizing
 LibreDWG's separate block markers, owned vertices, table records and attached
@@ -86,14 +96,26 @@ source coverage rises to 377,208 of 378,400 entities (99.68%); the remaining
 1,192 entities and skipped open/invalid HATCH paths stay explicit in the
 report.
 
-The Scene Cache v1.7 pattern milestone measured 4,140 ms median conversion
-wall time and 591,904,768 bytes median peak RSS; measured maximums were
-4,200 ms and 592,035,840 bytes. The deterministic 175,985,184-byte cache adds
+The Scene Cache v1.7 pattern milestone on LibreDWG 0.14 measured 2,941 ms
+median conversion wall time and 591,659,008 bytes median peak RSS; measured
+maximums were 2,957 ms and 591,740,928 bytes. The deterministic
+175,985,184-byte cache adds
 6,390 resolved pattern-definition records and 12,020 dash values. Those two
 sections add 556,320 bytes over v1.6 while the line overview and detail
 batches remain unchanged. The corresponding acadrust conversion measured
 7,642 ms median and 969,310,208 bytes median peak RSS, confirming that it still
 fails the memory hard gate while LibreDWG passes both conversion gates.
+
+The 0.14 cache and normalized conversion report are byte-identical to the
+0.13.4 result on the reference drawing, while median conversion time improves
+from 4,140 ms to 2,941 ms. Nightly `0.14.xxxx` prereleases are not used as the
+reproducible engine pin.
+
+The latest ACadSharp 3.6.51 parser preflight measured 4,014 ms median wall time
+and 1,452,392,448 bytes median peak RSS; measured maximums were 4,098 ms and
+1,452,474,368 bytes. It preserved the logical entity, block and Korean text
+fingerprints, but parser memory alone exceeds the hard limit by more than
+650 MB. No ACadSharp cache writer is planned.
 
 Cross-engine conversion of public LibreDWG fixtures covers every HATCH mode.
 `example_2018.dwg` produces one pattern HATCH, two definition lines and four

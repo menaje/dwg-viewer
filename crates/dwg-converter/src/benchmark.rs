@@ -755,8 +755,17 @@ fn evaluate_decision(
         CONVERSION_TARGET_MS,
         CONVERSION_HARD_LIMIT_MS,
     );
+    // Parsing is a mandatory subset of conversion. A parser-only candidate
+    // that already exceeds the hard memory limit cannot be rescued by adding
+    // a cache writer, so allow the inspection phase to reject it before that
+    // additional implementation work. Prefer the full conversion observation
+    // whenever it exists.
+    let peak_observation = match conversion {
+        Some(phase) => phase.peak_rss_bytes.clone(),
+        None => inspection.and_then(|phase| phase.peak_rss_bytes.clone()),
+    };
     let peak_rss_bytes = evaluate_gate(
-        conversion.and_then(|phase| phase.peak_rss_bytes.clone()),
+        peak_observation,
         PEAK_RSS_TARGET_BYTES,
         PEAK_RSS_HARD_LIMIT_BYTES,
     );
@@ -861,6 +870,60 @@ mod tests {
             8_000,
         );
         assert_eq!(decision.status, GateStatus::HardFail);
+    }
+
+    #[test]
+    fn parser_memory_can_reject_a_candidate_before_conversion_exists() {
+        let inspection = BenchmarkPhaseSummary {
+            runs: Vec::new(),
+            wall_ms: MetricSummary {
+                samples: 3,
+                minimum: 1,
+                median: 1,
+                maximum: 1,
+            },
+            reported_total_ms: MetricSummary {
+                samples: 3,
+                minimum: 1,
+                median: 1,
+                maximum: 1,
+            },
+            peak_rss_bytes: Some(MetricSummary {
+                samples: 3,
+                minimum: 1_300_000_000,
+                median: 1_310_000_000,
+                maximum: 1_320_000_000,
+            }),
+            deterministic_output: true,
+            fingerprint: Value::Null,
+        };
+
+        let decision = evaluate_decision(Some(&inspection), None);
+        assert_eq!(decision.status, BenchmarkStatus::HardFail);
+        assert_eq!(decision.peak_rss_bytes.status, GateStatus::HardFail);
+        assert_eq!(decision.conversion_wall_ms.status, GateStatus::Unavailable);
+
+        let conversion_without_rss = BenchmarkPhaseSummary {
+            runs: Vec::new(),
+            wall_ms: MetricSummary {
+                samples: 3,
+                minimum: 1,
+                median: 1,
+                maximum: 1,
+            },
+            reported_total_ms: MetricSummary {
+                samples: 3,
+                minimum: 1,
+                median: 1,
+                maximum: 1,
+            },
+            peak_rss_bytes: None,
+            deterministic_output: true,
+            fingerprint: Value::Null,
+        };
+        let decision = evaluate_decision(Some(&inspection), Some(&conversion_without_rss));
+        assert_eq!(decision.status, BenchmarkStatus::Incomplete);
+        assert_eq!(decision.peak_rss_bytes.status, GateStatus::Unavailable);
     }
 
     #[test]

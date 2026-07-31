@@ -10,14 +10,36 @@
 ## Optional dependency: GNU LibreDWG
 
 - Project: https://www.gnu.org/software/libredwg/
-- Version: 0.13.4
+- Version: 0.14
 - License: GNU General Public License 3.0 or later
-- Usage: optional process-isolated DWG parsing and Scene Cache conversion
-  candidate
+- Usage: selected process-isolated DWG parsing and Scene Cache conversion
+  engine
 
 LibreDWG is not linked into the MPL-2.0 Rust or Webview components. The optional
 adapter binary links to LibreDWG and must be distributed under terms compatible
 with GPL-3.0-or-later.
+
+## Optional benchmark dependency: ACadSharp
+
+- Project: https://github.com/DomCR/ACadSharp
+- Version: 3.6.51
+- License: MIT
+- Usage: process-isolated parser-memory preflight and compatibility comparison
+
+ACadSharp is content-hash locked in `adapters/acadsharp/packages.lock.json`.
+It is not part of the selected viewer runtime because its parser exceeds the
+large-drawing memory hard limit.
+
+## Portable ACadSharp build runtime: .NET
+
+- Project: https://github.com/dotnet
+- SDK version: 9.0.316
+- License: MIT on the supported Linux and macOS product distributions
+- Usage: downloaded into an isolated build directory only to prepare and run
+  the optional ACadSharp benchmark adapter
+
+The downloaded SDK archive includes its authoritative license and third-party
+notices. It is not installed globally or bundled in the viewer.
 
 ## Portable build tool: pkgconf
 
