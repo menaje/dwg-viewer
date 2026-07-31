@@ -5,13 +5,16 @@ This optional process-isolated adapter measures LibreDWG with the same
 acadrust engine. It traverses LibreDWG's object model directly instead of
 creating a full JSON dump.
 
-The `convert` path writes Scene Cache v1.5 without a whole-drawing intermediate
+The `convert` path writes Scene Cache v1.6 without a whole-drawing intermediate
 model. It repeatedly traverses LibreDWG objects and streams sections and
 bounded GPU batches directly to a new cache file. For large drawings, it
 spills fixed-size detail records into private unnamed temporary files, sorts
 8,192-record runs, and performs one buffered merge into group-local XY Morton
 order. The in-memory sort working set stays bounded below 0.8 MB; the
 temporary files are mode `0600`, close-on-exec, and removed automatically.
+HATCH sections use repeated bounded passes and retain at most one 65,536-point
+ring (about 1.5 MiB) while streaming; they never build a whole-drawing fill
+mesh.
 
 This is a deliberately partial conversion milestone:
 
@@ -33,8 +36,11 @@ This is a deliberately partial conversion milestone:
 - HATCH line, circular, elliptic, bulge and spline boundaries share those
   chord rules and are capped at 65,536 segments per HATCH; reports expose
   rendered boundary segments and any capped entities;
-- HATCH source records and solid, gradient or clipped pattern fills remain
-  deferred;
+- bounded HATCH entity records retain pattern/gradient metadata, closed `f64`
+  rings, gradient colors and seed points; rings are capped at 65,536 vertices
+  per HATCH and 1,048,576 vertices globally;
+- the Webview fills solid and gradient rings after the first line frame;
+  pattern metadata is retained but pattern strokes remain deferred;
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
 - bounded SHX/BigFont and system-font fallback display is implemented in the
@@ -101,18 +107,26 @@ keeps raw counts under `drawing.raw_*` and `embedded_text`, but normalizes the
 main `drawing.entities`, `drawing.objects`, `entity_types` and `text` fields to
 the shared logical inspection contract.
 
-On the private 24 MB reference drawing, the Scene Cache v1.5 milestone had a
-3,526 ms median process wall time and 592,216,064-byte median peak RSS across
-three isolated measured runs. The maximums were 3,601 ms and 592,232,448 bytes,
-so both target gates pass. The deterministic 173,480,720-byte cache contains
+On the private 24 MB reference drawing, the Scene Cache v1.6 milestone had a
+4,120 ms median process wall time and 592,150,528-byte median peak RSS across
+three isolated measured runs. The maximums were 4,134 ms and 592,265,216 bytes,
+so both target gates pass. The deterministic 175,428,864-byte cache contains
 1,659,755 full-detail segments, including 35,550 HATCH boundary segments; no
-HATCH reached the per-entity cap and no non-finite segment was skipped. The
-browser opens it with eight range reads totaling 5,001,477 bytes, including
-the unchanged 4 MiB overview. The 2,289 text records then load in three
-separate reads totaling 793,407 bytes; their 690 Hangul-bearing values and
-2,674 Hangul characters exactly match the inspection fingerprint with no
-corruption markers. HATCH remains among the 4,745 deferred source entities
-until fill/source records are implemented. At peak, the two automatically
-removed sort files use about 312 MB of temporary disk for this drawing; they
-do not become resident geometry arrays. Private reports and generated caches
-are not committed.
+HATCH reached the boundary or fill-vertex cap and no non-finite display
+segment was skipped.
+
+The five HATCH sections contain 3,553 source records, 6,365 usable closed
+loops, 31,511 fill vertices, 6,704 gradient colors and 3,653 seed points.
+Open and invalid paths stay explicit in the report. Logical source coverage is
+377,208 of 378,400 entities; 392 HATCHes are solid and 3,161 are patterns.
+
+The browser opens the cache with eight range reads totaling 5,001,677 bytes,
+including the unchanged 4 MiB overview. A local range-reader qualification
+then loaded the five HATCH sections in five reads totaling 1,947,941 bytes in
+11.8 ms and triangulated 379 usable solid fills into 5,585 triangles and a
+536,160-byte GPU buffer in 14.9 ms. The GPU limit was not reached. The 2,289
+text records still load separately; their 690 Hangul-bearing values and 2,674
+Hangul characters match the inspection fingerprint with no corruption
+markers. At peak, the two automatically removed sort files use about 312 MB
+of temporary disk for this drawing; they do not become resident geometry
+arrays. Private reports and generated caches are not committed.

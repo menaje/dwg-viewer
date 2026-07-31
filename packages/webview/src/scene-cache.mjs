@@ -1,6 +1,6 @@
 export const CACHE_MAGIC = new Uint8Array([68, 87, 71, 83, 67, 78, 49, 0]);
 export const CACHE_VERSION_MAJOR = 1;
-export const MAX_CACHE_VERSION_MINOR = 5;
+export const MAX_CACHE_VERSION_MINOR = 6;
 export const HEADER_SIZE = 64;
 export const DIRECTORY_ENTRY_SIZE = 40;
 export const GPU_LINE_BATCH_RECORD_SIZE = 128;
@@ -8,6 +8,11 @@ export const GPU_LINE_VERTEX_RECORD_SIZE = 32;
 export const TEXT_STYLE_RECORD_SIZE = 96;
 export const TEXT_ENTITY_RECORD_SIZE = 336;
 export const TEXT_COLUMN_HEIGHT_RECORD_SIZE = 8;
+export const HATCH_ENTITY_RECORD_SIZE = 192;
+export const HATCH_LOOP_RECORD_SIZE = 48;
+export const HATCH_VERTEX_RECORD_SIZE = 24;
+export const HATCH_GRADIENT_COLOR_RECORD_SIZE = 16;
+export const HATCH_SEED_POINT_RECORD_SIZE = 16;
 
 export const SectionKind = Object.freeze({
   Drawing: 1,
@@ -30,6 +35,11 @@ export const SectionKind = Object.freeze({
   TextColumnHeights: 23,
   GpuLineBatches: 30,
   GpuLineVertices: 31,
+  HatchEntities: 32,
+  HatchLoops: 33,
+  HatchVertices: 34,
+  HatchGradientColors: 35,
+  HatchSeedPoints: 36,
 });
 
 export const GpuLineBatchKind = Object.freeze({
@@ -44,11 +54,16 @@ const FIXED_RECORD_SIZES = new Map([
   [SectionKind.TextColumnHeights, TEXT_COLUMN_HEIGHT_RECORD_SIZE],
   [SectionKind.GpuLineBatches, GPU_LINE_BATCH_RECORD_SIZE],
   [SectionKind.GpuLineVertices, GPU_LINE_VERTEX_RECORD_SIZE],
+  [SectionKind.HatchLoops, HATCH_LOOP_RECORD_SIZE],
+  [SectionKind.HatchVertices, HATCH_VERTEX_RECORD_SIZE],
+  [SectionKind.HatchGradientColors, HATCH_GRADIENT_COLOR_RECORD_SIZE],
+  [SectionKind.HatchSeedPoints, HATCH_SEED_POINT_RECORD_SIZE],
 ]);
 const MAX_METADATA_SECTION_BYTES = 64 * 1024 * 1024;
 const MAX_CACHE_STRING_BYTES = 1024 * 1024;
 const MAX_OVERVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_DETAIL_BATCH_BYTES = 512 * 1024;
+const MAX_HATCH_SOURCE_RECORDS = 1_048_576;
 const STRING_TABLE_HEADER_SIZE = 16;
 const STRING_TABLE_FLAG = 1;
 
@@ -57,6 +72,21 @@ export const TextEntityKind = Object.freeze({
   MText: 1,
   AttributeDefinition: 2,
   Attribute: 3,
+});
+
+export const HatchFlags = Object.freeze({
+  Solid: 1,
+  Associative: 1 << 1,
+  Double: 1 << 2,
+  Gradient: 1 << 3,
+  SingleColorGradient: 1 << 4,
+  Truncated: 1 << 5,
+});
+
+export const HatchStyle = Object.freeze({
+  Normal: 0,
+  Outer: 1,
+  Ignore: 2,
 });
 
 function requireArrayBuffer(buffer, expectedLength, label) {
@@ -303,6 +333,224 @@ export class TextEntityTable {
   }
 }
 
+export class HatchSourceTable {
+  constructor({
+    entityBuffer,
+    stringOffset,
+    entityCount,
+    loopBuffer,
+    loopCount,
+    vertexBuffer,
+    vertexCount,
+    gradientColorBuffer,
+    gradientColorCount,
+    seedPointBuffer,
+    seedPointCount,
+  }) {
+    this.entityBuffer = entityBuffer;
+    this.entityView = new DataView(entityBuffer);
+    this.stringOffset = stringOffset;
+    this.entityCount = entityCount;
+    this.loopBuffer = loopBuffer;
+    this.loopView = new DataView(loopBuffer);
+    this.loopCount = loopCount;
+    this.vertexBuffer = vertexBuffer;
+    this.vertexView = new DataView(vertexBuffer);
+    this.vertexCount = vertexCount;
+    this.gradientColorBuffer = gradientColorBuffer;
+    this.gradientColorView = new DataView(gradientColorBuffer);
+    this.gradientColorCount = gradientColorCount;
+    this.seedPointBuffer = seedPointBuffer;
+    this.seedPointView = new DataView(seedPointBuffer);
+    this.seedPointCount = seedPointCount;
+    this.decoder = new TextDecoder("utf-8", { fatal: true });
+  }
+
+  get length() {
+    return this.entityCount;
+  }
+
+  #entityOffset(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.entityCount) {
+      throw new RangeError(`HATCH entity index is out of range: ${index}`);
+    }
+    return STRING_TABLE_HEADER_SIZE + index * HATCH_ENTITY_RECORD_SIZE;
+  }
+
+  readEntity(index, target) {
+    if (!target || typeof target !== "object") {
+      throw new TypeError("HATCH entity target must be an object");
+    }
+    const offset = this.#entityOffset(index);
+    target.index = index;
+    target.handle = this.entityView.getBigUint64(offset, true);
+    target.ownerHandle = this.entityView.getBigUint64(offset + 8, true);
+    target.layerIndex = this.entityView.getUint32(offset + 16, true);
+    target.color = this.entityView.getUint32(offset + 20, true);
+    target.lineWeight = this.entityView.getInt16(offset + 24, true);
+    target.commonFlags = this.entityView.getUint16(offset + 26, true);
+    target.flags = this.entityView.getUint32(offset + 48, true);
+    target.style = this.entityView.getUint16(offset + 52, true);
+    target.patternType = this.entityView.getUint16(offset + 54, true);
+    target.firstLoop = readSafeU64(
+      this.entityView,
+      offset + 56,
+      "HATCH loop offset",
+    );
+    target.loopCount = readSafeU64(
+      this.entityView,
+      offset + 64,
+      "HATCH loop count",
+    );
+    target.firstGradientColor = readSafeU64(
+      this.entityView,
+      offset + 72,
+      "HATCH gradient-color offset",
+    );
+    target.gradientColorCount = readSafeU64(
+      this.entityView,
+      offset + 80,
+      "HATCH gradient-color count",
+    );
+    target.elevation = this.entityView.getFloat64(offset + 88, true);
+    target.normal ??= [0, 0, 1];
+    for (let axis = 0; axis < 3; axis += 1) {
+      target.normal[axis] = this.entityView.getFloat64(
+        offset + 96 + axis * 8,
+        true,
+      );
+    }
+    target.patternAngle = this.entityView.getFloat64(offset + 120, true);
+    target.patternScale = this.entityView.getFloat64(offset + 128, true);
+    target.pixelSize = this.entityView.getFloat64(offset + 136, true);
+    target.gradientAngle = this.entityView.getFloat64(offset + 144, true);
+    target.gradientShift = this.entityView.getFloat64(offset + 152, true);
+    target.gradientTint = this.entityView.getFloat64(offset + 160, true);
+    target.firstSeedPoint = readSafeU64(
+      this.entityView,
+      offset + 168,
+      "HATCH seed-point offset",
+    );
+    target.seedPointCount = readSafeU64(
+      this.entityView,
+      offset + 176,
+      "HATCH seed-point count",
+    );
+    target.gradientReserved = this.entityView.getInt32(offset + 184, true);
+    target.definitionLineCount = this.entityView.getUint32(
+      offset + 188,
+      true,
+    );
+    return target;
+  }
+
+  readPatternName(index) {
+    return this.#readString(this.#entityOffset(index) + 32);
+  }
+
+  readGradientName(index) {
+    return this.#readString(this.#entityOffset(index) + 40);
+  }
+
+  readLoop(index, target) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.loopCount) {
+      throw new RangeError(`HATCH loop index is out of range: ${index}`);
+    }
+    if (!target || typeof target !== "object") {
+      throw new TypeError("HATCH loop target must be an object");
+    }
+    const offset = index * HATCH_LOOP_RECORD_SIZE;
+    target.index = index;
+    target.hatchIndex = readSafeU64(
+      this.loopView,
+      offset,
+      "HATCH loop source index",
+    );
+    target.pathFlags = this.loopView.getUint32(offset + 8, true);
+    target.sourcePathIndex = this.loopView.getUint32(offset + 12, true);
+    target.firstVertex = readSafeU64(
+      this.loopView,
+      offset + 16,
+      "HATCH vertex offset",
+    );
+    target.vertexCount = readSafeU64(
+      this.loopView,
+      offset + 24,
+      "HATCH vertex count",
+    );
+    target.sourceEdgeCount = this.loopView.getUint32(offset + 32, true);
+    target.flags = this.loopView.getUint32(offset + 36, true);
+    target.signedArea = this.loopView.getFloat64(offset + 40, true);
+    return target;
+  }
+
+  readVertex(index, target) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.vertexCount) {
+      throw new RangeError(`HATCH vertex index is out of range: ${index}`);
+    }
+    if (!target || target.length < 3) {
+      throw new TypeError("HATCH vertex target must contain three values");
+    }
+    const offset = index * HATCH_VERTEX_RECORD_SIZE;
+    for (let axis = 0; axis < 3; axis += 1) {
+      target[axis] = this.vertexView.getFloat64(offset + axis * 8, true);
+    }
+    return target;
+  }
+
+  readGradientColor(index, target) {
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= this.gradientColorCount
+    ) {
+      throw new RangeError(`HATCH gradient-color index is out of range: ${index}`);
+    }
+    if (!target || typeof target !== "object") {
+      throw new TypeError("HATCH gradient-color target must be an object");
+    }
+    const offset = index * HATCH_GRADIENT_COLOR_RECORD_SIZE;
+    target.value = this.gradientColorView.getFloat64(offset, true);
+    target.color = this.gradientColorView.getUint32(offset + 8, true);
+    return target;
+  }
+
+  readSeedPoint(index, target) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.seedPointCount) {
+      throw new RangeError(`HATCH seed-point index is out of range: ${index}`);
+    }
+    if (!target || target.length < 2) {
+      throw new TypeError("HATCH seed-point target must contain two values");
+    }
+    const offset = index * HATCH_SEED_POINT_RECORD_SIZE;
+    target[0] = this.seedPointView.getFloat64(offset, true);
+    target[1] = this.seedPointView.getFloat64(offset + 8, true);
+    return target;
+  }
+
+  get(index) {
+    const record = this.readEntity(index, { normal: [0, 0, 1] });
+    return Object.freeze({
+      ...record,
+      normal: Object.freeze([...record.normal]),
+      patternName: this.readPatternName(index),
+      gradientName: this.readGradientName(index),
+    });
+  }
+
+  #readString(referenceOffset) {
+    const relativeOffset = this.entityView.getUint32(referenceOffset, true);
+    const byteLength = this.entityView.getUint32(referenceOffset + 4, true);
+    return this.decoder.decode(
+      new Uint8Array(
+        this.entityBuffer,
+        this.stringOffset + relativeOffset,
+        byteLength,
+      ),
+    );
+  }
+}
+
 export class SceneCacheReader {
   constructor(source, header, sections) {
     this.source = source;
@@ -427,6 +675,38 @@ export class SceneCacheReader {
       validateStringTableDirectoryEntry(textStyles, TEXT_STYLE_RECORD_SIZE);
       validateStringTableDirectoryEntry(textEntities, TEXT_ENTITY_RECORD_SIZE);
       validateRecordSection(columnHeights, TEXT_COLUMN_HEIGHT_RECORD_SIZE);
+    }
+    if (minor >= 6) {
+      const hatchEntities = sections.get(SectionKind.HatchEntities);
+      const hatchLoops = sections.get(SectionKind.HatchLoops);
+      const hatchVertices = sections.get(SectionKind.HatchVertices);
+      const hatchGradientColors = sections.get(
+        SectionKind.HatchGradientColors,
+      );
+      const hatchSeedPoints = sections.get(SectionKind.HatchSeedPoints);
+      if (
+        !hatchEntities ||
+        !hatchLoops ||
+        !hatchVertices ||
+        !hatchGradientColors ||
+        !hatchSeedPoints
+      ) {
+        throw new Error("Scene Cache v1.6 is missing required HATCH sections");
+      }
+      validateStringTableDirectoryEntry(
+        hatchEntities,
+        HATCH_ENTITY_RECORD_SIZE,
+      );
+      validateRecordSection(hatchLoops, HATCH_LOOP_RECORD_SIZE);
+      validateRecordSection(hatchVertices, HATCH_VERTEX_RECORD_SIZE);
+      validateRecordSection(
+        hatchGradientColors,
+        HATCH_GRADIENT_COLOR_RECORD_SIZE,
+      );
+      validateRecordSection(
+        hatchSeedPoints,
+        HATCH_SEED_POINT_RECORD_SIZE,
+      );
     }
 
     return new SceneCacheReader(
@@ -660,6 +940,295 @@ export class SceneCacheReader {
         styles,
         columnHeights,
       );
+    });
+  }
+
+  async readHatchSource() {
+    return this.memoize("hatch-source", async () => {
+      const entities = this.getSection(SectionKind.HatchEntities);
+      const loops = this.getSection(SectionKind.HatchLoops);
+      const vertices = this.getSection(SectionKind.HatchVertices);
+      const gradientColors = this.getSection(SectionKind.HatchGradientColors);
+      const seedPoints = this.getSection(SectionKind.HatchSeedPoints);
+      validateStringTableDirectoryEntry(entities, HATCH_ENTITY_RECORD_SIZE);
+      validateRecordSection(loops, HATCH_LOOP_RECORD_SIZE);
+      validateRecordSection(vertices, HATCH_VERTEX_RECORD_SIZE);
+      validateRecordSection(
+        gradientColors,
+        HATCH_GRADIENT_COLOR_RECORD_SIZE,
+      );
+      validateRecordSection(seedPoints, HATCH_SEED_POINT_RECORD_SIZE);
+      for (const section of [
+        entities,
+        loops,
+        vertices,
+        gradientColors,
+        seedPoints,
+      ]) {
+        if (section.recordCount > MAX_HATCH_SOURCE_RECORDS) {
+          throw new Error(
+            `HATCH section ${section.kind} exceeds the ${MAX_HATCH_SOURCE_RECORDS}-record limit`,
+          );
+        }
+      }
+
+      const [
+        entityBuffer,
+        loopBuffer,
+        vertexBuffer,
+        gradientColorBuffer,
+        seedPointBuffer,
+      ] = await Promise.all([
+        this.readWholeMetadataSection(entities),
+        this.readWholeMetadataSection(loops),
+        this.readWholeMetadataSection(vertices),
+        this.readWholeMetadataSection(gradientColors),
+        this.readWholeMetadataSection(seedPoints),
+      ]);
+      const entityView = new DataView(entityBuffer);
+      const loopView = new DataView(loopBuffer);
+      const vertexView = new DataView(vertexBuffer);
+      const gradientColorView = new DataView(gradientColorBuffer);
+      const seedPointView = new DataView(seedPointBuffer);
+      const recordCount = entityView.getUint32(0, true);
+      const recordSize = entityView.getUint32(4, true);
+      const stringOffset = readSafeU64(
+        entityView,
+        8,
+        "HATCH UTF-8 blob offset",
+      );
+      const minimumStringOffset = checkedAdd(
+        STRING_TABLE_HEADER_SIZE,
+        checkedMultiply(
+          entities.recordCount,
+          entities.recordSize,
+          "HATCH entity bytes",
+        ),
+        "HATCH UTF-8 minimum offset",
+      );
+      if (
+        recordCount !== entities.recordCount ||
+        recordSize !== entities.recordSize ||
+        stringOffset < minimumStringOffset ||
+        stringOffset > entities.byteLength
+      ) {
+        throw new Error("HATCH string-table header is inconsistent");
+      }
+
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      const validateString = (entityIndex, referenceOffset) => {
+        const relativeOffset = entityView.getUint32(referenceOffset, true);
+        const byteLength = entityView.getUint32(referenceOffset + 4, true);
+        if (byteLength > MAX_CACHE_STRING_BYTES) {
+          throw new Error(
+            `HATCH entity ${entityIndex} contains an oversized string`,
+          );
+        }
+        const start = checkedAdd(
+          stringOffset,
+          relativeOffset,
+          "HATCH UTF-8 offset",
+        );
+        const end = checkedAdd(start, byteLength, "HATCH UTF-8 end");
+        if (start < stringOffset || end > entities.byteLength) {
+          throw new Error(
+            `HATCH entity ${entityIndex} points outside its UTF-8 blob`,
+          );
+        }
+        decoder.decode(new Uint8Array(entityBuffer, start, byteLength));
+      };
+      let expectedFirstLoop = 0;
+      let expectedFirstGradientColor = 0;
+      let expectedFirstSeedPoint = 0;
+      for (let index = 0; index < entities.recordCount; index += 1) {
+        const offset =
+          STRING_TABLE_HEADER_SIZE + index * HATCH_ENTITY_RECORD_SIZE;
+        validateString(index, offset + 32);
+        validateString(index, offset + 40);
+        const flags = entityView.getUint32(offset + 48, true);
+        const style = entityView.getUint16(offset + 52, true);
+        const patternType = entityView.getUint16(offset + 54, true);
+        if (flags & ~0x3f || style > HatchStyle.Ignore || patternType > 2) {
+          throw new Error(
+            `HATCH entity ${index} has unsupported flags or enum values`,
+          );
+        }
+        const firstLoop = readSafeU64(
+          entityView,
+          offset + 56,
+          "HATCH loop offset",
+        );
+        const loopCount = readSafeU64(
+          entityView,
+          offset + 64,
+          "HATCH loop count",
+        );
+        const firstGradientColor = readSafeU64(
+          entityView,
+          offset + 72,
+          "HATCH gradient-color offset",
+        );
+        const gradientColorCount = readSafeU64(
+          entityView,
+          offset + 80,
+          "HATCH gradient-color count",
+        );
+        const firstSeedPoint = readSafeU64(
+          entityView,
+          offset + 168,
+          "HATCH seed-point offset",
+        );
+        const seedPointCount = readSafeU64(
+          entityView,
+          offset + 176,
+          "HATCH seed-point count",
+        );
+        if (
+          firstLoop !== expectedFirstLoop ||
+          firstGradientColor !== expectedFirstGradientColor ||
+          firstSeedPoint !== expectedFirstSeedPoint ||
+          checkedAdd(firstLoop, loopCount, "HATCH loop range") >
+            loops.recordCount ||
+          checkedAdd(
+            firstGradientColor,
+            gradientColorCount,
+            "HATCH gradient-color range",
+          ) > gradientColors.recordCount ||
+          checkedAdd(
+            firstSeedPoint,
+            seedPointCount,
+            "HATCH seed-point range",
+          ) > seedPoints.recordCount
+        ) {
+          throw new Error(`HATCH entity ${index} has an invalid pool range`);
+        }
+        expectedFirstLoop += loopCount;
+        expectedFirstGradientColor += gradientColorCount;
+        expectedFirstSeedPoint += seedPointCount;
+        const finiteOffsets = [
+          88, 96, 104, 112, 120, 128, 136, 144, 152, 160,
+        ];
+        if (
+          finiteOffsets.some(
+            (relativeOffset) =>
+              !Number.isFinite(
+                entityView.getFloat64(offset + relativeOffset, true),
+              ),
+          )
+        ) {
+          throw new Error(`HATCH entity ${index} has a non-finite scalar`);
+        }
+        const normalLengthSquared =
+          entityView.getFloat64(offset + 96, true) ** 2 +
+          entityView.getFloat64(offset + 104, true) ** 2 +
+          entityView.getFloat64(offset + 112, true) ** 2;
+        if (
+          !Number.isFinite(normalLengthSquared) ||
+          normalLengthSquared <= Number.EPSILON
+        ) {
+          throw new Error(`HATCH entity ${index} has an invalid normal`);
+        }
+      }
+      if (
+        expectedFirstLoop !== loops.recordCount ||
+        expectedFirstGradientColor !== gradientColors.recordCount ||
+        expectedFirstSeedPoint !== seedPoints.recordCount
+      ) {
+        throw new Error("HATCH source pools are not fully covered");
+      }
+
+      let expectedFirstVertex = 0;
+      for (let index = 0; index < loops.recordCount; index += 1) {
+        const offset = index * HATCH_LOOP_RECORD_SIZE;
+        const hatchIndex = readSafeU64(
+          loopView,
+          offset,
+          "HATCH loop source index",
+        );
+        const pathFlags = loopView.getUint32(offset + 8, true);
+        const firstVertex = readSafeU64(
+          loopView,
+          offset + 16,
+          "HATCH vertex offset",
+        );
+        const vertexCount = readSafeU64(
+          loopView,
+          offset + 24,
+          "HATCH vertex count",
+        );
+        const flags = loopView.getUint32(offset + 36, true);
+        const signedArea = loopView.getFloat64(offset + 40, true);
+        if (
+          hatchIndex >= entities.recordCount ||
+          pathFlags & 32 ||
+          firstVertex !== expectedFirstVertex ||
+          vertexCount < 3 ||
+          flags & ~1 ||
+          !Number.isFinite(signedArea) ||
+          Math.abs(signedArea) <= 1e-18 ||
+          checkedAdd(firstVertex, vertexCount, "HATCH vertex range") >
+            vertices.recordCount
+        ) {
+          throw new Error(`HATCH loop ${index} has invalid metadata`);
+        }
+        expectedFirstVertex += vertexCount;
+      }
+      if (expectedFirstVertex !== vertices.recordCount) {
+        throw new Error("HATCH vertex pool is not fully covered");
+      }
+
+      for (let index = 0; index < vertices.recordCount; index += 1) {
+        const offset = index * HATCH_VERTEX_RECORD_SIZE;
+        if (
+          [0, 8, 16].some(
+            (relativeOffset) =>
+              !Number.isFinite(
+                vertexView.getFloat64(offset + relativeOffset, true),
+              ),
+          )
+        ) {
+          throw new Error(`HATCH vertex ${index} contains a non-finite value`);
+        }
+      }
+      for (let index = 0; index < gradientColors.recordCount; index += 1) {
+        if (
+          !Number.isFinite(
+            gradientColorView.getFloat64(
+              index * HATCH_GRADIENT_COLOR_RECORD_SIZE,
+              true,
+            ),
+          )
+        ) {
+          throw new Error(
+            `HATCH gradient color ${index} contains a non-finite value`,
+          );
+        }
+      }
+      for (let index = 0; index < seedPoints.recordCount; index += 1) {
+        const offset = index * HATCH_SEED_POINT_RECORD_SIZE;
+        if (
+          !Number.isFinite(seedPointView.getFloat64(offset, true)) ||
+          !Number.isFinite(seedPointView.getFloat64(offset + 8, true))
+        ) {
+          throw new Error(
+            `HATCH seed point ${index} contains a non-finite value`,
+          );
+        }
+      }
+
+      return new HatchSourceTable({
+        entityBuffer,
+        stringOffset,
+        entityCount: entities.recordCount,
+        loopBuffer,
+        loopCount: loops.recordCount,
+        vertexBuffer,
+        vertexCount: vertices.recordCount,
+        gradientColorBuffer,
+        gradientColorCount: gradientColors.recordCount,
+        seedPointBuffer,
+        seedPointCount: seedPoints.recordCount,
+      });
     });
   }
 

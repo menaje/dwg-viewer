@@ -572,6 +572,7 @@ fn parse_observation(
             "cache",
             "coverage",
             "gpu_lines",
+            "hatch_fills",
             "performance",
             "diagnostics",
         ]
@@ -892,7 +893,7 @@ fi
 if [ "$1" = "convert" ]; then
   cp "$2.fixture.cache" "$3"
   cache_size=$(wc -c < "$3" | tr -d ' ')
-  printf '%s\n' '{"schema":"dwg-scene-cache/1","status":"ok","input":{"size_bytes":3},"cache":{"size_bytes":'"$cache_size"',"validated":true},"coverage":{},"gpu_lines":{},"performance":{"parse_ms":1,"write_ms":2,"total_ms":3,"peak_rss_bytes":100},"diagnostics":0}'
+  printf '%s\n' '{"schema":"dwg-scene-cache/1","status":"ok","input":{"size_bytes":3},"cache":{"size_bytes":'"$cache_size"',"validated":true},"coverage":{},"gpu_lines":{},"hatch_fills":{},"performance":{"parse_ms":1,"write_ms":2,"total_ms":3,"peak_rss_bytes":100},"diagnostics":0}'
   exit 0
 fi
 exit 2

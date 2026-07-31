@@ -11,8 +11,8 @@
 #include <stdint.h>
 
 #define LIBREDWG_SCENE_CACHE_VERSION_MAJOR 1u
-#define LIBREDWG_SCENE_CACHE_VERSION_MINOR 5u
-#define LIBREDWG_SCENE_SECTION_COUNT 20
+#define LIBREDWG_SCENE_CACHE_VERSION_MINOR 6u
+#define LIBREDWG_SCENE_SECTION_COUNT 25
 
 typedef struct
 {
@@ -37,6 +37,7 @@ typedef struct
   uint64_t mtexts;
   uint64_t attribute_definitions;
   uint64_t attributes;
+  uint64_t hatches;
 } LibreDwgPrimitiveCounts;
 
 typedef struct
@@ -64,6 +65,21 @@ typedef struct
 
 typedef struct
 {
+  uint64_t source_hatches;
+  uint64_t solid_hatches;
+  uint64_t gradient_hatches;
+  uint64_t pattern_hatches;
+  uint64_t fill_loops;
+  uint64_t fill_vertices;
+  uint64_t gradient_colors;
+  uint64_t seed_points;
+  uint64_t truncated_fill_hatches;
+  uint64_t skipped_open_paths;
+  uint64_t skipped_invalid_paths;
+} LibreDwgHatchFillSummary;
+
+typedef struct
+{
   const char *name;
   uint64_t records;
   uint64_t bytes;
@@ -74,6 +90,7 @@ typedef struct
   uint64_t cache_size;
   LibreDwgPrimitiveCounts coverage;
   LibreDwgGpuLineSummary gpu_lines;
+  LibreDwgHatchFillSummary hatch_fills;
   LibreDwgSectionSummary sections[LIBREDWG_SCENE_SECTION_COUNT];
 } LibreDwgSceneCacheReport;
 

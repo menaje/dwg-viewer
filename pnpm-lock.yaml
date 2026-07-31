@@ -13,12 +13,20 @@ importers:
       '@mlightcad/shx-parser':
         specifier: 1.4.5
         version: 1.4.5
+      earcut:
+        specifier: 3.2.3
+        version: 3.2.3
 
 packages:
 
   '@mlightcad/shx-parser@1.4.5':
     resolution: {integrity: sha512-wFY0X7vnuq1IYdP6JRggb7LHcKho1P8zmcWGtXa6XYthwyKZCUoZCswTXr7J26pbzyhBB7KsiCcCL48iwIevdQ==}
 
+  earcut@3.2.3:
+    resolution: {integrity: sha512-vnS4AVwp1KHAF13i1vp1/2D5evWy3k5u/iW/B81QVsUZtV8cv2tU0b2VNFlqvh4kYwrFMDdjPCfAmfyJW9y14Q==}
+
 snapshots:
 
   '@mlightcad/shx-parser@1.4.5': {}
+
+  earcut@3.2.3: {}

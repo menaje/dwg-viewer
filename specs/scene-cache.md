@@ -1,7 +1,8 @@
-# Scene Cache v1.5
+# Scene Cache v1.6
 
-Status: source geometry/text writer and bounded HATCH-boundary preview
-implemented; expansion tracked by GitHub issues #3 and #9.
+Status: source geometry/text writer, bounded HATCH rings and asynchronous
+solid/gradient fill path implemented; expansion tracked by GitHub issues #3
+and #9.
 
 The cache is a little-endian, versioned binary container designed for range
 reads and browser `ArrayBuffer`/`DataView` access. Geometry is never encoded as
@@ -70,14 +71,21 @@ Section kinds currently written:
 | 23 | MTEXT column-height pool |
 | 30 | viewport/LOD GPU line batches |
 | 31 | interleaved GPU line vertices |
+| 32 | HATCH records and UTF-8 pattern/gradient names |
+| 33 | bounded closed HATCH loop records |
+| 34 | HATCH loop `f64[3]` vertex pool |
+| 35 | HATCH gradient-color pool |
+| 36 | HATCH seed-point pool |
 
 Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
 Version 1.2 adds kinds 30–31 for straight and polyline GPU lines. Version 1.3
 extends those GPU sections with bounded curve chords without changing their
 binary record sizes. Version 1.4 adds kinds 4 and 22–23 for source text and
 font-style metadata. Version 1.5 adds bounded HATCH boundary chords and expands
-the packed GPU source-kind field without changing a record size. The validator
-continues to accept older v1 caches.
+the packed GPU source-kind field without changing a record size. Version 1.6
+adds kinds 32–36 for bounded source-backed HATCH fills. The validator continues
+to accept older v1 caches, while a v1.6 writer always emits all 25 sections,
+including empty pools.
 
 ## Shared primitive prefix
 
@@ -225,6 +233,86 @@ normal, tolerances and begin/end tangents. It references four typed pools:
 All offset/count pairs are checked against their corresponding pool before the
 cache is accepted.
 
+## Bounded HATCH source and fill rings
+
+Scene Cache v1.6 preserves every HATCH as a kind-32 source record, including
+its shared primitive prefix, pattern and gradient names, style, flags,
+elevation, normal, pattern transform, gradient parameters, seed-point range
+and pattern-definition-line count. Closed usable boundary paths become
+bounded `f64` rings in kinds 33–34. The duplicated closing endpoint is omitted;
+the loop is implicitly closed from its last vertex to its first.
+
+Analytic and bulge edges use the same bounded chord rules as the line display
+path. Consequently, kind 34 is a source-backed fill ring rather than a
+lossless replacement for the original analytic edge topology. Open,
+degenerate and non-finite paths are skipped and reported separately. One
+HATCH contributes at most 65,536 ring vertices, the global vertex pool is
+capped at 1,048,576 records, and each gradient-color and seed-point pool is
+also capped at 1,048,576 records. A truncated entity sets its source flag and
+increments `hatch_fills.truncated_fill_hatches`.
+
+### HATCH entity record
+
+Kind 32 uses the standard 16-byte string-table header followed by 192-byte
+records:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u8[32]` | shared primitive prefix |
+| 32 | `u32[2]` | pattern-name UTF-8 offset and length |
+| 40 | `u32[2]` | gradient-name UTF-8 offset and length |
+| 48 | `u32` | HATCH flags |
+| 52 | `u16` | style: 0 normal, 1 outer, 2 ignore |
+| 54 | `u16` | source pattern-type enum |
+| 56 | `u64` | first kind-33 loop |
+| 64 | `u64` | loop count |
+| 72 | `u64` | first kind-35 gradient color |
+| 80 | `u64` | gradient-color count |
+| 88 | `f64` | elevation |
+| 96 | `f64[3]` | finite OCS normal; `[0,0,1]` fallback |
+| 120 | `f64` | pattern angle |
+| 128 | `f64` | pattern scale |
+| 136 | `f64` | pixel size |
+| 144 | `f64` | gradient angle |
+| 152 | `f64` | gradient shift |
+| 160 | `f64` | gradient tint |
+| 168 | `u64` | first kind-36 seed point |
+| 176 | `u64` | seed-point count |
+| 184 | `i32` | source gradient reserved value |
+| 188 | `u32` | source pattern-definition-line count |
+
+HATCH flag bits are 0 solid, 1 associative, 2 double, 3 gradient, 4
+single-color gradient and 5 truncated.
+
+### HATCH loop and value pools
+
+Each kind-33 record is 48 bytes:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u64` | owning kind-32 HATCH index |
+| 8 | `u32` | source boundary-path flags |
+| 12 | `u32` | source path index within the HATCH |
+| 16 | `u64` | first kind-34 vertex |
+| 24 | `u64` | vertex count |
+| 32 | `u32` | source edge count |
+| 36 | `u32` | loop flags; bit 0 means a curve was approximated |
+| 40 | `f64` | signed area in the dominant-axis projection |
+
+Kind 34 stores one `f64[3]` vertex per 24-byte record. Kind 35 stores a
+gradient stop as `f64 value`, encoded `u32 color` and reserved `u32` in 16
+bytes. Kind 36 stores one `f64[2]` seed point in 16 bytes. Entity ranges are
+contiguous and monotonic; loop-to-entity, loop-to-vertex, gradient-color and
+seed-point ranges are all validated before the cache is accepted.
+
+The Webview starts this work only after the first line frame. A dedicated
+worker range-reads the five HATCH sections, applies normal/outer/ignore ring
+nesting, triangulates solid and gradient fills and transfers only the final
+GPU buffer. Pattern HATCHes are counted but not triangulated. Runtime limits
+are 2,048 loops and 65,536 triangles per entity, 32 MiB of fill GPU vertices
+overall and 24,576 vertices per local-origin batch. A new file cancels and
+terminates the previous worker.
+
 ## Viewport and LOD GPU lines
 
 LINE and normalized polyline segments are emitted as interleaved, GPU-ready
@@ -233,15 +321,15 @@ CIRCLE, ELLIPSE, polyline bulges and NURBS SPLINE entities. Model-space
 geometry and each block definition remain separate. A block's vertices are
 stored once regardless of how many INSERT entities reference it.
 
-Scene Cache v1.5 also emits HATCH boundary paths. Straight edges remain exact
+Scene Cache v1.5+ also emits HATCH boundary paths. Straight edges remain exact
 within the derived `f32` display buffer; circular, elliptic, bulge and spline
 edges use the same bounded chord rules as the corresponding standalone
 entities. One HATCH contributes at most 65,536 boundary segments. The
 conversion report exposes both `hatch_boundary_segments` and
 `truncated_hatch_entities`, so the safety cap cannot silently hide a
-pathological boundary. Fill patterns, solid/gradient fills and HATCH
-source-precision records are not implemented yet; HATCH therefore remains in
-`coverage.deferred_entities`.
+pathological boundary. In v1.6, the separate bounded ring pools support
+source-backed solid and gradient fills without changing this first-frame line
+path.
 
 Circular and bulge curves use no more than 16 segments per revolution. Valid
 splines use two segments per non-empty knot span and no more than 256 segments
@@ -303,7 +391,7 @@ vertex buffer:
 | 24 | `u32` | entity handle high 32 bits |
 | 28 | `u32` | packed line weight, visibility, source kind and approximation flag |
 
-For v1.5, the packed style stores the signed line-weight bits in bits 0–15,
+For v1.5+, the packed style stores the signed line-weight bits in bits 0–15,
 invisibility in bit 16, source kind in bits 17–20 and the curved-chord
 approximation flag in bit 21. Source kinds are 0 LINE, 1 LWPOLYLINE, 2 2D
 POLYLINE, 3 3D POLYLINE, 4 ARC, 5 CIRCLE, 6 ELLIPSE, 7 SPLINE and 8 HATCH
@@ -318,7 +406,8 @@ available in the source sections for later high-zoom refinement.
 - automatic trusted SHX font discovery and project font mapping;
 - linetype override table;
 - view-adaptive high-zoom refinement beyond the bounded v1.3 curve chords;
-- HATCH source records plus solid, gradient and clipped pattern fills;
+- lossless HATCH analytic-edge and pattern-definition-line records, plus
+  clipped pattern-stroke rendering;
 - entity-selection index and source fingerprint.
 
 Cache files can contain project names and drawing text. They are local,
@@ -326,7 +415,7 @@ generated artifacts and must not be committed.
 
 ## LibreDWG qualification writer
 
-The optional LibreDWG adapter currently writes a valid but partial v1.5 cache
+The optional LibreDWG adapter currently writes a valid but partial v1.6 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
@@ -335,9 +424,12 @@ ATTRIB source records. Its GPU sections render LINE and normalized polyline
 segments plus bounded ARC/CIRCLE/ELLIPSE, bulge, SPLINE and HATCH-boundary
 chords. Circular curves use the same 16-segments-per-revolution limit; SPLINE
 evaluation and malformed-input fallback use the 256-segments-per-entity limit.
-HATCH fills and source records remain deferred. All omitted logical entities
-and any HATCH boundary cap are exposed in the conversion report rather than
-silently treated as supported.
+It also writes the five bounded HATCH source/fill sections. The Webview
+range-reads those sections after the first line frame, triangulates solid and
+gradient rings in a worker and uploads at most 32 MiB of local-origin fill
+vertices. Pattern HATCH metadata is retained, but pattern strokes remain
+deferred. All omitted logical entities, skipped paths and HATCH caps are
+exposed in the conversion report rather than silently treated as supported.
 
 This qualification writer keeps the same 4 MiB overview and 512 KiB detail
 limits and uses disk-backed group-local XY Morton ordering for detail batches.

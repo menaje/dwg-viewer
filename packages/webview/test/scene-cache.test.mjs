@@ -40,9 +40,9 @@ test("accepts the Scene Cache v1.3 header", async () => {
 test("rejects a newer unsupported Scene Cache minor version", async () => {
   await assert.rejects(
     SceneCacheReader.open(
-      new MemoryRangeSource(makeFixtureCache({ minorVersion: 6 })),
+      new MemoryRangeSource(makeFixtureCache({ minorVersion: 7 })),
     ),
-    /unsupported scene-cache version 1\.6/,
+    /unsupported scene-cache version 1\.7/,
   );
 });
 
@@ -53,6 +53,34 @@ test("accepts the Scene Cache v1.5 HATCH-boundary header", async () => {
 
   assert.equal(reader.header.major, 1);
   assert.equal(reader.header.minor, 5);
+});
+
+test("reads bounded Scene Cache v1.6 HATCH source pools lazily", async () => {
+  const source = new TrackedRangeSource(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 6 })),
+  );
+  const reader = await SceneCacheReader.open(source);
+  const requestsAfterOpen = source.requests.length;
+  const hatches = await reader.readHatchSource();
+
+  assert.equal(reader.header.minor, 6);
+  assert.equal(hatches.length, 1);
+  assert.equal(hatches.loopCount, 2);
+  assert.equal(hatches.vertexCount, 8);
+  assert.equal(hatches.gradientColorCount, 2);
+  assert.equal(hatches.seedPointCount, 1);
+  assert.equal(hatches.get(0).patternName, "SOLID");
+  assert.equal(hatches.get(0).gradientName, "LINEAR");
+  assert.equal(hatches.get(0).loopCount, 2);
+
+  const loop = hatches.readLoop(1, {});
+  assert.equal(loop.firstVertex, 4);
+  assert.equal(loop.vertexCount, 4);
+  assert.equal(loop.signedArea, -16);
+  assert.deepEqual(hatches.readVertex(6, [0, 0, 0]), [7, 7, 0]);
+  assert.deepEqual(hatches.readSeedPoint(0, [0, 0]), [1, 1]);
+  assert.equal(hatches.readGradientColor(1, {}).value, 1);
+  assert.equal(source.requests.length - requestsAfterOpen, 5);
 });
 
 test("preserves v1.4 Korean source text, style fonts and MTEXT columns", async () => {

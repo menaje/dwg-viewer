@@ -2,6 +2,11 @@ import {
   DIRECTORY_ENTRY_SIZE,
   GPU_LINE_BATCH_RECORD_SIZE,
   GPU_LINE_VERTEX_RECORD_SIZE,
+  HATCH_ENTITY_RECORD_SIZE,
+  HATCH_GRADIENT_COLOR_RECORD_SIZE,
+  HATCH_LOOP_RECORD_SIZE,
+  HATCH_SEED_POINT_RECORD_SIZE,
+  HATCH_VERTEX_RECORD_SIZE,
   HEADER_SIZE,
   SectionKind,
   TEXT_COLUMN_HEIGHT_RECORD_SIZE,
@@ -241,6 +246,140 @@ function makeTextColumnHeightSection() {
   };
 }
 
+function makeHatchEntitySection() {
+  const pattern = encoder.encode("SOLID");
+  const gradient = encoder.encode("LINEAR");
+  const stringOffset = 16 + HATCH_ENTITY_RECORD_SIZE;
+  const buffer = new ArrayBuffer(
+    stringOffset + pattern.byteLength + gradient.byteLength,
+  );
+  const view = new DataView(buffer);
+  view.setUint32(0, 1, true);
+  view.setUint32(4, HATCH_ENTITY_RECORD_SIZE, true);
+  writeU64(view, 8, stringOffset);
+  const offset = 16;
+  writeU64(view, offset, 401);
+  writeU64(view, offset + 8, 100);
+  view.setUint32(offset + 16, 0, true);
+  view.setUint32(offset + 20, 0, true);
+  view.setInt16(offset + 24, -1, true);
+  view.setUint32(offset + 32, 0, true);
+  view.setUint32(offset + 36, pattern.byteLength, true);
+  view.setUint32(offset + 40, pattern.byteLength, true);
+  view.setUint32(offset + 44, gradient.byteLength, true);
+  view.setUint32(offset + 48, (1 << 0) | (1 << 3), true);
+  view.setUint16(offset + 52, 0, true);
+  view.setUint16(offset + 54, 1, true);
+  writeU64(view, offset + 56, 0);
+  writeU64(view, offset + 64, 2);
+  writeU64(view, offset + 72, 0);
+  writeU64(view, offset + 80, 2);
+  view.setFloat64(offset + 88, 0, true);
+  writeVec3(view, offset + 96, [0, 0, 1]);
+  view.setFloat64(offset + 120, 0, true);
+  view.setFloat64(offset + 128, 1, true);
+  view.setFloat64(offset + 136, 0, true);
+  view.setFloat64(offset + 144, Math.PI / 4, true);
+  view.setFloat64(offset + 152, 0, true);
+  view.setFloat64(offset + 160, 0, true);
+  writeU64(view, offset + 168, 0);
+  writeU64(view, offset + 176, 1);
+  new Uint8Array(buffer, stringOffset, pattern.byteLength).set(pattern);
+  new Uint8Array(
+    buffer,
+    stringOffset + pattern.byteLength,
+    gradient.byteLength,
+  ).set(gradient);
+  return {
+    kind: SectionKind.HatchEntities,
+    recordSize: HATCH_ENTITY_RECORD_SIZE,
+    recordCount: 1,
+    flags: 1,
+    buffer,
+  };
+}
+
+function makeHatchLoopSection() {
+  const buffer = new ArrayBuffer(HATCH_LOOP_RECORD_SIZE * 2);
+  const view = new DataView(buffer);
+  const writeLoop = (offset, pathFlags, firstVertex, signedArea) => {
+    writeU64(view, offset, 0);
+    view.setUint32(offset + 8, pathFlags, true);
+    writeU64(view, offset + 16, firstVertex);
+    writeU64(view, offset + 24, 4);
+    view.setUint32(offset + 32, 4, true);
+    view.setFloat64(offset + 40, signedArea, true);
+  };
+  writeLoop(0, 1, 0, 100);
+  writeLoop(HATCH_LOOP_RECORD_SIZE, 0, 4, -16);
+  return {
+    kind: SectionKind.HatchLoops,
+    recordSize: HATCH_LOOP_RECORD_SIZE,
+    recordCount: 2,
+    flags: 0,
+    buffer,
+  };
+}
+
+function makeHatchVertexSection() {
+  const points = [
+    [0, 0, 0],
+    [10, 0, 0],
+    [10, 10, 0],
+    [0, 10, 0],
+    [3, 3, 0],
+    [3, 7, 0],
+    [7, 7, 0],
+    [7, 3, 0],
+  ];
+  const buffer = new ArrayBuffer(HATCH_VERTEX_RECORD_SIZE * points.length);
+  const view = new DataView(buffer);
+  points.forEach((point, index) =>
+    writeVec3(view, index * HATCH_VERTEX_RECORD_SIZE, point),
+  );
+  return {
+    kind: SectionKind.HatchVertices,
+    recordSize: HATCH_VERTEX_RECORD_SIZE,
+    recordCount: points.length,
+    flags: 0,
+    buffer,
+  };
+}
+
+function makeHatchGradientColorSection() {
+  const buffer = new ArrayBuffer(HATCH_GRADIENT_COLOR_RECORD_SIZE * 2);
+  const view = new DataView(buffer);
+  view.setFloat64(0, 0, true);
+  view.setUint32(8, (3 << 30) | (255 << 16), true);
+  view.setFloat64(HATCH_GRADIENT_COLOR_RECORD_SIZE, 1, true);
+  view.setUint32(
+    HATCH_GRADIENT_COLOR_RECORD_SIZE + 8,
+    (3 << 30) | 255,
+    true,
+  );
+  return {
+    kind: SectionKind.HatchGradientColors,
+    recordSize: HATCH_GRADIENT_COLOR_RECORD_SIZE,
+    recordCount: 2,
+    flags: 0,
+    buffer,
+  };
+}
+
+function makeHatchSeedPointSection() {
+  const buffer = new ArrayBuffer(HATCH_SEED_POINT_RECORD_SIZE);
+  const view = new DataView(buffer);
+  view.setFloat64(0, 1, true);
+  view.setFloat64(8, 1, true);
+  return {
+    kind: SectionKind.HatchSeedPoints,
+    recordSize: HATCH_SEED_POINT_RECORD_SIZE,
+    recordCount: 1,
+    flags: 0,
+    buffer,
+  };
+}
+
 function writeInsert(view, offset, values) {
   writeU64(view, offset, values.handle);
   writeU64(view, offset + 8, values.ownerHandle);
@@ -363,6 +502,7 @@ function makeVertexSection() {
 export function makeFixtureCache({
   minorVersion = 2,
   includeText = minorVersion >= 4,
+  includeHatch = minorVersion >= 6,
 } = {}) {
   const sections = [
     makeDrawingSection(),
@@ -375,6 +515,15 @@ export function makeFixtureCache({
       : []),
     makeBatchSection(),
     makeVertexSection(),
+    ...(includeHatch
+      ? [
+          makeHatchEntitySection(),
+          makeHatchLoopSection(),
+          makeHatchVertexSection(),
+          makeHatchGradientColorSection(),
+          makeHatchSeedPointSection(),
+        ]
+      : []),
   ];
   const directoryOffset = HEADER_SIZE;
   const directoryLength = sections.length * DIRECTORY_ENTRY_SIZE;

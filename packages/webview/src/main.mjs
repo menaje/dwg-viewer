@@ -23,6 +23,8 @@ const layersHideAll = document.querySelector("#layers-hide-all");
 let activeScene;
 let activeInteraction;
 let activeTextStatus;
+let activeHatchStatus;
+let activeHatchWorker;
 let openRevision = 0;
 const glyphCache = new ShxGlyphCache();
 
@@ -71,6 +73,17 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>Glyph 캐시</dt><dd>${formatBytes(glyphCache.stats.glyphBytes)}</dd></div>
     `
     : "";
+  const hatch = render?.hatchFill ?? activeHatchStatus?.metrics;
+  const hatchRows = hatch
+    ? `
+      <div><dt>해치 원본</dt><dd>${hatch.sourceHatches.toLocaleString()}개</dd></div>
+      <div><dt>해치 표시</dt><dd>${hatch.renderedHatches.toLocaleString()}개</dd></div>
+      <div><dt>채움 삼각형</dt><dd>${hatch.triangles.toLocaleString()}개</dd></div>
+      <div><dt>채움 배치</dt><dd>${hatch.batches.toLocaleString()}개</dd></div>
+      <div><dt>채움 GPU</dt><dd>${formatBytes(hatch.gpuBytes)}</dd></div>
+      <div><dt>채움 원본 읽기</dt><dd>${formatBytes(activeHatchStatus?.reads?.bytesRead ?? 0)}</dd></div>
+    `
+    : "";
   metrics.innerHTML = `
     <dl>
       <div><dt>첫 화면</dt><dd>${value.timings.firstFrameMs.toFixed(1)} ms</dd></div>
@@ -83,6 +96,7 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>GPU 정점 버퍼</dt><dd>${formatBytes(render.gpuVertexBytes)}</dd></div>
       <div><dt>전체 캐시</dt><dd>${formatBytes(value.cacheBytes)}</dd></div>
       ${detailRows}
+      ${hatchRows}
       ${textRows}
     </dl>
   `;
@@ -188,6 +202,84 @@ async function initializeTextOverlay(scene, revision) {
       : `문자 ${textEntities.length.toLocaleString()}개 표시${missingFontSuffix()}(시스템 글꼴 대체)`;
 }
 
+function loadHatchFillWorker(file, scene) {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(
+      new URL("./hatch-worker.mjs", import.meta.url),
+      { type: "module" },
+    );
+    let settled = false;
+    const task = {
+      cancel() {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        worker.terminate();
+        reject(new DOMException("HATCH 작업 취소됨", "AbortError"));
+      },
+    };
+    activeHatchWorker = task;
+    worker.addEventListener("message", (event) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      worker.terminate();
+      if (activeHatchWorker === task) {
+        activeHatchWorker = undefined;
+      }
+      if (!event.data.ok) {
+        reject(new Error(event.data.error));
+        return;
+      }
+      resolve(event.data);
+    });
+    worker.addEventListener("error", (event) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      worker.terminate();
+      if (activeHatchWorker === task) {
+        activeHatchWorker = undefined;
+      }
+      reject(new Error(event.message || "HATCH worker failed"));
+    });
+    worker.postMessage({
+      file,
+      blocks: scene.metadata.blocks,
+      modelBlockIndices: [...scene.instanceGraph.modelBlockIndices],
+    });
+  });
+}
+
+async function initializeHatchFills(file, scene, revision) {
+  if (scene.reader.header.minor < 6) {
+    return;
+  }
+  activeHatchStatus = Object.freeze({ state: "loading" });
+  status.textContent = "해치 원본을 별도 작업 공간에서 읽는 중";
+  const fill = await loadHatchFillWorker(file, scene);
+  if (revision !== openRevision || activeScene !== scene) {
+    return;
+  }
+  scene.renderer.setHatchFills(fill);
+  activeHatchStatus = Object.freeze({
+    state: "ready",
+    metrics: fill.metrics,
+    reads: fill.reads,
+  });
+  activeInteraction?.refresh();
+  const warnings =
+    fill.metrics.truncatedHatches +
+    fill.metrics.sourceTruncatedHatches +
+    fill.metrics.skippedTriangulations;
+  status.textContent =
+    `해치 ${fill.metrics.renderedHatches.toLocaleString()}개 표시 완료` +
+    (warnings > 0 ? ` · 제한/건너뜀 ${warnings.toLocaleString()}건` : "");
+}
+
 async function registerFontFiles(files) {
   if (files.length === 0) {
     return;
@@ -221,6 +313,9 @@ async function openFile(file) {
   setControlsEnabled(false);
   resetLayerPanel();
   activeTextStatus = undefined;
+  activeHatchStatus = undefined;
+  activeHatchWorker?.cancel();
+  activeHatchWorker = undefined;
   activeInteraction?.dispose();
   activeInteraction = undefined;
   activeScene?.renderer.dispose();
@@ -259,6 +354,16 @@ async function openFile(file) {
       },
     });
     setControlsEnabled(true);
+    initializeHatchFills(file, activeScene, revision).catch((error) => {
+      if (revision === openRevision) {
+        activeHatchStatus = Object.freeze({
+          state: "error",
+          error: error.message,
+        });
+        status.textContent = `해치 표시 실패: ${error.message}`;
+        console.error(error);
+      }
+    });
     initializeTextOverlay(activeScene, revision).catch((error) => {
       if (revision === openRevision) {
         status.textContent = `문자 표시 실패: ${error.message}`;

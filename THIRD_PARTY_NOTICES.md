@@ -37,3 +37,15 @@ with GPL-3.0-or-later.
 The Webview imports the package's ESM build. Fonts and glyphs are opened lazily
 under explicit byte and record limits; no font data is sent to an external
 service.
+
+## Earcut
+
+- Project: https://github.com/mapbox/earcut
+- Version: 3.2.3
+- License: ISC
+- Usage: browser-local triangulation of bounded HATCH rings after the first
+  line frame
+
+The Webview caps source and generated HATCH vertices before triangulation.
+Pattern strokes remain deferred; solid and gradient rings are triangulated
+locally without a service or paid SDK.

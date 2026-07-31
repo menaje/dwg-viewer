@@ -882,6 +882,7 @@ json_conversion_coverage (const LibreDwgPrimitiveCounts *counts)
   printf (",\"attribute_definitions\":%" PRIu64,
           counts->attribute_definitions);
   printf (",\"attributes\":%" PRIu64, counts->attributes);
+  printf (",\"hatches\":%" PRIu64, counts->hatches);
   putchar ('}');
 }
 
@@ -922,6 +923,29 @@ json_gpu_lines (const LibreDwgGpuLineSummary *summary)
           summary->maximum_batch_bytes);
   printf (",\"maximum_position_error\":%.17g",
           summary->maximum_position_error);
+  putchar ('}');
+}
+
+static void
+json_hatch_fills (const LibreDwgHatchFillSummary *summary)
+{
+  fputs ("{\"source_hatches\":", stdout);
+  printf ("%" PRIu64, summary->source_hatches);
+  printf (",\"solid_hatches\":%" PRIu64, summary->solid_hatches);
+  printf (",\"gradient_hatches\":%" PRIu64,
+          summary->gradient_hatches);
+  printf (",\"pattern_hatches\":%" PRIu64, summary->pattern_hatches);
+  printf (",\"fill_loops\":%" PRIu64, summary->fill_loops);
+  printf (",\"fill_vertices\":%" PRIu64, summary->fill_vertices);
+  printf (",\"gradient_colors\":%" PRIu64,
+          summary->gradient_colors);
+  printf (",\"seed_points\":%" PRIu64, summary->seed_points);
+  printf (",\"truncated_fill_hatches\":%" PRIu64,
+          summary->truncated_fill_hatches);
+  printf (",\"skipped_open_paths\":%" PRIu64,
+          summary->skipped_open_paths);
+  printf (",\"skipped_invalid_paths\":%" PRIu64,
+          summary->skipped_invalid_paths);
   putchar ('}');
 }
 
@@ -1018,6 +1042,8 @@ convert_dwg (const char *path, const char *output_path)
   json_conversion_coverage (&report.coverage);
   fputs (",\"gpu_lines\":", stdout);
   json_gpu_lines (&report.gpu_lines);
+  fputs (",\"hatch_fills\":", stdout);
+  json_hatch_fills (&report.hatch_fills);
   printf (",\"performance\":{\"parse_ms\":%" PRIu64
           ",\"write_ms\":%" PRIu64 ",\"total_ms\":%" PRIu64,
           parse_ms, write_ms, total_ms);

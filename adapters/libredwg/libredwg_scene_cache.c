@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MPL-2.0
  *
- * A bounded-memory Scene Cache v1.5 writer for GNU LibreDWG. Geometry and
+ * A bounded-memory Scene Cache v1.6 writer for GNU LibreDWG. Geometry and
  * source text are traversed repeatedly and written directly to the
  * destination; the writer never creates a JSON or whole-drawing in-memory
  * representation. Large detail passes use private temporary files for an
@@ -66,6 +66,15 @@
 #define MAX_SPLINE_DEGREE 15u
 #define MAX_SPLINE_SEGMENTS 256u
 #define MAX_HATCH_BOUNDARY_SEGMENTS 65536u
+#define MAX_HATCH_FILL_VERTICES 1048576u
+#define MAX_HATCH_AUX_RECORDS 1048576u
+#define HATCH_FLAG_SOLID 1u
+#define HATCH_FLAG_ASSOCIATIVE (1u << 1)
+#define HATCH_FLAG_DOUBLE (1u << 2)
+#define HATCH_FLAG_GRADIENT (1u << 3)
+#define HATCH_FLAG_SINGLE_COLOR_GRADIENT (1u << 4)
+#define HATCH_FLAG_TRUNCATED (1u << 5)
+#define HATCH_LOOP_FLAG_APPROXIMATED_CURVE 1u
 
 enum
 {
@@ -88,7 +97,12 @@ enum
   SECTION_TEXT_ENTITIES = 22,
   SECTION_TEXT_COLUMN_HEIGHTS = 23,
   SECTION_GPU_LINE_BATCHES = 30,
-  SECTION_GPU_LINE_VERTICES = 31
+  SECTION_GPU_LINE_VERTICES = 31,
+  SECTION_HATCH_ENTITIES = 32,
+  SECTION_HATCH_LOOPS = 33,
+  SECTION_HATCH_VERTICES = 34,
+  SECTION_HATCH_GRADIENT_COLORS = 35,
+  SECTION_HATCH_SEED_POINTS = 36
 };
 
 enum
@@ -109,7 +123,12 @@ enum
   SPLINE_POINT_RECORD_SIZE = 24,
   TEXT_ENTITY_RECORD_SIZE = 336,
   TEXT_COLUMN_HEIGHT_RECORD_SIZE = 8,
-  GPU_LINE_BATCH_RECORD_SIZE = 128
+  GPU_LINE_BATCH_RECORD_SIZE = 128,
+  HATCH_ENTITY_RECORD_SIZE = 192,
+  HATCH_LOOP_RECORD_SIZE = 48,
+  HATCH_VERTEX_RECORD_SIZE = 24,
+  HATCH_GRADIENT_COLOR_RECORD_SIZE = 16,
+  HATCH_SEED_POINT_RECORD_SIZE = 16
 };
 
 typedef struct
@@ -355,6 +374,42 @@ typedef struct
 
 typedef struct
 {
+  double (*vertices)[3];
+  size_t vertex_count;
+  uint32_t source_edge_count;
+  int approximated_curve;
+  double signed_area;
+} HatchRing;
+
+typedef struct
+{
+  LineSegment *segments;
+  size_t capacity;
+  size_t count;
+} HatchSegmentCollector;
+
+typedef int (*HatchRingConsumer) (
+    void *context, const Dwg_Object *object,
+    const Dwg_Entity_HATCH *hatch, uint64_t hatch_index,
+    uint32_t path_index, const Dwg_HATCH_Path *path,
+    const HatchRing *ring);
+
+typedef struct
+{
+  uint64_t global_vertices;
+  uint64_t global_gradient_colors;
+  uint64_t global_seed_points;
+  uint64_t loops;
+  uint64_t vertices;
+  uint64_t gradient_colors;
+  uint64_t seed_points;
+  uint64_t skipped_open_paths;
+  uint64_t skipped_invalid_paths;
+  int truncated;
+} HatchEntityScan;
+
+typedef struct
+{
   OverviewPlan *overview;
   LineSegmentConsumer consumer;
   void *consumer_context;
@@ -392,7 +447,12 @@ static const uint32_t SECTION_KINDS[LIBREDWG_SCENE_SECTION_COUNT]
         SECTION_TEXT_ENTITIES,
         SECTION_TEXT_COLUMN_HEIGHTS,
         SECTION_GPU_LINE_BATCHES,
-        SECTION_GPU_LINE_VERTICES };
+        SECTION_GPU_LINE_VERTICES,
+        SECTION_HATCH_ENTITIES,
+        SECTION_HATCH_LOOPS,
+        SECTION_HATCH_VERTICES,
+        SECTION_HATCH_GRADIENT_COLORS,
+        SECTION_HATCH_SEED_POINTS };
 
 static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
     = { DRAWING_RECORD_SIZE,
@@ -414,7 +474,12 @@ static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
         TEXT_ENTITY_RECORD_SIZE,
         TEXT_COLUMN_HEIGHT_RECORD_SIZE,
         GPU_LINE_BATCH_RECORD_SIZE,
-        GPU_LINE_VERTEX_RECORD_SIZE };
+        GPU_LINE_VERTEX_RECORD_SIZE,
+        HATCH_ENTITY_RECORD_SIZE,
+        HATCH_LOOP_RECORD_SIZE,
+        HATCH_VERTEX_RECORD_SIZE,
+        HATCH_GRADIENT_COLOR_RECORD_SIZE,
+        HATCH_SEED_POINT_RECORD_SIZE };
 
 static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
     = { "drawing",
@@ -436,7 +501,12 @@ static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
         "text_entities",
         "text_column_heights",
         "gpu_line_batches",
-        "gpu_line_vertices" };
+        "gpu_line_vertices",
+        "hatch_entities",
+        "hatch_loops",
+        "hatch_vertices",
+        "hatch_gradient_colors",
+        "hatch_seed_points" };
 
 static void
 set_error (CacheWriter *writer, const char *message)
@@ -1368,6 +1438,11 @@ count_primitives (const Dwg_Data *dwg)
         case DWG_TYPE_ATTDEF:
           counts.attribute_definitions++;
           break;
+        case DWG_TYPE_HATCH:
+          if (object->tio.entity
+              && object->tio.entity->tio.HATCH)
+            counts.hatches++;
+          break;
         default:
           break;
         }
@@ -1385,7 +1460,8 @@ count_primitives (const Dwg_Data *dwg)
                                + counts.polylines_3d + counts.ellipses
                                + counts.splines + counts.texts
                                + counts.mtexts
-                               + counts.attribute_definitions;
+                               + counts.attribute_definitions
+                               + counts.hatches;
   counts.deferred_entities
       = counts.total_entities - counts.serialized_entities;
   return counts;
@@ -4805,6 +4881,939 @@ hatch_requested_boundary_segments (const Dwg_Entity_HATCH *hatch)
   return total;
 }
 
+enum
+{
+  HATCH_RING_ERROR = -1,
+  HATCH_RING_INVALID = 0,
+  HATCH_RING_VALID = 1,
+  HATCH_RING_OPEN = 2,
+  HATCH_RING_TRUNCATED = 3
+};
+
+static uint64_t
+hatch_path_requested_segments (const Dwg_HATCH_Path *path)
+{
+  uint64_t total = 0;
+  uint64_t marker = (uint64_t)MAX_HATCH_BOUNDARY_SEGMENTS + 1u;
+  size_t item_count;
+  size_t item_index;
+  if (!path || !path->num_segs_or_paths)
+    return 0;
+  item_count = (size_t)path->num_segs_or_paths;
+  if ((path->flag & 2u) != 0u)
+    {
+      size_t source_segments;
+      if (!path->polyline_paths || item_count < 2u)
+        return 0;
+      source_segments
+          = item_count - 1u + (path->closed ? 1u : 0u);
+      for (item_index = 0; item_index < source_segments;
+           item_index++)
+        {
+          double bulge
+              = path->bulges_present
+                    ? path->polyline_paths[item_index].bulge
+                    : 0.0;
+          total = bounded_hatch_segment_sum (
+              total, bulge_segment_count (bulge));
+          if (total >= marker)
+            return marker;
+        }
+      return total;
+    }
+  if (!path->segs)
+    return 0;
+  for (item_index = 0; item_index < item_count; item_index++)
+    {
+      uint64_t requested
+          = hatch_edge_requested_segments (&path->segs[item_index]);
+      if (!requested)
+        return 0;
+      total = bounded_hatch_segment_sum (total, requested);
+      if (total >= marker)
+        return marker;
+    }
+  return total;
+}
+
+static int
+collect_hatch_segment (void *context, const LineSegment *segment)
+{
+  HatchSegmentCollector *collector = (HatchSegmentCollector *)context;
+  if (!collector || !segment || collector->count >= collector->capacity)
+    return 0;
+  collector->segments[collector->count++] = *segment;
+  return 1;
+}
+
+static int
+hatch_points_near (const double left[3], const double right[3])
+{
+  double scale = 1.0;
+  double tolerance;
+  size_t axis;
+  for (axis = 0; axis < 3; axis++)
+    {
+      if (!isfinite (left[axis]) || !isfinite (right[axis]))
+        return 0;
+      scale = fmax (scale, fabs (left[axis]));
+      scale = fmax (scale, fabs (right[axis]));
+    }
+  tolerance = fmax (1.0e-8, scale * DBL_EPSILON * 64.0);
+  for (axis = 0; axis < 3; axis++)
+    {
+      if (fabs (left[axis] - right[axis]) > tolerance)
+        return 0;
+    }
+  return 1;
+}
+
+static int
+append_hatch_segment_run (HatchRing *ring,
+                          const LineSegment *segments,
+                          size_t count)
+{
+  const LineSegment *first;
+  const LineSegment *last;
+  int reverse = 0;
+  size_t index;
+  if (!ring || !ring->vertices || !segments || !count)
+    return HATCH_RING_INVALID;
+  first = &segments[0];
+  last = &segments[count - 1u];
+  if (!ring->vertex_count)
+    {
+      memcpy (ring->vertices[ring->vertex_count++], first->start,
+              sizeof (first->start));
+    }
+  else if (hatch_points_near (
+               ring->vertices[ring->vertex_count - 1u],
+               first->start))
+    reverse = 0;
+  else if (hatch_points_near (
+               ring->vertices[ring->vertex_count - 1u],
+               last->end))
+    reverse = 1;
+  else
+    return HATCH_RING_OPEN;
+
+  if (reverse)
+    {
+      for (index = count; index > 0; index--)
+        {
+          const LineSegment *segment = &segments[index - 1u];
+          double *current = ring->vertices[ring->vertex_count - 1u];
+          if (!hatch_points_near (current, segment->end))
+            return HATCH_RING_OPEN;
+          if (!hatch_points_near (current, segment->start))
+            {
+              memcpy (ring->vertices[ring->vertex_count++],
+                      segment->start, sizeof (segment->start));
+            }
+          if (segment->approximated_curve)
+            ring->approximated_curve = 1;
+        }
+    }
+  else
+    {
+      for (index = 0; index < count; index++)
+        {
+          const LineSegment *segment = &segments[index];
+          double *current = ring->vertices[ring->vertex_count - 1u];
+          if (!hatch_points_near (current, segment->start))
+            return HATCH_RING_OPEN;
+          if (!hatch_points_near (current, segment->end))
+            {
+              memcpy (ring->vertices[ring->vertex_count++],
+                      segment->end, sizeof (segment->end));
+            }
+          if (segment->approximated_curve)
+            ring->approximated_curve = 1;
+        }
+    }
+  return HATCH_RING_VALID;
+}
+
+static int
+hatch_projected_area (const HatchRing *ring, const double normal[3],
+                      double *signed_area, double *extent)
+{
+  size_t dropped_axis;
+  size_t first_axis;
+  size_t second_axis;
+  double origin[2];
+  double twice_area = 0.0;
+  double maximum_extent = 0.0;
+  size_t index;
+  if (!ring || !ring->vertices || ring->vertex_count < 3u
+      || !normal || !signed_area || !extent)
+    return 0;
+  if (fabs (normal[0]) >= fabs (normal[1])
+      && fabs (normal[0]) >= fabs (normal[2]))
+    dropped_axis = 0;
+  else if (fabs (normal[1]) >= fabs (normal[2]))
+    dropped_axis = 1;
+  else
+    dropped_axis = 2;
+  if (dropped_axis == 0)
+    {
+      first_axis = 1;
+      second_axis = 2;
+    }
+  else if (dropped_axis == 1)
+    {
+      first_axis = 0;
+      second_axis = 2;
+    }
+  else
+    {
+      first_axis = 0;
+      second_axis = 1;
+    }
+  origin[0] = ring->vertices[0][first_axis];
+  origin[1] = ring->vertices[0][second_axis];
+  for (index = 0; index < ring->vertex_count; index++)
+    {
+      const double *left = ring->vertices[index];
+      const double *right
+          = ring->vertices[(index + 1u) % ring->vertex_count];
+      double left_x = left[first_axis] - origin[0];
+      double left_y = left[second_axis] - origin[1];
+      double right_x = right[first_axis] - origin[0];
+      double right_y = right[second_axis] - origin[1];
+      if (!isfinite (left_x) || !isfinite (left_y)
+          || !isfinite (right_x) || !isfinite (right_y))
+        return 0;
+      maximum_extent = fmax (maximum_extent, fabs (left_x));
+      maximum_extent = fmax (maximum_extent, fabs (left_y));
+      maximum_extent = fmax (maximum_extent, fabs (right_x));
+      maximum_extent = fmax (maximum_extent, fabs (right_y));
+      twice_area += left_x * right_y - right_x * left_y;
+    }
+  *signed_area = twice_area * 0.5;
+  *extent = maximum_extent;
+  return isfinite (*signed_area) && isfinite (*extent);
+}
+
+static void
+free_hatch_ring (HatchRing *ring)
+{
+  if (!ring)
+    return;
+  free (ring->vertices);
+  memset (ring, 0, sizeof (*ring));
+}
+
+static int
+build_hatch_ring (CacheWriter *writer, const Dwg_Entity_HATCH *hatch,
+                  const Dwg_HATCH_Path *path, uint64_t maximum_vertices,
+                  HatchRing *ring)
+{
+  uint64_t requested;
+  LineSegment *segments = NULL;
+  HatchSegmentCollector collector;
+  SegmentIteration iteration;
+  LineSegment base;
+  double normal[3];
+  double extent;
+  uint64_t generated;
+  size_t item_count;
+  size_t item_index;
+  int status = HATCH_RING_INVALID;
+  if (!writer || !hatch || !path || !ring)
+    return HATCH_RING_INVALID;
+  memset (ring, 0, sizeof (*ring));
+  requested = hatch_path_requested_segments (path);
+  if (requested < 3u)
+    return HATCH_RING_INVALID;
+  if (requested > maximum_vertices
+      || requested > MAX_HATCH_BOUNDARY_SEGMENTS)
+    return HATCH_RING_TRUNCATED;
+  if (requested > SIZE_MAX - 1u)
+    {
+      set_error (writer, "HATCH ring exceeds platform limits");
+      return HATCH_RING_ERROR;
+    }
+  segments = (LineSegment *)calloc ((size_t)requested,
+                                    sizeof (LineSegment));
+  ring->vertices = (double (*)[3])calloc (
+      (size_t)requested + 1u, sizeof (*ring->vertices));
+  if (!segments || !ring->vertices)
+    {
+      set_error (writer, "cannot allocate bounded HATCH ring");
+      status = HATCH_RING_ERROR;
+      goto done;
+    }
+  finite_normal_or_unit_z (
+      hatch->extrusion.x, hatch->extrusion.y,
+      hatch->extrusion.z, normal);
+  memset (&collector, 0, sizeof (collector));
+  collector.segments = segments;
+  collector.capacity = (size_t)requested;
+  memset (&iteration, 0, sizeof (iteration));
+  iteration.consumer = collect_hatch_segment;
+  iteration.consumer_context = &collector;
+  memset (&base, 0, sizeof (base));
+
+  item_count = (size_t)path->num_segs_or_paths;
+  if ((path->flag & 2u) != 0u)
+    {
+      generated = 0;
+      if (!iterate_hatch_polyline_path (
+              path, hatch->elevation, normal, &base, &iteration,
+              &generated))
+        {
+          set_error (writer, "cannot collect bounded HATCH polyline");
+          status = HATCH_RING_ERROR;
+          goto done;
+        }
+      if (iteration.skipped || collector.count != (size_t)requested)
+        goto done;
+      status = append_hatch_segment_run (
+          ring, segments, collector.count);
+      ring->source_edge_count = 1u;
+      if (status != HATCH_RING_VALID)
+        goto done;
+    }
+  else
+    {
+      ring->source_edge_count = (uint32_t)item_count;
+      for (item_index = 0; item_index < item_count; item_index++)
+        {
+          size_t first_segment = collector.count;
+          generated = 0;
+          if (!iterate_hatch_edge (
+                  &path->segs[item_index], hatch->elevation,
+                  normal, &base, &iteration, &generated))
+            {
+              set_error (writer, "cannot collect bounded HATCH edge");
+              status = HATCH_RING_ERROR;
+              goto done;
+            }
+          if (collector.count == first_segment)
+            goto done;
+          status = append_hatch_segment_run (
+              ring, &segments[first_segment],
+              collector.count - first_segment);
+          if (status != HATCH_RING_VALID)
+            goto done;
+        }
+      if (iteration.skipped || collector.count != (size_t)requested)
+        {
+          status = HATCH_RING_INVALID;
+          goto done;
+        }
+    }
+
+  if (ring->vertex_count < 4u
+      || !hatch_points_near (
+          ring->vertices[0],
+          ring->vertices[ring->vertex_count - 1u]))
+    {
+      status = HATCH_RING_OPEN;
+      goto done;
+    }
+  ring->vertex_count--;
+  if (ring->vertex_count < 3u
+      || !hatch_projected_area (
+          ring, normal, &ring->signed_area, &extent)
+      || fabs (ring->signed_area)
+             <= fmax (extent * extent * 1.0e-14, 1.0e-18))
+    {
+      status = HATCH_RING_INVALID;
+      goto done;
+    }
+  status = HATCH_RING_VALID;
+
+done:
+  free (segments);
+  if (status != HATCH_RING_VALID)
+    free_hatch_ring (ring);
+  return status;
+}
+
+static int
+scan_hatch_paths (CacheWriter *writer, const Dwg_Object *object,
+                  const Dwg_Entity_HATCH *hatch, uint64_t hatch_index,
+                  uint64_t *global_vertices,
+                  HatchRingConsumer consumer, void *consumer_context,
+                  HatchEntityScan *scan)
+{
+  uint64_t hatch_vertices = 0;
+  size_t path_count;
+  size_t path_index;
+  if (!writer || !hatch || !global_vertices || !scan)
+    return 0;
+  memset (scan, 0, sizeof (*scan));
+  if (!hatch->paths || !hatch->num_paths)
+    return 1;
+  path_count = (size_t)hatch->num_paths;
+  for (path_index = 0; path_index < path_count; path_index++)
+    {
+      const Dwg_HATCH_Path *path = &hatch->paths[path_index];
+      HatchRing ring;
+      uint64_t hatch_remaining
+          = MAX_HATCH_BOUNDARY_SEGMENTS - hatch_vertices;
+      uint64_t global_remaining
+          = MAX_HATCH_FILL_VERTICES - *global_vertices;
+      uint64_t maximum_vertices
+          = hatch_remaining < global_remaining
+                ? hatch_remaining
+                : global_remaining;
+      int status;
+      if ((path->flag & 32u) != 0u
+          || ((path->flag & 2u) != 0u && !path->closed))
+        {
+          scan->skipped_open_paths++;
+          continue;
+        }
+      status = build_hatch_ring (
+          writer, hatch, path, maximum_vertices, &ring);
+      if (status == HATCH_RING_ERROR)
+        return 0;
+      if (status == HATCH_RING_TRUNCATED)
+        {
+          scan->truncated = 1;
+          break;
+        }
+      if (status == HATCH_RING_OPEN)
+        {
+          scan->skipped_open_paths++;
+          continue;
+        }
+      if (status == HATCH_RING_INVALID)
+        {
+          scan->skipped_invalid_paths++;
+          continue;
+        }
+      if (path_index > UINT32_MAX
+          || (consumer
+              && !consumer (
+                  consumer_context, object, hatch, hatch_index,
+                  (uint32_t)path_index, path, &ring)))
+        {
+          free_hatch_ring (&ring);
+          if (!writer->failed)
+            set_error (writer, "cannot write bounded HATCH ring");
+          return 0;
+        }
+      hatch_vertices += (uint64_t)ring.vertex_count;
+      *global_vertices += (uint64_t)ring.vertex_count;
+      scan->loops++;
+      scan->vertices += (uint64_t)ring.vertex_count;
+      free_hatch_ring (&ring);
+    }
+  return 1;
+}
+
+static uint64_t
+scan_hatch_gradient_colors (const Dwg_Entity_HATCH *hatch,
+                            uint64_t *global_count, int *truncated)
+{
+  uint64_t count = 0;
+  size_t index;
+  if (!hatch || !global_count || !truncated)
+    return 0;
+  if (hatch->num_colors > 0 && !hatch->colors)
+    {
+      *truncated = 1;
+      return 0;
+    }
+  for (index = 0; hatch->colors
+                  && index < (size_t)hatch->num_colors;
+       index++)
+    {
+      if (*global_count >= MAX_HATCH_AUX_RECORDS
+          || !isfinite (hatch->colors[index].shift_value))
+        {
+          *truncated = 1;
+          continue;
+        }
+      (*global_count)++;
+      count++;
+    }
+  return count;
+}
+
+static uint64_t
+scan_hatch_seed_points (const Dwg_Entity_HATCH *hatch,
+                        uint64_t *global_count, int *truncated)
+{
+  uint64_t count = 0;
+  size_t index;
+  if (!hatch || !global_count || !truncated)
+    return 0;
+  if (hatch->num_seeds > 0 && !hatch->seeds)
+    {
+      *truncated = 1;
+      return 0;
+    }
+  for (index = 0; hatch->seeds
+                  && index < (size_t)hatch->num_seeds;
+       index++)
+    {
+      if (*global_count >= MAX_HATCH_AUX_RECORDS
+          || !isfinite (hatch->seeds[index].x)
+          || !isfinite (hatch->seeds[index].y))
+        {
+          *truncated = 1;
+          continue;
+        }
+      (*global_count)++;
+      count++;
+    }
+  return count;
+}
+
+static double
+finite_or_default (double value, double fallback)
+{
+  return isfinite (value) ? value : fallback;
+}
+
+static int
+copy_hatch_names (const Dwg_Entity_HATCH *hatch, char **pattern_name,
+                  char **gradient_name)
+{
+  *pattern_name = copy_utf8_field (
+      (void *)hatch, "HATCH", "name", "");
+  *gradient_name = copy_utf8_field (
+      (void *)hatch, "HATCH", "gradient_name", "");
+  if (!*pattern_name || !*gradient_name)
+    {
+      free (*pattern_name);
+      free (*gradient_name);
+      *pattern_name = NULL;
+      *gradient_name = NULL;
+      return 0;
+    }
+  return 1;
+}
+
+static int
+write_hatch_entity_section (
+    CacheWriter *writer, const Dwg_Data *dwg,
+    const CacheTables *tables, const LibreDwgPrimitiveCounts *counts,
+    LibreDwgHatchFillSummary *summary, SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t string_offset;
+  uint64_t string_cursor = 0;
+  uint64_t global_vertices = 0;
+  uint64_t global_gradient_colors = 0;
+  uint64_t global_seed_points = 0;
+  uint64_t first_loop = 0;
+  uint64_t hatch_index = 0;
+  size_t object_index;
+  if (counts->hatches > UINT32_MAX
+      || counts->hatches
+             > (UINT64_MAX - STRING_TABLE_HEADER_SIZE)
+                   / HATCH_ENTITY_RECORD_SIZE)
+    {
+      set_error (writer, "too many HATCH entities for scene cache");
+      return 0;
+    }
+  string_offset
+      = STRING_TABLE_HEADER_SIZE
+        + counts->hatches * HATCH_ENTITY_RECORD_SIZE;
+  memset (summary, 0, sizeof (*summary));
+  if (!align_writer (writer, &offset)
+      || !write_u32 (writer, (uint32_t)counts->hatches)
+      || !write_u32 (writer, HATCH_ENTITY_RECORD_SIZE)
+      || !write_u64 (writer, string_offset))
+    return 0;
+
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_HATCH *hatch;
+      HatchEntityScan scan;
+      char *pattern_name = NULL;
+      char *gradient_name = NULL;
+      uint32_t pattern_offset;
+      uint32_t pattern_length;
+      uint32_t gradient_offset;
+      uint32_t gradient_length;
+      uint32_t flags = 0;
+      uint64_t first_gradient_color = global_gradient_colors;
+      uint64_t first_seed_point = global_seed_points;
+      uint64_t gradient_color_count;
+      uint64_t seed_point_count;
+      double normal[3];
+      int truncated = 0;
+      if (object->fixedtype != DWG_TYPE_HATCH
+          || !object->tio.entity
+          || !(hatch = object->tio.entity->tio.HATCH))
+        continue;
+      if (!scan_hatch_paths (
+              writer, object, hatch, hatch_index, &global_vertices,
+              NULL, NULL, &scan))
+        return 0;
+      gradient_color_count = scan_hatch_gradient_colors (
+          hatch, &global_gradient_colors, &truncated);
+      seed_point_count = scan_hatch_seed_points (
+          hatch, &global_seed_points, &truncated);
+      truncated |= scan.truncated;
+      if (!copy_hatch_names (
+              hatch, &pattern_name, &gradient_name)
+          || !checked_string_layout (
+              &string_cursor, pattern_name, &pattern_offset,
+              &pattern_length)
+          || !checked_string_layout (
+              &string_cursor, gradient_name, &gradient_offset,
+              &gradient_length))
+        {
+          free (pattern_name);
+          free (gradient_name);
+          set_error (writer, "cannot prepare bounded HATCH strings");
+          return 0;
+        }
+      finite_normal_or_unit_z (
+          hatch->extrusion.x, hatch->extrusion.y,
+          hatch->extrusion.z, normal);
+      if (hatch->is_solid_fill)
+        flags |= HATCH_FLAG_SOLID;
+      if (hatch->is_associative)
+        flags |= HATCH_FLAG_ASSOCIATIVE;
+      if (hatch->double_flag)
+        flags |= HATCH_FLAG_DOUBLE;
+      if (hatch->is_gradient_fill)
+        flags |= HATCH_FLAG_GRADIENT;
+      if (hatch->single_color_gradient)
+        flags |= HATCH_FLAG_SINGLE_COLOR_GRADIENT;
+      if (truncated)
+        flags |= HATCH_FLAG_TRUNCATED;
+
+      if (!write_common (writer, object, tables)
+          || !write_u32 (writer, pattern_offset)
+          || !write_u32 (writer, pattern_length)
+          || !write_u32 (writer, gradient_offset)
+          || !write_u32 (writer, gradient_length)
+          || !write_u32 (writer, flags)
+          || !write_u16 (writer, (uint16_t)hatch->style)
+          || !write_u16 (writer, (uint16_t)hatch->pattern_type)
+          || !write_u64 (writer, first_loop)
+          || !write_u64 (writer, scan.loops)
+          || !write_u64 (writer, first_gradient_color)
+          || !write_u64 (writer, gradient_color_count)
+          || !write_f64 (
+              writer, finite_or_default (hatch->elevation, 0.0))
+          || !write_vec3 (writer, normal)
+          || !write_f64 (
+              writer, finite_or_default (hatch->angle, 0.0))
+          || !write_f64 (
+              writer,
+              finite_or_default (hatch->scale_spacing, 1.0))
+          || !write_f64 (
+              writer, finite_or_default (hatch->pixel_size, 0.0))
+          || !write_f64 (
+              writer,
+              finite_or_default (hatch->gradient_angle, 0.0))
+          || !write_f64 (
+              writer,
+              finite_or_default (hatch->gradient_shift, 0.0))
+          || !write_f64 (
+              writer,
+              finite_or_default (hatch->gradient_tint, 0.0))
+          || !write_u64 (writer, first_seed_point)
+          || !write_u64 (writer, seed_point_count)
+          || !write_i32 (writer, (int32_t)hatch->reserved)
+          || !write_u32 (writer, (uint32_t)hatch->num_deflines))
+        {
+          free (pattern_name);
+          free (gradient_name);
+          return 0;
+        }
+      free (pattern_name);
+      free (gradient_name);
+
+      summary->source_hatches++;
+      if (hatch->is_gradient_fill)
+        summary->gradient_hatches++;
+      else if (hatch->is_solid_fill)
+        summary->solid_hatches++;
+      else
+        summary->pattern_hatches++;
+      summary->fill_loops += scan.loops;
+      summary->fill_vertices += scan.vertices;
+      summary->gradient_colors += gradient_color_count;
+      summary->seed_points += seed_point_count;
+      summary->skipped_open_paths += scan.skipped_open_paths;
+      summary->skipped_invalid_paths += scan.skipped_invalid_paths;
+      if (truncated)
+        summary->truncated_fill_hatches++;
+      first_loop += scan.loops;
+      hatch_index++;
+    }
+  if (hatch_index != counts->hatches
+      || first_loop != summary->fill_loops
+      || global_vertices != summary->fill_vertices)
+    {
+      set_error (writer, "HATCH entity counts changed while writing");
+      return 0;
+    }
+
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_HATCH *hatch;
+      char *pattern_name = NULL;
+      char *gradient_name = NULL;
+      if (object->fixedtype != DWG_TYPE_HATCH
+          || !object->tio.entity
+          || !(hatch = object->tio.entity->tio.HATCH))
+        continue;
+      if (!copy_hatch_names (
+              hatch, &pattern_name, &gradient_name))
+        {
+          set_error (writer, "cannot copy bounded HATCH strings");
+          return 0;
+        }
+      if (!write_bytes (
+              writer, pattern_name, strlen (pattern_name))
+          || !write_bytes (
+              writer, gradient_name, strlen (gradient_name)))
+        {
+          free (pattern_name);
+          free (gradient_name);
+          return 0;
+        }
+      free (pattern_name);
+      free (gradient_name);
+    }
+  return finish_variable_section (
+      writer, entry, SECTION_HATCH_ENTITIES,
+      HATCH_ENTITY_RECORD_SIZE, "hatch_entities", offset,
+      counts->hatches, SECTION_FLAG_STRING_TABLE);
+}
+
+typedef struct
+{
+  CacheWriter *writer;
+  uint64_t first_vertex;
+  uint64_t loops;
+} HatchLoopWriter;
+
+static int
+write_hatch_loop (void *context, const Dwg_Object *object,
+                  const Dwg_Entity_HATCH *hatch,
+                  uint64_t hatch_index, uint32_t path_index,
+                  const Dwg_HATCH_Path *path, const HatchRing *ring)
+{
+  HatchLoopWriter *writer = (HatchLoopWriter *)context;
+  uint32_t flags
+      = ring->approximated_curve
+            ? HATCH_LOOP_FLAG_APPROXIMATED_CURVE
+            : 0u;
+  (void)object;
+  (void)hatch;
+  if (!write_u64 (writer->writer, hatch_index)
+      || !write_u32 (writer->writer, (uint32_t)path->flag)
+      || !write_u32 (writer->writer, path_index)
+      || !write_u64 (writer->writer, writer->first_vertex)
+      || !write_u64 (
+          writer->writer, (uint64_t)ring->vertex_count)
+      || !write_u32 (writer->writer, ring->source_edge_count)
+      || !write_u32 (writer->writer, flags)
+      || !write_f64 (writer->writer, ring->signed_area))
+    return 0;
+  writer->first_vertex += (uint64_t)ring->vertex_count;
+  writer->loops++;
+  return 1;
+}
+
+static int
+write_hatch_loop_section (CacheWriter *writer, const Dwg_Data *dwg,
+                          SectionEntry *entry)
+{
+  HatchLoopWriter loop_writer;
+  uint64_t offset;
+  uint64_t global_vertices = 0;
+  uint64_t hatch_index = 0;
+  size_t object_index;
+  memset (&loop_writer, 0, sizeof (loop_writer));
+  loop_writer.writer = writer;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_HATCH *hatch;
+      HatchEntityScan scan;
+      if (object->fixedtype != DWG_TYPE_HATCH
+          || !object->tio.entity
+          || !(hatch = object->tio.entity->tio.HATCH))
+        continue;
+      if (!scan_hatch_paths (
+              writer, object, hatch, hatch_index, &global_vertices,
+              write_hatch_loop, &loop_writer, &scan))
+        return 0;
+      hatch_index++;
+    }
+  if (loop_writer.first_vertex != global_vertices)
+    {
+      set_error (writer, "HATCH loop and vertex counts differ");
+      return 0;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_HATCH_LOOPS, HATCH_LOOP_RECORD_SIZE,
+      "hatch_loops", offset, loop_writer.loops);
+}
+
+typedef struct
+{
+  CacheWriter *writer;
+  uint64_t vertices;
+} HatchVertexWriter;
+
+static int
+write_hatch_vertices (void *context, const Dwg_Object *object,
+                      const Dwg_Entity_HATCH *hatch,
+                      uint64_t hatch_index, uint32_t path_index,
+                      const Dwg_HATCH_Path *path,
+                      const HatchRing *ring)
+{
+  HatchVertexWriter *writer = (HatchVertexWriter *)context;
+  size_t index;
+  (void)object;
+  (void)hatch;
+  (void)hatch_index;
+  (void)path_index;
+  (void)path;
+  for (index = 0; index < ring->vertex_count; index++)
+    {
+      if (!write_vec3 (writer->writer, ring->vertices[index]))
+        return 0;
+      writer->vertices++;
+    }
+  return 1;
+}
+
+static int
+write_hatch_vertex_section (CacheWriter *writer, const Dwg_Data *dwg,
+                            SectionEntry *entry)
+{
+  HatchVertexWriter vertex_writer;
+  uint64_t offset;
+  uint64_t global_vertices = 0;
+  uint64_t hatch_index = 0;
+  size_t object_index;
+  memset (&vertex_writer, 0, sizeof (vertex_writer));
+  vertex_writer.writer = writer;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_HATCH *hatch;
+      HatchEntityScan scan;
+      if (object->fixedtype != DWG_TYPE_HATCH
+          || !object->tio.entity
+          || !(hatch = object->tio.entity->tio.HATCH))
+        continue;
+      if (!scan_hatch_paths (
+              writer, object, hatch, hatch_index, &global_vertices,
+              write_hatch_vertices, &vertex_writer, &scan))
+        return 0;
+      hatch_index++;
+    }
+  if (vertex_writer.vertices != global_vertices)
+    {
+      set_error (writer, "HATCH vertex pass changed record count");
+      return 0;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_HATCH_VERTICES,
+      HATCH_VERTEX_RECORD_SIZE, "hatch_vertices", offset,
+      vertex_writer.vertices);
+}
+
+static int
+write_hatch_gradient_color_section (CacheWriter *writer,
+                                    const Dwg_Data *dwg,
+                                    SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t object_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_HATCH *hatch;
+      size_t color_index;
+      if (object->fixedtype != DWG_TYPE_HATCH
+          || !object->tio.entity
+          || !(hatch = object->tio.entity->tio.HATCH)
+          || !hatch->colors)
+        continue;
+      for (color_index = 0;
+           color_index < (size_t)hatch->num_colors;
+           color_index++)
+        {
+          const Dwg_HATCH_Color *color = &hatch->colors[color_index];
+          if (count >= MAX_HATCH_AUX_RECORDS
+              || !isfinite (color->shift_value))
+            continue;
+          if (!write_f64 (writer, color->shift_value)
+              || !write_u32 (writer, encode_color (&color->color))
+              || !write_u32 (writer, 0))
+            return 0;
+          count++;
+        }
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_HATCH_GRADIENT_COLORS,
+      HATCH_GRADIENT_COLOR_RECORD_SIZE, "hatch_gradient_colors",
+      offset, count);
+}
+
+static int
+write_hatch_seed_point_section (CacheWriter *writer,
+                                const Dwg_Data *dwg,
+                                SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t object_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_HATCH *hatch;
+      size_t seed_index;
+      if (object->fixedtype != DWG_TYPE_HATCH
+          || !object->tio.entity
+          || !(hatch = object->tio.entity->tio.HATCH)
+          || !hatch->seeds)
+        continue;
+      for (seed_index = 0; seed_index < (size_t)hatch->num_seeds;
+           seed_index++)
+        {
+          const BITCODE_2RD *seed = &hatch->seeds[seed_index];
+          if (count >= MAX_HATCH_AUX_RECORDS
+              || !isfinite (seed->x) || !isfinite (seed->y))
+            continue;
+          if (!write_f64 (writer, seed->x)
+              || !write_f64 (writer, seed->y))
+            return 0;
+          count++;
+        }
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_HATCH_SEED_POINTS,
+      HATCH_SEED_POINT_RECORD_SIZE, "hatch_seed_points", offset,
+      count);
+}
+
 static int
 count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
                     LibreDwgGpuLineSummary *summary,
@@ -5702,6 +6711,7 @@ libredwg_write_scene_cache (
   SectionEntry sections[LIBREDWG_SCENE_SECTION_COUNT];
   LibreDwgPrimitiveCounts counts;
   LibreDwgGpuLineSummary gpu_lines;
+  LibreDwgHatchFillSummary hatch_fills;
   OverviewPlan overview;
   SpatialSegmentStore spatial;
   uint64_t body_offset;
@@ -5718,6 +6728,7 @@ libredwg_write_scene_cache (
   memset (&writer, 0, sizeof (writer));
   memset (sections, 0, sizeof (sections));
   memset (&gpu_lines, 0, sizeof (gpu_lines));
+  memset (&hatch_fills, 0, sizeof (hatch_fills));
   memset (&overview, 0, sizeof (overview));
   memset (&spatial, 0, sizeof (spatial));
   if (error_message && error_message_size)
@@ -5822,6 +6833,15 @@ libredwg_write_scene_cache (
       || !write_gpu_vertex_section (&writer, dwg, &tables, &gpu_lines,
                                     &overview, &spatial, &sections[19],
                                     separate_overview)
+      || !write_hatch_entity_section (
+          &writer, dwg, &tables, &counts, &hatch_fills,
+          &sections[20])
+      || !write_hatch_loop_section (&writer, dwg, &sections[21])
+      || !write_hatch_vertex_section (&writer, dwg, &sections[22])
+      || !write_hatch_gradient_color_section (
+          &writer, dwg, &sections[23])
+      || !write_hatch_seed_point_section (
+          &writer, dwg, &sections[24])
       || !position (&writer, &file_size)
       || !write_header (&writer, file_size, source_size, source_version,
                         (uint32_t)dwg->header.is_maint)
@@ -5842,6 +6862,7 @@ libredwg_write_scene_cache (
   report->cache_size = file_size;
   report->coverage = counts;
   report->gpu_lines = gpu_lines;
+  report->hatch_fills = hatch_fills;
   for (i = 0; i < LIBREDWG_SCENE_SECTION_COUNT; i++)
     {
       if (sections[i].kind != SECTION_KINDS[i]

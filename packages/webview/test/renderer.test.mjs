@@ -38,6 +38,7 @@ function makeFakeGl() {
     SRC_ALPHA: 23,
     ONE_MINUS_SRC_ALPHA: 24,
     LINES: 25,
+    TRIANGLES: 26,
     createShader: () => ({ id: ++nextId }),
     shaderSource(_shader, source) {
       calls.shaderSources.push(source);
@@ -180,5 +181,67 @@ test("redraws overview and independently uploaded detail vertex ranges", () => {
   ]);
 
   assert.equal(renderer.deleteDetailBatch(detail.id), true);
+  renderer.dispose();
+});
+
+test("draws bounded HATCH fills before line geometry", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const overview = batch({
+    id: 0,
+    kind: GpuLineBatchKind.ModelOverview,
+    lodLevel: 0,
+    firstVertex: 0,
+  });
+  const first = renderer.renderOverview({
+    batches: [overview],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: { instancesByBlock: new Map() },
+    vertices: {
+      buffer: new ArrayBuffer(64),
+      byteLength: 64,
+      vertexCount: 2,
+    },
+  });
+  renderer.setHatchFills({
+    batches: [
+      {
+        id: 0,
+        kind: GpuLineBatchKind.ModelDetail,
+        lodLevel: 1,
+        firstVertex: 0,
+        vertexCount: 3,
+        blockIndex: null,
+        origin: [0, 0, 0],
+        bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+      },
+    ],
+    vertices: {
+      buffer: new ArrayBuffer(96),
+      byteLength: 96,
+      vertexCount: 3,
+    },
+    metrics: { triangles: 1 },
+  });
+
+  const redrawn = renderer.redraw(first.camera);
+
+  assert.equal(redrawn.hatchFillDrawCalls, 1);
+  assert.equal(redrawn.hatchFillSubmittedVertices, 3);
+  assert.equal(redrawn.hatchFillGpuBytes, 96);
+  assert.equal(redrawn.gpuVertexBytes, 160);
+  assert.deepEqual(calls.drawArraysInstanced.slice(-2), [
+    { mode: gl.TRIANGLES, first: 0, count: 3, instances: 1 },
+    { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+  ]);
   renderer.dispose();
 });

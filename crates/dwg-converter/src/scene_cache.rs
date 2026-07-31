@@ -16,7 +16,7 @@ use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, Inp
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 5;
+pub const CACHE_VERSION_MINOR: u16 = 6;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -38,6 +38,11 @@ const TEXT_ENTITY_RECORD_SIZE: u32 = 336;
 const TEXT_COLUMN_HEIGHT_RECORD_SIZE: u32 = 8;
 const GPU_LINE_BATCH_RECORD_SIZE: u32 = 128;
 const GPU_LINE_VERTEX_RECORD_SIZE: u32 = 32;
+const HATCH_ENTITY_RECORD_SIZE: u32 = 192;
+const HATCH_LOOP_RECORD_SIZE: u32 = 48;
+const HATCH_VERTEX_RECORD_SIZE: u32 = 24;
+const HATCH_GRADIENT_COLOR_RECORD_SIZE: u32 = 16;
+const HATCH_SEED_POINT_RECORD_SIZE: u32 = 16;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
 const SECTION_FLAG_STRING_TABLE: u32 = 1;
 const MAX_CACHE_STRING_BYTES: u64 = 1024 * 1024;
@@ -57,7 +62,16 @@ const MAX_CURVE_SEGMENTS: usize = 256;
 const SPLINE_SEGMENTS_PER_SPAN: usize = 2;
 const MAX_SPLINE_DEGREE: usize = 15;
 const MAX_HATCH_BOUNDARY_SEGMENTS: usize = 65_536;
+const MAX_HATCH_FILL_VERTICES: usize = 1_048_576;
+const MAX_HATCH_AUX_RECORDS: usize = 1_048_576;
 const CURVE_EPSILON: f64 = 1.0e-12;
+const HATCH_FLAG_SOLID: u32 = 1;
+const HATCH_FLAG_ASSOCIATIVE: u32 = 1 << 1;
+const HATCH_FLAG_DOUBLE: u32 = 1 << 2;
+const HATCH_FLAG_GRADIENT: u32 = 1 << 3;
+const HATCH_FLAG_SINGLE_COLOR_GRADIENT: u32 = 1 << 4;
+const HATCH_FLAG_TRUNCATED: u32 = 1 << 5;
+const HATCH_LOOP_FLAG_APPROXIMATED_CURVE: u32 = 1;
 
 #[derive(Debug, Clone, Default)]
 pub struct ConvertOptions {
@@ -72,6 +86,7 @@ pub struct ConversionReport {
     pub cache: CacheSummary,
     pub coverage: PrimitiveCounts,
     pub gpu_lines: GpuLineSummary,
+    pub hatch_fills: HatchFillSummary,
     pub performance: CachePerformance,
     pub diagnostics: usize,
 }
@@ -115,6 +130,7 @@ pub struct PrimitiveCounts {
     pub mtexts: u64,
     pub attribute_definitions: u64,
     pub attributes: u64,
+    pub hatches: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -138,6 +154,21 @@ pub struct GpuLineSummary {
     pub full_detail_vertex_bytes: u64,
     pub maximum_batch_bytes: u64,
     pub maximum_position_error: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct HatchFillSummary {
+    pub source_hatches: u64,
+    pub solid_hatches: u64,
+    pub gradient_hatches: u64,
+    pub pattern_hatches: u64,
+    pub fill_loops: u64,
+    pub fill_vertices: u64,
+    pub gradient_colors: u64,
+    pub seed_points: u64,
+    pub truncated_fill_hatches: u64,
+    pub skipped_open_paths: u64,
+    pub skipped_invalid_paths: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,6 +226,11 @@ enum SectionKind {
     TextColumnHeights = 23,
     GpuLineBatches = 30,
     GpuLineVertices = 31,
+    HatchEntities = 32,
+    HatchLoops = 33,
+    HatchVertices = 34,
+    HatchGradientColors = 35,
+    HatchSeedPoints = 36,
 }
 
 impl SectionKind {
@@ -220,6 +256,11 @@ impl SectionKind {
             Self::TextColumnHeights => "text_column_heights",
             Self::GpuLineBatches => "gpu_line_batches",
             Self::GpuLineVertices => "gpu_line_vertices",
+            Self::HatchEntities => "hatch_entities",
+            Self::HatchLoops => "hatch_loops",
+            Self::HatchVertices => "hatch_vertices",
+            Self::HatchGradientColors => "hatch_gradient_colors",
+            Self::HatchSeedPoints => "hatch_seed_points",
         }
     }
 
@@ -245,6 +286,11 @@ impl SectionKind {
             23 => Some(Self::TextColumnHeights),
             30 => Some(Self::GpuLineBatches),
             31 => Some(Self::GpuLineVertices),
+            32 => Some(Self::HatchEntities),
+            33 => Some(Self::HatchLoops),
+            34 => Some(Self::HatchVertices),
+            35 => Some(Self::HatchGradientColors),
+            36 => Some(Self::HatchSeedPoints),
             _ => None,
         }
     }
@@ -269,13 +315,22 @@ impl SectionKind {
             Self::TextColumnHeights => TEXT_COLUMN_HEIGHT_RECORD_SIZE,
             Self::GpuLineBatches => GPU_LINE_BATCH_RECORD_SIZE,
             Self::GpuLineVertices => GPU_LINE_VERTEX_RECORD_SIZE,
+            Self::HatchEntities => HATCH_ENTITY_RECORD_SIZE,
+            Self::HatchLoops => HATCH_LOOP_RECORD_SIZE,
+            Self::HatchVertices => HATCH_VERTEX_RECORD_SIZE,
+            Self::HatchGradientColors => HATCH_GRADIENT_COLOR_RECORD_SIZE,
+            Self::HatchSeedPoints => HATCH_SEED_POINT_RECORD_SIZE,
         }
     }
 
     fn uses_string_table(self) -> bool {
         matches!(
             self,
-            Self::Layers | Self::Blocks | Self::TextStyles | Self::TextEntities
+            Self::Layers
+                | Self::Blocks
+                | Self::TextStyles
+                | Self::TextEntities
+                | Self::HatchEntities
         )
     }
 }
@@ -294,6 +349,7 @@ struct SectionEntry {
 struct CacheWriteSummary {
     counts: PrimitiveCounts,
     gpu_lines: GpuLineSummary,
+    hatch_fills: HatchFillSummary,
     sections: Vec<SectionEntry>,
 }
 
@@ -351,6 +407,58 @@ struct SourceTextRow<'a> {
     column_width: f64,
     column_gutter: f64,
     column_heights: &'a [f64],
+}
+
+#[derive(Debug)]
+struct HatchEntityRow<'a> {
+    hatch: &'a Hatch,
+    first_loop: u64,
+    loop_count: u64,
+    first_gradient_color: u64,
+    gradient_color_count: u64,
+    first_seed_point: u64,
+    seed_point_count: u64,
+    definition_line_count: u32,
+    truncated: bool,
+}
+
+#[derive(Debug)]
+struct HatchLoopRow {
+    hatch_index: u64,
+    path_flags: u32,
+    source_path_index: u32,
+    first_vertex: u64,
+    vertex_count: u64,
+    source_edge_count: u32,
+    flags: u32,
+    signed_area: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HatchGradientColorRow {
+    value: f64,
+    color: u32,
+}
+
+#[derive(Debug)]
+struct HatchSourcePlan<'a> {
+    entities: Vec<HatchEntityRow<'a>>,
+    loops: Vec<HatchLoopRow>,
+    vertices: Vec<Vector3>,
+    gradient_colors: Vec<HatchGradientColorRow>,
+    seed_points: Vec<[f64; 2]>,
+    summary: HatchFillSummary,
+}
+
+enum HatchRingBuild {
+    Valid {
+        vertices: Vec<Vector3>,
+        approximated_curve: bool,
+        signed_area: f64,
+    },
+    Open,
+    Invalid,
+    Truncated,
 }
 
 pub fn convert_dwg(
@@ -442,6 +550,7 @@ pub fn convert_dwg(
         },
         coverage: summary.counts,
         gpu_lines: summary.gpu_lines,
+        hatch_fills: summary.hatch_fills,
         performance: CachePerformance {
             parse_ms: duration_ms(parse_elapsed),
             write_ms: duration_ms(write_elapsed),
@@ -629,6 +738,15 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
             SectionKind::TextColumnHeights,
         ]);
     }
+    if minor_version >= 6 {
+        required.extend([
+            SectionKind::HatchEntities,
+            SectionKind::HatchLoops,
+            SectionKind::HatchVertices,
+            SectionKind::HatchGradientColors,
+            SectionKind::HatchSeedPoints,
+        ]);
+    }
     for kind in required {
         let count = entries
             .iter()
@@ -763,6 +881,17 @@ fn validate_string_references<R: Read + Seek>(
                     )?;
                 }
             }
+            SectionKind::HatchEntities => {
+                for reference_offset in [32, 40] {
+                    validate_utf8_reference(
+                        reader,
+                        entry,
+                        string_offset,
+                        slice_u32(&record, reference_offset),
+                        slice_u32(&record, reference_offset + 4),
+                    )?;
+                }
+            }
             _ => unreachable!("only string-table sections are validated here"),
         }
     }
@@ -880,6 +1009,162 @@ fn validate_cross_section_references<R: Read + Seek>(
                 slice_u64(&record, 104),
                 fits.record_count,
             )?;
+        }
+    }
+
+    if let Some(hatches) = find_section(entries, SectionKind::HatchEntities) {
+        let loops = find_section(entries, SectionKind::HatchLoops)
+            .context("HATCH entities exist without a loop pool")?;
+        let vertices = find_section(entries, SectionKind::HatchVertices)
+            .context("HATCH entities exist without a vertex pool")?;
+        let colors = find_section(entries, SectionKind::HatchGradientColors)
+            .context("HATCH entities exist without a gradient-color pool")?;
+        let seeds = find_section(entries, SectionKind::HatchSeedPoints)
+            .context("HATCH entities exist without a seed-point pool")?;
+        let mut expected_first_loop = 0_u64;
+        let mut expected_first_color = 0_u64;
+        let mut expected_first_seed = 0_u64;
+
+        for hatch_index in 0..hatches.record_count {
+            let mut record = [0_u8; HATCH_ENTITY_RECORD_SIZE as usize];
+            read_record(reader, hatches, hatch_index, &mut record)?;
+            let flags = slice_u32(&record, 48);
+            let style = slice_u16(&record, 52);
+            let pattern_type = slice_u16(&record, 54);
+            if flags
+                & !(HATCH_FLAG_SOLID
+                    | HATCH_FLAG_ASSOCIATIVE
+                    | HATCH_FLAG_DOUBLE
+                    | HATCH_FLAG_GRADIENT
+                    | HATCH_FLAG_SINGLE_COLOR_GRADIENT
+                    | HATCH_FLAG_TRUNCATED)
+                != 0
+                || style > 2
+                || pattern_type > 2
+            {
+                anyhow::bail!("HATCH entity contains unsupported flags or enum values");
+            }
+
+            let first_loop = slice_u64(&record, 56);
+            let loop_count = slice_u64(&record, 64);
+            let first_color = slice_u64(&record, 72);
+            let color_count = slice_u64(&record, 80);
+            let first_seed = slice_u64(&record, 168);
+            let seed_count = slice_u64(&record, 176);
+            if first_loop != expected_first_loop
+                || first_color != expected_first_color
+                || first_seed != expected_first_seed
+            {
+                anyhow::bail!("HATCH source pool ranges are not contiguous");
+            }
+            validate_pool_range("HATCH loops", first_loop, loop_count, loops.record_count)?;
+            validate_pool_range(
+                "HATCH gradient colors",
+                first_color,
+                color_count,
+                colors.record_count,
+            )?;
+            validate_pool_range(
+                "HATCH seed points",
+                first_seed,
+                seed_count,
+                seeds.record_count,
+            )?;
+            expected_first_loop = first_loop
+                .checked_add(loop_count)
+                .context("HATCH loop range overflow")?;
+            expected_first_color = first_color
+                .checked_add(color_count)
+                .context("HATCH gradient-color range overflow")?;
+            expected_first_seed = first_seed
+                .checked_add(seed_count)
+                .context("HATCH seed-point range overflow")?;
+
+            for coordinate_offset in [88, 96, 104, 112, 120, 128, 136, 144, 152, 160] {
+                if !slice_f64(&record, coordinate_offset).is_finite() {
+                    anyhow::bail!("HATCH entity contains a non-finite scalar");
+                }
+            }
+            let normal_length_squared = [96, 104, 112]
+                .into_iter()
+                .map(|offset| slice_f64(&record, offset).powi(2))
+                .sum::<f64>();
+            if !normal_length_squared.is_finite() || normal_length_squared <= CURVE_EPSILON {
+                anyhow::bail!("HATCH entity contains an invalid normal");
+            }
+
+            for loop_index in first_loop..expected_first_loop {
+                let mut loop_record = [0_u8; HATCH_LOOP_RECORD_SIZE as usize];
+                read_record(reader, loops, loop_index, &mut loop_record)?;
+                if slice_u64(&loop_record, 0) != hatch_index {
+                    anyhow::bail!("HATCH loop references an invalid source entity");
+                }
+            }
+        }
+        if expected_first_loop != loops.record_count
+            || expected_first_color != colors.record_count
+            || expected_first_seed != seeds.record_count
+        {
+            anyhow::bail!("HATCH source pools are not fully covered");
+        }
+
+        let mut expected_first_vertex = 0_u64;
+        for loop_index in 0..loops.record_count {
+            let mut record = [0_u8; HATCH_LOOP_RECORD_SIZE as usize];
+            read_record(reader, loops, loop_index, &mut record)?;
+            let hatch_index = slice_u64(&record, 0);
+            let path_flags = slice_u32(&record, 8);
+            let first_vertex = slice_u64(&record, 16);
+            let vertex_count = slice_u64(&record, 24);
+            let flags = slice_u32(&record, 36);
+            let signed_area = slice_f64(&record, 40);
+            if hatch_index >= hatches.record_count
+                || path_flags & 32 != 0
+                || first_vertex != expected_first_vertex
+                || vertex_count < 3
+                || flags & !HATCH_LOOP_FLAG_APPROXIMATED_CURVE != 0
+                || !signed_area.is_finite()
+                || signed_area.abs() <= 1.0e-18
+            {
+                anyhow::bail!("HATCH loop contains invalid metadata");
+            }
+            validate_pool_range(
+                "HATCH vertices",
+                first_vertex,
+                vertex_count,
+                vertices.record_count,
+            )?;
+            expected_first_vertex = first_vertex
+                .checked_add(vertex_count)
+                .context("HATCH vertex range overflow")?;
+        }
+        if expected_first_vertex != vertices.record_count {
+            anyhow::bail!("HATCH vertex pool is not fully covered");
+        }
+
+        for vertex_index in 0..vertices.record_count {
+            let mut record = [0_u8; HATCH_VERTEX_RECORD_SIZE as usize];
+            read_record(reader, vertices, vertex_index, &mut record)?;
+            if [0, 8, 16]
+                .into_iter()
+                .any(|offset| !slice_f64(&record, offset).is_finite())
+            {
+                anyhow::bail!("HATCH vertex contains a non-finite coordinate");
+            }
+        }
+        for color_index in 0..colors.record_count {
+            let mut record = [0_u8; HATCH_GRADIENT_COLOR_RECORD_SIZE as usize];
+            read_record(reader, colors, color_index, &mut record)?;
+            if !slice_f64(&record, 0).is_finite() {
+                anyhow::bail!("HATCH gradient color contains a non-finite position");
+            }
+        }
+        for seed_index in 0..seeds.record_count {
+            let mut record = [0_u8; HATCH_SEED_POINT_RECORD_SIZE as usize];
+            read_record(reader, seeds, seed_index, &mut record)?;
+            if !slice_f64(&record, 0).is_finite() || !slice_f64(&record, 8).is_finite() {
+                anyhow::bail!("HATCH seed point contains a non-finite coordinate");
+            }
         }
     }
 
@@ -1022,7 +1307,7 @@ fn write_scene_cache<W: Write + Seek>(
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
     let counts = PrimitiveCounts::from_document(document);
-    let section_count = 20_u32;
+    let section_count = 25_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
         directory_offset + u64::from(section_count) * u64::from(DIRECTORY_ENTRY_SIZE),
@@ -1108,6 +1393,19 @@ fn write_scene_cache<W: Write + Seek>(
         &gpu_line_plan,
         &layer_indices,
     )?);
+    let gpu_lines = gpu_line_plan.summary;
+    drop(gpu_line_plan);
+    let hatch_plan = build_hatch_source_plan(document)?;
+    sections.push(write_hatch_entity_section(
+        writer,
+        &hatch_plan,
+        &layer_indices,
+    )?);
+    sections.push(write_hatch_loop_section(writer, &hatch_plan)?);
+    sections.push(write_hatch_vertex_section(writer, &hatch_plan)?);
+    sections.push(write_hatch_gradient_color_section(writer, &hatch_plan)?);
+    sections.push(write_hatch_seed_point_section(writer, &hatch_plan)?);
+    let hatch_fills = hatch_plan.summary;
 
     let file_size = writer.stream_position()?;
     writer.seek(SeekFrom::Start(0))?;
@@ -1128,7 +1426,8 @@ fn write_scene_cache<W: Write + Seek>(
 
     Ok(CacheWriteSummary {
         counts,
-        gpu_lines: gpu_line_plan.summary,
+        gpu_lines,
+        hatch_fills,
         sections,
     })
 }
@@ -1172,6 +1471,7 @@ impl PrimitiveCounts {
                 EntityType::MText(_) => counts.mtexts += 1,
                 EntityType::AttributeDefinition(_) => counts.attribute_definitions += 1,
                 EntityType::AttributeEntity(_) => counts.attributes += 1,
+                EntityType::Hatch(_) => counts.hatches += 1,
                 _ => {}
             }
         }
@@ -1186,7 +1486,8 @@ impl PrimitiveCounts {
             + counts.splines
             + counts.texts
             + counts.mtexts
-            + counts.attribute_definitions;
+            + counts.attribute_definitions
+            + counts.hatches;
         counts.deferred_entities = counts
             .total_entities
             .saturating_sub(counts.serialized_entities);
@@ -1857,6 +2158,513 @@ fn source_attribute_row(attribute: &AttributeEntity) -> SourceTextRow<'_> {
         column_gutter: 0.0,
         column_heights: &[],
     }
+}
+
+fn build_hatch_source_plan(document: &CadDocument) -> Result<HatchSourcePlan<'_>> {
+    let mut plan = HatchSourcePlan {
+        entities: Vec::new(),
+        loops: Vec::new(),
+        vertices: Vec::new(),
+        gradient_colors: Vec::new(),
+        seed_points: Vec::new(),
+        summary: HatchFillSummary::default(),
+    };
+
+    for entity in document.entities() {
+        let EntityType::Hatch(hatch) = entity else {
+            continue;
+        };
+        let hatch_index = u64::try_from(plan.entities.len()).context("too many HATCH entities")?;
+        let first_loop = u64::try_from(plan.loops.len())?;
+        let first_gradient_color = u64::try_from(plan.gradient_colors.len())?;
+        let first_seed_point = u64::try_from(plan.seed_points.len())?;
+        let mut hatch_vertex_count = 0_usize;
+        let mut truncated = false;
+
+        plan.summary.source_hatches = plan
+            .summary
+            .source_hatches
+            .checked_add(1)
+            .context("HATCH source count overflow")?;
+        if hatch.gradient_color.enabled {
+            plan.summary.gradient_hatches = plan
+                .summary
+                .gradient_hatches
+                .checked_add(1)
+                .context("gradient HATCH count overflow")?;
+        } else if hatch.is_solid {
+            plan.summary.solid_hatches = plan
+                .summary
+                .solid_hatches
+                .checked_add(1)
+                .context("solid HATCH count overflow")?;
+        } else {
+            plan.summary.pattern_hatches = plan
+                .summary
+                .pattern_hatches
+                .checked_add(1)
+                .context("pattern HATCH count overflow")?;
+        }
+
+        for (path_index, path) in hatch.paths.iter().enumerate() {
+            if path.flags.is_not_closed() {
+                plan.summary.skipped_open_paths = plan
+                    .summary
+                    .skipped_open_paths
+                    .checked_add(1)
+                    .context("open HATCH path count overflow")?;
+                continue;
+            }
+            let hatch_remaining = MAX_HATCH_BOUNDARY_SEGMENTS.saturating_sub(hatch_vertex_count);
+            let global_remaining = MAX_HATCH_FILL_VERTICES.saturating_sub(plan.vertices.len());
+            let maximum_vertices = hatch_remaining.min(global_remaining);
+            match build_hatch_ring(hatch, path, maximum_vertices) {
+                HatchRingBuild::Valid {
+                    vertices,
+                    approximated_curve,
+                    signed_area,
+                } => {
+                    let first_vertex = u64::try_from(plan.vertices.len())?;
+                    let vertex_count = u64::try_from(vertices.len())?;
+                    hatch_vertex_count = hatch_vertex_count
+                        .checked_add(vertices.len())
+                        .context("HATCH vertex count overflow")?;
+                    plan.vertices.extend(vertices);
+                    plan.loops.push(HatchLoopRow {
+                        hatch_index,
+                        path_flags: path.flags.bits(),
+                        source_path_index: u32::try_from(path_index)
+                            .context("too many paths in HATCH entity")?,
+                        first_vertex,
+                        vertex_count,
+                        source_edge_count: u32::try_from(path.edges.len())
+                            .context("too many edges in HATCH path")?,
+                        flags: if approximated_curve {
+                            HATCH_LOOP_FLAG_APPROXIMATED_CURVE
+                        } else {
+                            0
+                        },
+                        signed_area,
+                    });
+                }
+                HatchRingBuild::Open => {
+                    plan.summary.skipped_open_paths = plan
+                        .summary
+                        .skipped_open_paths
+                        .checked_add(1)
+                        .context("open HATCH path count overflow")?;
+                }
+                HatchRingBuild::Invalid => {
+                    plan.summary.skipped_invalid_paths = plan
+                        .summary
+                        .skipped_invalid_paths
+                        .checked_add(1)
+                        .context("invalid HATCH path count overflow")?;
+                }
+                HatchRingBuild::Truncated => {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+
+        for color in &hatch.gradient_color.colors {
+            if plan.gradient_colors.len() >= MAX_HATCH_AUX_RECORDS || !color.value.is_finite() {
+                truncated = true;
+                continue;
+            }
+            plan.gradient_colors.push(HatchGradientColorRow {
+                value: color.value,
+                color: encode_color(color.color),
+            });
+        }
+        for seed in &hatch.seed_points {
+            if plan.seed_points.len() >= MAX_HATCH_AUX_RECORDS
+                || !seed.x.is_finite()
+                || !seed.y.is_finite()
+            {
+                truncated = true;
+                continue;
+            }
+            plan.seed_points.push([seed.x, seed.y]);
+        }
+
+        let loop_count = u64::try_from(plan.loops.len())?
+            .checked_sub(first_loop)
+            .context("HATCH loop range underflow")?;
+        let gradient_color_count = u64::try_from(plan.gradient_colors.len())?
+            .checked_sub(first_gradient_color)
+            .context("HATCH gradient-color range underflow")?;
+        let seed_point_count = u64::try_from(plan.seed_points.len())?
+            .checked_sub(first_seed_point)
+            .context("HATCH seed-point range underflow")?;
+        if truncated {
+            plan.summary.truncated_fill_hatches = plan
+                .summary
+                .truncated_fill_hatches
+                .checked_add(1)
+                .context("truncated HATCH count overflow")?;
+        }
+        plan.entities.push(HatchEntityRow {
+            hatch,
+            first_loop,
+            loop_count,
+            first_gradient_color,
+            gradient_color_count,
+            first_seed_point,
+            seed_point_count,
+            definition_line_count: u32::try_from(hatch.pattern.lines.len())
+                .context("too many HATCH pattern definition lines")?,
+            truncated,
+        });
+    }
+
+    plan.summary.fill_loops = u64::try_from(plan.loops.len())?;
+    plan.summary.fill_vertices = u64::try_from(plan.vertices.len())?;
+    plan.summary.gradient_colors = u64::try_from(plan.gradient_colors.len())?;
+    plan.summary.seed_points = u64::try_from(plan.seed_points.len())?;
+    Ok(plan)
+}
+
+fn build_hatch_ring(
+    hatch: &Hatch,
+    path: &acadrust::entities::BoundaryPath,
+    maximum_vertices: usize,
+) -> HatchRingBuild {
+    let mut requested_segments = 0_usize;
+    for edge in &path.edges {
+        let count = hatch_edge_segment_count(edge);
+        if count == 0 {
+            return HatchRingBuild::Invalid;
+        }
+        requested_segments = requested_segments.saturating_add(count);
+        if requested_segments > maximum_vertices {
+            return HatchRingBuild::Truncated;
+        }
+    }
+    if requested_segments < 3 {
+        return HatchRingBuild::Invalid;
+    }
+
+    let mut vertices = Vec::with_capacity(requested_segments.saturating_add(1));
+    let mut approximated_curve = false;
+    for edge in &path.edges {
+        let segment_count = hatch_edge_segment_count(edge);
+        let Some(first) = hatch_edge_segment(hatch, edge, 0) else {
+            return HatchRingBuild::Invalid;
+        };
+        let Some(last) = hatch_edge_segment(hatch, edge, segment_count - 1) else {
+            return HatchRingBuild::Invalid;
+        };
+        approximated_curve |= match edge {
+            BoundaryEdge::Line(_) => false,
+            BoundaryEdge::Polyline(polyline) => polyline
+                .vertices
+                .iter()
+                .any(|vertex| vertex.z.abs() > CURVE_EPSILON),
+            _ => true,
+        };
+
+        let reverse = if let Some(current) = vertices.last().copied() {
+            if hatch_points_near(current, first.start) {
+                false
+            } else if hatch_points_near(current, last.end) {
+                true
+            } else {
+                return HatchRingBuild::Open;
+            }
+        } else {
+            vertices.push(first.start);
+            false
+        };
+
+        if reverse {
+            for segment_index in (0..segment_count).rev() {
+                let Some(segment) = hatch_edge_segment(hatch, edge, segment_index) else {
+                    return HatchRingBuild::Invalid;
+                };
+                let Some(current) = vertices.last().copied() else {
+                    return HatchRingBuild::Invalid;
+                };
+                if !hatch_points_near(current, segment.end) {
+                    return HatchRingBuild::Open;
+                }
+                if !hatch_points_near(current, segment.start) {
+                    vertices.push(segment.start);
+                }
+            }
+        } else {
+            for segment_index in 0..segment_count {
+                let Some(segment) = hatch_edge_segment(hatch, edge, segment_index) else {
+                    return HatchRingBuild::Invalid;
+                };
+                let Some(current) = vertices.last().copied() else {
+                    return HatchRingBuild::Invalid;
+                };
+                if !hatch_points_near(current, segment.start) {
+                    return HatchRingBuild::Open;
+                }
+                if !hatch_points_near(current, segment.end) {
+                    vertices.push(segment.end);
+                }
+            }
+        }
+    }
+
+    if vertices.iter().any(|point| !vector_is_finite(*point)) {
+        return HatchRingBuild::Invalid;
+    }
+    let Some(last) = vertices.last().copied() else {
+        return HatchRingBuild::Invalid;
+    };
+    if !hatch_points_near(vertices[0], last) {
+        return HatchRingBuild::Open;
+    }
+    vertices.pop();
+    if vertices.len() < 3 {
+        return HatchRingBuild::Invalid;
+    }
+    let (signed_area, extent) = hatch_projected_area(&vertices, hatch.normal);
+    let area_tolerance = (extent * extent * 1.0e-14).max(1.0e-18);
+    if !signed_area.is_finite() || signed_area.abs() <= area_tolerance {
+        return HatchRingBuild::Invalid;
+    }
+    HatchRingBuild::Valid {
+        vertices,
+        approximated_curve,
+        signed_area,
+    }
+}
+
+fn hatch_points_near(left: Vector3, right: Vector3) -> bool {
+    if !vector_is_finite(left) || !vector_is_finite(right) {
+        return false;
+    }
+    let scale = [
+        left.x.abs(),
+        left.y.abs(),
+        left.z.abs(),
+        right.x.abs(),
+        right.y.abs(),
+        right.z.abs(),
+        1.0,
+    ]
+    .into_iter()
+    .fold(1.0_f64, f64::max);
+    let tolerance = 1.0e-8_f64.max(scale * f64::EPSILON * 64.0);
+    (left.x - right.x).abs() <= tolerance
+        && (left.y - right.y).abs() <= tolerance
+        && (left.z - right.z).abs() <= tolerance
+}
+
+fn hatch_projected_area(vertices: &[Vector3], normal: Vector3) -> (f64, f64) {
+    let safe_normal = finite_hatch_normal(normal);
+    let dropped_axis = if safe_normal[0].abs() >= safe_normal[1].abs()
+        && safe_normal[0].abs() >= safe_normal[2].abs()
+    {
+        0
+    } else if safe_normal[1].abs() >= safe_normal[2].abs() {
+        1
+    } else {
+        2
+    };
+    let project = |point: Vector3| match dropped_axis {
+        0 => (point.y, point.z),
+        1 => (point.x, point.z),
+        _ => (point.x, point.y),
+    };
+    let (origin_x, origin_y) = project(vertices[0]);
+    let mut twice_area = 0.0;
+    let mut extent = 0.0_f64;
+    for index in 0..vertices.len() {
+        let (left_x, left_y) = project(vertices[index]);
+        let (right_x, right_y) = project(vertices[(index + 1) % vertices.len()]);
+        let left_x = left_x - origin_x;
+        let left_y = left_y - origin_y;
+        let right_x = right_x - origin_x;
+        let right_y = right_y - origin_y;
+        extent = extent
+            .max(left_x.abs())
+            .max(left_y.abs())
+            .max(right_x.abs())
+            .max(right_y.abs());
+        twice_area += left_x * right_y - right_x * left_y;
+    }
+    (twice_area * 0.5, extent)
+}
+
+fn finite_hatch_normal(normal: Vector3) -> [f64; 3] {
+    if vector_is_finite(normal) && normal.length_squared() > CURVE_EPSILON {
+        [normal.x, normal.y, normal.z]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+fn finite_or(value: f64, fallback: f64) -> f64 {
+    if value.is_finite() {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn write_hatch_entity_section<W: Write + Seek>(
+    writer: &mut W,
+    plan: &HatchSourcePlan<'_>,
+    layer_indices: &HashMap<String, u32>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut strings = Vec::new();
+    let mut string_references = Vec::with_capacity(plan.entities.len());
+    for row in &plan.entities {
+        string_references.push([
+            push_string(&mut strings, &row.hatch.pattern.name)?,
+            push_string(&mut strings, &row.hatch.gradient_color.name)?,
+        ]);
+    }
+    let string_offset = STRING_TABLE_HEADER_SIZE
+        + u64::try_from(plan.entities.len())? * u64::from(HATCH_ENTITY_RECORD_SIZE);
+    write_u32(writer, u32::try_from(plan.entities.len())?)?;
+    write_u32(writer, HATCH_ENTITY_RECORD_SIZE)?;
+    write_u64(writer, string_offset)?;
+
+    for (row, references) in plan.entities.iter().zip(string_references) {
+        let hatch = row.hatch;
+        let mut flags = 0_u32;
+        if hatch.is_solid {
+            flags |= HATCH_FLAG_SOLID;
+        }
+        if hatch.is_associative {
+            flags |= HATCH_FLAG_ASSOCIATIVE;
+        }
+        if hatch.is_double {
+            flags |= HATCH_FLAG_DOUBLE;
+        }
+        if hatch.gradient_color.enabled {
+            flags |= HATCH_FLAG_GRADIENT;
+        }
+        if hatch.gradient_color.is_single_color {
+            flags |= HATCH_FLAG_SINGLE_COLOR_GRADIENT;
+        }
+        if row.truncated {
+            flags |= HATCH_FLAG_TRUNCATED;
+        }
+
+        write_common_data(writer, &hatch.common, layer_indices)?;
+        for reference in references {
+            write_u32(writer, reference.0)?;
+            write_u32(writer, reference.1)?;
+        }
+        write_u32(writer, flags)?;
+        write_u16(writer, hatch.style as u16)?;
+        write_u16(writer, hatch.pattern_type as u16)?;
+        write_u64(writer, row.first_loop)?;
+        write_u64(writer, row.loop_count)?;
+        write_u64(writer, row.first_gradient_color)?;
+        write_u64(writer, row.gradient_color_count)?;
+        write_f64(writer, finite_or(hatch.elevation, 0.0))?;
+        for coordinate in finite_hatch_normal(hatch.normal) {
+            write_f64(writer, coordinate)?;
+        }
+        write_f64(writer, finite_or(hatch.pattern_angle, 0.0))?;
+        write_f64(writer, finite_or(hatch.pattern_scale, 1.0))?;
+        write_f64(writer, finite_or(hatch.pixel_size, 0.0))?;
+        write_f64(writer, finite_or(hatch.gradient_color.angle, 0.0))?;
+        write_f64(writer, finite_or(hatch.gradient_color.shift, 0.0))?;
+        write_f64(writer, finite_or(hatch.gradient_color.color_tint, 0.0))?;
+        write_u64(writer, row.first_seed_point)?;
+        write_u64(writer, row.seed_point_count)?;
+        write_i32(writer, hatch.gradient_color.reserved)?;
+        write_u32(writer, row.definition_line_count)?;
+    }
+    writer.write_all(&strings)?;
+    finish_variable_section(
+        writer,
+        SectionKind::HatchEntities,
+        HATCH_ENTITY_RECORD_SIZE,
+        offset,
+        u64::try_from(plan.entities.len())?,
+        SECTION_FLAG_STRING_TABLE,
+    )
+}
+
+fn write_hatch_loop_section<W: Write + Seek>(
+    writer: &mut W,
+    plan: &HatchSourcePlan<'_>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    for row in &plan.loops {
+        write_u64(writer, row.hatch_index)?;
+        write_u32(writer, row.path_flags)?;
+        write_u32(writer, row.source_path_index)?;
+        write_u64(writer, row.first_vertex)?;
+        write_u64(writer, row.vertex_count)?;
+        write_u32(writer, row.source_edge_count)?;
+        write_u32(writer, row.flags)?;
+        write_f64(writer, row.signed_area)?;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::HatchLoops,
+        HATCH_LOOP_RECORD_SIZE,
+        offset,
+        u64::try_from(plan.loops.len())?,
+    )
+}
+
+fn write_hatch_vertex_section<W: Write + Seek>(
+    writer: &mut W,
+    plan: &HatchSourcePlan<'_>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    for vertex in &plan.vertices {
+        write_vec3(writer, *vertex)?;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::HatchVertices,
+        HATCH_VERTEX_RECORD_SIZE,
+        offset,
+        u64::try_from(plan.vertices.len())?,
+    )
+}
+
+fn write_hatch_gradient_color_section<W: Write + Seek>(
+    writer: &mut W,
+    plan: &HatchSourcePlan<'_>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    for color in &plan.gradient_colors {
+        write_f64(writer, color.value)?;
+        write_u32(writer, color.color)?;
+        write_u32(writer, 0)?;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::HatchGradientColors,
+        HATCH_GRADIENT_COLOR_RECORD_SIZE,
+        offset,
+        u64::try_from(plan.gradient_colors.len())?,
+    )
+}
+
+fn write_hatch_seed_point_section<W: Write + Seek>(
+    writer: &mut W,
+    plan: &HatchSourcePlan<'_>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    for seed in &plan.seed_points {
+        write_f64(writer, seed[0])?;
+        write_f64(writer, seed[1])?;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::HatchSeedPoints,
+        HATCH_SEED_POINT_RECORD_SIZE,
+        offset,
+        u64::try_from(plan.seed_points.len())?,
+    )
 }
 
 fn write_line_section<W: Write + Seek>(
@@ -4253,7 +5061,7 @@ mod tests {
         PolylineEdge, Spline, Text,
     };
     use acadrust::tables::BlockRecord;
-    use acadrust::types::{Vector2, Vector3};
+    use acadrust::types::{Color, Vector2, Vector3};
 
     use super::*;
 
@@ -4312,7 +5120,7 @@ mod tests {
         assert_eq!(read_u16(&bytes, 8), CACHE_VERSION_MAJOR);
         assert_eq!(read_u16(&bytes, 10), CACHE_VERSION_MINOR);
         assert_eq!(read_u32(&bytes, 12), HEADER_SIZE);
-        assert_eq!(read_u32(&bytes, 16), 20);
+        assert_eq!(read_u32(&bytes, 16), 25);
         assert_eq!(read_u64(&bytes, 48), 1234);
         assert_eq!(summary.counts.serialized_entities, 7);
         assert_eq!(summary.gpu_lines.model_segments, 43);
@@ -4323,7 +5131,7 @@ mod tests {
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
-        assert_eq!(validation.sections.len(), 20);
+        assert_eq!(validation.sections.len(), 25);
         assert_eq!(validation.source_size, 1234);
 
         let line = directory_entry(&bytes, SectionKind::Lines);
@@ -4523,14 +5331,86 @@ mod tests {
         let mut cursor = Cursor::new(Vec::new());
         let summary = write_scene_cache(&mut cursor, &document, 0).unwrap();
         let bytes = cursor.into_inner();
-        assert_eq!(summary.counts.serialized_entities, 0);
-        assert_eq!(summary.counts.deferred_entities, 1);
+        assert_eq!(summary.counts.serialized_entities, 1);
+        assert_eq!(summary.counts.deferred_entities, 0);
         assert_eq!(summary.gpu_lines.model_segments, 17);
         assert_eq!(summary.gpu_lines.hatch_boundary_segments, 17);
         assert_eq!(summary.gpu_lines.truncated_hatch_entities, 0);
+        assert_eq!(summary.hatch_fills.source_hatches, 1);
+        assert_eq!(summary.hatch_fills.fill_loops, 0);
+        assert_eq!(summary.hatch_fills.skipped_open_paths, 1);
         let vertices = directory_entry(&bytes, SectionKind::GpuLineVertices);
         let style = read_u32(&bytes, vertices.2 as usize + 28);
         assert_eq!((style >> GPU_STYLE_SOURCE_KIND_SHIFT) & 0xf, 8);
+    }
+
+    #[test]
+    fn closed_gradient_hatch_preserves_bounded_source_and_fill_rings() {
+        let mut hatch = Hatch::new();
+        hatch.gradient_color.enabled = true;
+        hatch.gradient_color.name = "LINEAR".to_owned();
+        hatch.gradient_color.angle = std::f64::consts::FRAC_PI_4;
+        hatch
+            .gradient_color
+            .add_color(0.0, Color::Rgb { r: 255, g: 0, b: 0 });
+        hatch
+            .gradient_color
+            .add_color(1.0, Color::Rgb { r: 0, g: 0, b: 255 });
+        hatch.add_seed_point(Vector2::new(1.0, 1.0));
+        let mut path = BoundaryPath::external();
+        for (start, end) in [
+            ((0.0, 0.0), (2.0, 0.0)),
+            ((2.0, 0.0), (2.0, 2.0)),
+            ((2.0, 2.0), (0.0, 2.0)),
+            ((0.0, 2.0), (0.0, 0.0)),
+        ] {
+            path.add_edge(BoundaryEdge::Line(LineEdge {
+                start: Vector2::new(start.0, start.1),
+                end: Vector2::new(end.0, end.1),
+            }));
+        }
+        hatch.add_path(path);
+
+        let mut document = CadDocument::new();
+        document.add_entity(EntityType::Hatch(hatch)).unwrap();
+        let mut cursor = Cursor::new(Vec::new());
+        let summary = write_scene_cache(&mut cursor, &document, 0).unwrap();
+        let bytes = cursor.into_inner();
+
+        assert_eq!(summary.counts.hatches, 1);
+        assert_eq!(summary.hatch_fills.source_hatches, 1);
+        assert_eq!(summary.hatch_fills.gradient_hatches, 1);
+        assert_eq!(summary.hatch_fills.fill_loops, 1);
+        assert_eq!(summary.hatch_fills.fill_vertices, 4);
+        assert_eq!(summary.hatch_fills.gradient_colors, 2);
+        assert_eq!(summary.hatch_fills.seed_points, 1);
+        assert_eq!(summary.hatch_fills.truncated_fill_hatches, 0);
+
+        let hatches = directory_entry(&bytes, SectionKind::HatchEntities);
+        assert_eq!(hatches.1, HATCH_ENTITY_RECORD_SIZE);
+        assert_eq!(hatches.3, 1);
+        let hatch_offset = usize::try_from(hatches.2).unwrap() + STRING_TABLE_HEADER_SIZE as usize;
+        assert_eq!(
+            read_u32(&bytes, hatch_offset + 48) & HATCH_FLAG_GRADIENT,
+            HATCH_FLAG_GRADIENT
+        );
+        assert_eq!(read_u64(&bytes, hatch_offset + 56), 0);
+        assert_eq!(read_u64(&bytes, hatch_offset + 64), 1);
+        assert_eq!(read_u64(&bytes, hatch_offset + 80), 2);
+
+        let loops = directory_entry(&bytes, SectionKind::HatchLoops);
+        assert_eq!(loops.3, 1);
+        let loop_offset = usize::try_from(loops.2).unwrap();
+        assert_eq!(read_u64(&bytes, loop_offset + 24), 4);
+        assert!((read_f64(&bytes, loop_offset + 40) - 4.0).abs() < 1.0e-12);
+        let vertices = directory_entry(&bytes, SectionKind::HatchVertices);
+        assert_eq!(vertices.3, 4);
+        let colors = directory_entry(&bytes, SectionKind::HatchGradientColors);
+        assert_eq!(colors.3, 2);
+        let seeds = directory_entry(&bytes, SectionKind::HatchSeedPoints);
+        assert_eq!(seeds.3, 1);
+
+        validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
     }
 
     #[test]

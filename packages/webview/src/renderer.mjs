@@ -9,6 +9,7 @@ import {
 } from "./math.mjs";
 
 const VERTEX_STRIDE = 32;
+const FILL_VERTEX_STRIDE = 32;
 const INSTANCE_STRIDE = 64;
 const MAX_INSTANCES_PER_DRAW = 16_384;
 const MODEL_INSTANCES = Object.freeze({
@@ -98,6 +99,92 @@ void main() {
 }
 `;
 
+const FILL_VERTEX_SHADER = `#version 300 es
+precision highp float;
+precision highp int;
+
+layout(location = 0) in vec3 a_localPosition;
+layout(location = 1) in uint a_layerIndex;
+layout(location = 2) in uint a_firstColor;
+layout(location = 3) in uint a_lastColor;
+layout(location = 4) in float a_mix;
+layout(location = 5) in uint a_style;
+layout(location = 6) in mat4 a_instanceMatrix;
+
+uniform mat4 u_projection;
+
+flat out uint v_layerIndex;
+flat out uint v_firstColor;
+flat out uint v_lastColor;
+flat out uint v_style;
+out float v_mix;
+
+void main() {
+  gl_Position = u_projection * a_instanceMatrix * vec4(a_localPosition, 1.0);
+  v_layerIndex = a_layerIndex;
+  v_firstColor = a_firstColor;
+  v_lastColor = a_lastColor;
+  v_style = a_style;
+  v_mix = a_mix;
+}
+`;
+
+const FILL_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+precision highp int;
+
+flat in uint v_layerIndex;
+flat in uint v_firstColor;
+flat in uint v_lastColor;
+flat in uint v_style;
+in float v_mix;
+
+uniform sampler2D u_layerColors;
+uniform int u_layerCount;
+
+out vec4 outColor;
+
+vec3 aciColor(uint index) {
+  if (index == 1u) return vec3(1.0, 0.18, 0.18);
+  if (index == 2u) return vec3(1.0, 1.0, 0.2);
+  if (index == 3u) return vec3(0.2, 1.0, 0.35);
+  if (index == 4u) return vec3(0.2, 0.95, 1.0);
+  if (index == 5u) return vec3(0.35, 0.55, 1.0);
+  if (index == 6u) return vec3(1.0, 0.25, 1.0);
+  if (index == 7u) return vec3(0.92);
+  float gray = 0.35 + 0.6 * float(index % 16u) / 15.0;
+  return vec3(gray);
+}
+
+vec4 resolveColor(uint encodedColor) {
+  uint kind = encodedColor >> 30u;
+  if (kind == 0u) {
+    if (v_layerIndex >= uint(u_layerCount)) return vec4(0.92, 0.92, 0.92, 1.0);
+    return texelFetch(u_layerColors, ivec2(int(v_layerIndex), 0), 0);
+  }
+  if (kind == 1u) return vec4(0.92, 0.92, 0.92, 1.0);
+  if (kind == 2u) return vec4(aciColor(encodedColor & 255u), 1.0);
+  return vec4(
+    float((encodedColor >> 16u) & 255u) / 255.0,
+    float((encodedColor >> 8u) & 255u) / 255.0,
+    float(encodedColor & 255u) / 255.0,
+    1.0
+  );
+}
+
+void main() {
+  if ((v_style & (1u << 16u)) != 0u) discard;
+  if (
+    v_layerIndex < uint(u_layerCount) &&
+    texelFetch(u_layerColors, ivec2(int(v_layerIndex), 0), 0).a <= 0.0
+  ) discard;
+  vec4 firstColor = resolveColor(v_firstColor);
+  vec4 lastColor = resolveColor(v_lastColor);
+  outColor = mix(firstColor, lastColor, clamp(v_mix, 0.0, 1.0));
+  if (outColor.a <= 0.0) discard;
+}
+`;
+
 function compileShader(gl, type, source) {
   const shader = gl.createShader(type);
   if (!shader) {
@@ -113,9 +200,13 @@ function compileShader(gl, type, source) {
   return shader;
 }
 
-function createProgram(gl) {
-  const vertex = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SHADER);
-  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SHADER);
+function createProgram(
+  gl,
+  vertexSource = VERTEX_SHADER,
+  fragmentSource = FRAGMENT_SHADER,
+) {
+  const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
+  const fragment = compileShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
   const program = gl.createProgram();
   if (!program) {
     throw new Error("cannot allocate WebGL program");
@@ -254,12 +345,18 @@ export class WebGlLineRenderer {
     this.canvas = canvas;
     this.gl = gl;
     this.program = createProgram(gl);
+    this.fillProgram = createProgram(
+      gl,
+      FILL_VERTEX_SHADER,
+      FILL_FRAGMENT_SHADER,
+    );
     this.instanceBuffer = gl.createBuffer();
     this.layerTexture = gl.createTexture();
     this.vertexResources = new Set();
     this.detailResources = new Map();
     this.detailSelections = new Map();
     this.overviewScene = null;
+    this.hatchFillScene = null;
     this.textOverlay = null;
     if (!this.instanceBuffer || !this.layerTexture) {
       throw new Error("cannot allocate WebGL buffers");
@@ -267,6 +364,18 @@ export class WebGlLineRenderer {
     this.projectionLocation = gl.getUniformLocation(this.program, "u_projection");
     this.layerCountLocation = gl.getUniformLocation(this.program, "u_layerCount");
     this.layerTextureLocation = gl.getUniformLocation(this.program, "u_layerColors");
+    this.fillProjectionLocation = gl.getUniformLocation(
+      this.fillProgram,
+      "u_projection",
+    );
+    this.fillLayerCountLocation = gl.getUniformLocation(
+      this.fillProgram,
+      "u_layerCount",
+    );
+    this.fillLayerTextureLocation = gl.getUniformLocation(
+      this.fillProgram,
+      "u_layerColors",
+    );
     this.layerCount = 0;
     this.layers = Object.freeze([]);
     this.layerVisibility = [];
@@ -374,6 +483,79 @@ export class WebGlLineRenderer {
     return resource;
   }
 
+  uploadHatchFillVertices(arrayBuffer) {
+    const gl = this.gl;
+    const vertexBuffer = gl.createBuffer();
+    const vertexArray = gl.createVertexArray();
+    if (!vertexBuffer || !vertexArray) {
+      throw new Error("cannot allocate HATCH fill WebGL resources");
+    }
+    gl.bindVertexArray(vertexArray);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, arrayBuffer, gl.STATIC_DRAW);
+
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, FILL_VERTEX_STRIDE, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribIPointer(
+      1,
+      1,
+      gl.UNSIGNED_INT,
+      FILL_VERTEX_STRIDE,
+      12,
+    );
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribIPointer(
+      2,
+      1,
+      gl.UNSIGNED_INT,
+      FILL_VERTEX_STRIDE,
+      16,
+    );
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribIPointer(
+      3,
+      1,
+      gl.UNSIGNED_INT,
+      FILL_VERTEX_STRIDE,
+      20,
+    );
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribPointer(4, 1, gl.FLOAT, false, FILL_VERTEX_STRIDE, 24);
+    gl.enableVertexAttribArray(5);
+    gl.vertexAttribIPointer(
+      5,
+      1,
+      gl.UNSIGNED_INT,
+      FILL_VERTEX_STRIDE,
+      28,
+    );
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
+    for (let column = 0; column < 4; column += 1) {
+      const location = 6 + column;
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribPointer(
+        location,
+        4,
+        gl.FLOAT,
+        false,
+        INSTANCE_STRIDE,
+        column * 16,
+      );
+      gl.vertexAttribDivisor(location, 1);
+    }
+    gl.bindVertexArray(null);
+
+    const resource = Object.freeze({
+      vertexBuffer,
+      vertexArray,
+      byteLength: arrayBuffer.byteLength,
+    });
+    this.vertexResources.add(resource);
+    return resource;
+  }
+
   deleteVertices(resource) {
     if (!this.vertexResources.delete(resource)) {
       return;
@@ -411,6 +593,41 @@ export class WebGlLineRenderer {
       resource,
     });
     return Object.freeze({ ...this.redraw(camera), resource });
+  }
+
+  setHatchFills({ batches, vertices, metrics = null }) {
+    if (
+      !vertices ||
+      vertices.byteLength !== vertices.vertexCount * FILL_VERTEX_STRIDE ||
+      vertices.buffer.byteLength !== vertices.byteLength
+    ) {
+      throw new Error("HATCH fill vertex payload is inconsistent");
+    }
+    let expectedFirstVertex = 0;
+    for (const batch of batches) {
+      if (
+        batch.firstVertex !== expectedFirstVertex ||
+        batch.vertexCount % 3 !== 0
+      ) {
+        throw new Error(`HATCH fill batch ${batch.id} has an invalid range`);
+      }
+      expectedFirstVertex += batch.vertexCount;
+    }
+    if (expectedFirstVertex !== vertices.vertexCount) {
+      throw new Error("HATCH fill batches do not cover the vertex buffer");
+    }
+    if (this.hatchFillScene?.resource) {
+      this.deleteVertices(this.hatchFillScene.resource);
+    }
+    const resource =
+      vertices.byteLength > 0
+        ? this.uploadHatchFillVertices(vertices.buffer)
+        : null;
+    this.hatchFillScene = Object.freeze({
+      batches,
+      metrics,
+      resource,
+    });
   }
 
   addDetailBatch(batch, vertices) {
@@ -457,8 +674,10 @@ export class WebGlLineRenderer {
     metrics,
     {
       detail = false,
+      fill = false,
       firstVertex = batch.firstVertex,
       instanceIndices = null,
+      primitive = this.gl.LINES,
     } = {},
   ) {
     const gl = this.gl;
@@ -498,7 +717,7 @@ export class WebGlLineRenderer {
       gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, packed, gl.DYNAMIC_DRAW);
       gl.drawArraysInstanced(
-        gl.LINES,
+        primitive,
         firstVertex,
         batch.vertexCount,
         instanceCount,
@@ -514,6 +733,11 @@ export class WebGlLineRenderer {
       if (detail) {
         metrics.detailDrawCalls += 1;
         metrics.detailSubmittedVertices += batch.vertexCount * instanceCount;
+      }
+      if (fill) {
+        metrics.hatchFillDrawCalls += 1;
+        metrics.hatchFillSubmittedVertices +=
+          batch.vertexCount * instanceCount;
       }
     }
   }
@@ -534,17 +758,24 @@ export class WebGlLineRenderer {
     for (const entry of this.detailResources.values()) {
       cachedDetailGpuBytes += entry.byteLength;
     }
+    const hatchFillGpuBytes = this.hatchFillScene?.resource?.byteLength ?? 0;
     const metrics = {
       drawCalls: 0,
       detailDrawCalls: 0,
       detailBatches: 0,
+      hatchFillDrawCalls: 0,
+      hatchFillSubmittedVertices: 0,
+      hatchFillGpuBytes,
+      hatchFill: this.hatchFillScene?.metrics ?? null,
       submittedInstances: 0,
       submittedVertices: 0,
       detailSubmittedVertices: 0,
       instanceUploadBytes: 0,
       maximumInstanceBufferBytes: 0,
       gpuVertexBytes:
-        this.overviewScene.resource.byteLength + cachedDetailGpuBytes,
+        this.overviewScene.resource.byteLength +
+        cachedDetailGpuBytes +
+        hatchFillGpuBytes,
       cachedDetailGpuBytes,
       cachedDetailBatches: this.detailResources.size,
       bounds: this.overviewScene.bounds,
@@ -556,13 +787,37 @@ export class WebGlLineRenderer {
     gl.disable(gl.DEPTH_TEST);
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.layerTexture);
+
+    if (this.hatchFillScene?.resource) {
+      gl.useProgram(this.fillProgram);
+      gl.uniformMatrix4fv(
+        this.fillProjectionLocation,
+        false,
+        camera.projection,
+      );
+      gl.uniform1i(this.fillLayerCountLocation, this.layerCount);
+      gl.uniform1i(this.fillLayerTextureLocation, 0);
+      for (const batch of this.hatchFillScene.batches) {
+        this.drawBatch(
+          batch,
+          this.hatchFillScene.resource,
+          this.overviewScene.instanceGraph,
+          camera,
+          metrics,
+          {
+            fill: true,
+            primitive: gl.TRIANGLES,
+          },
+        );
+      }
+    }
+
     gl.useProgram(this.program);
     gl.uniformMatrix4fv(this.projectionLocation, false, camera.projection);
     gl.uniform1i(this.layerCountLocation, this.layerCount);
     gl.uniform1i(this.layerTextureLocation, 0);
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.layerTexture);
-
     for (const batch of this.overviewScene.batches) {
       if (batch.lodLevel !== 0) {
         break;
@@ -606,10 +861,12 @@ export class WebGlLineRenderer {
     this.gl.deleteBuffer(this.instanceBuffer);
     this.gl.deleteTexture(this.layerTexture);
     this.gl.deleteProgram(this.program);
+    this.gl.deleteProgram(this.fillProgram);
     this.detailResources.clear();
     this.detailSelections.clear();
     this.textOverlay?.dispose();
     this.textOverlay = null;
+    this.hatchFillScene = null;
     this.overviewScene = null;
   }
 }
