@@ -90,6 +90,45 @@ only qualifies this boundary; the rejected real probe is reproducible under
 [`adapters/libredwg/wasm`](../adapters/libredwg/wasm/README.md) and is not
 exposed as a product backend.
 
+## Progressive Native first frame
+
+The uncached Native path now separates “usable line frame” from “canonical
+cache complete” without changing parsers or adding another process:
+
+```text
+one LibreDWG parse
+  -> capped overview plan
+       -> independent preview cache -> Webview first line frame
+       -> disk-backed detail sort -> full cache -> validation/commit
+                                           -> replace preview
+```
+
+The adapter publishes the preview only after closing it and creating a ready
+marker. The extension rechecks source and engine snapshots, opens a dedicated
+range channel and keeps the sidecar outside the reusable-cache namespace. The
+full cache retains its original atomic write, validation and cache identity.
+Preview failures are non-terminal, and editor close, retry, cancellation,
+render failure or the full first frame releases its channel and private file.
+
+The preview repeats the bounded overview traversal but does not copy the
+LibreDWG object graph or build full-detail geometry in memory. It contains the
+metadata required for block expansion plus no more than 4 MiB of overview GPU
+vertices. Empty schema-valid source sections prevent post-frame workers from
+requesting data that is not part of the preview.
+
+On the 24,680,147-byte reference drawing, one instrumented Native run
+published a 4,914,376-byte preview at 1,241 ms and completed the unchanged
+177,049,408-byte full cache at 3,312 ms. The full SHA-256 remained
+`d3bf4181b9e1ddc936f31a9254d0745990fd4468077498186923f987b7452d77`.
+Actual Chromium loads produced first line frames in 517.9 ms for the preview
+and 502.6 ms for the full cache. Combining the independently measured stages
+puts usable geometry at about 1.76 seconds instead of 3.81 seconds, a roughly
+2.1-second perceived-loading gain. Peak JavaScript heap was 29.41 MiB for the
+preview and 60.16 MiB for the full cache. The repeated overview work adds
+roughly 0.3–0.4 seconds to total conversion, which is accepted because the
+5-second conversion target still passes and the visible frame arrives much
+earlier.
+
 ## Process boundary
 
 DWG parsing runs outside the VS Code extension host and Webview. The converter

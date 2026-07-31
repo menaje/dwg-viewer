@@ -281,7 +281,8 @@ class DwgEditorProvider
     let disposed = false;
     let generation = 0;
     let conversion: AbortController | undefined;
-    let rangeChannel: CacheRangeChannel | undefined;
+    const rangeChannels = new Map<string, CacheRangeChannel>();
+    const previewReleases = new Map<string, () => Promise<void>>();
     let fontChannel: ShxFontChannel | undefined;
     let activeCacheId: string | undefined;
     let activeCacheReused = false;
@@ -308,11 +309,34 @@ class DwgEditorProvider
       conversion = undefined;
       activeCacheId = undefined;
       activeEngine = undefined;
-      const channel = rangeChannel;
-      rangeChannel = undefined;
+      const channels = [...rangeChannels.values()];
+      const releases = [...previewReleases.values()];
+      rangeChannels.clear();
+      previewReleases.clear();
       fontChannel?.dispose();
       fontChannel = undefined;
+      await Promise.allSettled(
+        channels.map((channel) => channel.dispose()),
+      );
+      await Promise.allSettled(releases.map((release) => release()));
+    };
+
+    const disposePreview = async (cacheId: string): Promise<void> => {
+      const channel = rangeChannels.get(cacheId);
+      const release = previewReleases.get(cacheId);
+      rangeChannels.delete(cacheId);
+      previewReleases.delete(cacheId);
       await channel?.dispose();
+      await release?.();
+    };
+
+    const disposeInactivePreviews = async (): Promise<void> => {
+      const previewIds = [...previewReleases.keys()].filter(
+        (cacheId) => cacheId !== activeCacheId,
+      );
+      await Promise.allSettled(
+        previewIds.map((cacheId) => disposePreview(cacheId)),
+      );
     };
 
     const createFontChannel = (cacheId: string): ShxFontChannel => {
@@ -388,6 +412,7 @@ class DwgEditorProvider
           extensionPath: this.context.extensionPath,
         });
         const engine = new LibreDwgNativeSceneEngine(adapterPath);
+        activeEngine = engine.descriptor;
         const manager = new SceneCacheManager(
           path.join(this.context.globalStorageUri.fsPath, "cache"),
           engine,
@@ -412,6 +437,50 @@ class DwgEditorProvider
               return await manager.prepare(document.uri.fsPath, {
                 force,
                 signal: controller.signal,
+                onPreview: async (preview) => {
+                  if (
+                    disposed ||
+                    controller.signal.aborted ||
+                    currentGeneration !== generation
+                  ) {
+                    await preview.release();
+                    return;
+                  }
+                  const channel = await CacheRangeChannel.open(
+                    preview.cacheId,
+                    preview.cachePath,
+                    preview.size,
+                    (message) =>
+                      webviewPanel.webview.postMessage(message),
+                  );
+                  if (
+                    disposed ||
+                    controller.signal.aborted ||
+                    currentGeneration !== generation
+                  ) {
+                    await channel.dispose();
+                    await preview.release();
+                    return;
+                  }
+                  rangeChannels.set(preview.cacheId, channel);
+                  previewReleases.set(
+                    preview.cacheId,
+                    preview.release,
+                  );
+                  try {
+                    await webviewPanel.webview.postMessage({
+                      type: "dwg-cache-preview-ready/1",
+                      cacheId: preview.cacheId,
+                      size: preview.size,
+                      engineId: preview.engine.engineId,
+                      engineVersion: preview.engine.engineVersion,
+                      engineBackend: preview.engine.backendId,
+                    });
+                  } catch (error) {
+                    await disposePreview(preview.cacheId);
+                    throw error;
+                  }
+                },
                 onProgress: (event) => {
                   const phaseText: Record<
                     SceneEngineProgressPhase,
@@ -468,7 +537,7 @@ class DwgEditorProvider
           await channel.dispose();
           return;
         }
-        rangeChannel = channel;
+        rangeChannels.set(prepared.cacheId, channel);
         activeCacheId = prepared.cacheId;
         activeCacheReused = prepared.reused;
         activeEngine = prepared.engine;
@@ -529,7 +598,12 @@ class DwgEditorProvider
 
     const messageSubscription =
       webviewPanel.webview.onDidReceiveMessage((raw: HostMessage) => {
-        if (rangeChannel?.handleMessage(raw)) {
+        const messageCacheId =
+          typeof raw?.cacheId === "string" ? raw.cacheId : undefined;
+        if (
+          messageCacheId &&
+          rangeChannels.get(messageCacheId)?.handleMessage(raw)
+        ) {
           return;
         }
         if (fontChannel?.handleMessage(raw)) {
@@ -615,6 +689,17 @@ class DwgEditorProvider
                   activeEngine?.backendId ?? "unknown"
                 } host_to_frame_ms=${hostElapsed} webview_frame_ms=${webviewElapsed}`,
               );
+              void disposeInactivePreviews();
+            } else if (
+              typeof raw.cacheId === "string" &&
+              previewReleases.has(raw.cacheId)
+            ) {
+              const hostElapsed = Math.max(0, Date.now() - openStartedAt);
+              this.output.appendLine(
+                `[PREVIEW_FRAME_READY] engine=${
+                  activeEngine?.engineId ?? "libredwg"
+                } host_to_frame_ms=${hostElapsed}`,
+              );
             }
             break;
           case "dwg-viewer-error/1":
@@ -623,6 +708,12 @@ class DwgEditorProvider
                 typeof raw.code === "string" ? raw.code.slice(0, 80) : "unknown"
               }`,
             );
+            if (
+              typeof raw.cacheId === "string" &&
+              previewReleases.has(raw.cacheId)
+            ) {
+              void disposePreview(raw.cacheId);
+            }
             break;
         }
       });

@@ -17,6 +17,7 @@ import {
   parseAdapterReport,
   parseLibreDwgDoctorReport,
   resolveLibreDwgAdapter,
+  runLibreDwgAdapter,
 } from "../src/native-cache";
 import {
   computeCacheId,
@@ -234,6 +235,59 @@ test("resolves only an absolute executable adapter path", async (context) => {
     /ADAPTER_PATH_NOT_ABSOLUTE/u,
   );
 });
+
+test(
+  "publishes a bounded native preview before full conversion completes",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "dwg-native-preview-"));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const sourcePath = path.join(root, "drawing.dwg");
+    const outputPath = path.join(root, "drawing.cache");
+    const previewPath = path.join(root, "drawing.preview");
+    const adapterPath = path.join(root, "libredwg-adapter");
+    await writeFile(sourcePath, "drawing");
+    await writeFile(
+      adapterPath,
+      `#!/usr/bin/env node
+const fs = require("node:fs");
+const output = process.argv[4];
+const preview = process.env.DWG_VIEWER_PREVIEW_PATH;
+const ready = process.env.DWG_VIEWER_PREVIEW_READY_PATH;
+fs.writeFileSync(preview, "preview");
+fs.writeFileSync(ready, "");
+setTimeout(() => {
+  fs.writeFileSync(output, "cache");
+  process.stdout.write(JSON.stringify({
+    schema: "dwg-scene-cache/1",
+    status: "ok",
+    cache: { size_bytes: 5, validated: true }
+  }) + "\\n");
+}, 120);
+`,
+    );
+    await chmod(adapterPath, 0o700);
+
+    let previewCount = 0;
+    await runLibreDwgAdapter({
+      adapterPath,
+      inputPath: sourcePath,
+      outputPath,
+      previewPath,
+      signal: new AbortController().signal,
+      async onPreview(preview) {
+        previewCount++;
+        assert.equal(preview.path, previewPath);
+        assert.equal(preview.size, 7);
+        assert.equal(await readFile(preview.path, "utf8"), "preview");
+        await assert.rejects(readFile(outputPath), /ENOENT/u);
+      },
+    });
+
+    assert.equal(previewCount, 1);
+    assert.equal(await readFile(outputPath, "utf8"), "cache");
+  },
+);
 
 test(
   "creates, reuses, rebuilds, and cancels native caches",

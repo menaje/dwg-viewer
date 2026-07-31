@@ -207,6 +207,25 @@ The memory margin to the 600,000,000-byte target is small. New LibreDWG
 coverage must keep the current bounded streaming or disk-backed design; a
 whole-drawing geometry array is not allowed.
 
+## Perceived-loading follow-on
+
+The selected Native engine no longer waits for the canonical cache before
+showing any geometry. After its single LibreDWG parse, it writes a temporary
+overview-only Scene Cache before the disk-backed detail sort, then continues
+the unchanged full conversion. This preserves the engine decision: it reuses
+the measured bounded C writer and process lifetime instead of adopting the
+rejected multi-gigabyte WASM path.
+
+On the reference drawing, the 4,914,376-byte preview was ready at 1,241 ms and
+the full 177,049,408-byte cache at 3,312 ms. Chromium rendered them in 517.9 ms
+and 502.6 ms respectively, putting the first usable line frame about 2.1
+seconds earlier when the measured stages are combined. Preview peak JavaScript
+heap was 29.41 MiB versus 60.16 MiB for the full-cache load. The final cache
+retained its prior SHA-256, while repeating the bounded overview traversal
+added roughly 0.3–0.4 seconds to total conversion. The trade is accepted:
+time-to-visible improves materially, conversion remains below the 5-second
+target, and no second whole-drawing model or memory class is introduced.
+
 ## WASM backend qualification
 
 Issue #17 compiled the exact LibreDWG 0.14 parser and the same Scene Cache

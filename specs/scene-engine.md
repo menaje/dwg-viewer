@@ -11,6 +11,8 @@ forking the renderer. The extension-side contract is
 DWG
   -> SceneCacheManager
        -> LibreDWG Native process (product default)
+            -> first-frame preview sidecar
+            -> validated full cache
        -> WASM Worker candidate (qualification only)
   -> Scene Cache v1.11
   -> one range reader and one WebGL renderer
@@ -42,10 +44,41 @@ Every descriptor declares:
 
 The current product descriptor is `libredwg` 0.14 on backend `native` with
 kind `native-process`. It declares linework, blocks, HATCH, WIPEOUT, text and
-SHX/BigFont support. Its converter writes the complete cache atomically, so
-`progressivePreview` is false. A WASM candidate may declare true only when its
-Worker publishes a bounded, independently readable preview without creating a
-whole-drawing JavaScript object graph.
+SHX/BigFont support. It declares `progressivePreview=true`: the same Native
+process may publish an independently readable, first-frame Scene Cache before
+it performs the disk-backed detail sort and writes the complete cache. A WASM
+candidate may declare true only when its Worker provides the same guarantee
+without creating a whole-drawing JavaScript object graph.
+
+## Native progressive publication
+
+The preview is optional and best-effort. When the caller supplies an
+`onPreview` callback, the cache manager gives the Native engine a new private
+preview path. The adapter:
+
+1. parses the DWG once and builds the capped overview plan;
+2. writes and closes an independent Scene Cache v1.11 preview;
+3. creates a separate ready marker;
+4. continues the existing disk-backed detail sort and atomic full-cache write.
+
+The preview contains drawing, layer, block and INSERT metadata plus only the
+LOD-0 GPU line prefix. Its geometry is capped by the existing 4 MiB overview
+limit; source, text, HATCH, primitive and draw-order sections remain present
+but empty. Header flag bit 0 identifies this display-only artifact. It is
+never committed under the canonical cache identity, reused on a later open or
+accepted as the final conversion result.
+
+The extension observes the marker without blocking the converter, verifies
+the preview path and size and rechecks both source and engine snapshots before
+opening a separate range channel. The Webview replaces the preview with the
+ordinary full cache when that cache is validated. The preview channel and file
+are released after the full first frame, or immediately on retry,
+cancellation, editor close or preview-render failure.
+
+Preview creation, publication or rendering failure does not weaken the final
+cache contract: conversion continues through the existing validated,
+atomically committed path. Older compatible adapters simply ignore the
+preview environment variables and retain the previous loading behavior.
 
 ## Progress
 

@@ -1030,6 +1030,9 @@ json_hatch_fills (const LibreDwgHatchFillSummary *summary)
 static int
 convert_dwg (const char *path, const char *output_path)
 {
+  const char *preview_path = getenv ("DWG_VIEWER_PREVIEW_PATH");
+  const char *preview_ready_path
+      = getenv ("DWG_VIEWER_PREVIEW_READY_PATH");
   struct stat metadata;
   struct timespec started;
   struct timespec parsed;
@@ -1046,6 +1049,14 @@ convert_dwg (const char *path, const char *output_path)
   size_t i;
   int result = 1;
 
+  if (!preview_path || !preview_ready_path
+      || strcmp (preview_path, output_path) == 0
+      || strcmp (preview_ready_path, output_path) == 0
+      || strcmp (preview_ready_path, preview_path) == 0)
+    {
+      preview_path = NULL;
+      preview_ready_path = NULL;
+    }
   if (stat (path, &metadata) != 0 || !S_ISREG (metadata.st_mode)
       || metadata.st_size < 0)
     {
@@ -1080,9 +1091,11 @@ convert_dwg (const char *path, const char *output_path)
       goto done;
     }
   if (!libredwg_write_scene_cache (
-          &dwg, output_path, (uint64_t)metadata.st_size,
-          numeric_version_code (version_code), &report, cache_error,
-          sizeof (cache_error)))
+          &dwg, output_path,
+          preview_path && preview_ready_path ? preview_path : NULL,
+          preview_path && preview_ready_path ? preview_ready_path : NULL,
+          (uint64_t)metadata.st_size, numeric_version_code (version_code),
+          &report, cache_error, sizeof (cache_error)))
     {
       fprintf (stderr, "LibreDWG scene-cache conversion failed: %s\n",
                cache_error[0] ? cache_error : "unknown writer error");

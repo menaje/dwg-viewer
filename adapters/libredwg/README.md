@@ -74,6 +74,33 @@ Morton key as the acadrust writer, with original source order as the
 deterministic tie breaker. The first-frame overview remains capped at 65,536
 segments and 4 MiB.
 
+## Progressive first frame
+
+When the VS Code host supplies both private preview paths, the same conversion
+process emits a Scene Cache v1.11 first-frame sidecar immediately after parsing
+and overview planning, before the disk-backed full-detail sort. The sidecar
+contains drawing/layer/block/INSERT metadata and overview-only GPU line data;
+all other required sections are schema-valid and empty. Header flag bit 0
+prevents it from being mistaken for a canonical cache.
+
+The adapter closes the preview before creating its ready marker. It then
+continues writing the ordinary full cache and preserves the existing one-JSON
+stdout and exit-status contract. Preview creation is best-effort: failure
+removes both sidecars and never converts a successful full-cache write into a
+failure. Older hosts omit the variables and receive exactly the previous
+behavior.
+
+On the 24,680,147-byte reference drawing, the 4,914,376-byte preview and marker
+were available at 1,241 ms; the unchanged 177,049,408-byte full cache completed
+at 3,312 ms. The full-cache SHA-256 remained
+`d3bf4181b9e1ddc936f31a9254d0745990fd4468077498186923f987b7452d77`.
+An actual Chromium load rendered the preview in 517.9 ms with a 29.41 MiB peak
+JavaScript heap, versus 502.6 ms and 60.16 MiB for the full cache. Combining
+the independently measured stages moves the first usable line frame forward
+by about 2.1 seconds. Repeating the bounded overview pass adds roughly
+0.3–0.4 seconds to full conversion, without another whole-drawing object
+graph or a higher parser memory class.
+
 ## Portable build and self-diagnosis
 
 The reproducible path downloads checksum-pinned LibreDWG and pkgconf sources,

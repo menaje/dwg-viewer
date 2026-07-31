@@ -1204,6 +1204,9 @@ async function openCache(source, workerSource) {
           viewport.detail.loading > 0
             ? `상세 청크 ${viewport.detail.loading.toLocaleString()}개 읽는 중`
             : `${viewport.zoom.toFixed(2)}× · 화면 상세 ${viewport.detail.selectedBatches.toLocaleString()}개`;
+        if (activeScene.metrics.preview) {
+          status.textContent += " · 빠른 미리보기";
+        }
         status.textContent += missingFontSuffix();
       },
       onError(error) {
@@ -1352,12 +1355,22 @@ if (vscodeApi) {
       setHostedState(message.state, message.message, message.code);
       return;
     }
-    if (message?.type !== "dwg-cache-ready/1") {
+    const isPreview = message?.type === "dwg-cache-preview-ready/1";
+    if (!isPreview && message?.type !== "dwg-cache-ready/1") {
       return;
     }
-    setHostedState("ready");
+    if (!isPreview) {
+      setHostedState("ready");
+    }
     openHostedCache(message)
       .then(() => {
+        if (activeHostCacheId !== message.cacheId) {
+          return;
+        }
+        if (isPreview) {
+          status.textContent =
+            "빠른 미리보기 표시 중 · 전체 도면을 계속 준비하고 있습니다";
+        }
         vscodeApi.postMessage({
           type: "dwg-first-frame-ready/1",
           cacheId: message.cacheId,
@@ -1365,6 +1378,9 @@ if (vscodeApi) {
         });
       })
       .catch((error) => {
+        if (activeHostCacheId !== message.cacheId) {
+          return;
+        }
         setHostedState("error", error.message);
         vscodeApi.postMessage({
           type: "dwg-viewer-error/1",

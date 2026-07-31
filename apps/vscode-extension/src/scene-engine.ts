@@ -86,12 +86,21 @@ export interface SceneEngineSnapshot {
   readonly revision: string;
 }
 
+export interface SceneEnginePreviewArtifact {
+  readonly path: string;
+  readonly size: number;
+}
+
 export interface SceneEngineConversionRequest {
   readonly sourcePath: string;
   readonly outputPath: string;
+  readonly previewPath?: string;
   readonly signal: AbortSignal;
   readonly options: SceneConversionOptions;
   readonly onProgress?: (event: SceneEngineProgressEvent) => void;
+  readonly onPreview?: (
+    preview: SceneEnginePreviewArtifact,
+  ) => void | Promise<void>;
 }
 
 export interface SceneEngine {

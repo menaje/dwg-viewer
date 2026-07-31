@@ -21,12 +21,32 @@ test("opens the header and directory without reading the full cache", async () =
   assert.equal(reader.header.major, 1);
   assert.equal(reader.header.minor, 2);
   assert.equal(reader.header.fileSize, buffer.byteLength);
+  assert.equal(reader.header.preview, false);
   assert.equal(reader.sections.size, 6);
   assert.deepEqual(source.requests, [
     { offset: 0, length: 64 },
     { offset: 64, length: 6 * 40 },
   ]);
   assert.ok(source.bytesRead < buffer.byteLength / 2);
+});
+
+test("identifies a bounded progressive preview cache", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(
+      makeFixtureCache({ minorVersion: 11, preview: true }),
+    ),
+  );
+
+  assert.equal(reader.header.preview, true);
+});
+
+test("rejects unsupported Scene Cache header flags", async () => {
+  const buffer = makeFixtureCache();
+  new DataView(buffer).setUint32(24, 2, true);
+  await assert.rejects(
+    SceneCacheReader.open(new MemoryRangeSource(buffer)),
+    /unsupported header flags/u,
+  );
 });
 
 test("accepts the Scene Cache v1.3 header", async () => {

@@ -112,6 +112,96 @@ test("prepares a progressive WASM-shaped engine through the common cache path", 
   );
 });
 
+test("publishes and releases an independently readable preview", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dwg-scene-preview-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const sourcePath = path.join(root, "drawing.dwg");
+  await writeFile(sourcePath, "drawing");
+
+  const descriptor = wasmProbeDescriptor();
+  const engine: SceneEngine = {
+    descriptor,
+    async snapshot() {
+      return { revision: "preview-revision-1" };
+    },
+    async convert(request) {
+      assert.equal(typeof request.previewPath, "string");
+      await writeFile(request.previewPath!, "bounded-preview");
+      await request.onPreview?.({
+        path: request.previewPath!,
+        size: 15,
+      });
+      await writeFile(request.outputPath, "packed-scene-cache");
+    },
+  };
+  const phases: SceneEngineProgressPhase[] = [];
+  let releasedPreviewPath: string | undefined;
+  const prepared = await new SceneCacheManager(
+    path.join(root, "cache"),
+    engine,
+  ).prepare(sourcePath, {
+    signal: new AbortController().signal,
+    onProgress: ({ phase }) => phases.push(phase),
+    async onPreview(preview) {
+      assert.match(preview.cacheId, /^[a-f0-9]{64}$/u);
+      assert.equal(await readFile(preview.cachePath, "utf8"), "bounded-preview");
+      releasedPreviewPath = preview.cachePath;
+      await preview.release();
+      await preview.release();
+    },
+  });
+
+  assert.equal(prepared.reused, false);
+  assert.deepEqual(phases, [
+    "checking",
+    "preview-ready",
+    "cache-ready",
+  ]);
+  assert.ok(releasedPreviewPath);
+  await assert.rejects(readFile(releasedPreviewPath));
+});
+
+test("keeps the final cache when preview publication fails", async (context) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "dwg-scene-preview-fail-"));
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const sourcePath = path.join(root, "drawing.dwg");
+  await writeFile(sourcePath, "drawing");
+
+  const descriptor = wasmProbeDescriptor();
+  let previewPath: string | undefined;
+  const engine: SceneEngine = {
+    descriptor,
+    async snapshot() {
+      return { revision: "preview-revision-1" };
+    },
+    async convert(request) {
+      previewPath = request.previewPath;
+      await writeFile(request.previewPath!, "bounded-preview");
+      await request.onPreview?.({
+        path: request.previewPath!,
+        size: 15,
+      });
+      await writeFile(request.outputPath, "packed-scene-cache");
+    },
+  };
+  const prepared = await new SceneCacheManager(
+    path.join(root, "cache"),
+    engine,
+  ).prepare(sourcePath, {
+    signal: new AbortController().signal,
+    async onPreview() {
+      throw new Error("preview consumer failed");
+    },
+  });
+
+  assert.equal(
+    await readFile(prepared.cachePath, "utf8"),
+    "packed-scene-cache",
+  );
+  assert.ok(previewPath);
+  await assert.rejects(readFile(previewPath), /ENOENT/u);
+});
+
 test("rejects an engine revision that changes during conversion", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dwg-engine-revision-"));
   context.after(() => rm(root, { recursive: true, force: true }));

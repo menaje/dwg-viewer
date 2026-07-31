@@ -52,6 +52,28 @@ The adapter must:
 The runner deletes every temporary conversion cache after reading the report.
 It also removes its private temporary workspace on success or failure.
 
+### Optional Native preview sidecar
+
+The VS Code host, but not the benchmark runner, may request an early
+first-frame artifact by setting both:
+
+```text
+DWG_VIEWER_PREVIEW_PATH=NEW_PRIVATE_PREVIEW_PATH
+DWG_VIEWER_PREVIEW_READY_PATH=NEW_PRIVATE_MARKER_PATH
+```
+
+The paths must be distinct from each other and from `TEMPORARY_CACHE`. The
+LibreDWG adapter treats the request as best-effort: it creates neither file
+unless both variables are valid, refuses to overwrite either path, writes an
+independently readable Scene Cache with preview header flag bit 0, closes it,
+and only then creates the zero-byte ready marker. A preview failure removes
+both sidecars and does not fail the requested full conversion.
+
+The ordinary process contract is unchanged. The adapter still writes exactly
+one JSON report, and exit success still means the full cache—not the preview—
+was written successfully. Hosts must treat the sidecar as ephemeral display
+data and delete it after replacement, cancellation or failure.
+
 ## Inspection report
 
 `inspect` must emit `dwg-inspection/1` with `status: "ok"` and these fields:

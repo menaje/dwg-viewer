@@ -1,9 +1,10 @@
-# Scene Cache v1.10
+# Scene Cache v1.11
 
 Status: source geometry/text writer, resolved DIMENSION picture-block
 instances, bounded HATCH rings and asynchronous solid/gradient fill,
 viewport-clipped pattern, POINT marker, SOLID fill/outline and 3DFACE
-wireframe paths, plus lossless WIPEOUT source and frame display implemented;
+wireframe paths, plus lossless WIPEOUT source, frame display and normalized
+draw-order tables implemented;
 expansion tracked by GitHub issues #3 and #9.
 
 The cache is a little-endian, versioned binary container designed for range
@@ -36,6 +37,19 @@ section payloads
 | 48 | `u64` | source DWG size |
 | 56 | `u32` | source DWG version code |
 | 60 | `u32` | maintenance version |
+
+Header flag bit 0 (`0x00000001`) marks a display-only progressive preview.
+All other bits are reserved and must be zero; the Webview rejects a cache with
+an unknown header flag. A canonical full cache always writes flags as zero.
+
+A flagged preview is still an independently readable v1.11 container with the
+complete section directory. It carries drawing, layer, block and INSERT
+metadata plus only the LOD-0 GPU line batches and vertices needed for the
+first frame. Other required sections are encoded as valid empty sections.
+Preview geometry retains the 4 MiB overview cap and existing metadata section
+limits. The artifact is ephemeral: it is not a valid replacement for the
+canonical full conversion result, is not committed under the cache identity
+and must be deleted after the full cache replaces it.
 
 ### Directory entry
 
@@ -85,6 +99,8 @@ Section kinds currently written:
 | 41 | 3DFACE source records |
 | 42 | WIPEOUT source records |
 | 43 | WIPEOUT clip-boundary `f64[2]` vertex pool |
+| 44 | normalized block-local draw-order table records |
+| 45 | draw-order entity/sort-handle entry pool |
 
 Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
 Version 1.2 adds kinds 30–31 for straight and polyline GPU lines. Version 1.3
@@ -99,9 +115,10 @@ blocks reuse the unchanged kind-13 record and therefore require no version
 bump or new section. Version 1.9 adds kind 41 for WCS 3DFACE corners and
 invisible-edge flags. Version 1.10 adds kinds 42–43 for WIPEOUT image bases,
 display metadata and exact clip vertices; drawing metadata offset 12 stores
-the drawing-wide frame setting. The validator continues to accept older v1
-caches, while a v1.10 writer always emits all 32 sections, including empty
-pools.
+the drawing-wide frame setting. Version 1.11 adds kinds 44–45 for normalized
+`SORTENTSTABLE` ownership and entity/sort-handle pairs. The validator
+continues to accept older v1 caches, while a v1.11 writer always emits all 34
+sections, including empty pools.
 
 ## Shared primitive prefix
 
@@ -660,8 +677,8 @@ available in the source sections for later high-zoom refinement.
   fidelity beyond the bounded first pass;
 - automatic trusted SHX font discovery and project font mapping;
 - linetype override table;
-- draw-order-aware WIPEOUT mask fill, including block-local sort tables and
-  nested INSERT order;
+- exact CAD draw-order parity beyond the bounded block-local/nested INSERT
+  mask composition and safe fallback;
 - view-adaptive high-zoom refinement beyond the bounded v1.3 curve chords;
 - lossless HATCH analytic-edge topology beyond the bounded fill rings;
 - entity-selection index and source fingerprint.
@@ -671,7 +688,7 @@ generated artifacts and must not be committed.
 
 ## LibreDWG qualification writer
 
-The optional LibreDWG adapter currently writes a valid but partial v1.10 cache
+The optional LibreDWG adapter currently writes a valid but partial v1.11 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
@@ -684,17 +701,22 @@ evaluation and malformed-input fallback use the 256-segments-per-entity limit.
 It also writes the seven bounded HATCH source/fill/pattern sections and the
 POINT/SOLID/3DFACE/WIPEOUT source sections, including `PDMODE`, `PDSIZE`,
 `FILLMODE`, invisible face edges, exact WIPEOUT clip vertices and the global
-frame setting. The Webview range-reads those sections after the first line
+frame setting, plus normalized draw-order tables and entries. The Webview
+range-reads those sections after the first line
 frame, builds POINT markers, SOLID geometry, 3DFACE wireframe edges and safe
 WIPEOUT frames in a one-shot worker, triangulates solid and gradient HATCH
 rings, and regenerates clipped HATCH pattern strokes in the persistent worker.
-WIPEOUT masks remain explicitly deferred until draw-order rendering exists. All
-omitted logical entities, unresolved DIMENSION blocks, skipped paths and
-safety caps are exposed in the conversion report rather than silently treated
-as supported.
+Bounded draw-order composition expands and renders safe WIPEOUT masks, with an
+explicit frame/source fallback when its caps or validity checks fail. All
+omitted logical entities, unresolved DIMENSION blocks, skipped paths and safety
+caps are exposed in the conversion report rather than silently treated as
+supported.
 
 This qualification writer keeps the same 4 MiB overview and 512 KiB detail
 limits and uses disk-backed group-local XY Morton ordering for detail batches.
+When the extension requests progressive publication, the writer emits the
+flagged overview-only sidecar before that detail sort, then continues to the
+unchanged full v1.11 cache.
 LibreDWG is the selected primary engine path. The remaining unsupported source
 families and exact CAD text-layout fidelity must be closed before that path is
 release-ready.

@@ -369,8 +369,13 @@ interface RunAdapterOptions {
   adapterPath: string;
   inputPath: string;
   outputPath: string;
+  previewPath?: string;
   signal: AbortSignal;
   onPhase?: (phase: "converting" | "validating") => void;
+  onPreview?: (preview: {
+    path: string;
+    size: number;
+  }) => void | Promise<void>;
 }
 
 function appendBounded(
@@ -394,8 +399,10 @@ export async function runLibreDwgAdapter({
   adapterPath,
   inputPath,
   outputPath,
+  previewPath,
   signal,
   onPhase,
+  onPreview,
 }: RunAdapterOptions): Promise<void> {
   if (signal.aborted) {
     throw abortSceneEngineError();
@@ -408,6 +415,12 @@ export async function runLibreDwgAdapter({
         ...process.env,
         DWG_VIEWER_ADAPTER_PROTOCOL: ADAPTER_PROTOCOL,
         DWG_VIEWER_BENCHMARK_PHASE: "convert",
+        ...(previewPath
+          ? {
+              DWG_VIEWER_PREVIEW_PATH: previewPath,
+              DWG_VIEWER_PREVIEW_READY_PATH: `${previewPath}.ready`,
+            }
+          : {}),
       },
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
@@ -428,6 +441,51 @@ export async function runLibreDwgAdapter({
   let stderrBytes = 0;
   let outputError: Error | undefined;
   let terminationTimer: NodeJS.Timeout | undefined;
+  let previewNotified = false;
+  let previewCheck: Promise<void> | undefined;
+
+  const checkPreview = async (): Promise<void> => {
+    if (
+      !previewPath ||
+      !onPreview ||
+      previewNotified ||
+      signal.aborted
+    ) {
+      return;
+    }
+    try {
+      const [readyMetadata, previewMetadata] = await Promise.all([
+        stat(`${previewPath}.ready`),
+        stat(previewPath),
+      ]);
+      if (
+        !readyMetadata.isFile() ||
+        !previewMetadata.isFile() ||
+        !Number.isSafeInteger(previewMetadata.size) ||
+        previewMetadata.size <= 0
+      ) {
+        return;
+      }
+      await onPreview({
+        path: previewPath,
+        size: previewMetadata.size,
+      });
+      previewNotified = true;
+    } catch {
+      // Progressive preview is best-effort; full conversion remains valid.
+    }
+  };
+  const previewTimer =
+    previewPath && onPreview
+      ? setInterval(() => {
+          if (!previewCheck) {
+            previewCheck = checkPreview().finally(() => {
+              previewCheck = undefined;
+            });
+          }
+        }, 25)
+      : undefined;
+  previewTimer?.unref();
 
   const terminate = (): void => {
     if (
@@ -495,6 +553,11 @@ export async function runLibreDwgAdapter({
     });
   });
 
+  if (previewTimer) {
+    clearInterval(previewTimer);
+  }
+  await previewCheck;
+  await checkPreview();
   signal.removeEventListener("abort", onAbort);
   if (terminationTimer) {
     clearTimeout(terminationTimer);
@@ -547,7 +610,7 @@ export const LIBREDWG_NATIVE_ENGINE_DESCRIPTOR = Object.freeze({
   capabilities: Object.freeze({
     localExecution: true,
     packedSceneCache: true,
-    progressivePreview: false,
+    progressivePreview: true,
     cancellable: true,
     features: Object.freeze([
       "linework",
@@ -586,9 +649,11 @@ export class LibreDwgNativeSceneEngine implements SceneEngine {
   async convert({
     sourcePath,
     outputPath,
+    previewPath,
     signal,
     options,
     onProgress,
+    onPreview,
   }: SceneEngineConversionRequest): Promise<void> {
     if (Object.keys(options).length > 0) {
       throw new SceneEngineError(
@@ -607,9 +672,11 @@ export class LibreDwgNativeSceneEngine implements SceneEngine {
       adapterPath: this.adapterPath,
       inputPath: sourcePath,
       outputPath,
+      previewPath,
       signal,
       onPhase: (phase) =>
         emit(phase === "converting" ? "parsing" : "validating"),
+      onPreview,
     });
   }
 }

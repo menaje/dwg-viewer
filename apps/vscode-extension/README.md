@@ -32,7 +32,12 @@ normal drawing-open or cached first-frame path. If an adapter is missing, the
 viewer error screen exposes the same select-and-diagnose action.
 
 The first open creates a private cache under VS Code's extension storage.
-Subsequent opens reuse it until the drawing or converter changes.
+For a large uncached drawing, the same Native process first publishes a
+geometry-bounded, independently readable overview cache. The Webview displays
+that line frame while full detail continues, then replaces it with the
+validated canonical cache and deletes the preview. Preview failure and older
+compatible adapters fall back to the ordinary full-cache path. Subsequent
+opens reuse the canonical cache until the drawing or converter changes.
 
 ## Engine boundary
 
@@ -92,6 +97,7 @@ compiled glyphs remain under the Webview's separate byte-bounded caches.
 ## Current scope
 
 - Read-only model-space viewing
+- Progressive Native overview while the first full cache is still being built
 - Bounded cache range reads (maximum 8 MiB per request)
 - Layer visibility, pan, zoom, hatch, and text
 - Delayed SHX/BigFont discovery, mapping, diagnostics, and Korean fallback

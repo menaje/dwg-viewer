@@ -43,6 +43,7 @@ export async function loadFirstFrame(
     cacheVersion: `${reader.header.major}.${reader.header.minor}`,
     cacheBytes: reader.header.fileSize,
     sourceBytes: reader.header.sourceSize,
+    preview: reader.header.preview,
     overviewBytes: overview.byteLength,
     blocks: metadata.blocks.length,
     inserts: metadata.inserts.length,

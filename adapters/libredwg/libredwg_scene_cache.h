@@ -104,6 +104,7 @@ typedef struct
 typedef struct
 {
   uint64_t cache_size;
+  uint64_t preview_size;
   LibreDwgPrimitiveCounts coverage;
   LibreDwgGpuLineSummary gpu_lines;
   LibreDwgHatchFillSummary hatch_fills;
@@ -111,7 +112,8 @@ typedef struct
 } LibreDwgSceneCacheReport;
 
 int libredwg_write_scene_cache (
-    Dwg_Data *dwg, const char *output_path, uint64_t source_size,
+    Dwg_Data *dwg, const char *output_path, const char *preview_path,
+    const char *preview_ready_path, uint64_t source_size,
     uint32_t source_version, LibreDwgSceneCacheReport *report,
     char *error_message, size_t error_message_size);
 

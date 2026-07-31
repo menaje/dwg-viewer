@@ -1,4 +1,5 @@
 import {
+  CACHE_HEADER_FLAG_PREVIEW,
   DIRECTORY_ENTRY_SIZE,
   DRAW_ORDER_ENTRY_RECORD_SIZE,
   DRAW_ORDER_TABLE_RECORD_SIZE,
@@ -893,6 +894,7 @@ function makeDrawOrderEntrySection() {
 
 export function makeFixtureCache({
   minorVersion = 2,
+  preview = false,
   includeText = minorVersion >= 4,
   includeHatch = minorVersion >= 6,
   faceRecordCount = 5,
@@ -957,6 +959,7 @@ export function makeFixtureCache({
   view.setUint32(12, HEADER_SIZE, true);
   view.setUint32(16, sections.length, true);
   view.setUint32(20, DIRECTORY_ENTRY_SIZE, true);
+  view.setUint32(24, preview ? CACHE_HEADER_FLAG_PREVIEW : 0, true);
   writeU64(view, 32, directoryOffset);
   writeU64(view, 40, fileSize);
   writeU64(view, 48, 1024);

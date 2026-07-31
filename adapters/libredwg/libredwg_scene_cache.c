@@ -480,6 +480,7 @@ typedef struct
 
 static const uint8_t CACHE_MAGIC[8]
     = { 'D', 'W', 'G', 'S', 'C', 'N', '1', '\0' };
+#define CACHE_HEADER_FLAG_PREVIEW 1u
 
 static const uint32_t SECTION_KINDS[LIBREDWG_SCENE_SECTION_COUNT]
     = { SECTION_DRAWING,
@@ -7511,7 +7512,7 @@ write_gpu_batch_section (CacheWriter *writer, const Dwg_Data *dwg,
                          LibreDwgGpuLineSummary *summary,
                          OverviewPlan *overview,
                          SpatialSegmentStore *spatial, SectionEntry *entry,
-                         int *separate_overview)
+                         int overview_only, int *separate_overview)
 {
   uint64_t offset;
   uint64_t total
@@ -7521,7 +7522,7 @@ write_gpu_batch_section (CacheWriter *writer, const Dwg_Data *dwg,
   if (!align_writer (writer, &offset))
     return 0;
   *separate_overview = total > SCENE_OVERVIEW_SEGMENTS;
-  if (*separate_overview
+  if (*separate_overview && !overview_only
       && (!spatial || !spatial->file || spatial->count != total))
     {
       set_error (writer, "sorted spatial geometry count is inconsistent");
@@ -7534,8 +7535,9 @@ write_gpu_batch_section (CacheWriter *writer, const Dwg_Data *dwg,
                              0, 1, &selected))
         return 0;
       summary->overview_segments = selected;
-      if (!write_batch_pass (writer, dwg, tables, summary, NULL, spatial,
-                             1, 1, NULL))
+      if (!overview_only
+          && !write_batch_pass (writer, dwg, tables, summary, NULL, spatial,
+                                1, 1, NULL))
         return 0;
     }
   else
@@ -7684,7 +7686,7 @@ write_gpu_vertex_section (CacheWriter *writer, const Dwg_Data *dwg,
                           LibreDwgGpuLineSummary *summary,
                           OverviewPlan *overview,
                           SpatialSegmentStore *spatial, SectionEntry *entry,
-                          int separate_overview)
+                          int separate_overview, int overview_only)
 {
   uint64_t offset;
   uint64_t vertices = 0;
@@ -7695,7 +7697,8 @@ write_gpu_vertex_section (CacheWriter *writer, const Dwg_Data *dwg,
       && !write_vertex_pass (
           writer, dwg, tables, overview, NULL, &vertices))
     return 0;
-  if (!write_vertex_pass (
+  if ((!separate_overview || !overview_only)
+      && !write_vertex_pass (
           writer, dwg, tables, NULL,
           separate_overview ? spatial : NULL, &vertices))
     return 0;
@@ -7718,7 +7721,8 @@ write_gpu_vertex_section (CacheWriter *writer, const Dwg_Data *dwg,
 
 static int
 write_header (CacheWriter *writer, uint64_t file_size, uint64_t source_size,
-              uint32_t source_version, uint32_t maintenance_version)
+              uint32_t source_version, uint32_t maintenance_version,
+              uint32_t flags)
 {
   if (!seek_to (writer, 0) || !write_bytes (writer, CACHE_MAGIC, 8)
       || !write_u16 (writer, CACHE_VERSION_MAJOR)
@@ -7726,7 +7730,7 @@ write_header (CacheWriter *writer, uint64_t file_size, uint64_t source_size,
       || !write_u32 (writer, CACHE_HEADER_SIZE)
       || !write_u32 (writer, LIBREDWG_SCENE_SECTION_COUNT)
       || !write_u32 (writer, DIRECTORY_ENTRY_SIZE)
-      || !write_u32 (writer, 0) || !write_u32 (writer, 0)
+      || !write_u32 (writer, flags) || !write_u32 (writer, 0)
       || !write_u64 (writer, CACHE_HEADER_SIZE)
       || !write_u64 (writer, file_size)
       || !write_u64 (writer, source_size)
@@ -7756,9 +7760,151 @@ write_directory (CacheWriter *writer, const SectionEntry *sections)
   return 1;
 }
 
+static int
+write_empty_fixed_section (CacheWriter *writer, SectionEntry *entry,
+                           size_t index)
+{
+  uint64_t offset;
+  return align_writer (writer, &offset)
+         && finish_fixed_section (
+             writer, entry, SECTION_KINDS[index],
+             SECTION_RECORD_SIZES[index], SECTION_NAMES[index], offset, 0);
+}
+
+static int
+write_empty_string_section (CacheWriter *writer, SectionEntry *entry,
+                            size_t index)
+{
+  uint64_t offset;
+  if (!align_writer (writer, &offset) || !write_u32 (writer, 0)
+      || !write_u32 (writer, SECTION_RECORD_SIZES[index])
+      || !write_u64 (writer, STRING_TABLE_HEADER_SIZE))
+    return 0;
+  return finish_variable_section (
+      writer, entry, SECTION_KINDS[index], SECTION_RECORD_SIZES[index],
+      SECTION_NAMES[index], offset, 0, SECTION_FLAG_STRING_TABLE);
+}
+
+static int
+write_scene_preview (
+    Dwg_Data *dwg, const char *output_path, uint64_t source_size,
+    uint32_t source_version, uint32_t wipeout_frame,
+    const CacheTables *tables, const LibreDwgPrimitiveCounts *counts,
+    const LibreDwgGpuLineSummary *gpu_lines, OverviewPlan *overview,
+    uint64_t *preview_size)
+{
+  CacheWriter writer;
+  SectionEntry sections[LIBREDWG_SCENE_SECTION_COUNT];
+  LibreDwgGpuLineSummary preview_gpu_lines;
+  uint64_t body_offset;
+  uint64_t file_size;
+  int separate_overview;
+  int descriptor = -1;
+  FILE *file = NULL;
+  size_t index;
+  int created = 0;
+  int success = 0;
+  char error_message[160];
+
+  memset (&writer, 0, sizeof (writer));
+  memset (sections, 0, sizeof (sections));
+  memset (&preview_gpu_lines, 0, sizeof (preview_gpu_lines));
+  memset (error_message, 0, sizeof (error_message));
+  preview_gpu_lines.model_segments = gpu_lines->model_segments;
+  preview_gpu_lines.block_segments = gpu_lines->block_segments;
+  writer.error = error_message;
+  writer.error_size = sizeof (error_message);
+
+  descriptor = open (output_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (descriptor < 0)
+    goto done;
+  created = 1;
+  file = fdopen (descriptor, "wb");
+  if (!file)
+    {
+      close (descriptor);
+      descriptor = -1;
+      goto done;
+    }
+  descriptor = -1;
+  writer.file = file;
+  body_offset = align_up (
+      CACHE_HEADER_SIZE
+          + (uint64_t)LIBREDWG_SCENE_SECTION_COUNT * DIRECTORY_ENTRY_SIZE,
+      8);
+  if (!seek_to (&writer, body_offset)
+      || !write_drawing_section (
+          &writer, dwg, counts, source_version, wipeout_frame,
+          &sections[0])
+      || !write_layer_section (&writer, tables, &sections[1])
+      || !write_block_section (&writer, tables, &sections[2])
+      || !write_empty_string_section (&writer, &sections[3], 3))
+    goto done;
+  for (index = 4; index <= 6; index++)
+    if (!write_empty_fixed_section (&writer, &sections[index], index))
+      goto done;
+  if (!write_insert_section (&writer, dwg, tables, &sections[7]))
+    goto done;
+  for (index = 8; index <= 15; index++)
+    if (!write_empty_fixed_section (&writer, &sections[index], index))
+      goto done;
+  if (!write_empty_string_section (&writer, &sections[16], 16)
+      || !write_empty_fixed_section (&writer, &sections[17], 17)
+      || !write_gpu_batch_section (
+          &writer, dwg, tables, &preview_gpu_lines, overview, NULL,
+          &sections[18], 1, &separate_overview)
+      || !write_gpu_vertex_section (
+          &writer, dwg, tables, &preview_gpu_lines, overview, NULL,
+          &sections[19], separate_overview, 1)
+      || !write_empty_string_section (&writer, &sections[20], 20))
+    goto done;
+  for (index = 21; index < LIBREDWG_SCENE_SECTION_COUNT; index++)
+    if (!write_empty_fixed_section (&writer, &sections[index], index))
+      goto done;
+  if (!position (&writer, &file_size)
+      || !write_header (
+          &writer, file_size, source_size, source_version,
+          (uint32_t)LIBREDWG_MAINTENANCE_VERSION (dwg),
+          CACHE_HEADER_FLAG_PREVIEW)
+      || !write_directory (&writer, sections) || fflush (file) != 0)
+    goto done;
+  if (fclose (file) != 0)
+    {
+      file = NULL;
+      goto done;
+    }
+  file = NULL;
+  *preview_size = file_size;
+  success = 1;
+
+done:
+  if (file)
+    fclose (file);
+  if (descriptor >= 0)
+    close (descriptor);
+  if (!success && created)
+    unlink (output_path);
+  return success;
+}
+
+static int
+create_preview_ready_file (const char *path)
+{
+  int descriptor = open (path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  if (descriptor < 0)
+    return 0;
+  if (close (descriptor) != 0)
+    {
+      unlink (path);
+      return 0;
+    }
+  return 1;
+}
+
 int
 libredwg_write_scene_cache (
-    Dwg_Data *dwg, const char *output_path, uint64_t source_size,
+    Dwg_Data *dwg, const char *output_path, const char *preview_path,
+    const char *preview_ready_path, uint64_t source_size,
     uint32_t source_version, LibreDwgSceneCacheReport *report,
     char *error_message, size_t error_message_size)
 {
@@ -7829,6 +7975,20 @@ libredwg_write_scene_cache (
       set_error (&writer, "GPU segment count exceeds cache limits");
       goto done;
     }
+  if (preview_path && preview_path[0] && preview_ready_path
+      && preview_ready_path[0])
+    {
+      if (!write_scene_preview (
+              dwg, preview_path, source_size, source_version,
+              wipeout_frame, &tables, &counts, &gpu_lines, &overview,
+              &report->preview_size)
+          || !create_preview_ready_file (preview_ready_path))
+        {
+          unlink (preview_path);
+          unlink (preview_ready_path);
+          report->preview_size = 0;
+        }
+    }
   gpu_segment_count = gpu_lines.model_segments + gpu_lines.block_segments;
   if (gpu_segment_count > SCENE_OVERVIEW_SEGMENTS
       && !build_spatial_segment_store (
@@ -7889,10 +8049,10 @@ libredwg_write_scene_cache (
                                             &sections[17])
       || !write_gpu_batch_section (&writer, dwg, &tables, &gpu_lines,
                                    &overview, &spatial, &sections[18],
-                                   &separate_overview)
+                                   0, &separate_overview)
       || !write_gpu_vertex_section (&writer, dwg, &tables, &gpu_lines,
                                     &overview, &spatial, &sections[19],
-                                    separate_overview)
+                                    separate_overview, 0)
       || !write_hatch_entity_section (
           &writer, dwg, &tables, &counts, &hatch_fills,
           &sections[20])
@@ -7923,7 +8083,7 @@ libredwg_write_scene_cache (
       || !position (&writer, &file_size)
       || !write_header (
           &writer, file_size, source_size, source_version,
-          (uint32_t)LIBREDWG_MAINTENANCE_VERSION (dwg))
+          (uint32_t)LIBREDWG_MAINTENANCE_VERSION (dwg), 0)
       || !write_directory (&writer, sections)
       || fflush (file) != 0)
     {

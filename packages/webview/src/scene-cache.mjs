@@ -3,6 +3,7 @@ export const CACHE_VERSION_MAJOR = 1;
 export const MAX_CACHE_VERSION_MINOR = 11;
 export const HEADER_SIZE = 64;
 export const DIRECTORY_ENTRY_SIZE = 40;
+export const CACHE_HEADER_FLAG_PREVIEW = 1;
 export const GPU_LINE_BATCH_RECORD_SIZE = 128;
 export const GPU_LINE_VERTEX_RECORD_SIZE = 32;
 export const TEXT_STYLE_RECORD_SIZE = 96;
@@ -1067,6 +1068,10 @@ export class SceneCacheReader {
     if (headerView.getUint32(20, true) !== DIRECTORY_ENTRY_SIZE) {
       throw new Error("unexpected scene-cache directory-entry size");
     }
+    const headerFlags = headerView.getUint32(24, true);
+    if ((headerFlags & ~CACHE_HEADER_FLAG_PREVIEW) !== 0) {
+      throw new Error("scene-cache contains unsupported header flags");
+    }
 
     const directoryOffset = readSafeU64(
       headerView,
@@ -1269,6 +1274,8 @@ export class SceneCacheReader {
         directoryOffset,
         fileSize,
         sourceSize,
+        preview:
+          (headerFlags & CACHE_HEADER_FLAG_PREVIEW) !== 0,
         sourceVersion: headerView.getUint32(56, true),
         maintenanceVersion: headerView.getUint32(60, true),
       }),

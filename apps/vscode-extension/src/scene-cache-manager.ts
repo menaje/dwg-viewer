@@ -72,11 +72,20 @@ export interface PreparedCache {
   engine: SceneEngineDescriptor;
 }
 
+export interface PreparedPreview {
+  cacheId: string;
+  cachePath: string;
+  size: number;
+  engine: SceneEngineDescriptor;
+  release(): Promise<void>;
+}
+
 export interface PrepareCacheOptions {
   force?: boolean;
   signal: AbortSignal;
   conversionOptions?: SceneConversionOptions;
   onProgress?: (event: SceneEngineProgressEvent) => void;
+  onPreview?: (preview: PreparedPreview) => void | Promise<void>;
 }
 
 export class SceneCacheManager {
@@ -99,6 +108,7 @@ export class SceneCacheManager {
       signal,
       conversionOptions = EMPTY_SCENE_CONVERSION_OPTIONS,
       onProgress,
+      onPreview,
     }: PrepareCacheOptions,
   ): Promise<PreparedCache> {
     try {
@@ -170,14 +180,97 @@ export class SceneCacheManager {
         this.cacheRoot,
         `${cacheId}.${randomBytes(8).toString("hex")}.tmp`,
       );
+      const previewPath =
+        onPreview && this.engine.descriptor.capabilities.progressivePreview
+          ? path.join(
+              this.cacheRoot,
+              `${cacheId}.${randomBytes(8).toString("hex")}.preview`,
+            )
+          : undefined;
+      let previewHandedOff = false;
+      let previewPublication = Promise.resolve();
       try {
         await this.engine.convert({
           sourcePath,
           outputPath: temporaryPath,
+          previewPath,
           signal,
           options: normalizedOptions,
           onProgress: (event) => this.forward(onProgress, event),
+          onPreview: previewPath
+            ? (artifact) => {
+                previewPublication = previewPublication
+                  .then(async () => {
+                    if (
+                      previewHandedOff ||
+                      signal.aborted ||
+                      artifact.path !== previewPath ||
+                      !Number.isSafeInteger(artifact.size) ||
+                      artifact.size <= 0
+                    ) {
+                      return;
+                    }
+                    const [
+                      currentSourceMetadata,
+                      currentEngineSnapshot,
+                      previewMetadata,
+                    ] = await Promise.all([
+                      stat(sourcePath, { bigint: true }),
+                      this.engine.snapshot(),
+                      stat(previewPath),
+                    ]);
+                    if (
+                      currentSourceMetadata.size !== sourceMetadata.size ||
+                      currentSourceMetadata.mtimeNs !==
+                        sourceMetadata.mtimeNs ||
+                      currentEngineSnapshot.revision !==
+                        engineSnapshot.revision ||
+                      !previewMetadata.isFile() ||
+                      previewMetadata.size !== artifact.size
+                    ) {
+                      return;
+                    }
+                    if (process.platform !== "win32") {
+                      await chmod(previewPath, 0o600);
+                    }
+                    let released = false;
+                    const release = async (): Promise<void> => {
+                      if (released) {
+                        return;
+                      }
+                      released = true;
+                      await rm(previewPath, { force: true });
+                    };
+                    previewHandedOff = true;
+                    this.notify(onProgress, "preview-ready");
+                    try {
+                      await onPreview?.({
+                        cacheId: hashFields([
+                          "dwg-scene-preview/1",
+                          cacheId,
+                          previewPath,
+                        ]),
+                        cachePath: previewPath,
+                        size: artifact.size,
+                        engine: this.engine.descriptor,
+                        release,
+                      });
+                    } catch {
+                      await release().catch(() => undefined);
+                    }
+                  })
+                  .catch(async () => {
+                    if (!previewHandedOff) {
+                      await rm(previewPath, { force: true }).catch(
+                        () => undefined,
+                      );
+                    }
+                  });
+                return previewPublication;
+              }
+            : undefined,
         });
+        await previewPublication;
         if (signal.aborted) {
           throw abortSceneEngineError();
         }
@@ -226,6 +319,14 @@ export class SceneCacheManager {
         return { ...prepared, reused: false };
       } finally {
         await rm(temporaryPath, { force: true }).catch(() => undefined);
+        if (previewPath) {
+          await rm(`${previewPath}.ready`, { force: true }).catch(
+            () => undefined,
+          );
+          if (!previewHandedOff) {
+            await rm(previewPath, { force: true }).catch(() => undefined);
+          }
+        }
       }
     } catch (error) {
       this.notify(
