@@ -74,11 +74,12 @@ Morton key as the acadrust writer, with original source order as the
 deterministic tie breaker. The first-frame overview remains capped at 65,536
 segments and 4 MiB.
 
-## Portable build
+## Portable build and self-diagnosis
 
 The reproducible path downloads checksum-pinned LibreDWG and pkgconf sources,
-builds them under a new private directory, and writes the adapter to a new
-path. It never installs a system package:
+builds a stripped adapter with LibreDWG linked statically under a new private
+directory, and writes the adapter to a new path. It never installs a system
+package:
 
 ```bash
 adapters/libredwg/prepare.sh \
@@ -86,8 +87,17 @@ adapters/libredwg/prepare.sh \
   /private/tmp/libredwg-adapter
 ```
 
-Both paths must not already exist. A C11 compiler, `make`, `curl`, `tar` and a
-SHA-256 utility are required.
+Both paths must not already exist. A C11 compiler, `make`, `strip`, `tar` and
+a SHA-256 utility are required. `curl` is needed only when LibreDWG or a
+fallback pkgconf must be downloaded. An already downloaded source archive can
+be used offline after checksum verification:
+
+```bash
+LIBREDWG_SOURCE_ARCHIVE=/path/to/libredwg-0.14.tar.xz \
+  adapters/libredwg/prepare.sh \
+  /new/private/build-directory \
+  /existing/output-parent/libredwg-adapter
+```
 
 If LibreDWG 0.14 or newer already exists in an isolated prefix, only the
 adapter needs to be built:
@@ -97,10 +107,52 @@ LIBREDWG_PREFIX=/path/to/libredwg-prefix \
   adapters/libredwg/build.sh /new/path/to/libredwg-adapter
 ```
 
-The output binary links to LibreDWG; distributing that binary must comply with
-LibreDWG's GPL-3.0-or-later license. An MPL-only VSIX must not bundle the
-prebuilt adapter until the GPL-enabled release artifact described in
-[`docs/engine-decision.md`](../../docs/engine-decision.md) is reviewed.
+The adapter exposes a bounded self-diagnosis that does not open a drawing:
+
+```bash
+/path/to/libredwg-adapter doctor
+```
+
+It reports the adapter protocol, exact engine and license, Scene Cache
+compatibility, static/dynamic linkage and target platform as one bounded JSON
+record. The VS Code extension runs this only when the user selects or explicitly
+diagnoses an adapter, so it adds no work to the normal drawing-open path.
+
+## Separate GPL package
+
+The output binary links to LibreDWG and must be distributed in compliance with
+GPL-3.0-or-later. Create a new, deterministic GPL package with the exact
+LibreDWG source archive:
+
+```bash
+node adapters/libredwg/package.mjs \
+  --adapter /absolute/path/to/libredwg-adapter \
+  --libredwg-source /absolute/path/to/libredwg-0.14.tar.xz \
+  --output /absolute/new/path/dwg-viewer-libredwg.tar.gz
+```
+
+The packager refuses to overwrite a file, rejects a dynamic LibreDWG
+dependency, local build paths, a wrong source checksum or an incompatible
+doctor report. The archive includes the executable, GPL and MPL license texts,
+checksums, a machine-readable manifest, all adapter build sources and the exact
+LibreDWG 0.14 source archive. Fixed metadata and sorted entries make repeated
+packaging from the same target binary byte-identical. The included repository
+license and package metadata also let the packaged `package.mjs` run from the
+extracted source tree instead of depending on files outside the archive.
+
+GitHub's separate adapter workflow qualifies Linux x64 and macOS arm64
+packages. Windows is not yet a qualified target because the cache writer still
+uses POSIX temporary-file and process-isolation APIs; a Windows artifact must
+not be published until those paths are ported and measured.
+
+The MPL-only VSIX never bundles this executable. Public release signing and the
+final distribution review remain separate publication gates; this packaging
+policy is engineering guidance, not legal advice.
+
+The clean macOS arm64 static-package qualification converted the 24,680,147-byte
+reference drawing in 3,564 ms with 524,468,224-byte peak RSS. It produced the
+same valid 177,049,408-byte Scene Cache v1.11 with all 378,400 logical entities
+preserved, so static distribution remains inside both performance gates.
 
 ## Benchmark
 

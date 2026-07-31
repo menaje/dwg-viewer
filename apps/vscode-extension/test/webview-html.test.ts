@@ -89,3 +89,41 @@ test("repository Webview CSS keeps host-only controls hidden", async () => {
     /\[hidden\]\s*\{\s*display:\s*none\s*!important;/u,
   );
 });
+
+test("repository host UI and manifest expose adapter selection and diagnosis", async () => {
+  const repositoryRoot = path.resolve(__dirname, "../../../..");
+  const [template, mainModule, manifestText] = await Promise.all([
+    readFile(
+      path.join(repositoryRoot, "packages", "webview", "index.html"),
+      "utf8",
+    ),
+    readFile(
+      path.join(repositoryRoot, "packages", "webview", "src", "main.mjs"),
+      "utf8",
+    ),
+    readFile(
+      path.join(
+        repositoryRoot,
+        "apps",
+        "vscode-extension",
+        "package.json",
+      ),
+      "utf8",
+    ),
+  ]);
+  assert.match(
+    template,
+    /id="host-adapter-setup"[^>]*hidden/u,
+  );
+  assert.match(mainModule, /code\.startsWith\("ADAPTER_"\)/u);
+  assert.match(mainModule, /type: "dwg-adapter-select\/1"/u);
+
+  const manifest = JSON.parse(manifestText) as {
+    contributes?: { commands?: Array<{ command?: string }> };
+  };
+  const commands = new Set(
+    manifest.contributes?.commands?.map(({ command }) => command),
+  );
+  assert.equal(commands.has("dwgViewer.selectLibreDwgAdapter"), true);
+  assert.equal(commands.has("dwgViewer.diagnoseLibreDwgAdapter"), true);
+});

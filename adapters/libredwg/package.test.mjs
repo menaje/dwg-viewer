@@ -1,0 +1,106 @@
+// SPDX-License-Identifier: MPL-2.0
+
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import {
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import test from "node:test";
+import { promisify } from "node:util";
+import {
+  createDeterministicTarGzip,
+  LIBREDWG_SOURCE_SHA256,
+  LIBREDWG_VERSION,
+} from "./package.mjs";
+
+const execFileAsync = promisify(execFile);
+
+test("creates a deterministic archive with fixed paths and executable modes", async (context) => {
+  const root = await mkdtemp(
+    path.join(os.tmpdir(), "dwg-adapter-package-test-"),
+  );
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const archivePath = path.join(root, "adapter.tar.gz");
+  const files = [
+    {
+      name: "package/bin/libredwg-adapter",
+      data: Buffer.from("binary"),
+      mode: 0o755,
+    },
+    {
+      name: "package/source/README.txt",
+      data: Buffer.from("source"),
+      mode: 0o644,
+    },
+  ];
+  const first = createDeterministicTarGzip(files);
+  const second = createDeterministicTarGzip([...files].reverse());
+  assert.deepEqual(first, second);
+  assert.equal(first.readUInt32LE(4), 0);
+  assert.equal(first[9], 255);
+  await writeFile(archivePath, first);
+
+  const listing = await execFileAsync(
+    "tar",
+    ["-tvzf", archivePath],
+    { encoding: "utf8" },
+  );
+  assert.match(
+    listing.stdout,
+    /-rwxr-xr-x.*package\/bin\/libredwg-adapter/u,
+  );
+  assert.match(
+    listing.stdout,
+    /-rw-r--r--.*package\/source\/README\.txt/u,
+  );
+  assert.doesNotMatch(listing.stdout, /\/private\/|\/Users\//u);
+});
+
+test("rejects traversal, absolute, backslash, and duplicate archive paths", () => {
+  for (const name of [
+    "../escape",
+    "/absolute",
+    "folder\\windows",
+  ]) {
+    assert.throws(
+      () =>
+        createDeterministicTarGzip([
+          { name, data: Buffer.alloc(0), mode: 0o644 },
+        ]),
+      /unsafe archive path/u,
+    );
+  }
+  assert.throws(
+    () =>
+      createDeterministicTarGzip([
+        { name: "same", data: Buffer.alloc(0), mode: 0o644 },
+        { name: "same", data: Buffer.alloc(0), mode: 0o644 },
+      ]),
+    /duplicate archive path/u,
+  );
+});
+
+test("keeps package and source preparation pins synchronized", async () => {
+  const [prepareScript, buildScript] = await Promise.all([
+    readFile(path.join(import.meta.dirname, "prepare.sh"), "utf8"),
+    readFile(path.join(import.meta.dirname, "build.sh"), "utf8"),
+  ]);
+  assert.match(
+    prepareScript,
+    new RegExp(`LIBREDWG_VERSION=${LIBREDWG_VERSION.replace(".", "\\.")}`, "u"),
+  );
+  assert.match(
+    prepareScript,
+    new RegExp(`LIBREDWG_SHA256=${LIBREDWG_SOURCE_SHA256}`, "u"),
+  );
+  assert.match(prepareScript, /--disable-shared/u);
+  assert.match(prepareScript, /--enable-static/u);
+  assert.match(buildScript, /static_library=.*libredwg\.a/u);
+  assert.match(buildScript, /"\$static_library" -lm/u);
+  assert.match(buildScript, /"\$strip" "\$output"/u);
+});

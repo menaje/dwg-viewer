@@ -12,9 +12,11 @@ import path from "node:path";
 import test from "node:test";
 import {
   computeCacheId,
+  diagnoseLibreDwgAdapter,
   isAbortError,
   NativeCacheManager,
   parseAdapterReport,
+  parseLibreDwgDoctorReport,
   resolveLibreDwgAdapter,
 } from "../src/native-cache";
 
@@ -58,6 +60,103 @@ test("adapter report requires the expected schema, validation, and size", () => 
     /ADAPTER_REPORT_REJECTED/u,
   );
 });
+
+test("doctor report requires the adapter, cache, engine, and license contract", () => {
+  const compatible = {
+    schema: "dwg-engine-doctor/1",
+    status: "ok",
+    protocol: "dwg-engine-adapter/1",
+    engine: {
+      id: "libredwg",
+      version: "0.14",
+      license: "GPL-3.0-or-later",
+      linkage: "static",
+    },
+    cache: { schema: "dwg-scene-cache/1.11" },
+    target: { platform: "darwin", architecture: "arm64" },
+  };
+  assert.deepEqual(
+    parseLibreDwgDoctorReport(JSON.stringify(compatible)),
+    {
+      engineVersion: "0.14",
+      linkage: "static",
+      platform: "darwin",
+      architecture: "arm64",
+    },
+  );
+  assert.throws(
+    () =>
+      parseLibreDwgDoctorReport(
+        JSON.stringify({
+          ...compatible,
+          cache: { schema: "dwg-scene-cache/1.10" },
+        }),
+      ),
+    /ADAPTER_DOCTOR_REPORT_REJECTED/u,
+  );
+  assert.throws(
+    () =>
+      parseLibreDwgDoctorReport(
+        JSON.stringify({
+          ...compatible,
+          engine: { ...compatible.engine, license: "unknown" },
+        }),
+      ),
+    /ADAPTER_DOCTOR_REPORT_REJECTED/u,
+  );
+});
+
+test(
+  "runs a bounded adapter self-diagnosis and rejects a timeout",
+  { skip: process.platform === "win32" },
+  async (context) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "dwg-doctor-test-"));
+    context.after(() => rm(root, { recursive: true, force: true }));
+    const adapterPath = path.join(root, "libredwg-adapter");
+    await writeFile(
+      adapterPath,
+      `#!/usr/bin/env node
+if (
+  process.argv[2] !== "doctor" ||
+  process.env.DWG_VIEWER_ADAPTER_PROTOCOL !== "dwg-engine-adapter/1" ||
+  process.env.DWG_VIEWER_BENCHMARK_PHASE !== "doctor"
+) process.exit(12);
+if (process.env.DWG_DOCTOR_TEST_MODE === "slow") {
+  setInterval(() => {}, 1000);
+} else {
+  process.stdout.write(JSON.stringify({
+    schema: "dwg-engine-doctor/1",
+    status: "ok",
+    protocol: "dwg-engine-adapter/1",
+    engine: {
+      id: "libredwg",
+      version: "0.14",
+      license: "GPL-3.0-or-later",
+      linkage: "static"
+    },
+    cache: { schema: "dwg-scene-cache/1.11" },
+    target: { platform: "test", architecture: "test" }
+  }) + "\\n");
+}
+`,
+    );
+    await chmod(adapterPath, 0o700);
+
+    const report = await diagnoseLibreDwgAdapter(adapterPath);
+    assert.equal(report.engineVersion, "0.14");
+    assert.equal(report.linkage, "static");
+
+    process.env.DWG_DOCTOR_TEST_MODE = "slow";
+    try {
+      await assert.rejects(
+        diagnoseLibreDwgAdapter(adapterPath, { timeoutMs: 100 }),
+        /ADAPTER_DOCTOR_TIMEOUT/u,
+      );
+    } finally {
+      delete process.env.DWG_DOCTOR_TEST_MODE;
+    }
+  },
+);
 
 test("resolves only an absolute executable adapter path", async (context) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "dwg-adapter-path-"));

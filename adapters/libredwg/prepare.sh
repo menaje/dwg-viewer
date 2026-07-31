@@ -49,7 +49,7 @@ adapter_parent=$(dirname -- "$adapter_output")
 [ ! -e "$adapter_output" ] || fail "adapter output already exists"
 [ -d "$adapter_parent" ] || fail "adapter output parent does not exist"
 
-for required_tool in curl tar make awk; do
+for required_tool in tar make awk "${STRIP:-strip}"; do
   command -v "$required_tool" >/dev/null 2>&1 \
     || fail "required build tool is missing: $required_tool"
 done
@@ -70,6 +70,8 @@ if command -v pkg-config >/dev/null 2>&1; then
 elif command -v pkgconf >/dev/null 2>&1; then
   pkg_config=$(command -v pkgconf)
 else
+  command -v curl >/dev/null 2>&1 \
+    || fail "curl is required to download portable pkgconf"
   echo "Preparing portable pkgconf $PKGCONF_VERSION"
   pkgconf_archive="$build_root/pkgconf-$PKGCONF_VERSION.tar.xz"
   verified_download \
@@ -87,11 +89,22 @@ else
 fi
 
 echo "Preparing GNU LibreDWG $LIBREDWG_VERSION"
-libredwg_archive="$build_root/libredwg-$LIBREDWG_VERSION.tar.xz"
-verified_download \
-  "https://github.com/LibreDWG/libredwg/releases/download/$LIBREDWG_VERSION/libredwg-$LIBREDWG_VERSION.tar.xz" \
-  "$libredwg_archive" \
-  "$LIBREDWG_SHA256"
+if [ -n "${LIBREDWG_SOURCE_ARCHIVE:-}" ]; then
+  [ -f "$LIBREDWG_SOURCE_ARCHIVE" ] \
+    || fail "LIBREDWG_SOURCE_ARCHIVE is not a readable file"
+  libredwg_archive=$LIBREDWG_SOURCE_ARCHIVE
+  actual=$(checksum "$libredwg_archive")
+  [ "$actual" = "$LIBREDWG_SHA256" ] \
+    || fail "checksum mismatch for supplied LibreDWG source"
+else
+  command -v curl >/dev/null 2>&1 \
+    || fail "curl is required to download LibreDWG source"
+  libredwg_archive="$build_root/libredwg-$LIBREDWG_VERSION.tar.xz"
+  verified_download \
+    "https://github.com/LibreDWG/libredwg/releases/download/$LIBREDWG_VERSION/libredwg-$LIBREDWG_VERSION.tar.xz" \
+    "$libredwg_archive" \
+    "$LIBREDWG_SHA256"
+fi
 tar -xf "$libredwg_archive" -C "$build_root"
 
 libredwg_source="$build_root/libredwg-$LIBREDWG_VERSION"
@@ -99,6 +112,8 @@ libredwg_source="$build_root/libredwg-$LIBREDWG_VERSION"
   cd "$libredwg_source"
   PKG_CONFIG="$pkg_config" ./configure \
     --prefix="$install_prefix" \
+    --disable-shared \
+    --enable-static \
     --disable-bindings \
     --disable-docs \
     --disable-dxf \

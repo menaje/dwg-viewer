@@ -1,0 +1,92 @@
+name: LibreDWG adapter packages
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "adapters/libredwg/**"
+      - ".github/workflows/libredwg-adapter.yml"
+      - "LICENSE"
+      - "package.json"
+  pull_request:
+    paths:
+      - "adapters/libredwg/**"
+      - ".github/workflows/libredwg-adapter.yml"
+      - "LICENSE"
+      - "package.json"
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+          - runner: macos-14
+            target: darwin-arm64
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Build checksum-pinned static adapter
+        shell: bash
+        run: |
+          adapters/libredwg/prepare.sh \
+            "$RUNNER_TEMP/dwg-libredwg-build" \
+            "$RUNNER_TEMP/libredwg-adapter"
+
+      - name: Run bounded self-diagnosis
+        shell: bash
+        run: |
+          DWG_VIEWER_ADAPTER_PROTOCOL=dwg-engine-adapter/1 \
+          DWG_VIEWER_BENCHMARK_PHASE=doctor \
+            "$RUNNER_TEMP/libredwg-adapter" doctor
+
+      - name: Create and reproduce GPL source-complete package
+        shell: bash
+        run: |
+          node adapters/libredwg/package.mjs \
+            --adapter "$RUNNER_TEMP/libredwg-adapter" \
+            --libredwg-source "$RUNNER_TEMP/dwg-libredwg-build/libredwg-0.14.tar.xz" \
+            --output "$RUNNER_TEMP/dwg-viewer-libredwg-${{ matrix.target }}.tar.gz"
+          node adapters/libredwg/package.mjs \
+            --adapter "$RUNNER_TEMP/libredwg-adapter" \
+            --libredwg-source "$RUNNER_TEMP/dwg-libredwg-build/libredwg-0.14.tar.xz" \
+            --output "$RUNNER_TEMP/dwg-viewer-libredwg-${{ matrix.target }}-repeated.tar.gz"
+          cmp \
+            "$RUNNER_TEMP/dwg-viewer-libredwg-${{ matrix.target }}.tar.gz" \
+            "$RUNNER_TEMP/dwg-viewer-libredwg-${{ matrix.target }}-repeated.tar.gz"
+
+      - name: Verify extracted checksums and executable
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/extracted"
+          tar -xzf \
+            "$RUNNER_TEMP/dwg-viewer-libredwg-${{ matrix.target }}.tar.gz" \
+            -C "$RUNNER_TEMP/extracted"
+          package_root=$(find "$RUNNER_TEMP/extracted" -mindepth 1 -maxdepth 1 -type d)
+          cd "$package_root"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c SHA256SUMS
+          else
+            shasum -a 256 -c SHA256SUMS
+          fi
+          bin/libredwg-adapter doctor
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dwg-viewer-libredwg-${{ matrix.target }}
+          path: ${{ runner.temp }}/dwg-viewer-libredwg-${{ matrix.target }}.tar.gz
+          archive: false
+          if-no-files-found: error

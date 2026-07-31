@@ -12,8 +12,11 @@ import path from "node:path";
 
 export const ADAPTER_PROTOCOL = "dwg-engine-adapter/1";
 export const CACHE_SCHEMA_VERSION = "dwg-scene-cache/1.11";
+export const DOCTOR_REPORT_SCHEMA = "dwg-engine-doctor/1";
 const MAX_STDOUT_BYTES = 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
+const MAX_DOCTOR_STDOUT_BYTES = 64 * 1024;
+const DEFAULT_DOCTOR_TIMEOUT_MS = 5_000;
 const TERMINATION_GRACE_MS = 1_500;
 
 export class NativeCacheError extends Error {
@@ -159,6 +162,240 @@ export function parseAdapterReport(
       "LibreDWG 변환 결과의 무결성 검사를 통과하지 못했습니다.",
     );
   }
+}
+
+interface RawDoctorReport {
+  schema?: unknown;
+  status?: unknown;
+  protocol?: unknown;
+  engine?: {
+    id?: unknown;
+    version?: unknown;
+    license?: unknown;
+    linkage?: unknown;
+  };
+  cache?: {
+    schema?: unknown;
+  };
+  target?: {
+    platform?: unknown;
+    architecture?: unknown;
+  };
+}
+
+export interface LibreDwgDoctorReport {
+  engineVersion: string;
+  linkage: "static" | "dynamic" | "unknown";
+  platform: string;
+  architecture: string;
+}
+
+function isSafeIdentifier(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 40 &&
+    /^[a-zA-Z0-9._+-]+$/u.test(value)
+  );
+}
+
+export function parseLibreDwgDoctorReport(
+  output: string,
+): LibreDwgDoctorReport {
+  let report: RawDoctorReport;
+  try {
+    report = JSON.parse(output.trim()) as RawDoctorReport;
+  } catch (error) {
+    throw new NativeCacheError(
+      "ADAPTER_DOCTOR_REPORT_INVALID",
+      "LibreDWG 변환기가 올바른 진단 보고서를 반환하지 않았습니다.",
+      { cause: error },
+    );
+  }
+
+  const linkage = report.engine?.linkage;
+  if (
+    report.schema !== DOCTOR_REPORT_SCHEMA ||
+    report.status !== "ok" ||
+    report.protocol !== ADAPTER_PROTOCOL ||
+    report.engine?.id !== "libredwg" ||
+    !isSafeIdentifier(report.engine.version) ||
+    report.engine.license !== "GPL-3.0-or-later" ||
+    (linkage !== "static" &&
+      linkage !== "dynamic" &&
+      linkage !== "unknown") ||
+    report.cache?.schema !== CACHE_SCHEMA_VERSION ||
+    !isSafeIdentifier(report.target?.platform) ||
+    !isSafeIdentifier(report.target?.architecture)
+  ) {
+    throw new NativeCacheError(
+      "ADAPTER_DOCTOR_REPORT_REJECTED",
+      "선택한 LibreDWG 변환기는 이 버전의 DWG Viewer와 호환되지 않습니다.",
+    );
+  }
+
+  return {
+    engineVersion: report.engine.version,
+    linkage,
+    platform: report.target.platform,
+    architecture: report.target.architecture,
+  };
+}
+
+export interface DiagnoseAdapterOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export async function diagnoseLibreDwgAdapter(
+  adapterPath: string,
+  {
+    signal = new AbortController().signal,
+    timeoutMs = DEFAULT_DOCTOR_TIMEOUT_MS,
+  }: DiagnoseAdapterOptions = {},
+): Promise<LibreDwgDoctorReport> {
+  if (signal.aborted) {
+    throw abortError();
+  }
+  if (
+    !Number.isSafeInteger(timeoutMs) ||
+    timeoutMs < 100 ||
+    timeoutMs > 30_000
+  ) {
+    throw new TypeError("doctor timeout is outside the supported range");
+  }
+
+  let child;
+  try {
+    child = spawn(adapterPath, ["doctor"], {
+      env: {
+        ...process.env,
+        DWG_VIEWER_ADAPTER_PROTOCOL: ADAPTER_PROTOCOL,
+        DWG_VIEWER_BENCHMARK_PHASE: "doctor",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      cwd: path.dirname(adapterPath),
+    });
+  } catch (error) {
+    throw new NativeCacheError(
+      "ADAPTER_START_FAILED",
+      "LibreDWG 변환기를 시작하지 못했습니다.",
+      { cause: error },
+    );
+  }
+
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let outputError: Error | undefined;
+  let timedOut = false;
+  let terminationTimer: NodeJS.Timeout | undefined;
+
+  const terminate = (): void => {
+    if (
+      terminationTimer ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    ) {
+      return;
+    }
+    child.kill("SIGTERM");
+    terminationTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+      }
+    }, TERMINATION_GRACE_MS);
+    terminationTimer.unref();
+  };
+  const timeoutTimer = setTimeout(() => {
+    timedOut = true;
+    terminate();
+  }, timeoutMs);
+  timeoutTimer.unref();
+  const onAbort = (): void => terminate();
+  signal.addEventListener("abort", onAbort, { once: true });
+
+  child.stdout.on("data", (value: Buffer | string) => {
+    if (outputError) {
+      return;
+    }
+    try {
+      stdoutBytes = appendBounded(
+        stdout,
+        Buffer.from(value),
+        stdoutBytes,
+        MAX_DOCTOR_STDOUT_BYTES,
+      );
+    } catch (error) {
+      outputError = error as Error;
+      terminate();
+    }
+  });
+  child.stderr.on("data", (value: Buffer | string) => {
+    if (outputError) {
+      return;
+    }
+    try {
+      stderrBytes = appendBounded(
+        stderr,
+        Buffer.from(value),
+        stderrBytes,
+        MAX_STDERR_BYTES,
+      );
+    } catch (error) {
+      outputError = error as Error;
+      terminate();
+    }
+  });
+
+  const result = await new Promise<{
+    code: number | null;
+    error?: Error;
+  }>((resolve) => {
+    let spawnError: Error | undefined;
+    child.once("error", (error) => {
+      spawnError = error;
+    });
+    child.once("close", (code) => {
+      resolve({ code, error: spawnError });
+    });
+  });
+
+  clearTimeout(timeoutTimer);
+  signal.removeEventListener("abort", onAbort);
+  if (terminationTimer) {
+    clearTimeout(terminationTimer);
+  }
+  if (signal.aborted) {
+    throw abortError();
+  }
+  if (timedOut) {
+    throw new NativeCacheError(
+      "ADAPTER_DOCTOR_TIMEOUT",
+      "LibreDWG 변환기 진단이 제한 시간 안에 끝나지 않았습니다.",
+    );
+  }
+  if (outputError) {
+    throw outputError;
+  }
+  if (result.error) {
+    throw new NativeCacheError(
+      "ADAPTER_START_FAILED",
+      "LibreDWG 변환기를 시작하지 못했습니다.",
+      { cause: result.error },
+    );
+  }
+  if (result.code !== 0) {
+    throw new NativeCacheError(
+      "ADAPTER_DOCTOR_FAILED",
+      "LibreDWG 변환기 자체 진단에 실패했습니다.",
+    );
+  }
+  return parseLibreDwgDoctorReport(
+    Buffer.concat(stdout, stdoutBytes).toString("utf8"),
+  );
 }
 
 interface RunAdapterOptions {

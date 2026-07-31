@@ -41,6 +41,7 @@ const layersShowAll = document.querySelector("#layers-show-all");
 const layersHideAll = document.querySelector("#layers-hide-all");
 const hostRetry = document.querySelector("#host-retry");
 const hostRebuild = document.querySelector("#host-rebuild");
+const hostAdapterSetup = document.querySelector("#host-adapter-setup");
 let activeScene;
 let activeInteraction;
 let activeTextStatus;
@@ -1270,7 +1271,7 @@ function openHostedCache(message) {
   );
 }
 
-function setHostedState(state, detail = "") {
+function setHostedState(state, detail = "", code = "") {
   if (!vscodeApi) {
     return;
   }
@@ -1279,16 +1280,19 @@ function setHostedState(state, detail = "") {
       status.textContent = "로컬 DWG 변환을 준비하는 중";
       hostRetry.hidden = true;
       hostRebuild.hidden = true;
+      hostAdapterSetup.hidden = true;
       break;
     case "converting":
       status.textContent = "로컬에서 DWG를 변환하는 중";
       hostRetry.hidden = true;
       hostRebuild.hidden = true;
+      hostAdapterSetup.hidden = true;
       break;
     case "validating":
       status.textContent = "변환 결과를 검사하는 중";
       hostRetry.hidden = true;
       hostRebuild.hidden = true;
+      hostAdapterSetup.hidden = true;
       break;
     case "error":
       status.textContent = detail
@@ -1296,10 +1300,13 @@ function setHostedState(state, detail = "") {
         : "도면을 열 수 없습니다";
       hostRetry.hidden = false;
       hostRebuild.hidden = false;
+      hostAdapterSetup.hidden =
+        typeof code !== "string" || !code.startsWith("ADAPTER_");
       break;
     case "ready":
       hostRetry.hidden = true;
       hostRebuild.hidden = false;
+      hostAdapterSetup.hidden = true;
       break;
   }
 }
@@ -1337,8 +1344,12 @@ if (vscodeApi) {
       }
       return;
     }
+    if (message?.type === "dwg-adapter-select-result/1") {
+      hostAdapterSetup.disabled = false;
+      return;
+    }
     if (message?.type === "dwg-cache-state/1") {
-      setHostedState(message.state, message.message);
+      setHostedState(message.state, message.message, message.code);
       return;
     }
     if (message?.type !== "dwg-cache-ready/1") {
@@ -1481,6 +1492,13 @@ hostRebuild.addEventListener("click", () => {
   if (vscodeApi) {
     setHostedState("preparing");
     vscodeApi.postMessage({ type: "dwg-cache-rebuild/1" });
+  }
+});
+
+hostAdapterSetup.addEventListener("click", () => {
+  if (vscodeApi) {
+    hostAdapterSetup.disabled = true;
+    vscodeApi.postMessage({ type: "dwg-adapter-select/1" });
   }
 });
 

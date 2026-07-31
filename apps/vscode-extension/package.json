@@ -27,13 +27,23 @@
   "main": "./dist/src/extension.js",
   "activationEvents": [
     "onCustomEditor:dwgViewer.dwg",
-    "onCommand:dwgViewer.addShxFontFolders"
+    "onCommand:dwgViewer.addShxFontFolders",
+    "onCommand:dwgViewer.selectLibreDwgAdapter",
+    "onCommand:dwgViewer.diagnoseLibreDwgAdapter"
   ],
   "contributes": {
     "commands": [
       {
         "command": "dwgViewer.addShxFontFolders",
         "title": "DWG Viewer: SHX 글꼴 폴더 추가"
+      },
+      {
+        "command": "dwgViewer.selectLibreDwgAdapter",
+        "title": "DWG Viewer: LibreDWG 변환기 선택"
+      },
+      {
+        "command": "dwgViewer.diagnoseLibreDwgAdapter",
+        "title": "DWG Viewer: LibreDWG 변환기 진단"
       }
     ],
     "customEditors": [

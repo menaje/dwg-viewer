@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import * as vscode from "vscode";
 import {
+  diagnoseLibreDwgAdapter,
   isAbortError,
   NativeCacheError,
   NativeCacheManager,
@@ -17,6 +18,116 @@ import { renderWebviewHtml } from "./webview-html";
 
 const VIEW_TYPE = "dwgViewer.dwg";
 const ADD_SHX_FONT_FOLDERS_COMMAND = "dwgViewer.addShxFontFolders";
+const SELECT_LIBREDWG_ADAPTER_COMMAND =
+  "dwgViewer.selectLibreDwgAdapter";
+const DIAGNOSE_LIBREDWG_ADAPTER_COMMAND =
+  "dwgViewer.diagnoseLibreDwgAdapter";
+
+function adapterErrorDetails(error: unknown): {
+  code: string;
+  message: string;
+} {
+  return error instanceof NativeCacheError
+    ? { code: error.code, message: error.userMessage }
+    : {
+        code: "ADAPTER_DIAGNOSIS_FAILED",
+        message: "LibreDWG 변환기를 확인하지 못했습니다.",
+      };
+}
+
+async function diagnoseAdapterWithProgress(
+  adapterPath: string,
+): ReturnType<typeof diagnoseLibreDwgAdapter> {
+  return vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "DWG Viewer: LibreDWG 변환기 진단",
+      cancellable: false,
+    },
+    () => diagnoseLibreDwgAdapter(adapterPath),
+  );
+}
+
+async function selectLibreDwgAdapter(
+  output: vscode.OutputChannel,
+): Promise<boolean> {
+  const selected = await vscode.window.showOpenDialog({
+    canSelectFiles: true,
+    canSelectFolders: false,
+    canSelectMany: false,
+    title: "DWG Viewer용 LibreDWG 변환기 선택",
+    openLabel: "선택 후 진단",
+  });
+  const adapterUri = selected?.find((uri) => uri.scheme === "file");
+  if (!adapterUri) {
+    return false;
+  }
+
+  try {
+    const adapterPath = await resolveLibreDwgAdapter({
+      configuredPath: adapterUri.fsPath,
+      extensionPath: "",
+    });
+    const report = await diagnoseAdapterWithProgress(adapterPath);
+    await vscode.workspace
+      .getConfiguration("dwgViewer")
+      .update(
+        "libredwgAdapterPath",
+        adapterPath,
+        vscode.ConfigurationTarget.Global,
+      );
+    const linkage =
+      report.linkage === "static"
+        ? "독립 실행형"
+        : "로컬 라이브러리 연결형";
+    output.appendLine(
+      `[ADAPTER_READY] engine=${report.engineVersion} linkage=${report.linkage} target=${report.platform}-${report.architecture}`,
+    );
+    void vscode.window.showInformationMessage(
+      `DWG Viewer: LibreDWG ${report.engineVersion} 변환기 진단을 통과했습니다 (${linkage}).`,
+    );
+    return true;
+  } catch (error) {
+    const details = adapterErrorDetails(error);
+    output.appendLine(`[${details.code}] adapter selection failed`);
+    void vscode.window.showErrorMessage(
+      `DWG Viewer: ${details.message}`,
+    );
+    return false;
+  }
+}
+
+async function diagnoseConfiguredLibreDwgAdapter(
+  context: vscode.ExtensionContext,
+  output: vscode.OutputChannel,
+): Promise<boolean> {
+  try {
+    const configuration = vscode.workspace.getConfiguration("dwgViewer");
+    const adapterPath = await resolveLibreDwgAdapter({
+      configuredPath: configuration.get<string>(
+        "libredwgAdapterPath",
+        "",
+      ),
+      environmentPath: process.env.DWG_VIEWER_LIBREDWG_ADAPTER,
+      extensionPath: context.extensionPath,
+    });
+    const report = await diagnoseAdapterWithProgress(adapterPath);
+    output.appendLine(
+      `[ADAPTER_READY] engine=${report.engineVersion} linkage=${report.linkage} target=${report.platform}-${report.architecture}`,
+    );
+    void vscode.window.showInformationMessage(
+      `DWG Viewer: LibreDWG ${report.engineVersion} 변환기가 정상입니다 (${report.platform}-${report.architecture}, ${report.linkage}).`,
+    );
+    return true;
+  } catch (error) {
+    const details = adapterErrorDetails(error);
+    output.appendLine(`[${details.code}] adapter diagnosis failed`);
+    void vscode.window.showErrorMessage(
+      `DWG Viewer: ${details.message}`,
+    );
+    return false;
+  }
+}
 
 function fontDirectoryKey(value: string): string {
   const resolved = path.resolve(value);
@@ -406,6 +517,32 @@ class DwgEditorProvider
           case "dwg-cache-rebuild/1":
             requestStart(true);
             break;
+          case "dwg-adapter-select/1":
+            void Promise.resolve(
+              vscode.commands.executeCommand<boolean>(
+                SELECT_LIBREDWG_ADAPTER_COMMAND,
+              ),
+            )
+              .then((changed) => {
+                void webviewPanel.webview.postMessage({
+                  type: "dwg-adapter-select-result/1",
+                  changed: Boolean(changed),
+                });
+                if (changed && !disposed) {
+                  requestStart(false);
+                }
+              })
+              .catch(() => {
+                this.output.appendLine(
+                  "[ADAPTER_CONFIGURATION_FAILED] cannot select adapter",
+                );
+                void webviewPanel.webview.postMessage({
+                  type: "dwg-adapter-select-result/1",
+                  changed: false,
+                  failed: true,
+                });
+              });
+            break;
           case "dwg-font-folder-select/1": {
             const previousChannel = fontChannel;
             void Promise.resolve(
@@ -512,6 +649,14 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(
       ADD_SHX_FONT_FOLDERS_COMMAND,
       addShxFontFolders,
+    ),
+    vscode.commands.registerCommand(
+      SELECT_LIBREDWG_ADAPTER_COMMAND,
+      () => selectLibreDwgAdapter(output),
+    ),
+    vscode.commands.registerCommand(
+      DIAGNOSE_LIBREDWG_ADAPTER_COMMAND,
+      () => diagnoseConfiguredLibreDwgAdapter(context, output),
     ),
     vscode.window.registerCustomEditorProvider(VIEW_TYPE, provider, {
       supportsMultipleEditorsPerDocument: false,

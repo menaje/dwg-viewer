@@ -41,8 +41,17 @@
 #endif
 
 #define ADAPTER_PROTOCOL "dwg-engine-adapter/1"
+#define DOCTOR_REPORT_SCHEMA "dwg-engine-doctor/1"
 #define REPORT_SCHEMA "dwg-inspection/1"
 #define CONVERSION_REPORT_SCHEMA "dwg-scene-cache/1"
+
+#ifndef DWG_VIEWER_LIBREDWG_VERSION
+#define DWG_VIEWER_LIBREDWG_VERSION "unknown"
+#endif
+
+#ifndef DWG_VIEWER_LIBREDWG_LINKAGE
+#define DWG_VIEWER_LIBREDWG_LINKAGE "unknown"
+#endif
 
 typedef struct
 {
@@ -106,9 +115,62 @@ print_usage (void)
 {
   fputs (
       "usage:\n"
+      "  libredwg-adapter doctor\n"
       "  libredwg-adapter inspect INPUT [--notification-samples N]\n"
       "  libredwg-adapter convert INPUT OUTPUT\n",
       stderr);
+}
+
+static const char *
+build_platform (void)
+{
+#if defined(_WIN32)
+  return "win32";
+#elif defined(__APPLE__)
+  return "darwin";
+#elif defined(__linux__)
+  return "linux";
+#else
+  return "unknown";
+#endif
+}
+
+static const char *
+build_architecture (void)
+{
+#if defined(__aarch64__) || defined(_M_ARM64)
+  return "arm64";
+#elif defined(__x86_64__) || defined(_M_X64)
+  return "x64";
+#elif defined(__i386__) || defined(_M_IX86)
+  return "ia32";
+#else
+  return "unknown";
+#endif
+}
+
+static int
+doctor (void)
+{
+  fputs ("{\"schema\":\"" DOCTOR_REPORT_SCHEMA
+         "\",\"status\":\"ok\",\"protocol\":\"" ADAPTER_PROTOCOL
+         "\",\"engine\":{\"id\":\"libredwg\",\"version\":\""
+         DWG_VIEWER_LIBREDWG_VERSION
+         "\",\"license\":\"GPL-3.0-or-later\",\"linkage\":\""
+         DWG_VIEWER_LIBREDWG_LINKAGE
+         "\"},\"cache\":{\"schema\":\"dwg-scene-cache/",
+         stdout);
+  printf ("%u.%u\"},\"target\":{\"platform\":\"%s\","
+          "\"architecture\":\"%s\"}}\n",
+          LIBREDWG_SCENE_CACHE_VERSION_MAJOR,
+          LIBREDWG_SCENE_CACHE_VERSION_MINOR, build_platform (),
+          build_architecture ());
+  if (fflush (stdout) != 0 || ferror (stdout))
+    {
+      fputs ("cannot write adapter doctor report\n", stderr);
+      return 1;
+    }
+  return 0;
 }
 
 static uint32_t
@@ -585,6 +647,8 @@ static int
 validate_arguments (int argc, char **argv)
 {
   int i;
+  if (argc >= 2 && strcmp (argv[1], "doctor") == 0)
+    return argc == 2;
   if (argc >= 2 && strcmp (argv[1], "convert") == 0)
     return argc == 4;
   if (argc < 3 || strcmp (argv[1], "inspect") != 0)
@@ -1089,5 +1153,7 @@ main (int argc, char **argv)
     }
   if (strcmp (argv[1], "convert") == 0)
     return convert_dwg (argv[2], argv[3]);
+  if (strcmp (argv[1], "doctor") == 0)
+    return doctor ();
   return inspect_dwg (argv[2]);
 }

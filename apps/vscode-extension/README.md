@@ -9,8 +9,12 @@ ranges required by the Webview. Drawing data is never uploaded.
 ## Native converter
 
 The extension deliberately does not bundle the GPL-licensed LibreDWG adapter in
-the MPL-licensed VSIX. Build or install the repository's
-`libredwg-adapter` separately, then set:
+the MPL-licensed VSIX. Build or extract the repository's separate GPL package,
+then run **DWG Viewer: LibreDWG 변환기 선택** and select the executable. The
+extension checks the engine version, GPL declaration, protocol and Scene Cache
+compatibility before saving the setting.
+
+The same path can be set manually:
 
 ```json
 {
@@ -21,6 +25,11 @@ the MPL-licensed VSIX. Build or install the repository's
 For local development only, `DWG_VIEWER_LIBREDWG_ADAPTER` can provide the same
 absolute path. A separately distributed adapter may also be placed at
 `native/<platform>-<architecture>/libredwg-adapter`.
+
+Run **DWG Viewer: LibreDWG 변환기 진단** at any time to repeat the bounded
+five-second self-test. Diagnosis runs only on request and is not added to the
+normal drawing-open or cached first-frame path. If an adapter is missing, the
+viewer error screen exposes the same select-and-diagnose action.
 
 The first open creates a private cache under VS Code's extension storage.
 Subsequent opens reuse it until the drawing or converter changes.

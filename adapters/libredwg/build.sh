@@ -15,9 +15,14 @@ output=$1
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 pkg_config=${PKG_CONFIG:-pkg-config}
 cc=${CC:-cc}
+strip=${STRIP:-strip}
 
 [ ! -e "$output" ] || {
   echo "refusing to overwrite adapter output: $output" >&2
+  exit 1
+}
+command -v "$strip" >/dev/null 2>&1 || {
+  echo "a binary strip tool is required: $strip" >&2
   exit 1
 }
 
@@ -29,13 +34,24 @@ PKG_CONFIG_PATH="$LIBREDWG_PREFIX/lib/pkgconfig:$LIBREDWG_PREFIX/lib64/pkgconfig
 export PKG_CONFIG_PATH
 
 "$pkg_config" --atleast-version=0.14 libredwg
+engine_version=$("$pkg_config" --modversion libredwg)
 cflags=$("$pkg_config" --cflags libredwg)
-libs=$("$pkg_config" --libs libredwg)
+libdir=$("$pkg_config" --variable=libdir libredwg)
+static_library="$libdir/libredwg.a"
+
+[ -f "$static_library" ] || {
+  echo "the portable build requires the static LibreDWG library: $static_library" >&2
+  exit 1
+}
 
 # pkg-config output is intentionally split into compiler arguments.
 # shellcheck disable=SC2086
 "$cc" -std=c11 -O3 -DNDEBUG -Wall -Wextra -Wpedantic \
+  "-DDWG_VIEWER_LIBREDWG_VERSION=\"$engine_version\"" \
+  '-DDWG_VIEWER_LIBREDWG_LINKAGE="static"' \
   $cflags \
   "$script_dir/libredwg_adapter.c" \
   "$script_dir/libredwg_scene_cache.c" \
-  $libs -o "$output"
+  "$static_library" -lm -o "$output"
+
+"$strip" "$output"

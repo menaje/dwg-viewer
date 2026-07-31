@@ -36,6 +36,8 @@ jobs:
           cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Check adapter packaging
+        run: pnpm run check:adapter-package
       - name: Check Webview
         run: pnpm --filter @dwg-viewer/webview check
       - name: Check VS Code extension

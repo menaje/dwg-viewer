@@ -225,14 +225,23 @@ also warning that the communication semantics can affect the legal analysis.
 The project therefore does not treat process isolation alone as a legal
 conclusion.
 
-Until a release-package review is completed:
+The repository now has a deterministic GPL package builder and a separate
+Linux x64/macOS arm64 qualification workflow. It requires a stripped,
+statically linked adapter, validates the adapter's bounded doctor report,
+rejects dynamic LibreDWG dependencies and local build paths, and includes the
+exact LibreDWG archive, adapter source, build scripts, license texts, manifest
+and checksums. Corresponding source is therefore shipped in the same archive
+rather than delegated to an unpinned external URL.
+
+Until public-release signing and the final distribution review are completed:
 
 1. an MPL-only VSIX must not bundle a prebuilt LibreDWG-linked adapter;
 2. local development may build the adapter from checksum-pinned source with
    `adapters/libredwg/prepare.sh`;
-3. a distribution that bundles the adapter must be published as a separately
-   identified GPL-compliant LibreDWG-enabled artifact with the required source,
-   license and notices.
+3. the adapter may only be published as the separately identified
+   GPL-3.0-or-later package produced by `adapters/libredwg/package.mjs`;
+4. Windows packages remain blocked until the POSIX adapter paths are ported,
+   measured and added to the qualification workflow.
 
 ACadSharp 3.6.51 is MIT-licensed, and the optional adapter uses a
 checksum-pinned .NET SDK plus a content-hash-locked package. Its permissive
@@ -249,7 +258,8 @@ engineering distribution policy, not legal advice.
 - Keep the ACadSharp inspection adapter, package lock and parser preflight test;
   do not build an ACadSharp Scene Cache converter unless a future release
   materially changes the measured memory architecture.
-- Resolve the GPL-enabled release artifact before VSIX publication in issue #6.
+- Keep the source-complete GPL package and two-platform qualification workflow
+  as the issue #6 release boundary; complete signing/review before publication.
 
 ## Primary sources
 
