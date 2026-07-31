@@ -301,10 +301,12 @@ export function buildPrimitiveMeshes(
     !source?.points ||
     typeof source.points.readEntity !== "function" ||
     !source?.solids ||
-    typeof source.solids.readEntity !== "function"
+    typeof source.solids.readEntity !== "function" ||
+    !source?.faces ||
+    typeof source.faces.readEntity !== "function"
   ) {
     throw new TypeError(
-      "primitive mesh builder requires POINT and SOLID source tables",
+      "primitive mesh builder requires POINT, SOLID and 3DFACE source tables",
     );
   }
   requireBudget(
@@ -320,7 +322,7 @@ export function buildPrimitiveMeshes(
   requireBudget(
     maximumSolidOutlineGpuBytes,
     PRIMITIVE_VERTEX_STRIDE * 2,
-    "SOLID outline",
+    "surface outline",
   );
 
   const blockIndexByHandle = new Map();
@@ -329,7 +331,7 @@ export function buildPrimitiveMeshes(
   }
   const pointMesh = new PackedMeshBuilder(maximumPointGpuBytes);
   const solidFillMesh = new PackedMeshBuilder(maximumSolidFillGpuBytes);
-  const solidOutlineMesh = new PackedMeshBuilder(
+  const surfaceOutlineMesh = new PackedMeshBuilder(
     maximumSolidOutlineGpuBytes,
   );
   const point = {
@@ -345,6 +347,14 @@ export function buildPrimitiveMeshes(
       [0, 0, 0],
     ],
     normal: [0, 0, 1],
+  };
+  const face = {
+    corners: [
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 0, 0],
+    ],
   };
   const transformedCorners = [
     [0, 0, 0],
@@ -372,19 +382,29 @@ export function buildPrimitiveMeshes(
     sourceSolids: source.solids.length,
     renderedFilledSolids: 0,
     renderedOutlineSolids: 0,
+    sourceFaces: source.faces.length,
+    renderedFaces: 0,
+    renderedFaceEdges: 0,
+    hiddenFaceEdges: 0,
+    skippedDegenerateFaceEdges: 0,
     skippedOwners: 0,
     skippedDegenerateTriangles: 0,
     pointVertices: 0,
     solidFillVertices: 0,
     solidOutlineVertices: 0,
+    faceOutlineVertices: 0,
+    surfaceOutlineVertices: 0,
     pointGpuBytes: 0,
     solidFillGpuBytes: 0,
     solidOutlineGpuBytes: 0,
+    faceOutlineGpuBytes: 0,
+    surfaceOutlineGpuBytes: 0,
     gpuBytes: 0,
     batches: 0,
     pointGpuLimitReached: false,
     solidFillGpuLimitReached: false,
     solidOutlineGpuLimitReached: false,
+    faceOutlineGpuLimitReached: false,
   };
 
   for (let index = 0; index < source.points.length; index += 1) {
@@ -471,7 +491,7 @@ export function buildPrimitiveMeshes(
       outlineEdge[0] = corners[start];
       outlineEdge[1] = corners[end];
       if (
-        !solidOutlineMesh.write(
+        !surfaceOutlineMesh.write(
           owner,
           outlineEdge,
           attributes,
@@ -480,6 +500,7 @@ export function buildPrimitiveMeshes(
         metrics.solidOutlineGpuLimitReached = true;
         break;
       }
+      metrics.solidOutlineVertices += outlineEdge.length;
       rendered = true;
     }
     if (rendered) {
@@ -487,19 +508,62 @@ export function buildPrimitiveMeshes(
     }
   }
 
+  for (let index = 0; index < source.faces.length; index += 1) {
+    source.faces.readEntity(index, face);
+    const owner = classifyOwner(
+      face,
+      blocks,
+      instanceGraph,
+      blockIndexByHandle,
+    );
+    if (!owner) {
+      metrics.skippedOwners += 1;
+      continue;
+    }
+    let rendered = false;
+    const attributes = solidOutlineAttributes(face);
+    for (let edge = 0; edge < QUADRILATERAL_EDGES.length; edge += 1) {
+      if (face.invisibleEdges & (1 << edge)) {
+        metrics.hiddenFaceEdges += 1;
+        continue;
+      }
+      const [start, end] = QUADRILATERAL_EDGES[edge];
+      if (pointsNear(face.corners[start], face.corners[end])) {
+        metrics.skippedDegenerateFaceEdges += 1;
+        continue;
+      }
+      outlineEdge[0] = face.corners[start];
+      outlineEdge[1] = face.corners[end];
+      if (!surfaceOutlineMesh.write(owner, outlineEdge, attributes)) {
+        metrics.faceOutlineGpuLimitReached = true;
+        break;
+      }
+      metrics.renderedFaceEdges += 1;
+      metrics.faceOutlineVertices += outlineEdge.length;
+      rendered = true;
+    }
+    if (rendered) {
+      metrics.renderedFaces += 1;
+    }
+  }
+
   const points = pointMesh.finish();
   const solidFills = solidFillMesh.finish();
-  const solidOutlines = solidOutlineMesh.finish();
+  const solidOutlines = surfaceOutlineMesh.finish();
   metrics.pointVertices = points.vertices.vertexCount;
   metrics.solidFillVertices = solidFills.vertices.vertexCount;
-  metrics.solidOutlineVertices = solidOutlines.vertices.vertexCount;
+  metrics.surfaceOutlineVertices = solidOutlines.vertices.vertexCount;
   metrics.pointGpuBytes = points.vertices.byteLength;
   metrics.solidFillGpuBytes = solidFills.vertices.byteLength;
-  metrics.solidOutlineGpuBytes = solidOutlines.vertices.byteLength;
+  metrics.solidOutlineGpuBytes =
+    metrics.solidOutlineVertices * PRIMITIVE_VERTEX_STRIDE;
+  metrics.faceOutlineGpuBytes =
+    metrics.faceOutlineVertices * PRIMITIVE_VERTEX_STRIDE;
+  metrics.surfaceOutlineGpuBytes = solidOutlines.vertices.byteLength;
   metrics.gpuBytes =
     metrics.pointGpuBytes +
     metrics.solidFillGpuBytes +
-    metrics.solidOutlineGpuBytes;
+    metrics.surfaceOutlineGpuBytes;
   metrics.batches =
     points.batches.length +
     solidFills.batches.length +

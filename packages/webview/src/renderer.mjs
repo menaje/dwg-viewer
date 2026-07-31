@@ -910,7 +910,7 @@ export class WebGlLineRenderer {
   }) {
     validatePackedScene(points, 1, "POINT");
     validatePackedScene(solidFills, 3, "SOLID fill");
-    validatePackedScene(solidOutlines, 2, "SOLID outline");
+    validatePackedScene(solidOutlines, 2, "surface outline");
     const gpuBytes =
       points.vertices.byteLength +
       solidFills.vertices.byteLength +

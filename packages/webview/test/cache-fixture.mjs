@@ -1,5 +1,6 @@
 import {
   DIRECTORY_ENTRY_SIZE,
+  FACE_ENTITY_RECORD_SIZE,
   GPU_LINE_BATCH_RECORD_SIZE,
   GPU_LINE_VERTEX_RECORD_SIZE,
   HATCH_ENTITY_RECORD_SIZE,
@@ -525,6 +526,83 @@ function makeSolidEntitySection() {
   };
 }
 
+function makeFaceEntitySection(recordCount = 5) {
+  const rows = [
+    {
+      handle: 701,
+      ownerHandle: 100,
+      invisibleEdges: 1,
+      corners: [
+        [20, 0, 0],
+        [24, 0, 0],
+        [24, 3, 0],
+        [20, 3, 0],
+      ],
+    },
+    {
+      handle: 702,
+      ownerHandle: 100,
+      invisibleEdges: 2,
+      corners: [
+        [25, 0, 0],
+        [29, 0, 0],
+        [29, 3, 0],
+        [25, 3, 0],
+      ],
+    },
+    {
+      handle: 703,
+      ownerHandle: 101,
+      invisibleEdges: 4,
+      corners: [
+        [30, 0, 0],
+        [34, 0, 0],
+        [34, 3, 0],
+        [30, 3, 0],
+      ],
+    },
+    {
+      handle: 704,
+      ownerHandle: 101,
+      invisibleEdges: 8,
+      corners: [
+        [35, 0, 0],
+        [39, 0, 0],
+        [39, 3, 0],
+        [35, 3, 0],
+      ],
+    },
+    {
+      handle: 705,
+      ownerHandle: 100,
+      invisibleEdges: 0,
+      corners: [
+        [40, 0, 0],
+        [44, 0, 0],
+        [42, 3, 0],
+        [42, 3, 0],
+      ],
+    },
+  ];
+  const buffer = new ArrayBuffer(FACE_ENTITY_RECORD_SIZE * recordCount);
+  const view = new DataView(buffer);
+  rows.slice(0, recordCount).forEach((row, index) => {
+    const offset = index * FACE_ENTITY_RECORD_SIZE;
+    writePrimitiveCommon(view, offset, row);
+    view.setUint32(offset + 32, row.invisibleEdges, true);
+    row.corners.forEach((corner, cornerIndex) =>
+      writeVec3(view, offset + 40 + cornerIndex * 24, corner),
+    );
+  });
+  return {
+    kind: SectionKind.FaceEntities,
+    recordSize: FACE_ENTITY_RECORD_SIZE,
+    recordCount,
+    flags: 0,
+    buffer,
+  };
+}
+
 function writeInsert(view, offset, values) {
   writeU64(view, offset, values.handle);
   writeU64(view, offset + 8, values.ownerHandle);
@@ -648,6 +726,7 @@ export function makeFixtureCache({
   minorVersion = 2,
   includeText = minorVersion >= 4,
   includeHatch = minorVersion >= 6,
+  faceRecordCount = 5,
 } = {}) {
   const sections = [
     makeDrawingSection(),
@@ -677,6 +756,9 @@ export function makeFixtureCache({
       : []),
     ...(minorVersion >= 8
       ? [makePointEntitySection(), makeSolidEntitySection()]
+      : []),
+    ...(minorVersion >= 9
+      ? [makeFaceEntitySection(faceRecordCount)]
       : []),
   ];
   const directoryOffset = HEADER_SIZE;

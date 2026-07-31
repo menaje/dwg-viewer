@@ -1,9 +1,9 @@
-# Scene Cache v1.8
+# Scene Cache v1.9
 
 Status: source geometry/text writer, resolved DIMENSION picture-block
 instances, bounded HATCH rings and asynchronous solid/gradient fill,
-viewport-clipped pattern, POINT marker and SOLID fill/outline paths
-implemented; expansion tracked by GitHub issues #3 and #9.
+viewport-clipped pattern, POINT marker, SOLID fill/outline and 3DFACE
+wireframe paths implemented; expansion tracked by GitHub issues #3 and #9.
 
 The cache is a little-endian, versioned binary container designed for range
 reads and browser `ArrayBuffer`/`DataView` access. Geometry is never encoded as
@@ -81,6 +81,7 @@ Section kinds currently written:
 | 38 | HATCH pattern dash/gap/dot value pool |
 | 39 | POINT source records |
 | 40 | SOLID source records |
+| 41 | 3DFACE source records |
 
 Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
 Version 1.2 adds kinds 30–31 for straight and polyline GPU lines. Version 1.3
@@ -92,8 +93,9 @@ adds kinds 32–36 for bounded source-backed HATCH fills. Version 1.7 adds kinds
 37–38 for resolved pattern-definition lines and dash values. Version 1.8 adds
 kinds 39–40 for POINT and SOLID source records. Resolved DIMENSION picture
 blocks reuse the unchanged kind-13 record and therefore require no version
-bump or new section. The validator continues to accept older v1 caches, while
-a v1.8 writer always emits all 29 sections, including empty pools.
+bump or new section. Version 1.9 adds kind 41 for WCS 3DFACE corners and
+invisible-edge flags. The validator continues to accept older v1 caches,
+while a v1.9 writer always emits all 30 sections, including empty pools.
 
 ## Shared primitive prefix
 
@@ -398,12 +400,13 @@ GPU bytes. Definitions closer than 1.5 screen pixels are omitted before
 geometry generation. Shared block pattern vertices are stored once, and draw
 calls submit only the visible instance indices selected for that viewport.
 
-## POINT and SOLID source/display
+## POINT, SOLID and 3DFACE source/display
 
 Scene Cache v1.8 preserves POINT and SOLID independently of the first line
-frame. Both fixed-size sections use the shared primitive prefix and retain
-owner handles, so a block definition is converted once and displayed through
-the existing INSERT/MINSERT instance graph.
+frame, and v1.9 adds 3DFACE to the same deferred path. All three fixed-size
+sections use the shared primitive prefix and retain owner handles, so a block
+definition is converted once and displayed through the existing
+INSERT/MINSERT instance graph.
 
 ### POINT record
 
@@ -453,13 +456,36 @@ emits three or four boundary edges instead. Fill vertices use the same
 layer-aware 32-byte layout as HATCH fills; outlines use the existing 32-byte
 line layout.
 
-The v1.8 source reader caps POINT at 262,144 records and SOLID at 131,072
-records in addition to the 64 MiB per-section guard. After the first line
-frame, a one-shot worker reads only kinds 39–40 plus block/INSERT metadata,
+### 3DFACE record
+
+Each kind-41 record is 136 bytes:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u8[32]` | shared primitive prefix |
+| 32 | `u32` | invisible-edge flags; bits 0–3 correspond to edges 1–4 |
+| 36 | `u32` | reserved; zero |
+| 40 | `f64[3]` | first WCS corner |
+| 64 | `f64[3]` | second WCS corner |
+| 88 | `f64[3]` | third WCS corner |
+| 112 | `f64[3]` | fourth WCS corner |
+
+The fourth corner equals the third for a triangle. Unlike SOLID, 3DFACE
+corners are already WCS coordinates and the edge flags are source semantics,
+not a drawing-wide fill switch. The current viewer is a wireframe view, so
+the worker emits only non-hidden, non-degenerate edges. It preserves all four
+corners and flags so a future explicit shaded mode can triangulate the face
+without reparsing the DWG. Face edges append to the existing surface-outline
+buffer rather than allocating a fourth primitive GPU buffer.
+
+The source reader caps POINT at 262,144 records and both SOLID and 3DFACE at
+131,072 records in addition to the 64 MiB per-section guard. After the first
+line frame, a one-shot worker reads kinds 39–41 plus block/INSERT metadata,
 builds the shared-instance meshes, transfers the final buffers and exits.
-POINT GPU data is capped at 8 MiB, SOLID fills at 16 MiB and SOLID outlines at
-8 MiB, for a 32 MiB combined hard limit. The POINT/SOLID worker completes
-before the HATCH worker starts, avoiding simultaneous source-geometry peaks.
+POINT GPU data is capped at 8 MiB, SOLID fills at 16 MiB and the shared
+SOLID/3DFACE outline buffer at 8 MiB, for the unchanged 32 MiB combined hard
+limit. The primitive worker completes before the HATCH worker starts,
+avoiding simultaneous source-geometry peaks.
 Per-owner scratch batches start at one primitive instead of reserving a fixed
 block and grow only as needed up to 24,576 vertices, so many tiny block
 definitions cannot multiply a large initial allocation. Opening another file
@@ -557,6 +583,7 @@ available in the source sections for later high-zoom refinement.
   fidelity beyond the bounded first pass;
 - automatic trusted SHX font discovery and project font mapping;
 - linetype override table;
+- WIPEOUT source preservation and display;
 - view-adaptive high-zoom refinement beyond the bounded v1.3 curve chords;
 - lossless HATCH analytic-edge topology beyond the bounded fill rings;
 - entity-selection index and source fingerprint.
@@ -566,7 +593,7 @@ generated artifacts and must not be committed.
 
 ## LibreDWG qualification writer
 
-The optional LibreDWG adapter currently writes a valid but partial v1.8 cache
+The optional LibreDWG adapter currently writes a valid but partial v1.9 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
@@ -577,13 +604,14 @@ plus bounded ARC/CIRCLE/ELLIPSE, bulge, SPLINE and HATCH-boundary chords.
 Circular curves use the same 16-segments-per-revolution limit; SPLINE
 evaluation and malformed-input fallback use the 256-segments-per-entity limit.
 It also writes the seven bounded HATCH source/fill/pattern sections and the
-POINT/SOLID source sections, including `PDMODE`, `PDSIZE` and `FILLMODE`. The
-Webview range-reads those sections after the first line frame, builds POINT
-markers and SOLID geometry in a one-shot worker, triangulates solid and
-gradient HATCH rings, and regenerates clipped HATCH pattern strokes in the
-persistent worker. All omitted logical entities, unresolved DIMENSION blocks,
-skipped paths and safety caps are exposed in the conversion report rather than
-silently treated as supported.
+POINT/SOLID/3DFACE source sections, including `PDMODE`, `PDSIZE`, `FILLMODE`
+and invisible face edges. The Webview range-reads those sections after the
+first line frame, builds POINT markers, SOLID geometry and 3DFACE wireframe
+edges in a one-shot worker, triangulates solid and gradient HATCH rings, and
+regenerates clipped HATCH pattern strokes in the persistent worker. All
+omitted logical entities, unresolved DIMENSION blocks, skipped paths and
+safety caps are exposed in the conversion report rather than silently treated
+as supported.
 
 This qualification writer keeps the same 4 MiB overview and 512 KiB detail
 limits and uses disk-backed group-local XY Morton ordering for detail batches.

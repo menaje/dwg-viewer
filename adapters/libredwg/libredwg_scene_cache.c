@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MPL-2.0
  *
- * A bounded-memory Scene Cache v1.8 writer for GNU LibreDWG. Geometry and
+ * A bounded-memory Scene Cache v1.9 writer for GNU LibreDWG. Geometry and
  * source text are traversed repeatedly and written directly to the
  * destination; the writer never creates a JSON or whole-drawing in-memory
  * representation. Large detail passes use private temporary files for an
@@ -110,7 +110,8 @@ enum
   SECTION_HATCH_PATTERN_LINES = 37,
   SECTION_HATCH_PATTERN_DASHES = 38,
   SECTION_POINT_ENTITIES = 39,
-  SECTION_SOLID_ENTITIES = 40
+  SECTION_SOLID_ENTITIES = 40,
+  SECTION_FACE_ENTITIES = 41
 };
 
 enum
@@ -140,7 +141,8 @@ enum
   HATCH_PATTERN_LINE_RECORD_SIZE = 72,
   HATCH_PATTERN_DASH_RECORD_SIZE = 8,
   POINT_ENTITY_RECORD_SIZE = 112,
-  SOLID_ENTITY_RECORD_SIZE = 168
+  SOLID_ENTITY_RECORD_SIZE = 168,
+  FACE_ENTITY_RECORD_SIZE = 136
 };
 
 typedef struct
@@ -481,7 +483,8 @@ static const uint32_t SECTION_KINDS[LIBREDWG_SCENE_SECTION_COUNT]
         SECTION_HATCH_PATTERN_LINES,
         SECTION_HATCH_PATTERN_DASHES,
         SECTION_POINT_ENTITIES,
-        SECTION_SOLID_ENTITIES };
+        SECTION_SOLID_ENTITIES,
+        SECTION_FACE_ENTITIES };
 
 static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
     = { DRAWING_RECORD_SIZE,
@@ -512,7 +515,8 @@ static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
         HATCH_PATTERN_LINE_RECORD_SIZE,
         HATCH_PATTERN_DASH_RECORD_SIZE,
         POINT_ENTITY_RECORD_SIZE,
-        SOLID_ENTITY_RECORD_SIZE };
+        SOLID_ENTITY_RECORD_SIZE,
+        FACE_ENTITY_RECORD_SIZE };
 
 static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
     = { "drawing",
@@ -543,7 +547,8 @@ static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
         "hatch_pattern_lines",
         "hatch_pattern_dashes",
         "point_entities",
-        "solid_entities" };
+        "solid_entities",
+        "face_entities" };
 
 static void
 set_error (CacheWriter *writer, const char *message)
@@ -1538,6 +1543,10 @@ count_primitives (const Dwg_Data *dwg, const CacheTables *tables)
           if (object->tio.entity && object->tio.entity->tio.SOLID)
             counts.solids++;
           break;
+        case DWG_TYPE__3DFACE:
+          if (object->tio.entity && object->tio.entity->tio._3DFACE)
+            counts.faces++;
+          break;
         case DWG_TYPE_DIMENSION_LINEAR:
         case DWG_TYPE_DIMENSION_ALIGNED:
         case DWG_TYPE_DIMENSION_ANG2LN:
@@ -1573,7 +1582,7 @@ count_primitives (const Dwg_Data *dwg, const CacheTables *tables)
                                + counts.mtexts
                                + counts.attribute_definitions
                                + counts.hatches + counts.points
-                               + counts.solids;
+                               + counts.solids + counts.faces;
   counts.deferred_entities
       = counts.total_entities - counts.serialized_entities;
   return counts;
@@ -6294,6 +6303,67 @@ write_solid_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
 }
 
 static int
+write_face_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
+                           const CacheTables *tables,
+                           SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t object_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity__3DFACE *face;
+      const BITCODE_3BD *corners[4];
+      size_t corner_index;
+      if (object->fixedtype != DWG_TYPE__3DFACE || !object->tio.entity
+          || !(face = object->tio.entity->tio._3DFACE))
+        continue;
+      if (((uint32_t)face->invis_flags & ~15u) != 0)
+        {
+          set_error (
+              writer,
+              "3DFACE source contains unsupported invisible-edge flags");
+          return 0;
+        }
+      corners[0] = &face->corner1;
+      corners[1] = &face->corner2;
+      corners[2] = &face->corner3;
+      corners[3] = &face->corner4;
+      for (corner_index = 0; corner_index < 4; corner_index++)
+        {
+          if (!isfinite (corners[corner_index]->x)
+              || !isfinite (corners[corner_index]->y)
+              || !isfinite (corners[corner_index]->z))
+            {
+              set_error (
+                  writer, "3DFACE source contains a non-finite corner");
+              return 0;
+            }
+        }
+      if (!write_common (writer, object, tables)
+          || !write_u32 (writer, (uint32_t)face->invis_flags)
+          || !write_u32 (writer, 0))
+        return 0;
+      for (corner_index = 0; corner_index < 4; corner_index++)
+        {
+          const double corner[3]
+              = { corners[corner_index]->x, corners[corner_index]->y,
+                  corners[corner_index]->z };
+          if (!write_vec3 (writer, corner))
+            return 0;
+        }
+      count++;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_FACE_ENTITIES, FACE_ENTITY_RECORD_SIZE,
+      "face_entities", offset, count);
+}
+
+static int
 count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
                     LibreDwgGpuLineSummary *summary,
                     OverviewPlan *overview)
@@ -7329,6 +7399,8 @@ libredwg_write_scene_cache (
           &writer, dwg, &tables, &sections[27])
       || !write_solid_entity_section (
           &writer, dwg, &tables, &sections[28])
+      || !write_face_entity_section (
+          &writer, dwg, &tables, &sections[29])
       || !position (&writer, &file_size)
       || !write_header (
           &writer, file_size, source_size, source_version,

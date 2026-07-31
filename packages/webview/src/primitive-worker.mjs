@@ -17,7 +17,7 @@ self.addEventListener(
       const rangeSource = new TrackedRangeSource(new BlobRangeSource(file));
       const reader = await SceneCacheReader.open(rangeSource);
       if (reader.header.minor < 8) {
-        throw new Error("POINT and SOLID display requires Scene Cache v1.8");
+        throw new Error("deferred primitive display requires Scene Cache v1.8");
       }
       const [source, blocks, inserts] = await Promise.all([
         reader.readPrimitiveSource(),

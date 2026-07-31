@@ -13,9 +13,9 @@ import {
 } from "../src/scene-cache.mjs";
 import { makeFixtureCache } from "./cache-fixture.mjs";
 
-async function primitiveFixture() {
+async function primitiveFixture(minorVersion = 8) {
   const reader = await SceneCacheReader.open(
-    new MemoryRangeSource(makeFixtureCache({ minorVersion: 8 })),
+    new MemoryRangeSource(makeFixtureCache({ minorVersion })),
   );
   const [source, metadata] = await Promise.all([
     reader.readPrimitiveSource(),
@@ -71,6 +71,37 @@ test("builds instanced POINT markers and FILLMODE-aware SOLID meshes", async () 
   assert.equal(result.solidOutlines.batches[0].blockIndex, 1);
 });
 
+test("renders visible 3DFACE edges in the shared surface buffer", async () => {
+  const { source, metadata, instanceGraph } = await primitiveFixture(9);
+  const result = buildPrimitiveMeshes(
+    source,
+    metadata.blocks,
+    instanceGraph,
+  );
+
+  assert.equal(result.metrics.sourceFaces, 5);
+  assert.equal(result.metrics.renderedFaces, 5);
+  assert.equal(result.metrics.renderedFaceEdges, 15);
+  assert.equal(result.metrics.hiddenFaceEdges, 4);
+  assert.equal(result.metrics.skippedDegenerateFaceEdges, 1);
+  assert.equal(result.metrics.faceOutlineVertices, 30);
+  assert.equal(result.metrics.solidOutlineVertices, 6);
+  assert.equal(result.metrics.surfaceOutlineVertices, 36);
+  assert.equal(
+    result.metrics.faceOutlineGpuBytes,
+    30 * PRIMITIVE_VERTEX_STRIDE,
+  );
+  assert.equal(result.metrics.gpuBytes, 43 * PRIMITIVE_VERTEX_STRIDE);
+  assert.equal(result.solidOutlines.vertices.vertexCount, 36);
+  assert.ok(
+    result.solidOutlines.batches.some(
+      (batch) =>
+        batch.kind === GpuLineBatchKind.BlockDefinition &&
+        batch.blockIndex === 1,
+    ),
+  );
+});
+
 test("stops each deferred primitive stream at its GPU budget", async () => {
   const { source, metadata, instanceGraph } = await primitiveFixture();
   const result = buildPrimitiveMeshes(
@@ -92,5 +123,27 @@ test("stops each deferred primitive stream at its GPU budget", async () => {
   assert.equal(
     result.metrics.gpuBytes,
     PRIMITIVE_VERTEX_STRIDE * 6,
+  );
+});
+
+test("stops 3DFACE edges at the shared surface GPU budget", async () => {
+  const { source, metadata, instanceGraph } = await primitiveFixture(9);
+  const result = buildPrimitiveMeshes(
+    source,
+    metadata.blocks,
+    instanceGraph,
+    {
+      maximumSolidOutlineGpuBytes: PRIMITIVE_VERTEX_STRIDE * 8,
+    },
+  );
+
+  assert.equal(result.metrics.solidOutlineGpuLimitReached, false);
+  assert.equal(result.metrics.faceOutlineGpuLimitReached, true);
+  assert.equal(result.metrics.solidOutlineVertices, 6);
+  assert.equal(result.metrics.faceOutlineVertices, 2);
+  assert.equal(result.solidOutlines.vertices.vertexCount, 8);
+  assert.equal(
+    result.metrics.surfaceOutlineGpuBytes,
+    PRIMITIVE_VERTEX_STRIDE * 8,
   );
 });

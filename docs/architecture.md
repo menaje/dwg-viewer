@@ -36,8 +36,10 @@ the persistent HATCH worker. Scene Cache v1.8 adds lossless POINT and SOLID
 source records plus a bounded one-shot display worker. Resolved DIMENSION
 picture blocks reuse the existing kind-13 instance stream, so their nested
 block geometry reaches every renderer without a cache-version change or a
-second geometry copy. Remaining source families and exact CAD text layout are
-product-completeness gates on this selected engine, not an open parser choice.
+second geometry copy. Scene Cache v1.9 adds lossless 3DFACE WCS corners and
+invisible-edge flags to the same deferred worker. Remaining source families
+and exact CAD text layout are product-completeness gates on this selected
+engine, not an open parser choice.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -128,6 +130,15 @@ Three isolated measured processes completed in 2,921 / 3,215 / 3,860 ms with
 590,036,992 / 591,691,776 / 591,708,160 bytes peak RSS (minimum / median /
 maximum). Output was deterministic and both conversion gates passed.
 
+The Scene Cache v1.9 3DFACE milestone adds one 40-byte directory entry and 34
+fixed 136-byte records. The deterministic cache grows by exactly 4,664 bytes
+to 176,141,536 bytes. Kinds 2–40 remain byte-identical; only the kind-1
+serialized-entity count changes with coverage. Coverage rises to 378,384 of
+378,400 entities (99.996%), leaving only 16 WIPEOUT records deferred. Three
+clean process-isolated conversions completed in 3,153 / 3,715 / 4,082 ms with
+591,446,016 / 591,675,392 / 591,888,384 bytes peak RSS (minimum / median /
+maximum). Output was deterministic and both conversion gates passed.
+
 The 0.14 cache and normalized conversion report are byte-identical to the
 0.13.4 result on the reference drawing, while median conversion time improves
 from 4,140 ms to 2,941 ms. Nightly `0.14.xxxx` prereleases are not used as the
@@ -146,6 +157,8 @@ dash values; kinds 37–38 are byte-identical between acadrust and LibreDWG. Its
 payloads. The fixture's nine DIMENSION picture blocks resolve in both engines
 and produce 19 total kind-13 records: ten source INSERTs plus nine dimension
 references.
+`2000/entities-3d.dwg` adds a reproducible 3DFACE check: both engines preserve
+the same invisible-edge flags and four WCS corners.
 `2018/Dynblocks.dwg` matches at one solid plus three pattern HATCHes, eight
 loops, 104 fill vertices and four definition lines, with identical pattern
 sections. `2004/HatchG.dwg` matches at two gradient HATCHes, two loops and 269
@@ -209,6 +222,16 @@ graph construction and overview loading in 345.6 ms at 123,076,608 bytes peak
 RSS. An actual Chromium run produced the first usable line frame in 450.0 ms,
 kept GPU vertex buffers at 4.57 MiB and emitted no warning or error.
 
+With v1.9, one directory entry adds only 40 bytes to the first frame: eight
+reads total 5,025,133 bytes and do not touch the 3DFACE section. The post-frame
+primitive path uses seven reads totaling 714,027 bytes. It renders all 34
+faces as 114 visible edges, omitting ten source-hidden and twelve degenerate
+edges. The face portion adds 7,296 GPU bytes; the complete POINT/SOLID/3DFACE
+payload is 73,920 bytes and reaches no cap.
+An actual v1.9 Chromium run produced the first usable line frame in 464.0 ms,
+reported all 34 faces and 114 visible edges, used 4.58 MiB of GPU vertex
+buffers at drawing fit and emitted no console warning or error.
+
 An actual Chromium qualification produced the first usable line frame in
 449.1 ms. At drawing fit, the 1.5-pixel rule omitted all 6,442 visible
 definition passes and emitted no pattern buffer. After eight zoom-in actions
@@ -224,10 +247,10 @@ The external sort keeps either one 8,192-record run or its small merge windows
 resident, while two private unnamed files consume about 312 MB of temporary
 disk at peak for the reference drawing and disappear on close.
 
-The parser itself accounts for almost all measured RSS: the current conversion
-maximum is only 7,849,472 bytes below the 600,000,000-byte target. Therefore
-future LibreDWG coverage must retain streaming or disk-backed bounded passes;
-a whole-drawing geometry vector would erase the margin.
+The parser itself accounts for almost all measured RSS: the current v1.9
+conversion maximum is only 8,111,616 bytes below the 600,000,000-byte target.
+Therefore future LibreDWG coverage must retain streaming or disk-backed
+bounded passes; a whole-drawing geometry vector would erase the margin.
 
 The implemented Webview first-frame path opens the cache with `Blob.slice`
 or HTTP byte ranges. It validates the 64-byte header and section directory
@@ -249,9 +272,9 @@ batch around the camera before converting matrices to `f32`.
 
 ## Implemented cache slice
 
-Scene Cache v1.8 writes the drawing/layer/block/text-style tables and
+Scene Cache v1.9 writes the drawing/layer/block/text-style tables and
 source-precision LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE, ELLIPSE,
-SPLINE, TEXT, MTEXT, ATTDEF, ATTRIB, POINT and SOLID records. Resolved
+SPLINE, TEXT, MTEXT, ATTDEF, ATTRIB, POINT, SOLID and 3DFACE records. Resolved
 DIMENSION picture blocks share the kind-13 block-instance stream. The records
 retain owner handles so block definitions remain shared instead of being
 expanded per insertion. Text values, tags, prompts, font filenames and
@@ -325,11 +348,18 @@ its shader draws bounded screen-space glyphs. SOLID keeps four OCS corners
 and drawing `FILLMODE`; the worker applies the arbitrary-axis transform and
 emits either fill triangles or three/four outline edges.
 
+The v1.9 3DFACE slice adds WCS corners and four source invisible-edge bits to
+that worker. The wireframe view emits only visible, non-degenerate edges and
+appends them to the existing surface-outline packed buffer. It does not fill
+faces implicitly; retaining the complete source record leaves that decision
+for a future explicit shaded mode without reparsing the DWG.
+
 POINT source is capped at 262,144 records and 8 MiB of GPU vertices. SOLID
-source is capped at 131,072 records, 16 MiB of fill vertices and 8 MiB of
-outline vertices. The combined GPU hard limit is 32 MiB. This worker runs
-before HATCH initialization so the two source-buffer peaks do not overlap,
-and opening another file cancels unfinished work.
+and 3DFACE source are each capped at 131,072 records. SOLID fill vertices are
+capped at 16 MiB, while SOLID and 3DFACE share the existing 8 MiB outline
+buffer. The combined GPU hard limit remains 32 MiB. This worker runs before
+HATCH initialization so the two source-buffer peaks do not overlap, and
+opening another file cancels unfinished work.
 
 Large-drawing detail records are ordered by group and a 32-bit interleaved XY
 Morton key computed from each segment midpoint within that group's finite

@@ -11,8 +11,8 @@
 #include <stdint.h>
 
 #define LIBREDWG_SCENE_CACHE_VERSION_MAJOR 1u
-#define LIBREDWG_SCENE_CACHE_VERSION_MINOR 8u
-#define LIBREDWG_SCENE_SECTION_COUNT 29
+#define LIBREDWG_SCENE_CACHE_VERSION_MINOR 9u
+#define LIBREDWG_SCENE_SECTION_COUNT 30
 
 #if LIBREDWG_VERSION >= 14
 #define LIBREDWG_MAINTENANCE_VERSION(dwg_ptr) \
@@ -48,6 +48,7 @@ typedef struct
   uint64_t hatches;
   uint64_t points;
   uint64_t solids;
+  uint64_t faces;
 } LibreDwgPrimitiveCounts;
 
 typedef struct

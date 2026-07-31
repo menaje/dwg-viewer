@@ -17,7 +17,7 @@ use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, Inp
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 8;
+pub const CACHE_VERSION_MINOR: u16 = 9;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -48,6 +48,7 @@ const HATCH_PATTERN_LINE_RECORD_SIZE: u32 = 72;
 const HATCH_PATTERN_DASH_RECORD_SIZE: u32 = 8;
 const POINT_ENTITY_RECORD_SIZE: u32 = 112;
 const SOLID_ENTITY_RECORD_SIZE: u32 = 168;
+const FACE_ENTITY_RECORD_SIZE: u32 = 136;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
 const SECTION_FLAG_STRING_TABLE: u32 = 1;
 const MAX_CACHE_STRING_BYTES: u64 = 1024 * 1024;
@@ -143,6 +144,7 @@ pub struct PrimitiveCounts {
     pub hatches: u64,
     pub points: u64,
     pub solids: u64,
+    pub faces: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -257,6 +259,7 @@ enum SectionKind {
     HatchPatternDashes = 38,
     PointEntities = 39,
     SolidEntities = 40,
+    FaceEntities = 41,
 }
 
 impl SectionKind {
@@ -291,6 +294,7 @@ impl SectionKind {
             Self::HatchPatternDashes => "hatch_pattern_dashes",
             Self::PointEntities => "point_entities",
             Self::SolidEntities => "solid_entities",
+            Self::FaceEntities => "face_entities",
         }
     }
 
@@ -325,6 +329,7 @@ impl SectionKind {
             38 => Some(Self::HatchPatternDashes),
             39 => Some(Self::PointEntities),
             40 => Some(Self::SolidEntities),
+            41 => Some(Self::FaceEntities),
             _ => None,
         }
     }
@@ -358,6 +363,7 @@ impl SectionKind {
             Self::HatchPatternDashes => HATCH_PATTERN_DASH_RECORD_SIZE,
             Self::PointEntities => POINT_ENTITY_RECORD_SIZE,
             Self::SolidEntities => SOLID_ENTITY_RECORD_SIZE,
+            Self::FaceEntities => FACE_ENTITY_RECORD_SIZE,
         }
     }
 
@@ -806,6 +812,9 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
     }
     if minor_version >= 8 {
         required.extend([SectionKind::PointEntities, SectionKind::SolidEntities]);
+    }
+    if minor_version >= 9 {
+        required.push(SectionKind::FaceEntities);
     }
     for kind in required {
         let count = entries
@@ -1361,6 +1370,25 @@ fn validate_cross_section_references<R: Read + Seek>(
         }
     }
 
+    if let Some(faces) = find_section(entries, SectionKind::FaceEntities) {
+        let layers = find_section(entries, SectionKind::Layers)
+            .context("3DFACE entities exist without a layer table")?;
+        for index in 0..faces.record_count {
+            let mut record = [0_u8; FACE_ENTITY_RECORD_SIZE as usize];
+            read_record(reader, faces, index, &mut record)?;
+            validate_primitive_common(&record, layers.record_count, "3DFACE")?;
+            if slice_u32(&record, 32) & !0xf != 0 || slice_u32(&record, 36) != 0 {
+                anyhow::bail!("3DFACE entity has invalid flags or reserved metadata");
+            }
+            if (40..136)
+                .step_by(8)
+                .any(|offset| !slice_f64(&record, offset).is_finite())
+            {
+                anyhow::bail!("3DFACE entity contains a non-finite coordinate");
+            }
+        }
+    }
+
     if let Some(batches) = find_section(entries, SectionKind::GpuLineBatches) {
         let vertices = find_section(entries, SectionKind::GpuLineVertices)
             .context("GPU line batches exist without a vertex pool")?;
@@ -1510,7 +1538,7 @@ fn write_scene_cache<W: Write + Seek>(
     document: &CadDocument,
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
-    let section_count = 29_u32;
+    let section_count = 30_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
         directory_offset + u64::from(section_count) * u64::from(DIRECTORY_ENTRY_SIZE),
@@ -1612,6 +1640,7 @@ fn write_scene_cache<W: Write + Seek>(
         document,
         &layer_indices,
     )?);
+    sections.push(write_face_entity_section(writer, document, &layer_indices)?);
 
     let file_size = writer.stream_position()?;
     writer.seek(SeekFrom::Start(0))?;
@@ -1688,6 +1717,7 @@ impl PrimitiveCounts {
                 EntityType::Hatch(_) => counts.hatches += 1,
                 EntityType::Point(_) => counts.points += 1,
                 EntityType::Solid(_) => counts.solids += 1,
+                EntityType::Face3D(_) => counts.faces += 1,
                 _ => {}
             }
         }
@@ -1706,7 +1736,8 @@ impl PrimitiveCounts {
             + counts.attribute_definitions
             + counts.hatches
             + counts.points
-            + counts.solids;
+            + counts.solids
+            + counts.faces;
         counts.deferred_entities = counts
             .total_entities
             .saturating_sub(counts.serialized_entities);
@@ -3084,6 +3115,47 @@ fn write_solid_entity_section<W: Write + Seek>(
         writer,
         SectionKind::SolidEntities,
         SOLID_ENTITY_RECORD_SIZE,
+        offset,
+        count,
+    )
+}
+
+fn write_face_entity_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+    layer_indices: &HashMap<String, u32>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+    for entity in document.entities() {
+        let EntityType::Face3D(face) = entity else {
+            continue;
+        };
+        let invisible_edges = u32::from(face.invisible_edges.bits());
+        if invisible_edges & !0xf != 0 {
+            anyhow::bail!("3DFACE source contains unsupported invisible-edge flags");
+        }
+        let corners = [
+            face.first_corner,
+            face.second_corner,
+            face.third_corner,
+            face.fourth_corner,
+        ];
+        if corners.iter().any(|corner| !vector_is_finite(*corner)) {
+            anyhow::bail!("3DFACE source contains a non-finite corner");
+        }
+        write_common(writer, entity, layer_indices)?;
+        write_u32(writer, invisible_edges)?;
+        write_u32(writer, 0)?;
+        for corner in corners {
+            write_vec3(writer, corner)?;
+        }
+        count += 1;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::FaceEntities,
+        FACE_ENTITY_RECORD_SIZE,
         offset,
         count,
     )
@@ -5530,8 +5602,9 @@ mod tests {
 
     use acadrust::entities::{
         Arc, AttributeDefinition, AttributeEntity, BoundaryEdge, BoundaryPath, Circle,
-        CircularArcEdge, Dimension, DimensionLinear, Ellipse, EntityType, Hatch, HatchPatternLine,
-        Insert, Line, LineEdge, LwPolyline, MText, Point, PolylineEdge, Solid, Spline, Text,
+        CircularArcEdge, Dimension, DimensionLinear, Ellipse, EntityType, Face3D, Hatch,
+        HatchPatternLine, Insert, InvisibleEdgeFlags, Line, LineEdge, LwPolyline, MText, Point,
+        PolylineEdge, Solid, Spline, Text,
     };
     use acadrust::tables::BlockRecord;
     use acadrust::types::{Color, Vector2, Vector3};
@@ -5593,7 +5666,7 @@ mod tests {
         assert_eq!(read_u16(&bytes, 8), CACHE_VERSION_MAJOR);
         assert_eq!(read_u16(&bytes, 10), CACHE_VERSION_MINOR);
         assert_eq!(read_u32(&bytes, 12), HEADER_SIZE);
-        assert_eq!(read_u32(&bytes, 16), 29);
+        assert_eq!(read_u32(&bytes, 16), 30);
         assert_eq!(read_u64(&bytes, 48), 1234);
         assert_eq!(summary.counts.serialized_entities, 7);
         assert_eq!(summary.gpu_lines.model_segments, 43);
@@ -5604,7 +5677,7 @@ mod tests {
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
-        assert_eq!(validation.sections.len(), 29);
+        assert_eq!(validation.sections.len(), 30);
         assert_eq!(validation.source_size, 1234);
 
         let line = directory_entry(&bytes, SectionKind::Lines);
@@ -6334,7 +6407,7 @@ mod tests {
     }
 
     #[test]
-    fn point_and_solid_are_counted_as_serialized_entities() {
+    fn point_solid_and_face_are_counted_as_serialized_entities() {
         let mut document = CadDocument::new();
         document
             .add_entity(EntityType::Line(Line::from_coords(
@@ -6351,18 +6424,26 @@ mod tests {
                 Vector3::new(1.0, 1.0, 0.0),
             )))
             .unwrap();
+        document
+            .add_entity(EntityType::Face3D(Face3D::triangle(
+                Vector3::new(0.0, 0.0, 1.0),
+                Vector3::new(2.0, 0.0, 1.0),
+                Vector3::new(1.0, 1.0, 1.0),
+            )))
+            .unwrap();
 
         let block_targets = collect_block_instance_targets(&document).unwrap();
         let counts = PrimitiveCounts::from_document(&document, &block_targets);
-        assert_eq!(counts.total_entities, 3);
+        assert_eq!(counts.total_entities, 4);
         assert_eq!(counts.points, 1);
         assert_eq!(counts.solids, 1);
-        assert_eq!(counts.serialized_entities, 3);
+        assert_eq!(counts.faces, 1);
+        assert_eq!(counts.serialized_entities, 4);
         assert_eq!(counts.deferred_entities, 0);
     }
 
     #[test]
-    fn point_and_solid_source_records_are_lossless() {
+    fn point_solid_and_face_source_records_are_lossless() {
         let mut document = CadDocument::new();
         document.header.point_display_mode = 66;
         document.header.point_display_size = -3.5;
@@ -6386,6 +6467,20 @@ mod tests {
         solid.thickness = 1.25;
         document.add_entity(EntityType::Solid(solid)).unwrap();
 
+        let mut face = Face3D::new(
+            Vector3::new(1.0, 2.0, 3.0),
+            Vector3::new(4.0, 5.0, 6.0),
+            Vector3::new(7.0, 8.0, 9.0),
+            Vector3::new(10.0, 11.0, 12.0),
+        );
+        face.invisible_edges = InvisibleEdgeFlags::from_bits(9);
+        face.common.color = Color::Rgb {
+            r: 12,
+            g: 34,
+            b: 56,
+        };
+        document.add_entity(EntityType::Face3D(face)).unwrap();
+
         let mut cursor = Cursor::new(Vec::new());
         let summary = write_scene_cache(&mut cursor, &document, 999).unwrap();
         let bytes = cursor.into_inner();
@@ -6393,6 +6488,7 @@ mod tests {
 
         assert_eq!(summary.counts.points, 1);
         assert_eq!(summary.counts.solids, 1);
+        assert_eq!(summary.counts.faces, 1);
         assert_eq!(summary.counts.deferred_entities, 0);
 
         let point_entry = directory_entry(&bytes, SectionKind::PointEntities);
@@ -6425,6 +6521,19 @@ mod tests {
         assert_eq!(read_f64(&bytes, solid_offset + 112), 10.0);
         assert_eq!(read_f64(&bytes, solid_offset + 152), -1.0);
         assert_eq!(read_f64(&bytes, solid_offset + 160), 1.25);
+
+        let face_entry = directory_entry(&bytes, SectionKind::FaceEntities);
+        assert_eq!(face_entry.1, FACE_ENTITY_RECORD_SIZE);
+        assert_eq!(face_entry.3, 1);
+        let face_offset = face_entry.2 as usize;
+        assert_eq!(read_u32(&bytes, face_offset + 20), (3 << 30) | 0x0c2238);
+        assert_eq!(read_u32(&bytes, face_offset + 32), 9);
+        assert_eq!(read_u32(&bytes, face_offset + 36), 0);
+        assert_eq!(read_f64(&bytes, face_offset + 40), 1.0);
+        assert_eq!(read_f64(&bytes, face_offset + 64), 4.0);
+        assert_eq!(read_f64(&bytes, face_offset + 88), 7.0);
+        assert_eq!(read_f64(&bytes, face_offset + 112), 10.0);
+        assert_eq!(read_f64(&bytes, face_offset + 128), 12.0);
     }
 
     fn directory_entry(bytes: &[u8], expected_kind: SectionKind) -> (u32, u32, u64, u64) {

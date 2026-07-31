@@ -5,7 +5,7 @@ This optional process-isolated adapter measures LibreDWG with the same
 acadrust engine. It traverses LibreDWG's object model directly instead of
 creating a full JSON dump.
 
-The `convert` path writes Scene Cache v1.8 without a whole-drawing intermediate
+The `convert` path writes Scene Cache v1.9 without a whole-drawing intermediate
 model. It repeatedly traverses LibreDWG objects and streams sections and
 bounded GPU batches directly to a new cache file. For large drawings, it
 spills fixed-size detail records into private unnamed temporary files, sorts
@@ -49,10 +49,13 @@ This is a deliberately partial conversion milestone:
 - POINT retains WCS location, normal, thickness, X-axis angle and drawing
   `PDMODE`/`PDSIZE`; SOLID retains four OCS corners, normal, thickness and
   drawing `FILLMODE`;
+- 3DFACE retains four WCS corners and all four invisible-edge bits; its current
+  wireframe display emits only visible, non-degenerate edges;
 - after the first line frame, the Webview fills solid/gradient rings and
   clips pattern strokes to the current viewport in one persistent worker;
-- a preceding one-shot worker builds instanced POINT markers and SOLID
-  fill/outline meshes under a combined 32 MiB GPU limit, then exits;
+- a preceding one-shot worker builds instanced POINT markers, SOLID
+  fill/outline meshes and 3DFACE edges under a combined 32 MiB GPU limit,
+  then exits;
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
 - bounded SHX/BigFont and system-font fallback display is implemented in the
@@ -147,13 +150,25 @@ isolated measured conversions completed in 2,921 / 3,215 / 3,860 ms with
 590,036,992 / 591,691,776 / 591,708,160 bytes peak RSS (minimum / median /
 maximum), passing both gates with deterministic output.
 
+Scene Cache v1.9 adds 34 fixed-size 3DFACE records (4,624 bytes) plus one
+40-byte directory entry. The deterministic cache grows by exactly 4,664 bytes
+to 176,141,536 bytes. Kinds 2–40 remain byte-identical; only the kind-1
+serialized-entity count changes with coverage. Coverage rises to 378,384 of
+378,400 entities (99.996%), leaving only 16 WIPEOUT records deferred. Three
+clean process-isolated conversions completed in
+3,153 / 3,715 / 4,082 ms with 591,446,016 / 591,675,392 / 591,888,384 bytes
+peak RSS (minimum / median / maximum). Output was deterministic and both time
+and memory gates passed.
+
 Public LibreDWG fixtures provide a reproducible cross-engine check. Both
 writers validated `example_2018.dwg` as one pattern HATCH with two definition
 lines and four dash values; the complete kind-37 and kind-38 payloads were
 byte-identical. The same fixture also matched at 46 POINT and 15 SOLID records,
 with byte-identical kind-39 and kind-40 payloads. Both engines also resolve all
 nine DIMENSION picture blocks, producing 19 kind-13 records from ten source
-INSERTs and nine dimension references. `2018/Dynblocks.dwg` matched at one
+INSERTs and nine dimension references. `2000/entities-3d.dwg` contains one
+3DFACE; both engines produce the same invisible-edge flags and four WCS
+corners. `2018/Dynblocks.dwg` matched at one
 solid and three pattern
 HATCHes, eight loops, 104 fill vertices and four definition lines, again with
 byte-identical pattern sections. `2004/HatchG.dwg` matched at two gradient
@@ -177,6 +192,20 @@ references is reachable. Repeated owners create 2,668 picture occurrences and
 packed matrices (390,144 additional bytes). A local qualification completed
 metadata validation, graph construction and overview loading in 345.6 ms at
 123,076,608 bytes peak RSS.
+
+With v1.9, the first-frame path still performs eight reads and reads no
+3DFACE source data. Only the larger directory is visible, so the total grows
+by 40 bytes from 5,025,093 to 5,025,133 bytes while the overview remains
+4 MiB. The post-frame primitive path uses seven reads totaling 714,027 bytes.
+It validated and displayed all 34 faces as 114 visible edges, omitted ten
+source-hidden and twelve degenerate edges, and added 7,296 GPU bytes. The
+complete POINT/SOLID/3DFACE payload is 73,920 bytes and no source, owner or GPU
+cap was reached.
+
+An actual v1.9 Chromium qualification produced the first usable line frame in
+464.0 ms. It reported all 34 faces and 114 visible face edges, GPU vertex
+buffers totaled 4.58 MiB at drawing fit, the drawing rendered visibly, and
+the browser console contained no warning or error.
 
 The v1.8 POINT/SOLID qualification used six range reads totaling 686,107 bytes
 after the first line frame, including the block and block-instance metadata

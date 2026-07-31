@@ -41,9 +41,9 @@ test("accepts the Scene Cache v1.3 header", async () => {
 test("rejects a newer unsupported Scene Cache minor version", async () => {
   await assert.rejects(
     SceneCacheReader.open(
-      new MemoryRangeSource(makeFixtureCache({ minorVersion: 9 })),
+      new MemoryRangeSource(makeFixtureCache({ minorVersion: 10 })),
     ),
-    /unsupported scene-cache version 1\.9/,
+    /unsupported scene-cache version 1\.10/,
   );
 });
 
@@ -142,6 +142,7 @@ test("reads bounded Scene Cache v1.8 POINT and SOLID source lazily", async () =>
   assert.equal(reader.header.minor, 8);
   assert.equal(primitives.points.length, 1);
   assert.equal(primitives.solids.length, 2);
+  assert.equal(primitives.faces.length, 0);
   assert.deepEqual(primitives.points.get(0).location, [11, 2, 0]);
   assert.equal(primitives.points.get(0).displayMode, 66);
   assert.equal(primitives.points.get(0).displaySize, -3);
@@ -149,6 +150,69 @@ test("reads bounded Scene Cache v1.8 POINT and SOLID source lazily", async () =>
   assert.deepEqual(primitives.solids.get(0).corners[3], [0, 3, 0]);
   assert.equal(primitives.solids.get(1).fillMode, false);
   assert.equal(source.requests.length - requestsAfterOpen, 2);
+});
+
+test("reads bounded Scene Cache v1.9 3DFACE source lazily", async () => {
+  const source = new TrackedRangeSource(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 9 })),
+  );
+  const reader = await SceneCacheReader.open(source);
+  const requestsAfterOpen = source.requests.length;
+  const primitives = await reader.readPrimitiveSource();
+
+  assert.equal(reader.header.minor, 9);
+  assert.equal(primitives.faces.length, 5);
+  assert.deepEqual(
+    [0, 1, 2, 3, 4].map(
+      (index) => primitives.faces.get(index).invisibleEdges,
+    ),
+    [1, 2, 4, 8, 0],
+  );
+  assert.deepEqual(primitives.faces.get(0).corners[3], [20, 3, 0]);
+  assert.deepEqual(
+    primitives.faces.get(4).corners[3],
+    primitives.faces.get(4).corners[2],
+  );
+  assert.equal(source.requests.length - requestsAfterOpen, 3);
+});
+
+test("rejects invalid flags in a v1.9 3DFACE record", async () => {
+  const buffer = makeFixtureCache({ minorVersion: 9 });
+  const view = new DataView(buffer);
+  const sectionCount = view.getUint32(16, true);
+  const directoryOffset = Number(view.getBigUint64(32, true));
+  let faceOffset;
+  for (let index = 0; index < sectionCount; index += 1) {
+    const offset = directoryOffset + index * DIRECTORY_ENTRY_SIZE;
+    if (view.getUint32(offset, true) === SectionKind.FaceEntities) {
+      faceOffset = Number(view.getBigUint64(offset + 8, true));
+      break;
+    }
+  }
+  assert.notEqual(faceOffset, undefined);
+  view.setUint32(faceOffset + 32, 16, true);
+
+  const reader = await SceneCacheReader.open(new MemoryRangeSource(buffer));
+  await assert.rejects(
+    reader.readFaceEntities(),
+    /invalid flags or reserved metadata/,
+  );
+});
+
+test("rejects a v1.9 3DFACE source table above its record cap", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(
+      makeFixtureCache({
+        minorVersion: 9,
+        faceRecordCount: 131_073,
+      }),
+    ),
+  );
+
+  await assert.rejects(
+    reader.readFaceEntities(),
+    /exceeds the 131072-record limit/,
+  );
 });
 
 test("rejects reserved metadata in a v1.8 POINT record", async () => {

@@ -1,6 +1,6 @@
 export const CACHE_MAGIC = new Uint8Array([68, 87, 71, 83, 67, 78, 49, 0]);
 export const CACHE_VERSION_MAJOR = 1;
-export const MAX_CACHE_VERSION_MINOR = 8;
+export const MAX_CACHE_VERSION_MINOR = 9;
 export const HEADER_SIZE = 64;
 export const DIRECTORY_ENTRY_SIZE = 40;
 export const GPU_LINE_BATCH_RECORD_SIZE = 128;
@@ -17,6 +17,7 @@ export const HATCH_PATTERN_LINE_RECORD_SIZE = 72;
 export const HATCH_PATTERN_DASH_RECORD_SIZE = 8;
 export const POINT_ENTITY_RECORD_SIZE = 112;
 export const SOLID_ENTITY_RECORD_SIZE = 168;
+export const FACE_ENTITY_RECORD_SIZE = 136;
 
 export const SectionKind = Object.freeze({
   Drawing: 1,
@@ -48,6 +49,7 @@ export const SectionKind = Object.freeze({
   HatchPatternDashes: 38,
   PointEntities: 39,
   SolidEntities: 40,
+  FaceEntities: 41,
 });
 
 export const GpuLineBatchKind = Object.freeze({
@@ -70,6 +72,7 @@ const FIXED_RECORD_SIZES = new Map([
   [SectionKind.HatchPatternDashes, HATCH_PATTERN_DASH_RECORD_SIZE],
   [SectionKind.PointEntities, POINT_ENTITY_RECORD_SIZE],
   [SectionKind.SolidEntities, SOLID_ENTITY_RECORD_SIZE],
+  [SectionKind.FaceEntities, FACE_ENTITY_RECORD_SIZE],
 ]);
 const MAX_METADATA_SECTION_BYTES = 64 * 1024 * 1024;
 const MAX_CACHE_STRING_BYTES = 1024 * 1024;
@@ -81,6 +84,7 @@ const MAX_HATCH_PATTERN_LINES_PER_ENTITY = 4_096;
 const MAX_HATCH_PATTERN_DASHES_PER_ENTITY = 65_536;
 const MAX_POINT_SOURCE_RECORDS = 262_144;
 const MAX_SOLID_SOURCE_RECORDS = 131_072;
+const MAX_FACE_SOURCE_RECORDS = 131_072;
 const STRING_TABLE_HEADER_SIZE = 16;
 const STRING_TABLE_FLAG = 1;
 
@@ -776,6 +780,63 @@ export class SolidSourceTable {
   }
 }
 
+export class FaceSourceTable {
+  constructor(buffer, recordCount) {
+    this.buffer = buffer;
+    this.view = new DataView(buffer);
+    this.recordCount = recordCount;
+  }
+
+  get length() {
+    return this.recordCount;
+  }
+
+  readEntity(index, target) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.recordCount) {
+      throw new RangeError(`3DFACE entity index is out of range: ${index}`);
+    }
+    if (!target || typeof target !== "object") {
+      throw new TypeError("3DFACE entity target must be an object");
+    }
+    const offset = index * FACE_ENTITY_RECORD_SIZE;
+    target.index = index;
+    readPrimitiveCommon(this.view, offset, target);
+    target.invisibleEdges = this.view.getUint32(offset + 32, true);
+    target.corners ??= [
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 0, 0],
+      [0, 0, 0],
+    ];
+    for (let corner = 0; corner < 4; corner += 1) {
+      for (let axis = 0; axis < 3; axis += 1) {
+        target.corners[corner][axis] = this.view.getFloat64(
+          offset + 40 + corner * 24 + axis * 8,
+          true,
+        );
+      }
+    }
+    return target;
+  }
+
+  get(index) {
+    const record = this.readEntity(index, {
+      corners: [
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+        [0, 0, 0],
+      ],
+    });
+    return Object.freeze({
+      ...record,
+      corners: Object.freeze(
+        record.corners.map((corner) => Object.freeze([...corner])),
+      ),
+    });
+  }
+}
+
 export class SceneCacheReader {
   constructor(source, header, sections) {
     this.source = source;
@@ -964,6 +1025,15 @@ export class SceneCacheReader {
       }
       validateRecordSection(pointEntities, POINT_ENTITY_RECORD_SIZE);
       validateRecordSection(solidEntities, SOLID_ENTITY_RECORD_SIZE);
+    }
+    if (minor >= 9) {
+      const faceEntities = sections.get(SectionKind.FaceEntities);
+      if (!faceEntities) {
+        throw new Error(
+          "Scene Cache v1.9 is missing the required 3DFACE section",
+        );
+      }
+      validateRecordSection(faceEntities, FACE_ENTITY_RECORD_SIZE);
     }
 
     return new SceneCacheReader(
@@ -1713,12 +1783,51 @@ export class SceneCacheReader {
     });
   }
 
+  async readFaceEntities() {
+    return this.memoize("face-entities", async () => {
+      if (this.header.minor < 9) {
+        return new FaceSourceTable(new ArrayBuffer(0), 0);
+      }
+      const section = this.getSection(SectionKind.FaceEntities);
+      validateRecordSection(section, FACE_ENTITY_RECORD_SIZE);
+      if (section.recordCount > MAX_FACE_SOURCE_RECORDS) {
+        throw new Error(
+          `3DFACE section exceeds the ${MAX_FACE_SOURCE_RECORDS}-record limit`,
+        );
+      }
+      const layerCount = this.getSection(SectionKind.Layers).recordCount;
+      const buffer = await this.readWholeMetadataSection(section);
+      const view = new DataView(buffer);
+      for (let index = 0; index < section.recordCount; index += 1) {
+        const offset = index * FACE_ENTITY_RECORD_SIZE;
+        validatePrimitiveCommon(view, offset, layerCount, "3DFACE", index);
+        if (
+          view.getUint32(offset + 32, true) & ~0xf ||
+          view.getUint32(offset + 36, true) !== 0
+        ) {
+          throw new Error(
+            `3DFACE entity ${index} has invalid flags or reserved metadata`,
+          );
+        }
+        for (let valueOffset = 40; valueOffset < 136; valueOffset += 8) {
+          if (!Number.isFinite(view.getFloat64(offset + valueOffset, true))) {
+            throw new Error(
+              `3DFACE entity ${index} contains a non-finite coordinate`,
+            );
+          }
+        }
+      }
+      return new FaceSourceTable(buffer, section.recordCount);
+    });
+  }
+
   async readPrimitiveSource() {
-    const [points, solids] = await Promise.all([
+    const [points, solids, faces] = await Promise.all([
       this.readPointEntities(),
       this.readSolidEntities(),
+      this.readFaceEntities(),
     ]);
-    return Object.freeze({ points, solids });
+    return Object.freeze({ points, solids, faces });
   }
 
   async readInserts() {

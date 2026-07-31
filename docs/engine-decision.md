@@ -23,9 +23,9 @@ writer will not be implemented: parsing alone already exceeds the memory hard
 limit, so adding a writer cannot make the candidate eligible.
 
 Selection does not mean that the viewer is feature-complete. The follow-on
-DIMENSION picture-block milestone leaves 50 source entities plus exact CAD
-text layout as product work on the LibreDWG path rather than reasons to keep
-the engine choice open.
+3DFACE milestone leaves 16 WIPEOUT source entities plus exact CAD text layout
+as product work on the LibreDWG path rather than reasons to keep the engine
+choice open.
 
 ## Reproducible evidence
 
@@ -91,6 +91,26 @@ process RSS. An actual Chromium run produced the first usable line frame in
 450.0 ms with the same 4.57 MiB GPU vertex footprint and no console warning or
 error.
 
+Scene Cache v1.9 adds kind 41 without changing any preceding section layout.
+Kinds 2–40 remain byte-identical; only the kind-1 serialized-entity count
+changes. All 34 3DFACE records in the reference drawing are preserved,
+raising coverage to 378,384 of 378,400 entities (99.996%) and reducing
+deferred entities to the 16 WIPEOUT records. The cache grows by 4,664 bytes to
+176,141,536 bytes: 4,624 bytes of face records and one 40-byte directory
+entry. Three clean
+process-isolated conversions completed in 3,153 / 3,715 / 4,082 ms with
+591,446,016 / 591,675,392 / 591,888,384 bytes peak RSS (minimum / median /
+maximum). Output was deterministic and both gates passed.
+
+The first-frame reader still performs eight reads and does not touch kind 41.
+Only the directory grows, so first-frame bytes increase by 40 from 5,025,093
+to 5,025,133 while the 4 MiB overview is unchanged. The post-frame primitive
+path reads 4,624 additional source bytes and adds 7,296 GPU bytes for 114
+visible face edges; hidden and degenerate edges are omitted. An actual v1.9
+Chromium run produced the first usable line frame in 464.0 ms, reported all
+34 faces, used 4.58 MiB of GPU vertex buffers at drawing fit and emitted no
+console warning or error.
+
 The stable 0.14 release replaces the earlier 0.13.4 qualification pin. Its
 normalized conversion report and cache are byte-identical to 0.13.4 on the
 reference drawing, while median conversion wall time improves from 4,140 ms to
@@ -108,8 +128,9 @@ used as a reproducible product dependency.
   while SHX/BigFont glyph parsing stays lazy in the Webview.
 - Public cross-engine fixtures validate all current HATCH modes and exact
   pattern-section payloads; POINT and SOLID sections also match byte for byte,
-  and both engines resolve all nine DIMENSION picture blocks in
-  `example_2018.dwg`.
+  both engines resolve all nine DIMENSION picture blocks in
+  `example_2018.dwg`, and `2000/entities-3d.dwg` matches 3DFACE flags and WCS
+  corners.
 
 The memory margin to the 600,000,000-byte target is small. New LibreDWG
 coverage must keep the current bounded streaming or disk-backed design; a
@@ -149,7 +170,7 @@ engineering distribution policy, not legal advice.
 
 ## Consequences
 
-- Finish 3DFACE and WIPEOUT source/display decisions on the LibreDWG writer.
+- Finish WIPEOUT source/display decisions on the LibreDWG writer.
 - Continue Korean SHX/BigFont and exact MTEXT/OCS work in issues #5 and #7.
 - Use acadrust only for public cross-engine fixtures and regression oracles.
 - Keep the ACadSharp inspection adapter, package lock and parser preflight test;
@@ -166,3 +187,5 @@ engineering distribution policy, not legal advice.
 - [ACadSharp 3.6.51 package](https://www.nuget.org/packages/ACadSharp/3.6.51)
 - [.NET license information](https://github.com/dotnet/core/blob/main/license-information.md)
 - [GNU GPL FAQ on separate programs and aggregation](https://www.gnu.org/licenses/gpl-faq.html#MereAggregation)
+- [Autodesk 3DFACE DXF group codes](https://help.autodesk.com/cloudhelp/2024/ENU/AutoCAD-DXF/files/GUID-747865D5-51F0-45F2-BEFE-9572DBC5B151.htm)
+- [Autodesk 3DFACE wireframe/shaded behavior](https://help.autodesk.com/cloudhelp/2021/ENU/AutoCAD-Core/files/GUID-5E88BB23-9110-45FB-B54A-3FF2E2002585.htm)

@@ -111,8 +111,10 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>솔리드 원본</dt><dd>${primitives.sourceSolids.toLocaleString()}개</dd></div>
       <div><dt>솔리드 채움</dt><dd>${primitives.renderedFilledSolids.toLocaleString()}개</dd></div>
       <div><dt>솔리드 외곽선</dt><dd>${primitives.renderedOutlineSolids.toLocaleString()}개</dd></div>
-      <div><dt>점·솔리드 GPU</dt><dd>${formatBytes(primitives.gpuBytes)}</dd></div>
-      <div><dt>점·솔리드 원본 읽기</dt><dd>${formatBytes(activePrimitiveStatus?.reads?.bytesRead ?? 0)}</dd></div>
+      <div><dt>3D 면 원본/표시</dt><dd>${primitives.sourceFaces.toLocaleString()} / ${primitives.renderedFaces.toLocaleString()}개</dd></div>
+      <div><dt>3D 면 가장자리</dt><dd>${primitives.renderedFaceEdges.toLocaleString()}개</dd></div>
+      <div><dt>후처리 GPU</dt><dd>${formatBytes(primitives.gpuBytes)}</dd></div>
+      <div><dt>후처리 원본 읽기</dt><dd>${formatBytes(activePrimitiveStatus?.reads?.bytesRead ?? 0)}</dd></div>
     `
     : "";
   metrics.innerHTML = `
@@ -329,7 +331,7 @@ function createPrimitiveWorker() {
     initialize(file) {
       if (settled) {
         return Promise.reject(
-          new DOMException("점·솔리드 작업 취소됨", "AbortError"),
+          new DOMException("후처리 작업 취소됨", "AbortError"),
         );
       }
       return new Promise((resolve, reject) => {
@@ -360,7 +362,7 @@ function createPrimitiveWorker() {
             settled = true;
             worker.terminate();
             rejectRequest = undefined;
-            reject(new Error(event.message || "점·솔리드 worker failed"));
+            reject(new Error(event.message || "후처리 worker failed"));
           },
           { once: true },
         );
@@ -378,7 +380,7 @@ function createPrimitiveWorker() {
       settled = true;
       worker.terminate();
       rejectRequest?.(
-        new DOMException("점·솔리드 작업 취소됨", "AbortError"),
+        new DOMException("후처리 작업 취소됨", "AbortError"),
       );
       rejectRequest = undefined;
     },
@@ -390,7 +392,7 @@ async function initializePrimitives(file, scene, revision) {
     return;
   }
   activePrimitiveStatus = Object.freeze({ state: "loading" });
-  status.textContent = "점과 솔리드 원본을 별도 작업 공간에서 읽는 중";
+  status.textContent = "점·솔리드·3D 면 원본을 별도 작업 공간에서 읽는 중";
   const worker = createPrimitiveWorker();
   activePrimitiveWorker = worker;
   let result;
@@ -417,9 +419,10 @@ async function initializePrimitives(file, scene, revision) {
     value.skippedDegenerateTriangles +
     Number(value.pointGpuLimitReached) +
     Number(value.solidFillGpuLimitReached) +
-    Number(value.solidOutlineGpuLimitReached);
+    Number(value.solidOutlineGpuLimitReached) +
+    Number(value.faceOutlineGpuLimitReached);
   status.textContent =
-    `점 ${value.renderedPoints.toLocaleString()}개 · 솔리드 ${(value.renderedFilledSolids + value.renderedOutlineSolids).toLocaleString()}개 표시 완료` +
+    `점 ${value.renderedPoints.toLocaleString()}개 · 솔리드 ${(value.renderedFilledSolids + value.renderedOutlineSolids).toLocaleString()}개 · 3D 면 ${value.renderedFaces.toLocaleString()}개 표시 완료` +
     (warnings > 0 ? ` · 제한/건너뜀 ${warnings.toLocaleString()}건` : "");
 }
 
