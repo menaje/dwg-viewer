@@ -60,6 +60,67 @@ jq --slurp -f benchmarks/compare-inspection.jq \
 Parser diagnostics are intentionally excluded from compatibility equality
 because engines classify recoverable warnings differently.
 
+## Korean encoding regression
+
+The public Webview suite fixes the legacy Korean mapping contract without
+committing private drawings or proprietary SHX files:
+
+```bash
+pnpm --filter @dwg-viewer/webview test
+```
+
+It distinguishes the 2,350 modern Hangul syllables available through strict
+EUC-KR from the complete 11,172-syllable CP949/UHC and Johab sets. CP949 and
+Johab boundary/sample codes, automatic glyph probing and per-BigFont overrides
+are deterministic regression cases. This is an encoding matrix, not the
+20–30-drawing Korean corpus required by issue #7; real geometry/image
+qualification remains private until redistributable fixtures are available.
+
+The corpus runner turns a private manifest into one path-free automatic result
+table. It executes cases sequentially so converter memory never overlaps:
+
+```bash
+pnpm corpus:korean -- \
+  --manifest /absolute/private/korean-corpus.json \
+  --runner /absolute/path/to/target/release/dwg-converter \
+  --adapter /absolute/path/to/libredwg-adapter \
+  --output /absolute/path/to/benchmarks/results/korean-corpus.json
+```
+
+The manifest has this shape:
+
+```json
+{
+  "schema": "dwg-korean-corpus-manifest/1",
+  "cases": [
+    {
+      "id": "arch-r2000-001",
+      "path": "/absolute/private/drawing.dwg",
+      "redistributable": false,
+      "discipline": "architecture",
+      "sizeClass": "medium",
+      "dwgVersion": "AC1015",
+      "encodings": ["cp949"],
+      "fontKinds": ["shx", "bigfont"],
+      "expectedText": {
+        "minimumHangulCharacters": 1,
+        "maximumReplacementCharacters": 0,
+        "maximumNullCharacters": 0
+      }
+    }
+  ]
+}
+```
+
+Case IDs must be non-sensitive slugs. Paths, text samples, absolute bounds and
+adapter diagnostics are never copied into the corpus report. The exclusive
+output file is owner-only and is not overwritten. The gate requires at least
+20 cases plus all declared DWG versions, architecture/civil/MEP, three size
+classes, Unicode/EUC-KR/CP949/Johab and SHX/BigFont/Extended BigFont coverage.
+Per-case version, Hangul-loss, deterministic-output, conversion time and RSS
+decisions are automatic. `--allow-incomplete` writes an incremental report
+without returning a failing exit code while the matrix is still being filled.
+
 ## VS Code product qualification
 
 The product runner measures the packaged extension in an isolated, stabilized
