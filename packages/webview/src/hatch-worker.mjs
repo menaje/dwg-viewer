@@ -24,6 +24,7 @@ self.addEventListener("message", async (event) => {
         patternState.blocks,
         patternState.instanceGraph,
         event.data.camera,
+        { maskOrder: patternState.maskOrder },
       );
       self.postMessage(
         { requestId, ok: true, pattern },
@@ -35,7 +36,7 @@ self.addEventListener("message", async (event) => {
       throw new Error("unsupported HATCH worker request");
     }
 
-    const { file, camera } = event.data;
+    const { file, camera, maskOrder = null } = event.data;
     const rangeSource = new TrackedRangeSource(new BlobRangeSource(file));
     const reader = await SceneCacheReader.open(rangeSource);
     if (reader.header.minor < 6) {
@@ -47,7 +48,9 @@ self.addEventListener("message", async (event) => {
       reader.readInserts(),
       reader.readGpuLineBatches(),
     ]);
-    const baseInstanceGraph = buildInstanceGraph(blocks, inserts);
+    const baseInstanceGraph = buildInstanceGraph(blocks, inserts, {
+      maskOrder,
+    });
     const instanceGraph = Object.freeze({
       ...baseInstanceGraph,
       blockBoundsByIndex: buildHatchPatternBlockBounds(
@@ -55,7 +58,9 @@ self.addEventListener("message", async (event) => {
         blocks.length,
       ),
     });
-    const fill = buildHatchFillMesh(source, blocks, instanceGraph);
+    const fill = buildHatchFillMesh(source, blocks, instanceGraph, {
+      maskOrder,
+    });
     const pattern =
       reader.header.minor >= 7 && camera
         ? buildHatchPatternMesh(
@@ -63,9 +68,10 @@ self.addEventListener("message", async (event) => {
             blocks,
             instanceGraph,
             camera,
+            { maskOrder },
           )
         : null;
-    patternState = { source, blocks, instanceGraph };
+    patternState = { source, blocks, instanceGraph, maskOrder };
     const transfers = [fill.vertices.buffer];
     if (pattern) {
       transfers.push(pattern.vertices.buffer);

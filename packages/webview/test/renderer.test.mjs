@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { WebGlLineRenderer } from "../src/renderer.mjs";
+import {
+  patchLineMaskBuckets,
+  WebGlLineRenderer,
+} from "../src/renderer.mjs";
+import { decodeMaskBucket } from "../src/mask-order.mjs";
 import { GpuLineBatchKind } from "../src/scene-cache.mjs";
 
 function makeFakeGl() {
@@ -11,6 +15,7 @@ function makeFakeGl() {
     drawArraysInstanced: [],
     deletedBuffers: [],
     shaderSources: [],
+    depthFunc: [],
   };
   const gl = {
     VERTEX_SHADER: 1,
@@ -33,6 +38,7 @@ function makeFakeGl() {
     RGBA: 18,
     UNSIGNED_BYTE: 19,
     COLOR_BUFFER_BIT: 20,
+    DEPTH_BUFFER_BIT: 1 << 8,
     DEPTH_TEST: 21,
     BLEND: 22,
     SRC_ALPHA: 23,
@@ -40,6 +46,7 @@ function makeFakeGl() {
     LINES: 25,
     TRIANGLES: 26,
     POINTS: 27,
+    GEQUAL: 28,
     createShader: () => ({ id: ++nextId }),
     shaderSource(_shader, source) {
       calls.shaderSources.push(source);
@@ -77,7 +84,12 @@ function makeFakeGl() {
     },
     viewport() {},
     clearColor() {},
+    clearDepth() {},
     clear() {},
+    depthFunc(value) {
+      calls.depthFunc.push(value);
+    },
+    depthMask() {},
     disable() {},
     enable() {},
     blendFunc() {},
@@ -91,6 +103,31 @@ function makeFakeGl() {
     deleteTexture() {},
   };
   return { gl, calls };
+}
+
+function oneMaskPlan() {
+  return Object.freeze({
+    enabled: true,
+    modelOwnerHandle: 100n,
+    owners: new Map([
+      [
+        100n,
+        {
+          ownerHandle: 100n,
+          overrides: new Map(),
+          events: Object.freeze([
+            Object.freeze({
+              kind: "mask",
+              handle: 10n,
+              key: 10n,
+              prefix: 0,
+              contribution: 1,
+            }),
+          ]),
+        },
+      ],
+    ]),
+  });
 }
 
 function batch({ id, kind, lodLevel, firstVertex }) {
@@ -362,4 +399,139 @@ test("draws deferred SOLID fills and outlines before POINT markers", () => {
     ),
   );
   renderer.dispose();
+});
+
+test("patches line buckets and draws WIPEOUT masks before depth-tested geometry", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const overview = batch({
+    id: 0,
+    kind: GpuLineBatchKind.ModelOverview,
+    lodLevel: 0,
+    firstVertex: 0,
+  });
+  const overviewBuffer = new ArrayBuffer(64);
+  const overviewView = new DataView(overviewBuffer);
+  overviewView.setUint32(20, 5, true);
+  overviewView.setUint32(52, 15, true);
+  const blocks = [
+    {
+      index: 0,
+      handle: 100n,
+      name: "*Model_Space",
+      basePoint: [0, 0, 0],
+    },
+  ];
+  const initialGraph = {
+    instancesByBlock: new Map(),
+    modelBlockIndices: new Set([0]),
+  };
+  const first = renderer.renderOverview({
+    batches: [overview],
+    layers: [{ color: 0, flags: 0 }],
+    blocks,
+    instanceGraph: initialGraph,
+    vertices: {
+      buffer: overviewBuffer,
+      byteLength: 64,
+      vertexCount: 2,
+    },
+  });
+  const maskOrder = oneMaskPlan();
+  const orderedGraph = {
+    ...initialGraph,
+    maskOrderEnabled: true,
+  };
+  renderer.setMaskComposition({
+    maskOrder,
+    instanceGraph: orderedGraph,
+    blocks,
+    overviewVertices: {
+      buffer: overviewBuffer,
+      byteLength: 64,
+      vertexCount: 2,
+    },
+  });
+  assert.equal(decodeMaskBucket(overviewView.getUint32(28, true)), 0);
+  assert.equal(decodeMaskBucket(overviewView.getUint32(60, true)), 1);
+
+  const empty = {
+    batches: [],
+    vertices: {
+      buffer: new ArrayBuffer(0),
+      byteLength: 0,
+      vertexCount: 0,
+    },
+  };
+  renderer.setPrimitiveMeshes({
+    points: empty,
+    solidFills: empty,
+    solidOutlines: empty,
+    wipeoutMasks: {
+      batches: [
+        {
+          ...overview,
+          vertexCount: 3,
+          firstVertex: 0,
+          lodLevel: 1,
+        },
+      ],
+      vertices: {
+        buffer: new ArrayBuffer(96),
+        byteLength: 96,
+        vertexCount: 3,
+      },
+    },
+  });
+  const redrawn = renderer.redraw(first.camera);
+
+  assert.equal(redrawn.wipeoutMaskDrawCalls, 1);
+  assert.equal(redrawn.wipeoutMaskSubmittedVertices, 3);
+  assert.equal(redrawn.wipeoutMaskGpuBytes, 96);
+  assert.equal(calls.depthFunc.at(-1), gl.GEQUAL);
+  assert.deepEqual(calls.drawArraysInstanced.slice(-2), [
+    { mode: gl.TRIANGLES, first: 0, count: 3, instances: 1 },
+    { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+  ]);
+  assert.ok(
+    calls.shaderSources.some((source) =>
+      source.includes("a_maskBase + float(a_style >> 17u)"),
+    ),
+  );
+  renderer.dispose();
+});
+
+test("patches a bounded detail buffer using its global vertex range", () => {
+  const buffer = new ArrayBuffer(64);
+  const view = new DataView(buffer);
+  view.setUint32(20, 5, true);
+  view.setUint32(52, 15, true);
+  patchLineMaskBuckets(
+    buffer,
+    [
+      {
+        ...batch({
+          id: 9,
+          kind: GpuLineBatchKind.ModelDetail,
+          lodLevel: 1,
+          firstVertex: 20,
+        }),
+      },
+    ],
+    oneMaskPlan(),
+    [{ index: 0, handle: 100n, name: "*Model_Space" }],
+    20,
+  );
+
+  assert.equal(decodeMaskBucket(view.getUint32(28, true)), 0);
+  assert.equal(decodeMaskBucket(view.getUint32(60, true)), 1);
 });

@@ -1,18 +1,26 @@
 import { arbitraryAxisMat4, transformPoint } from "./math.mjs";
+import {
+  encodeMaskBucket,
+  maskBucketFor,
+} from "./mask-order.mjs";
 import { GpuLineBatchKind } from "./scene-cache.mjs";
 
 export const PRIMITIVE_VERTEX_STRIDE = 32;
 export const MAX_POINT_GPU_BYTES = 8 * 1024 * 1024;
 export const MAX_SOLID_FILL_GPU_BYTES = 16 * 1024 * 1024;
 export const MAX_SOLID_OUTLINE_GPU_BYTES = 8 * 1024 * 1024;
+export const MAX_WIPEOUT_MASK_GPU_BYTES = 8 * 1024 * 1024;
 export const MAX_PRIMITIVE_GPU_BYTES =
   MAX_POINT_GPU_BYTES +
   MAX_SOLID_FILL_GPU_BYTES +
-  MAX_SOLID_OUTLINE_GPU_BYTES;
+  MAX_SOLID_OUTLINE_GPU_BYTES +
+  MAX_WIPEOUT_MASK_GPU_BYTES;
 
 const MAX_BATCH_VERTICES = 24_576;
 const MAX_POSITION_ERROR = 1e-3;
 const GPU_STYLE_INVISIBLE = 1 << 16;
+const WIPEOUT_BACKGROUND_COLOR =
+  ((3 << 30) | (14 << 16) | (16 << 8) | 19) >>> 0;
 const TRIANGLE_EDGES = Object.freeze([
   Object.freeze([0, 1]),
   Object.freeze([1, 2]),
@@ -244,10 +252,12 @@ function requireBudget(value, minimum, label) {
   }
 }
 
-function pointAttributes(entity) {
-  const style =
+function pointAttributes(entity, maskOrder) {
+  const style = encodeMaskBucket(
     (entity.displayMode & 0xffff) |
-    (entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0);
+      (entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0),
+    maskBucketFor(maskOrder, entity.ownerHandle, entity.handle),
+  );
   const normalizedAngle = Math.atan2(
     Math.sin(entity.xAxisAngle),
     Math.cos(entity.xAxisAngle),
@@ -265,8 +275,11 @@ function pointAttributes(entity) {
   };
 }
 
-function solidFillAttributes(entity) {
-  const style = entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0;
+function solidFillAttributes(entity, maskOrder) {
+  const style = encodeMaskBucket(
+    entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0,
+    maskBucketFor(maskOrder, entity.ownerHandle, entity.handle),
+  );
   return (view, offset) => {
     view.setUint32(offset + 12, entity.layerIndex, true);
     view.setUint32(offset + 16, entity.color >>> 0, true);
@@ -276,8 +289,11 @@ function solidFillAttributes(entity) {
   };
 }
 
-function solidOutlineAttributes(entity) {
-  const style = entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0;
+function solidOutlineAttributes(entity, maskOrder) {
+  const style = encodeMaskBucket(
+    entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0,
+    maskBucketFor(maskOrder, entity.ownerHandle, entity.handle),
+  );
   return (view, offset) => {
     view.setUint32(offset + 12, entity.layerIndex, true);
     view.setUint32(offset + 16, entity.color >>> 0, true);
@@ -297,6 +313,17 @@ function wipeoutPoint(entity, localPoint, target) {
   return target;
 }
 
+function maskFillAttributes(mask) {
+  const style = encodeMaskBucket(0, mask.localBucket);
+  return (view, offset) => {
+    view.setUint32(offset + 12, mask.layerIndex, true);
+    view.setUint32(offset + 16, WIPEOUT_BACKGROUND_COLOR, true);
+    view.setUint32(offset + 20, WIPEOUT_BACKGROUND_COLOR, true);
+    view.setFloat32(offset + 24, 0, true);
+    view.setUint32(offset + 28, style, true);
+  };
+}
+
 export function buildPrimitiveMeshes(
   source,
   blocks,
@@ -305,7 +332,9 @@ export function buildPrimitiveMeshes(
     maximumPointGpuBytes = MAX_POINT_GPU_BYTES,
     maximumSolidFillGpuBytes = MAX_SOLID_FILL_GPU_BYTES,
     maximumSolidOutlineGpuBytes = MAX_SOLID_OUTLINE_GPU_BYTES,
+    maximumWipeoutMaskGpuBytes = MAX_WIPEOUT_MASK_GPU_BYTES,
     wipeoutFrame = null,
+    maskOrder = null,
   } = {},
 ) {
   if (
@@ -344,6 +373,11 @@ export function buildPrimitiveMeshes(
     PRIMITIVE_VERTEX_STRIDE * 2,
     "surface outline",
   );
+  requireBudget(
+    maximumWipeoutMaskGpuBytes,
+    PRIMITIVE_VERTEX_STRIDE * 3,
+    "WIPEOUT mask",
+  );
 
   const blockIndexByHandle = new Map();
   for (const block of blocks) {
@@ -353,6 +387,9 @@ export function buildPrimitiveMeshes(
   const solidFillMesh = new PackedMeshBuilder(maximumSolidFillGpuBytes);
   const surfaceOutlineMesh = new PackedMeshBuilder(
     maximumSolidOutlineGpuBytes,
+  );
+  const wipeoutMaskMesh = new PackedMeshBuilder(
+    maximumWipeoutMaskGpuBytes,
   );
   const point = {
     location: [0, 0, 0],
@@ -427,6 +464,9 @@ export function buildPrimitiveMeshes(
     skippedDegenerateFaceEdges: 0,
     sourceWipeouts: source.wipeouts.length,
     deferredWipeoutMasks: 0,
+    renderedWipeoutMasks: 0,
+    renderedWipeoutMaskTriangles: 0,
+    skippedWipeoutMaskTriangles: 0,
     renderedWipeoutFrames: 0,
     renderedWipeoutFrameEdges: 0,
     skippedDegenerateWipeoutEdges: 0,
@@ -444,6 +484,8 @@ export function buildPrimitiveMeshes(
     solidOutlineGpuBytes: 0,
     faceOutlineGpuBytes: 0,
     wipeoutOutlineGpuBytes: 0,
+    wipeoutMaskVertices: 0,
+    wipeoutMaskGpuBytes: 0,
     surfaceOutlineGpuBytes: 0,
     gpuBytes: 0,
     batches: 0,
@@ -452,6 +494,10 @@ export function buildPrimitiveMeshes(
     solidOutlineGpuLimitReached: false,
     faceOutlineGpuLimitReached: false,
     wipeoutOutlineGpuLimitReached: false,
+    wipeoutMaskGpuLimitReached: false,
+    maskOrderEnabled:
+      Boolean(maskOrder?.enabled) &&
+      Boolean(instanceGraph.maskOrderEnabled),
   };
 
   for (let index = 0; index < source.points.length; index += 1) {
@@ -470,7 +516,13 @@ export function buildPrimitiveMeshes(
       metrics.skippedOwners += 1;
       continue;
     }
-    if (!pointMesh.write(owner, pointVertices, pointAttributes(point))) {
+    if (
+      !pointMesh.write(
+        owner,
+        pointVertices,
+        pointAttributes(point, maskOrder),
+      )
+    ) {
       metrics.pointGpuLimitReached = true;
       break;
     }
@@ -504,7 +556,7 @@ export function buildPrimitiveMeshes(
     if (solid.fillMode) {
       let rendered = false;
       const triangles = isTriangle ? triangleFill : quadrilateralFill;
-      const attributes = solidFillAttributes(solid);
+      const attributes = solidFillAttributes(solid, maskOrder);
       for (const triangle of triangles) {
         if (!triangleIsUsable(triangle)) {
           metrics.skippedDegenerateTriangles += 1;
@@ -530,7 +582,7 @@ export function buildPrimitiveMeshes(
 
     const edges = isTriangle ? TRIANGLE_EDGES : QUADRILATERAL_EDGES;
     let rendered = false;
-    const attributes = solidOutlineAttributes(solid);
+    const attributes = solidOutlineAttributes(solid, maskOrder);
     for (const [start, end] of edges) {
       if (pointsNear(corners[start], corners[end])) {
         continue;
@@ -568,7 +620,7 @@ export function buildPrimitiveMeshes(
       continue;
     }
     let rendered = false;
-    const attributes = solidOutlineAttributes(face);
+    const attributes = solidOutlineAttributes(face, maskOrder);
     for (let edge = 0; edge < QUADRILATERAL_EDGES.length; edge += 1) {
       if (face.invisibleEdges & (1 << edge)) {
         metrics.hiddenFaceEdges += 1;
@@ -657,7 +709,7 @@ export function buildPrimitiveMeshes(
     }
 
     let rendered = false;
-    const attributes = solidOutlineAttributes(wipeout);
+    const attributes = solidOutlineAttributes(wipeout, maskOrder);
     for (let edge = 0; edge < edgeCount; edge += 1) {
       if (usesClipBoundary && wipeout.clipType === 2) {
         source.wipeouts.readClipVertex(
@@ -700,9 +752,50 @@ export function buildPrimitiveMeshes(
     }
   }
 
+  if (metrics.maskOrderEnabled) {
+    for (const mask of maskOrder.masks) {
+      const owner = classifyOwner(
+        mask,
+        blocks,
+        instanceGraph,
+        blockIndexByHandle,
+      );
+      if (!owner) {
+        metrics.skippedOwners += 1;
+        continue;
+      }
+      let rendered = false;
+      const attributes = maskFillAttributes(mask);
+      for (let index = 0; index < mask.triangles.length; index += 3) {
+        const triangle = [
+          mask.points[mask.triangles[index]],
+          mask.points[mask.triangles[index + 1]],
+          mask.points[mask.triangles[index + 2]],
+        ];
+        if (!triangleIsUsable(triangle)) {
+          metrics.skippedWipeoutMaskTriangles += 1;
+          continue;
+        }
+        if (!wipeoutMaskMesh.write(owner, triangle, attributes)) {
+          metrics.wipeoutMaskGpuLimitReached = true;
+          break;
+        }
+        metrics.renderedWipeoutMaskTriangles += 1;
+        rendered = true;
+      }
+      if (rendered) {
+        metrics.renderedWipeoutMasks += 1;
+      }
+      if (metrics.wipeoutMaskGpuLimitReached) {
+        break;
+      }
+    }
+  }
+
   const points = pointMesh.finish();
   const solidFills = solidFillMesh.finish();
   const solidOutlines = surfaceOutlineMesh.finish();
+  const wipeoutMasks = wipeoutMaskMesh.finish();
   metrics.pointVertices = points.vertices.vertexCount;
   metrics.solidFillVertices = solidFills.vertices.vertexCount;
   metrics.surfaceOutlineVertices = solidOutlines.vertices.vertexCount;
@@ -714,20 +807,25 @@ export function buildPrimitiveMeshes(
     metrics.faceOutlineVertices * PRIMITIVE_VERTEX_STRIDE;
   metrics.wipeoutOutlineGpuBytes =
     metrics.wipeoutOutlineVertices * PRIMITIVE_VERTEX_STRIDE;
+  metrics.wipeoutMaskVertices = wipeoutMasks.vertices.vertexCount;
+  metrics.wipeoutMaskGpuBytes = wipeoutMasks.vertices.byteLength;
   metrics.surfaceOutlineGpuBytes = solidOutlines.vertices.byteLength;
   metrics.gpuBytes =
     metrics.pointGpuBytes +
     metrics.solidFillGpuBytes +
-    metrics.surfaceOutlineGpuBytes;
+    metrics.surfaceOutlineGpuBytes +
+    metrics.wipeoutMaskGpuBytes;
   metrics.batches =
     points.batches.length +
     solidFills.batches.length +
-    solidOutlines.batches.length;
+    solidOutlines.batches.length +
+    wipeoutMasks.batches.length;
 
   return Object.freeze({
     points,
     solidFills,
     solidOutlines,
+    wipeoutMasks,
     metrics: Object.freeze(metrics),
   });
 }

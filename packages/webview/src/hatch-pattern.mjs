@@ -3,6 +3,10 @@ import {
   HatchFlags,
   HatchStyle,
 } from "./scene-cache.mjs";
+import {
+  encodeMaskBucket,
+  maskBucketFor,
+} from "./mask-order.mjs";
 
 export const HATCH_PATTERN_VERTEX_STRIDE = 32;
 export const MAX_HATCH_PATTERN_GPU_BYTES = 32 * 1024 * 1024;
@@ -817,6 +821,7 @@ export function buildHatchPatternMesh(
     maximumSegmentsPerEntity = MAX_HATCH_PATTERN_SEGMENTS_PER_ENTITY,
     maximumIntersectionTests = MAX_HATCH_PATTERN_INTERSECTION_TESTS,
     minimumSpacingPixels = MIN_HATCH_PATTERN_SPACING_PIXELS,
+    maskOrder = null,
   } = {},
 ) {
   if (
@@ -942,7 +947,10 @@ export function buildHatchPatternMesh(
       color: entity.color,
       handleLow: Number(entity.handle & 0xffffffffn),
       handleHigh: Number((entity.handle >> 32n) & 0xffffffffn),
-      style: entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0,
+      style: encodeMaskBucket(
+        entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0,
+        maskBucketFor(maskOrder, entity.ownerHandle, entity.handle),
+      ),
     };
     let entitySegments = 0;
     let renderedEntity = false;

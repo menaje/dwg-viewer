@@ -17,9 +17,16 @@ function fakeCanvas() {
     lineTo: 0,
     stroke: 0,
     transforms: [],
+    clips: [],
+    saves: 0,
+    restores: 0,
   };
   const context = {
     beginPath() {},
+    clip(rule) {
+      calls.clips.push(rule);
+    },
+    closePath() {},
     clearRect() {},
     fillText(...arguments_) {
       calls.fillText += 1;
@@ -29,6 +36,13 @@ function fakeCanvas() {
       calls.lineTo += 1;
     },
     moveTo() {},
+    rect() {},
+    restore() {
+      calls.restores += 1;
+    },
+    save() {
+      calls.saves += 1;
+    },
     setTransform(...values) {
       calls.transforms.push(values);
     },
@@ -155,4 +169,128 @@ test("does not decode source strings that are outside the viewport", async () =>
   );
 
   assert.equal(decodedValues, 0);
+});
+
+test("clips only text below a later WIPEOUT mask", () => {
+  const canvas = fakeCanvas();
+  const records = [
+    {
+      handle: 5n,
+      ownerHandle: 100n,
+      layerIndex: 0,
+      color: (2 << 30) | 7,
+      commonFlags: 0,
+      kind: 0,
+      insertionPoint: [105, 201, 0],
+      normal: [0, 0, 1],
+      height: 1,
+      widthFactor: 1,
+      rotation: 0,
+      obliqueAngle: 0,
+      lineSpacingFactor: 1,
+      sourceFlags: 0,
+      horizontalAlignment: 0,
+      attachment: 0,
+      mtextType: 0,
+      valueByteLength: 3,
+      style: null,
+    },
+    {
+      handle: 15n,
+      ownerHandle: 100n,
+      layerIndex: 0,
+      color: (2 << 30) | 7,
+      commonFlags: 0,
+      kind: 0,
+      insertionPoint: [105, 201, 0],
+      normal: [0, 0, 1],
+      height: 1,
+      widthFactor: 1,
+      rotation: 0,
+      obliqueAngle: 0,
+      lineSpacingFactor: 1,
+      sourceFlags: 0,
+      horizontalAlignment: 0,
+      attachment: 0,
+      mtextType: 0,
+      valueByteLength: 3,
+      style: null,
+    },
+  ];
+  const textEntities = {
+    length: records.length,
+    readDisplayRecord(index, target) {
+      Object.assign(target, records[index]);
+      target.insertionPoint = [...records[index].insertionPoint];
+      target.normal = [...records[index].normal];
+      return target;
+    },
+    readValue() {
+      return "한";
+    },
+  };
+  const maskOrder = {
+    enabled: true,
+    modelOwnerHandle: 100n,
+    owners: new Map([
+      [
+        100n,
+        {
+          overrides: new Map(),
+          events: [
+            {
+              kind: "mask",
+              handle: 10n,
+              key: 10n,
+              prefix: 0,
+              contribution: 1,
+            },
+          ],
+        },
+      ],
+    ]),
+    masks: [
+      {
+        handle: 10n,
+        ownerHandle: 100n,
+        layerIndex: 0,
+        localBucket: 1,
+        points: [
+          [100, 196, 0],
+          [110, 196, 0],
+          [110, 206, 0],
+          [100, 206, 0],
+        ],
+      },
+    ],
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities,
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    maskOrder,
+    minimumPixelHeight: 0.1,
+  });
+
+  const metrics = overlay.redraw(camera, [true]);
+
+  assert.equal(metrics.visibleOccurrences, 2);
+  assert.equal(metrics.maskOccurrences, 1);
+  assert.equal(metrics.clippedTextOccurrences, 1);
+  assert.equal(metrics.maskClipOperations, 1);
+  assert.deepEqual(canvas.calls.clips, ["evenodd"]);
+  assert.equal(canvas.calls.saves, 1);
+  assert.equal(canvas.calls.restores, 1);
 });

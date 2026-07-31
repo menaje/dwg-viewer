@@ -255,6 +255,7 @@ export class TextEntityTable {
     const offset = this.#recordOffset(index);
     const styleIndex = this.view.getUint32(offset + 36, true);
     target.index = index;
+    target.handle = this.view.getBigUint64(offset, true);
     target.ownerHandle = this.view.getBigUint64(offset + 8, true);
     target.layerIndex = this.view.getUint32(offset + 16, true);
     target.color = this.view.getUint32(offset + 20, true);

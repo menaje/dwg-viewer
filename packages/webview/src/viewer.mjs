@@ -44,6 +44,7 @@ export async function loadFirstFrame(
   const render = renderer.renderOverview({
     batches: metadata.batches,
     layers: metadata.layers,
+    blocks: metadata.blocks,
     instanceGraph,
     vertices: overview,
   });

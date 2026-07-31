@@ -46,17 +46,29 @@ overlay for the VS Code Webview.
   expanding geometry per INSERT.
 - Range-reads normalized v1.11 `SORTENTSTABLE` tables and entries only on
   demand. The first frame reads neither draw-order section.
+- Collapses the preserved sort keys to WIPEOUT-only order events, recursively
+  includes nested/DIMENSION/MINSERT mask spans and attaches one compact order
+  base to each existing block instance without copying its matrix.
 - Draws `PDMODE` point markers in screen space and converts SOLID OCS corners
   to bounded fill triangles or `FILLMODE`-off outlines.
 - Draws only the visible, non-degenerate WCS edges of 3DFACE records while
   retaining all four corners and invisible-edge flags for a future shaded
   mode.
-- Draws WIPEOUT clip/full-image frames only when the drawing-wide frame
-  setting enables them. Exact mask geometry stays source-backed and is
-  reported as deferred until draw-order-aware rendering is implemented.
+- Triangulates visible WIPEOUT clip/full-image boundaries and records them
+  first in a 24-bit WebGL depth buffer. Batched lines, HATCH, SOLID, 3DFACE
+  and POINT geometry then use the same compressed order, so only objects
+  below each mask are hidden.
+- Applies the same expanded order to Canvas text by clipping an occurrence
+  only against later WIPEOUT polygons. Layer-hidden masks are omitted from
+  both GPU and text composition.
+- Caps expanded masks at 10,000 and mask GPU vertices at 8 MiB. Invalid
+  boundaries, inverted clipping, sort collisions, block cycles and
+  depth/instance/order-limit failures disable every mask while preserving
+  ordinary geometry and configured WIPEOUT frames.
 - Caps POINT, SOLID-fill and shared SOLID/3DFACE/WIPEOUT-outline GPU vertices
-  at 8, 16 and 8 MiB, runs their one-shot worker before HATCH work, and
-  releases its source buffers when the final GPU payload is transferred.
+  at 8, 16 and 8 MiB, plus 8 MiB for WIPEOUT triangles. It runs their
+  one-shot worker before HATCH work and releases its source buffers when the
+  final GPU payload is transferred.
 - Loads source text after the first geometry frame and renders selected local
   SHX/BigFont glyphs through byte-bounded caches, with a Korean system-font
   fallback when a CAD font is unavailable.
@@ -93,4 +105,5 @@ v1.7 HATCH range, triangulation, dashed-pattern, block-clipping,
 large-coordinate and render-order contracts, plus v1.8 POINT/SOLID, v1.9
 3DFACE and v1.10 WIPEOUT range, WCS/OCS, clip-boundary, frame-setting,
 instance-sharing and GPU-budget behavior, plus v1.11 draw-order normalization,
-contiguous ranges and lazy reads.
+contiguous ranges, lazy reads, nested/array mask buckets, depth composition,
+HATCH/primitive bucket packing and Canvas text clipping.

@@ -10,15 +10,18 @@ import {
   transformPoint,
   translationMat4,
 } from "./math.mjs";
+import { maskBucketFor } from "./mask-order.mjs";
 
 const DEFAULT_MAXIMUM_SOURCE_TEXTS = 50_000;
 const DEFAULT_MAXIMUM_OCCURRENCES = 10_000;
 const DEFAULT_MAXIMUM_SEGMENTS = 250_000;
 const DEFAULT_MAXIMUM_FALLBACK_GLYPHS = 50_000;
 const DEFAULT_MINIMUM_PIXEL_HEIGHT = 2;
+const DEFAULT_MAXIMUM_MASK_OCCURRENCES = 10_000;
 const MAXIMUM_CODE_POINTS_PER_ENTITY = 4_096;
 const IDENTITY_INSTANCES = Object.freeze({
   data: identityMat4(),
+  maskBases: new Uint32Array([0]),
   count: 1,
 });
 
@@ -213,6 +216,13 @@ function pointToScreen(matrix, x, y, camera, width, height) {
   ];
 }
 
+function worldPointToScreen(point, camera, width, height) {
+  return [
+    ((point[0] - camera.origin[0]) / camera.worldWidth + 0.5) * width,
+    (0.5 - (point[1] - camera.origin[1]) / camera.worldHeight) * height,
+  ];
+}
+
 export class CanvasTextOverlay {
   constructor(
     canvas,
@@ -227,6 +237,8 @@ export class CanvasTextOverlay {
       maximumSegments = DEFAULT_MAXIMUM_SEGMENTS,
       maximumFallbackGlyphs = DEFAULT_MAXIMUM_FALLBACK_GLYPHS,
       minimumPixelHeight = DEFAULT_MINIMUM_PIXEL_HEIGHT,
+      maximumMaskOccurrences = DEFAULT_MAXIMUM_MASK_OCCURRENCES,
+      maskOrder = null,
     },
   ) {
     const context = canvas.getContext("2d", { alpha: true });
@@ -245,6 +257,8 @@ export class CanvasTextOverlay {
     this.maximumSegments = maximumSegments;
     this.maximumFallbackGlyphs = maximumFallbackGlyphs;
     this.minimumPixelHeight = minimumPixelHeight;
+    this.maximumMaskOccurrences = maximumMaskOccurrences;
+    this.maskOrder = maskOrder?.enabled ? maskOrder : null;
     this.blockIndexByHandle = new Map(
       blocks.map((block) => [block.handle, block.index]),
     );
@@ -259,6 +273,10 @@ export class CanvasTextOverlay {
       vectorGlyphs: 0,
       fallbackGlyphs: 0,
       segments: 0,
+      maskOccurrences: 0,
+      clippedTextOccurrences: 0,
+      maskClipOperations: 0,
+      maskClipDisabled: false,
       truncated: false,
     });
   }
@@ -289,8 +307,19 @@ export class CanvasTextOverlay {
       vectorGlyphs: 0,
       fallbackGlyphs: 0,
       segments: 0,
+      maskOccurrences: 0,
+      clippedTextOccurrences: 0,
+      maskClipOperations: 0,
+      maskClipDisabled: false,
       truncated: false,
     };
+    const screenMasks = this.#screenMasks(
+      camera,
+      width,
+      height,
+      layerVisibility,
+      metrics,
+    );
     const sourceCount = Math.min(
       this.textEntities.length,
       this.maximumSourceTexts,
@@ -394,6 +423,20 @@ export class CanvasTextOverlay {
           continue;
         }
         metrics.visibleOccurrences += 1;
+        const absoluteBucket =
+          (instances.maskBases?.[instanceIndex] ?? 0) +
+          maskBucketFor(
+            this.maskOrder,
+            record.ownerHandle,
+            record.handle,
+          );
+        const clipped = this.#beginMaskClip(
+          absoluteBucket,
+          screenMasks,
+          width,
+          height,
+          metrics,
+        );
         this.#drawOccurrence(
           record,
           lines,
@@ -404,6 +447,9 @@ export class CanvasTextOverlay {
           height,
           metrics,
         );
+        if (clipped) {
+          context.restore();
+        }
         if (
           metrics.visibleOccurrences >= this.maximumOccurrences ||
           metrics.segments >= this.maximumSegments ||
@@ -420,6 +466,93 @@ export class CanvasTextOverlay {
     context.setTransform(1, 0, 0, 1, 0, 0);
     this.lastMetrics = Object.freeze(metrics);
     return this.lastMetrics;
+  }
+
+  #screenMasks(camera, width, height, layerVisibility, metrics) {
+    if (!this.maskOrder) {
+      return [];
+    }
+    const screenMasks = [];
+    for (const mask of this.maskOrder.masks) {
+      if (
+        mask.layerIndex !== 0xffffffff &&
+        layerVisibility[mask.layerIndex] === false
+      ) {
+        continue;
+      }
+      const ownerBlockIndex = this.blockIndexByHandle.get(mask.ownerHandle);
+      const instances =
+        ownerBlockIndex === undefined ||
+        this.instanceGraph.modelBlockIndices.has(ownerBlockIndex)
+          ? IDENTITY_INSTANCES
+          : this.instanceGraph.instancesByBlock.get(ownerBlockIndex);
+      if (!instances) {
+        continue;
+      }
+      for (
+        let instanceIndex = 0;
+        instanceIndex < instances.count;
+        instanceIndex += 1
+      ) {
+        if (screenMasks.length >= this.maximumMaskOccurrences) {
+          metrics.maskClipDisabled = true;
+          return [];
+        }
+        const offset = instanceIndex * 16;
+        const matrix =
+          instances === IDENTITY_INSTANCES
+            ? instances.data
+            : instances.data.subarray(offset, offset + 16);
+        const points = mask.points.map((point) =>
+          worldPointToScreen(
+            transformPoint(matrix, point),
+            camera,
+            width,
+            height,
+          ),
+        );
+        const minX = Math.min(...points.map(([x]) => x));
+        const maxX = Math.max(...points.map(([x]) => x));
+        const minY = Math.min(...points.map(([, y]) => y));
+        const maxY = Math.max(...points.map(([, y]) => y));
+        if (maxX < 0 || minX > width || maxY < 0 || minY > height) {
+          continue;
+        }
+        screenMasks.push({
+          bucket:
+            (instances.maskBases?.[instanceIndex] ?? 0) +
+            mask.localBucket,
+          points,
+        });
+      }
+    }
+    screenMasks.sort((left, right) => left.bucket - right.bucket);
+    metrics.maskOccurrences = screenMasks.length;
+    return screenMasks;
+  }
+
+  #beginMaskClip(bucket, screenMasks, width, height, metrics) {
+    let saved = false;
+    for (const mask of screenMasks) {
+      if (mask.bucket <= bucket) {
+        continue;
+      }
+      if (!saved) {
+        this.context.save();
+        saved = true;
+        metrics.clippedTextOccurrences += 1;
+      }
+      this.context.beginPath();
+      this.context.rect(0, 0, width, height);
+      this.context.moveTo(mask.points[0][0], mask.points[0][1]);
+      for (let index = 1; index < mask.points.length; index += 1) {
+        this.context.lineTo(mask.points[index][0], mask.points[index][1]);
+      }
+      this.context.closePath();
+      this.context.clip("evenodd");
+      metrics.maskClipOperations += 1;
+    }
+    return saved;
   }
 
   #drawOccurrence(
@@ -563,5 +696,6 @@ export {
   DEFAULT_MAXIMUM_OCCURRENCES,
   DEFAULT_MAXIMUM_SEGMENTS,
   DEFAULT_MAXIMUM_SOURCE_TEXTS,
+  DEFAULT_MAXIMUM_MASK_OCCURRENCES,
   DEFAULT_MINIMUM_PIXEL_HEIGHT,
 };

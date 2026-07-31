@@ -7,21 +7,37 @@ import {
   includeTransformedBounds,
   orthographic2D,
 } from "./math.mjs";
+import {
+  encodeMaskBucket,
+  MAX_GLOBAL_MASK_BUCKET,
+  maskBucketFor,
+} from "./mask-order.mjs";
 
 const VERTEX_STRIDE = 32;
 const FILL_VERTEX_STRIDE = 32;
-const INSTANCE_STRIDE = 64;
+const INSTANCE_VALUES = 17;
+const INSTANCE_STRIDE = INSTANCE_VALUES * 4;
 const MAX_INSTANCES_PER_DRAW = 16_384;
-const MAX_PRIMITIVE_GPU_BYTES = 32 * 1024 * 1024;
+const MAX_PRIMITIVE_GPU_BYTES = 40 * 1024 * 1024;
 const MODEL_INSTANCES = Object.freeze({
   data: identityMat4(),
+  maskBases: new Uint32Array([0]),
   count: 1,
   length: 1,
 });
 const EMPTY_INSTANCES = Object.freeze({
   data: new Float64Array(0),
+  maskBases: new Uint32Array(0),
   count: 0,
   length: 0,
+});
+const EMPTY_PACKED_SCENE = Object.freeze({
+  batches: Object.freeze([]),
+  vertices: Object.freeze({
+    buffer: new ArrayBuffer(0),
+    byteLength: 0,
+    vertexCount: 0,
+  }),
 });
 
 const VERTEX_SHADER = `#version 300 es
@@ -33,6 +49,7 @@ layout(location = 1) in uint a_encodedColor;
 layout(location = 2) in uint a_layerIndex;
 layout(location = 3) in uint a_style;
 layout(location = 4) in mat4 a_instanceMatrix;
+layout(location = 8) in float a_maskBase;
 
 uniform mat4 u_projection;
 
@@ -42,6 +59,9 @@ flat out uint v_style;
 
 void main() {
   gl_Position = u_projection * a_instanceMatrix * vec4(a_localPosition, 1.0);
+  float orderDepth =
+    (a_maskBase + float(a_style >> 17u)) / ${MAX_GLOBAL_MASK_BUCKET}.0;
+  gl_Position.z = (orderDepth * 2.0 - 1.0) * gl_Position.w;
   v_encodedColor = a_encodedColor;
   v_layerIndex = a_layerIndex;
   v_style = a_style;
@@ -111,6 +131,7 @@ layout(location = 3) in uint a_lastColor;
 layout(location = 4) in float a_mix;
 layout(location = 5) in uint a_style;
 layout(location = 6) in mat4 a_instanceMatrix;
+layout(location = 10) in float a_maskBase;
 
 uniform mat4 u_projection;
 
@@ -122,6 +143,9 @@ out float v_mix;
 
 void main() {
   gl_Position = u_projection * a_instanceMatrix * vec4(a_localPosition, 1.0);
+  float orderDepth =
+    (a_maskBase + float(a_style >> 17u)) / ${MAX_GLOBAL_MASK_BUCKET}.0;
+  gl_Position.z = (orderDepth * 2.0 - 1.0) * gl_Position.w;
   v_layerIndex = a_layerIndex;
   v_firstColor = a_firstColor;
   v_lastColor = a_lastColor;
@@ -197,6 +221,7 @@ layout(location = 3) in uint a_style;
 layout(location = 4) in float a_angle;
 layout(location = 5) in float a_displaySize;
 layout(location = 6) in mat4 a_instanceMatrix;
+layout(location = 10) in float a_maskBase;
 
 uniform mat4 u_projection;
 uniform float u_viewportHeight;
@@ -210,6 +235,9 @@ flat out float v_markerSize;
 
 void main() {
   gl_Position = u_projection * a_instanceMatrix * vec4(a_localPosition, 1.0);
+  float orderDepth =
+    (a_maskBase + float(a_style >> 17u)) / ${MAX_GLOBAL_MASK_BUCKET}.0;
+  gl_Position.z = (orderDepth * 2.0 - 1.0) * gl_Position.w;
   uint mode = a_style & 65535u;
   float markerSize =
     a_displaySize > 0.0
@@ -439,6 +467,59 @@ function instancesForBatch(batch, instanceGraph) {
   );
 }
 
+function modelOwnerHandle(blocks) {
+  const modelBlocks = blocks.filter(
+    (block) => block.name.toUpperCase() === "*MODEL_SPACE",
+  );
+  return modelBlocks.length === 1 ? modelBlocks[0].handle : null;
+}
+
+function patchLineMaskBuckets(
+  buffer,
+  batches,
+  maskOrder,
+  blocks,
+  firstBufferVertex = 0,
+) {
+  if (!maskOrder?.enabled || buffer.byteLength === 0) {
+    return;
+  }
+  const view = new DataView(buffer);
+  const vertexCount = buffer.byteLength / VERTEX_STRIDE;
+  const modelHandle = modelOwnerHandle(blocks);
+  for (const batch of batches) {
+    const first = Math.max(batch.firstVertex, firstBufferVertex);
+    const end = Math.min(
+      batch.firstVertex + batch.vertexCount,
+      firstBufferVertex + vertexCount,
+    );
+    if (first >= end) {
+      continue;
+    }
+    const ownerHandle =
+      batch.blockIndex === null || batch.blockIndex === undefined
+        ? modelHandle
+        : blocks[batch.blockIndex]?.handle;
+    if (ownerHandle === null || ownerHandle === undefined) {
+      throw new Error("mask order requires one resolvable model owner");
+    }
+    for (let vertex = first; vertex < end; vertex += 1) {
+      const localVertex = vertex - firstBufferVertex;
+      const offset = localVertex * VERTEX_STRIDE;
+      const handle =
+        BigInt(view.getUint32(offset + 20, true)) |
+        (BigInt(view.getUint32(offset + 24, true)) << 32n);
+      const bucket = maskBucketFor(maskOrder, ownerHandle, handle);
+      const style = view.getUint32(offset + 28, true);
+      view.setUint32(
+        offset + 28,
+        encodeMaskBucket(style, bucket),
+        true,
+      );
+    }
+  }
+}
+
 function calculateOverviewBounds(batches, instanceGraph) {
   const bounds = emptyBounds3();
   for (const batch of batches) {
@@ -495,7 +576,7 @@ export class WebGlLineRenderer {
     const gl = canvas.getContext("webgl2", {
       alpha: false,
       antialias: true,
-      depth: false,
+      depth: true,
       preserveDrawingBuffer: false,
       powerPreference: "high-performance",
     });
@@ -526,8 +607,11 @@ export class WebGlLineRenderer {
     this.pointScene = null;
     this.solidFillScene = null;
     this.solidOutlineScene = null;
+    this.wipeoutMaskScene = null;
     this.primitiveMetrics = null;
     this.textOverlay = null;
+    this.maskOrder = null;
+    this.blocks = Object.freeze([]);
     if (!this.instanceBuffer || !this.layerTexture) {
       throw new Error("cannot allocate WebGL buffers");
     }
@@ -662,6 +746,9 @@ export class WebGlLineRenderer {
       );
       gl.vertexAttribDivisor(location, 1);
     }
+    gl.enableVertexAttribArray(8);
+    gl.vertexAttribPointer(8, 1, gl.FLOAT, false, INSTANCE_STRIDE, 64);
+    gl.vertexAttribDivisor(8, 1);
     gl.bindVertexArray(null);
 
     const resource = Object.freeze({
@@ -735,6 +822,9 @@ export class WebGlLineRenderer {
       );
       gl.vertexAttribDivisor(location, 1);
     }
+    gl.enableVertexAttribArray(10);
+    gl.vertexAttribPointer(10, 1, gl.FLOAT, false, INSTANCE_STRIDE, 64);
+    gl.vertexAttribDivisor(10, 1);
     gl.bindVertexArray(null);
 
     const resource = Object.freeze({
@@ -784,6 +874,9 @@ export class WebGlLineRenderer {
       );
       gl.vertexAttribDivisor(location, 1);
     }
+    gl.enableVertexAttribArray(10);
+    gl.vertexAttribPointer(10, 1, gl.FLOAT, false, INSTANCE_STRIDE, 64);
+    gl.vertexAttribDivisor(10, 1);
     gl.bindVertexArray(null);
 
     const resource = Object.freeze({
@@ -815,9 +908,16 @@ export class WebGlLineRenderer {
     return { width, height };
   }
 
-  renderOverview({ batches, layers, instanceGraph, vertices }) {
+  renderOverview({
+    batches,
+    layers,
+    blocks = Object.freeze([]),
+    instanceGraph,
+    vertices,
+  }) {
     const size = this.resize();
     this.setLayers(layers);
+    this.blocks = blocks;
     const bounds = calculateOverviewBounds(batches, instanceGraph);
     if (!boundsAreFinite(bounds)) {
       throw new Error("overview does not contain any drawable model-space geometry");
@@ -832,6 +932,42 @@ export class WebGlLineRenderer {
       resource,
     });
     return Object.freeze({ ...this.redraw(camera), resource });
+  }
+
+  setMaskComposition({
+    maskOrder,
+    instanceGraph,
+    blocks = this.blocks,
+    overviewVertices,
+  }) {
+    if (!this.overviewScene) {
+      throw new Error("cannot enable mask composition before the overview");
+    }
+    if (this.detailResources.size > 0) {
+      throw new Error("mask composition must precede detail streaming");
+    }
+    this.blocks = blocks;
+    const enabled =
+      Boolean(maskOrder?.enabled) &&
+      Boolean(instanceGraph?.maskOrderEnabled);
+    this.maskOrder = enabled ? maskOrder : null;
+    if (enabled) {
+      patchLineMaskBuckets(
+        overviewVertices.buffer,
+        this.overviewScene.batches,
+        maskOrder,
+        blocks,
+      );
+    }
+    const previous = this.overviewScene.resource;
+    const resource = this.uploadVertices(overviewVertices.buffer);
+    this.overviewScene = Object.freeze({
+      ...this.overviewScene,
+      instanceGraph,
+      resource,
+    });
+    this.deleteVertices(previous);
+    return enabled;
   }
 
   setHatchFills({ batches, vertices, metrics = null }) {
@@ -906,15 +1042,18 @@ export class WebGlLineRenderer {
     points,
     solidFills,
     solidOutlines,
+    wipeoutMasks = EMPTY_PACKED_SCENE,
     metrics = null,
   }) {
     validatePackedScene(points, 1, "POINT");
     validatePackedScene(solidFills, 3, "SOLID fill");
     validatePackedScene(solidOutlines, 2, "surface outline");
+    validatePackedScene(wipeoutMasks, 3, "WIPEOUT mask");
     const gpuBytes =
       points.vertices.byteLength +
       solidFills.vertices.byteLength +
-      solidOutlines.vertices.byteLength;
+      solidOutlines.vertices.byteLength +
+      wipeoutMasks.vertices.byteLength;
     if (gpuBytes > MAX_PRIMITIVE_GPU_BYTES) {
       throw new Error(
         `primitive GPU payload exceeds the ${MAX_PRIMITIVE_GPU_BYTES}-byte limit`,
@@ -924,6 +1063,7 @@ export class WebGlLineRenderer {
       this.pointScene,
       this.solidFillScene,
       this.solidOutlineScene,
+      this.wipeoutMaskScene,
     ]) {
       if (scene?.resource) {
         this.deleteVertices(scene.resource);
@@ -950,6 +1090,13 @@ export class WebGlLineRenderer {
           ? this.uploadVertices(solidOutlines.vertices.buffer)
           : null,
     });
+    this.wipeoutMaskScene = Object.freeze({
+      batches: wipeoutMasks.batches,
+      resource:
+        wipeoutMasks.vertices.byteLength > 0
+          ? this.uploadHatchFillVertices(wipeoutMasks.vertices.buffer)
+          : null,
+    });
     this.primitiveMetrics = metrics;
   }
 
@@ -963,6 +1110,15 @@ export class WebGlLineRenderer {
       vertices.byteLength !== batch.vertexCount * VERTEX_STRIDE
     ) {
       throw new Error(`GPU detail batch ${batch.id} has an invalid vertex payload`);
+    }
+    if (this.maskOrder) {
+      patchLineMaskBuckets(
+        vertices.buffer,
+        [batch],
+        this.maskOrder,
+        this.blocks,
+        batch.firstVertex,
+      );
     }
     const entry = Object.freeze({
       batch,
@@ -1002,6 +1158,7 @@ export class WebGlLineRenderer {
       point = false,
       solidFill = false,
       solidOutline = false,
+      wipeoutMask = false,
       firstVertex = batch.firstVertex,
       instanceIndices = null,
       primitive = this.gl.LINES,
@@ -1023,7 +1180,7 @@ export class WebGlLineRenderer {
         MAX_INSTANCES_PER_DRAW,
         totalInstances - firstInstance,
       );
-      const packed = new Float32Array(instanceCount * 16);
+      const packed = new Float32Array(instanceCount * INSTANCE_VALUES);
       for (let index = 0; index < instanceCount; index += 1) {
         const matrixIndex =
           instanceIndices?.[firstInstance + index] ?? firstInstance + index;
@@ -1038,8 +1195,10 @@ export class WebGlLineRenderer {
           camera.origin,
           matrixIndex * 16,
           packed,
-          index * 16,
+          index * INSTANCE_VALUES,
         );
+        packed[index * INSTANCE_VALUES + 16] =
+          instances.maskBases?.[matrixIndex] ?? 0;
       }
       gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, packed, gl.DYNAMIC_DRAW);
@@ -1085,6 +1244,11 @@ export class WebGlLineRenderer {
         metrics.solidOutlineSubmittedVertices +=
           batch.vertexCount * instanceCount;
       }
+      if (wipeoutMask) {
+        metrics.wipeoutMaskDrawCalls += 1;
+        metrics.wipeoutMaskSubmittedVertices +=
+          batch.vertexCount * instanceCount;
+      }
     }
   }
 
@@ -1112,6 +1276,8 @@ export class WebGlLineRenderer {
       this.solidFillScene?.resource?.byteLength ?? 0;
     const solidOutlineGpuBytes =
       this.solidOutlineScene?.resource?.byteLength ?? 0;
+    const wipeoutMaskGpuBytes =
+      this.wipeoutMaskScene?.resource?.byteLength ?? 0;
     const metrics = {
       drawCalls: 0,
       detailDrawCalls: 0,
@@ -1133,6 +1299,9 @@ export class WebGlLineRenderer {
       solidOutlineDrawCalls: 0,
       solidOutlineSubmittedVertices: 0,
       solidOutlineGpuBytes,
+      wipeoutMaskDrawCalls: 0,
+      wipeoutMaskSubmittedVertices: 0,
+      wipeoutMaskGpuBytes,
       primitives: this.primitiveMetrics,
       submittedInstances: 0,
       submittedVertices: 0,
@@ -1146,22 +1315,32 @@ export class WebGlLineRenderer {
         hatchPatternGpuBytes +
         pointGpuBytes +
         solidFillGpuBytes +
-        solidOutlineGpuBytes,
+        solidOutlineGpuBytes +
+        wipeoutMaskGpuBytes,
       cachedDetailGpuBytes,
       cachedDetailBatches: this.detailResources.size,
       bounds: this.overviewScene.bounds,
       camera,
     };
 
+    const maskCompositionEnabled =
+      Boolean(this.maskOrder) &&
+      Boolean(this.wipeoutMaskScene?.resource);
     gl.clearColor(0.055, 0.063, 0.075, 1);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    gl.disable(gl.DEPTH_TEST);
-    gl.enable(gl.BLEND);
-    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.clearDepth(0);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    if (maskCompositionEnabled) {
+      gl.enable(gl.DEPTH_TEST);
+      gl.depthFunc(gl.GEQUAL);
+      gl.depthMask(true);
+    } else {
+      gl.disable(gl.DEPTH_TEST);
+    }
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.layerTexture);
 
     if (
+      this.wipeoutMaskScene?.resource ||
       this.solidFillScene?.resource ||
       this.hatchFillScene?.resource
     ) {
@@ -1173,6 +1352,24 @@ export class WebGlLineRenderer {
       );
       gl.uniform1i(this.fillLayerCountLocation, this.layerCount);
       gl.uniform1i(this.fillLayerTextureLocation, 0);
+      if (maskCompositionEnabled) {
+        gl.disable(gl.BLEND);
+        for (const batch of this.wipeoutMaskScene.batches) {
+          this.drawBatch(
+            batch,
+            this.wipeoutMaskScene.resource,
+            this.overviewScene.instanceGraph,
+            camera,
+            metrics,
+            {
+              wipeoutMask: true,
+              primitive: gl.TRIANGLES,
+            },
+          );
+        }
+      }
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       if (this.solidFillScene?.resource) {
         for (const batch of this.solidFillScene.batches) {
           this.drawBatch(
@@ -1203,6 +1400,14 @@ export class WebGlLineRenderer {
           );
         }
       }
+    }
+    if (
+      !this.wipeoutMaskScene?.resource &&
+      !this.solidFillScene?.resource &&
+      !this.hatchFillScene?.resource
+    ) {
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
     }
 
     gl.useProgram(this.program);
@@ -1320,7 +1525,10 @@ export class WebGlLineRenderer {
     this.pointScene = null;
     this.solidFillScene = null;
     this.solidOutlineScene = null;
+    this.wipeoutMaskScene = null;
     this.primitiveMetrics = null;
+    this.maskOrder = null;
+    this.blocks = Object.freeze([]);
     this.overviewScene = null;
   }
 }
@@ -1331,4 +1539,5 @@ export {
   instancesForBatch,
   makeCamera,
   makeCameraFromView,
+  patchLineMaskBuckets,
 };

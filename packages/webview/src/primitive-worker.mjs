@@ -9,7 +9,13 @@ import { SceneCacheReader } from "./scene-cache.mjs";
 self.addEventListener(
   "message",
   async (event) => {
-    const { requestId, type, file, wipeoutFrame } = event.data;
+    const {
+      requestId,
+      type,
+      file,
+      wipeoutFrame,
+      maskOrder = null,
+    } = event.data;
     try {
       if (type !== "initialize") {
         throw new Error("unsupported primitive worker request");
@@ -24,12 +30,14 @@ self.addEventListener(
         reader.readBlocks(),
         reader.readInserts(),
       ]);
-      const instanceGraph = buildInstanceGraph(blocks, inserts);
+      const instanceGraph = buildInstanceGraph(blocks, inserts, {
+        maskOrder,
+      });
       const primitives = buildPrimitiveMeshes(
         source,
         blocks,
         instanceGraph,
-        { wipeoutFrame },
+        { wipeoutFrame, maskOrder },
       );
       self.postMessage(
         {
@@ -42,6 +50,7 @@ self.addEventListener(
           primitives.points.vertices.buffer,
           primitives.solidFills.vertices.buffer,
           primitives.solidOutlines.vertices.buffer,
+          primitives.wipeoutMasks.vertices.buffer,
         ],
       );
     } catch (error) {

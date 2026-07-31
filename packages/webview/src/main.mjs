@@ -1,4 +1,6 @@
 import { ViewportInteraction } from "./interaction.mjs";
+import { applyMaskOrderToInstanceGraph } from "./instance-graph.mjs";
+import { buildMaskOrderPlan } from "./mask-order.mjs";
 import { BlobRangeSource, TrackedRangeSource } from "./range-source.mjs";
 import { WebGlLineRenderer } from "./renderer.mjs";
 import { ShxGlyphCache } from "./shx-glyph-cache.mjs";
@@ -27,6 +29,9 @@ let activeHatchStatus;
 let activeHatchWorker;
 let activePrimitiveStatus;
 let activePrimitiveWorker;
+let activeMaskOrder;
+let activeRenderInstanceGraph;
+let activeMaskStatus;
 let hatchPatternTimer;
 let lastPatternCameraKey;
 let patternRequestRevision = 0;
@@ -76,6 +81,8 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>SHX 글자</dt><dd>${text.vectorGlyphs.toLocaleString()}개</dd></div>
       <div><dt>대체 글자</dt><dd>${text.fallbackGlyphs.toLocaleString()}개</dd></div>
       <div><dt>문자 선분</dt><dd>${text.segments.toLocaleString()}개</dd></div>
+      <div><dt>화면 가림</dt><dd>${text.maskOccurrences.toLocaleString()}개</dd></div>
+      <div><dt>문자 가림 적용</dt><dd>${text.clippedTextOccurrences.toLocaleString()}개</dd></div>
       <div><dt>Glyph 캐시</dt><dd>${formatBytes(glyphCache.stats.glyphBytes)}</dd></div>
     `
     : "";
@@ -114,10 +121,20 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>3D 면 원본/표시</dt><dd>${primitives.sourceFaces.toLocaleString()} / ${primitives.renderedFaces.toLocaleString()}개</dd></div>
       <div><dt>3D 면 가장자리</dt><dd>${primitives.renderedFaceEdges.toLocaleString()}개</dd></div>
       <div><dt>가림 객체 원본</dt><dd>${primitives.sourceWipeouts.toLocaleString()}개</dd></div>
+      <div><dt>가림 마스크</dt><dd>${primitives.renderedWipeoutMasks.toLocaleString()}개</dd></div>
+      <div><dt>가림 삼각형</dt><dd>${primitives.renderedWipeoutMaskTriangles.toLocaleString()}개</dd></div>
       <div><dt>가림 프레임</dt><dd>${primitives.renderedWipeoutFrames.toLocaleString()}개</dd></div>
-      <div><dt>순서 처리 대기 가림</dt><dd>${primitives.deferredWipeoutMasks.toLocaleString()}개</dd></div>
+      <div><dt>가림 GPU</dt><dd>${formatBytes(primitives.wipeoutMaskGpuBytes)}</dd></div>
       <div><dt>후처리 GPU</dt><dd>${formatBytes(primitives.gpuBytes)}</dd></div>
       <div><dt>후처리 원본 읽기</dt><dd>${formatBytes(activePrimitiveStatus?.reads?.bytesRead ?? 0)}</dd></div>
+    `
+    : "";
+  const maskRows = activeMaskStatus
+    ? `
+      <div><dt>가림 순서</dt><dd>${activeMaskStatus.enabled ? "활성" : "비활성"}</dd></div>
+      <div><dt>정렬표 읽기</dt><dd>${activeMaskStatus.tables.toLocaleString()} / ${activeMaskStatus.entries.toLocaleString()}개</dd></div>
+      <div><dt>확장 가림</dt><dd>${activeMaskStatus.maximumExpandedMasks.toLocaleString()}개</dd></div>
+      <div><dt>순서 계산</dt><dd>${activeMaskStatus.buildMs.toFixed(1)} ms</dd></div>
     `
     : "";
   metrics.innerHTML = `
@@ -135,6 +152,7 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       ${hatchRows}
       ${patternRows}
       ${primitiveRows}
+      ${maskRows}
       ${textRows}
     </dl>
   `;
@@ -208,7 +226,12 @@ function setAllLayersVisible(visible) {
   updateLayerSummary();
 }
 
-async function initializeTextOverlay(scene, revision) {
+async function initializeTextOverlay(
+  scene,
+  revision,
+  maskOrder = activeMaskOrder,
+  instanceGraph = activeRenderInstanceGraph ?? scene.instanceGraph,
+) {
   if (scene.reader.header.minor < 4) {
     return;
   }
@@ -224,8 +247,9 @@ async function initializeTextOverlay(scene, revision) {
     textEntities,
     blocks: scene.metadata.blocks,
     layers: scene.metadata.layers,
-    instanceGraph: scene.instanceGraph,
+    instanceGraph,
     glyphCache,
+    maskOrder,
   });
   scene.renderer.setTextOverlay(overlay);
   const missing = glyphCache.missingFonts(styles);
@@ -238,6 +262,68 @@ async function initializeTextOverlay(scene, revision) {
     missing.length === 0
       ? `문자 ${textEntities.length.toLocaleString()}개 표시 준비 완료`
       : `문자 ${textEntities.length.toLocaleString()}개 표시${missingFontSuffix()}(시스템 글꼴 대체)`;
+}
+
+async function initializeMaskComposition(scene, revision) {
+  const fallback = Object.freeze({
+    maskOrder: null,
+    instanceGraph: scene.instanceGraph,
+  });
+  if (scene.reader.header.minor < 11) {
+    activeMaskStatus = Object.freeze({
+      enabled: false,
+      tables: 0,
+      entries: 0,
+      maximumExpandedMasks: 0,
+      buildMs: 0,
+      reason: "scene-cache-version",
+    });
+    return fallback;
+  }
+  status.textContent = "가림 객체의 앞·뒤 순서를 계산하는 중";
+  const started = performance.now();
+  const [drawOrder, wipeouts] = await Promise.all([
+    scene.reader.readDrawOrder(),
+    scene.reader.readWipeoutEntities(),
+  ]);
+  if (revision !== openRevision || activeScene !== scene) {
+    return fallback;
+  }
+  const maskOrder = buildMaskOrderPlan(
+    drawOrder,
+    wipeouts,
+    scene.metadata.blocks,
+    scene.metadata.inserts,
+  );
+  const instanceGraph = maskOrder.enabled
+    ? applyMaskOrderToInstanceGraph(
+        scene.instanceGraph,
+        scene.metadata.blocks,
+        maskOrder,
+      )
+    : scene.instanceGraph;
+  const enabled =
+    maskOrder.enabled && instanceGraph.maskOrderEnabled;
+  const buildMs = performance.now() - started;
+  activeMaskStatus = Object.freeze({
+    enabled,
+    tables: maskOrder.diagnostics.tables,
+    entries: maskOrder.diagnostics.entries,
+    maximumExpandedMasks: maskOrder.maximumExpandedMasks,
+    buildMs,
+    reason: enabled ? null : maskOrder.reason ?? "instance-graph",
+  });
+  if (!enabled) {
+    return fallback;
+  }
+  scene.renderer.setMaskComposition({
+    maskOrder,
+    instanceGraph,
+    blocks: scene.metadata.blocks,
+    overviewVertices: scene.overview,
+  });
+  scene.renderer.redraw(scene.render.camera);
+  return Object.freeze({ maskOrder, instanceGraph });
 }
 
 function workerCamera(camera) {
@@ -331,7 +417,7 @@ function createPrimitiveWorker() {
   let settled = false;
   let rejectRequest;
   return {
-    initialize(file, wipeoutFrame) {
+    initialize(file, wipeoutFrame, maskOrder) {
       if (settled) {
         return Promise.reject(
           new DOMException("후처리 작업 취소됨", "AbortError"),
@@ -374,6 +460,7 @@ function createPrimitiveWorker() {
           type: "initialize",
           file,
           wipeoutFrame,
+          maskOrder,
         });
       });
     },
@@ -391,7 +478,12 @@ function createPrimitiveWorker() {
   };
 }
 
-async function initializePrimitives(file, scene, revision) {
+async function initializePrimitives(
+  file,
+  scene,
+  revision,
+  maskOrder = activeMaskOrder,
+) {
   if (scene.reader.header.minor < 8) {
     return;
   }
@@ -405,6 +497,7 @@ async function initializePrimitives(file, scene, revision) {
     result = await worker.initialize(
       file,
       scene.metadata.drawing.wipeoutFrame,
+      maskOrder,
     );
   } finally {
     if (activePrimitiveWorker === worker) {
@@ -429,13 +522,19 @@ async function initializePrimitives(file, scene, revision) {
     Number(value.solidFillGpuLimitReached) +
     Number(value.solidOutlineGpuLimitReached) +
     Number(value.faceOutlineGpuLimitReached) +
-    Number(value.wipeoutOutlineGpuLimitReached);
+    Number(value.wipeoutOutlineGpuLimitReached) +
+    Number(value.wipeoutMaskGpuLimitReached);
   status.textContent =
-    `점 ${value.renderedPoints.toLocaleString()}개 · 솔리드 ${(value.renderedFilledSolids + value.renderedOutlineSolids).toLocaleString()}개 · 3D 면 ${value.renderedFaces.toLocaleString()}개 · 가림 프레임 ${value.renderedWipeoutFrames.toLocaleString()}개 표시 완료` +
+    `점 ${value.renderedPoints.toLocaleString()}개 · 솔리드 ${(value.renderedFilledSolids + value.renderedOutlineSolids).toLocaleString()}개 · 3D 면 ${value.renderedFaces.toLocaleString()}개 · 가림 ${value.renderedWipeoutMasks.toLocaleString()}개 표시 완료` +
     (warnings > 0 ? ` · 제한/건너뜀 ${warnings.toLocaleString()}건` : "");
 }
 
-async function initializeHatchFills(file, scene, revision) {
+async function initializeHatchFills(
+  file,
+  scene,
+  revision,
+  maskOrder = activeMaskOrder,
+) {
   if (scene.reader.header.minor < 6) {
     return;
   }
@@ -447,6 +546,7 @@ async function initializeHatchFills(file, scene, revision) {
   const result = await worker.request("initialize", {
     file,
     camera: workerCamera(scene.render.camera),
+    maskOrder,
   });
   if (revision !== openRevision || activeScene !== scene) {
     return;
@@ -542,9 +642,14 @@ function scheduleHatchPatterns(scene, camera, revision) {
   }, HATCH_PATTERN_DEBOUNCE_MS);
 }
 
-async function initializeDeferredGeometry(file, scene, revision) {
+async function initializeDeferredGeometry(
+  file,
+  scene,
+  revision,
+  maskOrder = activeMaskOrder,
+) {
   try {
-    await initializePrimitives(file, scene, revision);
+    await initializePrimitives(file, scene, revision, maskOrder);
   } catch (error) {
     if (revision === openRevision && activeScene === scene) {
       activePrimitiveStatus = Object.freeze({
@@ -559,7 +664,7 @@ async function initializeDeferredGeometry(file, scene, revision) {
     return;
   }
   try {
-    await initializeHatchFills(file, scene, revision);
+    await initializeHatchFills(file, scene, revision, maskOrder);
   } catch (error) {
     if (revision === openRevision && activeScene === scene) {
       activeHatchStatus = Object.freeze({
@@ -607,6 +712,9 @@ async function openFile(file) {
   activeTextStatus = undefined;
   activeHatchStatus = undefined;
   activePrimitiveStatus = undefined;
+  activeMaskOrder = undefined;
+  activeRenderInstanceGraph = undefined;
+  activeMaskStatus = undefined;
   lastPatternCameraKey = undefined;
   patternRequestRevision += 1;
   if (hatchPatternTimer !== undefined) {
@@ -640,6 +748,35 @@ async function openFile(file) {
     dropZone.classList.add("loaded");
     populateLayerPanel(scene);
     renderMetrics(activeScene, source);
+    let maskState = Object.freeze({
+      maskOrder: null,
+      instanceGraph: scene.instanceGraph,
+    });
+    try {
+      maskState = await initializeMaskComposition(
+        scene,
+        revision,
+      );
+    } catch (error) {
+      if (revision === openRevision && activeScene === scene) {
+        activeMaskStatus = Object.freeze({
+          enabled: false,
+          tables: 0,
+          entries: 0,
+          maximumExpandedMasks: 0,
+          buildMs: 0,
+          reason: error.message,
+        });
+        console.error(error);
+      }
+    }
+    if (revision !== openRevision || activeScene !== scene) {
+      renderer.dispose();
+      return;
+    }
+    activeMaskOrder = maskState.maskOrder;
+    activeRenderInstanceGraph = maskState.instanceGraph;
+    renderMetrics(activeScene, source);
     activeInteraction = new ViewportInteraction(activeScene, canvas, {
       onUpdate(viewport) {
         renderMetrics(activeScene, source, viewport);
@@ -660,10 +797,20 @@ async function openFile(file) {
       },
     });
     setControlsEnabled(true);
-    initializeDeferredGeometry(file, activeScene, revision).catch(
+    initializeDeferredGeometry(
+      file,
+      activeScene,
+      revision,
+      activeMaskOrder,
+    ).catch(
       console.error,
     );
-    initializeTextOverlay(activeScene, revision).catch((error) => {
+    initializeTextOverlay(
+      activeScene,
+      revision,
+      activeMaskOrder,
+      activeRenderInstanceGraph,
+    ).catch((error) => {
       if (revision === openRevision) {
         status.textContent = `문자 표시 실패: ${error.message}`;
       }

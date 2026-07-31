@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildHatchPatternMesh } from "../src/hatch-pattern.mjs";
+import { decodeMaskBucket } from "../src/mask-order.mjs";
 
 function makePatternSource({
   basePoint = [0, 1],
@@ -173,6 +174,43 @@ test("clips continuous HATCH pattern lines around a nested hole", () => {
       [0, 3.5],
       [6.5, 10],
     ],
+  );
+});
+
+test("packs a HATCH pattern local mask bucket into line vertices", () => {
+  const source = makePatternSource();
+  const maskOrder = {
+    enabled: true,
+    modelOwnerHandle: 100n,
+    owners: new Map([
+      [
+        100n,
+        {
+          overrides: new Map(),
+          events: [
+            {
+              kind: "mask",
+              handle: 10n,
+              key: 10n,
+              prefix: 0,
+              contribution: 1,
+            },
+          ],
+        },
+      ],
+    ]),
+  };
+  const result = buildHatchPatternMesh(
+    source,
+    [],
+    { modelBlockIndices: new Set() },
+    camera,
+    { maskOrder },
+  );
+
+  assert.equal(
+    decodeMaskBucket(new DataView(result.vertices.buffer).getUint32(28, true)),
+    1,
   );
 });
 

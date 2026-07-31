@@ -5,6 +5,10 @@ import {
   HatchFlags,
   HatchStyle,
 } from "./scene-cache.mjs";
+import {
+  encodeMaskBucket,
+  maskBucketFor,
+} from "./mask-order.mjs";
 
 export const HATCH_FILL_VERTEX_STRIDE = 32;
 export const MAX_HATCH_FILL_GPU_BYTES = 32 * 1024 * 1024;
@@ -561,6 +565,7 @@ export function buildHatchFillMesh(
   {
     maximumGpuBytes = MAX_HATCH_FILL_GPU_BYTES,
     maximumTrianglesPerEntity = MAX_HATCH_FILL_TRIANGLES_PER_ENTITY,
+    maskOrder = null,
   } = {},
 ) {
   if (!source || typeof source.readEntity !== "function") {
@@ -663,8 +668,10 @@ export function buildHatchFillMesh(
     const groups = fillGroups(rings, entity.style);
     const colors = hatchColors(source, entity, colorTarget);
     const range = gradientRange(rings, entity.gradientAngle);
-    const style =
-      entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0;
+    const style = encodeMaskBucket(
+      entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0,
+      maskBucketFor(maskOrder, entity.ownerHandle, entity.handle),
+    );
     let entityTriangles = 0;
     let rendered = false;
     let entityTruncated = loopLimitReached;

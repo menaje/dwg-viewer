@@ -6,6 +6,7 @@ import {
   HATCH_FILL_VERTEX_STRIDE,
 } from "../src/hatch-fill.mjs";
 import { buildInstanceGraph } from "../src/instance-graph.mjs";
+import { decodeMaskBucket } from "../src/mask-order.mjs";
 import { MemoryRangeSource } from "../src/range-source.mjs";
 import {
   GpuLineBatchKind,
@@ -119,4 +120,40 @@ test("selects gradient endpoints by stop value without sorting source objects", 
 
   assert.equal(view.getUint32(16, true), ((3 << 30) | (255 << 16)) >>> 0);
   assert.equal(view.getUint32(20, true), ((3 << 30) | 255) >>> 0);
+});
+
+test("packs a HATCH local mask bucket into existing fill vertices", async () => {
+  const { metadata, source, instanceGraph } = await hatchFixture();
+  const maskOrder = {
+    enabled: true,
+    modelOwnerHandle: 100n,
+    owners: new Map([
+      [
+        100n,
+        {
+          overrides: new Map(),
+          events: [
+            {
+              kind: "mask",
+              handle: 400n,
+              key: 400n,
+              prefix: 0,
+              contribution: 1,
+            },
+          ],
+        },
+      ],
+    ]),
+  };
+  const result = buildHatchFillMesh(
+    source,
+    metadata.blocks,
+    instanceGraph,
+    { maskOrder },
+  );
+
+  assert.equal(
+    decodeMaskBucket(new DataView(result.vertices.buffer).getUint32(28, true)),
+    1,
+  );
 });

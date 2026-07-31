@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { buildInstanceGraph } from "../src/instance-graph.mjs";
+import { buildMaskOrderPlan, decodeMaskBucket } from "../src/mask-order.mjs";
 import {
   buildPrimitiveMeshes,
   PRIMITIVE_VERTEX_STRIDE,
@@ -206,6 +207,47 @@ test("keeps WIPEOUT masks deferred and omits frames when the setting is off", as
   assert.equal(result.metrics.wipeoutOutlineGpuBytes, 0);
   assert.equal(result.metrics.surfaceOutlineVertices, 36);
   assert.equal(result.metrics.gpuBytes, 43 * PRIMITIVE_VERTEX_STRIDE);
+});
+
+test("triangulates WIPEOUT masks with compressed draw-order buckets", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 11 })),
+  );
+  const [source, metadata, drawOrder] = await Promise.all([
+    reader.readPrimitiveSource(),
+    reader.readRenderMetadata(),
+    reader.readDrawOrder(),
+  ]);
+  const maskOrder = buildMaskOrderPlan(
+    drawOrder,
+    source.wipeouts,
+    metadata.blocks,
+    metadata.inserts,
+  );
+  const instanceGraph = buildInstanceGraph(
+    metadata.blocks,
+    metadata.inserts,
+    { maskOrder },
+  );
+  const result = buildPrimitiveMeshes(
+    source,
+    metadata.blocks,
+    instanceGraph,
+    { maskOrder, wipeoutFrame: 0 },
+  );
+
+  assert.equal(maskOrder.enabled, true);
+  assert.equal(instanceGraph.maskOrderEnabled, true);
+  assert.equal(result.metrics.maskOrderEnabled, true);
+  assert.equal(result.metrics.renderedWipeoutMasks, 3);
+  assert.equal(result.metrics.renderedWipeoutMaskTriangles, 6);
+  assert.equal(result.metrics.wipeoutMaskVertices, 18);
+  assert.equal(
+    result.metrics.wipeoutMaskGpuBytes,
+    18 * PRIMITIVE_VERTEX_STRIDE,
+  );
+  const view = new DataView(result.wipeoutMasks.vertices.buffer);
+  assert.ok(decodeMaskBucket(view.getUint32(28, true)) > 0);
 });
 
 test("stops each deferred primitive stream at its GPU budget", async () => {

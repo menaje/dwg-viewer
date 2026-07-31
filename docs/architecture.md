@@ -412,23 +412,33 @@ clipping metadata, definition handles, exact rectangular or polygonal clip
 vertices, and the drawing-wide frame setting. The first-frame reader touches
 only the enlarged directory and existing drawing record. The one-shot worker
 reads WIPEOUT source later and appends enabled frames to the shared surface
-outline buffer. Actual masks remain source-only because the current
-type-grouped renderer cannot preserve block-local `SORTENTSTABLE` and nested
-INSERT order.
+outline buffer.
 
 The v1.11 draw-order slice preserves each `SORTENTSTABLE` handle, associated
 block owner and normalized entity/sort-handle pairs under fixed record caps.
 The Webview validates contiguous table ranges and deterministic ordering only
-when a later renderer stage requests them. The source contract intentionally
-does not turn masks on: the next stage must collapse the preserved sort keys
-through nested INSERT traversal into bounded mask-order buckets and use those
-buckets consistently for WebGL geometry and the Canvas text overlay.
+when the post-first-frame renderer requests them. It keeps only WIPEOUT and
+INSERT order events, recursively folds child/MINSERT mask spans into their
+owners, and attaches an order base to each existing instance collection
+without copying its transform matrices. Line diagnostic/source-kind style
+bits, which are not consumed by the shader, become a 15-bit block-local mask
+bucket after the first frame.
+
+WIPEOUT boundaries are triangulated once and drawn to the background color
+before all other geometry. A 24-bit depth buffer with `GEQUAL` then rejects
+fragments below a later mask while allowing equal-order geometry after that
+mask to redraw. HATCH fill/pattern, POINT, SOLID, 3DFACE and streamed line
+detail use the same bucket contract. Canvas text independently subtracts
+only higher-order mask polygons. Expanded masks are capped at 10,000 and their
+GPU triangles at 8 MiB; invalid/inverted boundaries, duplicate critical sort
+keys, cycles and depth/instance/order limits disable all masks.
 
 POINT source is capped at 262,144 records and 8 MiB of GPU vertices. SOLID
 and 3DFACE source are each capped at 131,072 records. WIPEOUT is capped at
 65,536 records and 1,048,576 clip vertices. SOLID fill vertices are capped at
 16 MiB, while SOLID, 3DFACE and WIPEOUT share the existing 8 MiB outline
-buffer. The combined GPU hard limit remains 32 MiB. This worker runs before
+buffer. WIPEOUT mask triangles have a separate 8 MiB cap, making the combined
+primitive GPU hard limit 40 MiB. This worker runs before
 HATCH initialization so the two source-buffer peaks do not overlap, and
 opening another file cancels unfinished work.
 

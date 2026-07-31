@@ -152,6 +152,23 @@ cache still uses two reads; the larger directory adds only 80 bytes. The
 Webview does not read either draw-order body section until requested, at
 which point two bounded reads total 894,992 bytes.
 
+The completed mask stage combines those two reads with the already deferred
+WIPEOUT entity/clip pools: four post-frame reads total 907,712 bytes. The 16
+source masks expand through nested and array INSERTs to 2,206 order positions,
+then triangulate to 590 triangles (55.3 KiB). A local qualification measured
+about 13 ms for the order plan, 24 ms to attach bases while sharing the
+existing 97,862 instance matrices, and 16.5 ms to patch the 131,072 overview
+vertices in place.
+
+An actual Chromium run reported a 459.7 ms first line frame, 41.0 ms for the
+post-frame read/order/attachment stage, a 31.4 MB main-realm JS heap and
+4.64 MiB of fitted-view GPU vertex buffers. At 5.95x zoom with the full
+32 MiB detail cache selected, the reported JS heap was 148.4 MB and GPU vertex
+buffers were 36.64 MiB. WebGL exposed a 24-bit depth buffer, returned no GL
+error, and the console had no warning or error. The public fixture also
+activates both naturally ordered WIPEOUTs as 12 triangles without requiring a
+sort table.
+
 The stable 0.14 release replaces the earlier 0.13.4 qualification pin. Its
 normalized conversion report and cache are byte-identical to 0.13.4 on the
 reference drawing, while median conversion wall time improves from 4,140 ms to
@@ -211,9 +228,9 @@ engineering distribution policy, not legal advice.
 
 ## Consequences
 
-- Convert the preserved v1.11 sort tables into block-local and nested-INSERT
-  mask-order buckets before enabling WIPEOUT background fills; retain the
-  completed source/frame path as the regression baseline.
+- Keep the completed v1.11 block-local/nested-INSERT mask buckets, WebGL depth
+  composition and Canvas text clipping within their measured order/GPU
+  limits; retain the source/frame path as the safe fallback.
 - Continue Korean SHX/BigFont and exact MTEXT/OCS work in issues #5 and #7.
 - Use acadrust only for public cross-engine fixtures and regression oracles.
 - Keep the ACadSharp inspection adapter, package lock and parser preflight test;
