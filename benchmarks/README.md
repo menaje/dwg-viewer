@@ -59,3 +59,32 @@ jq --slurp -f benchmarks/compare-inspection.jq \
 
 Parser diagnostics are intentionally excluded from compatibility equality
 because engines classify recoverable warnings differently.
+
+## VS Code product qualification
+
+The product runner measures the packaged extension in an isolated, stabilized
+VS Code instance rather than adding process RSS values from an existing user
+session:
+
+```bash
+pnpm --filter dwg-viewer-vscode package:vsix
+pnpm --filter dwg-viewer-vscode qualify:host -- \
+  --code /absolute/path/to/code-cli \
+  --runtime /absolute/path/to/code-runtime \
+  --adapter /absolute/path/to/libredwg-adapter \
+  --drawing /absolute/path/to/reference.dwg \
+  --vsix apps/vscode-extension/dwg-viewer-vscode-0.1.0.vsix \
+  --output benchmarks/results/vscode-product.json
+```
+
+It runs a cold full-cache open and a close-during-conversion scenario. The
+memory gate uses the extension's incremental physical memory above the stable
+VS Code renderer/extension-host baseline. macOS uses `footprint`, which
+de-duplicates shared mappings; Linux uses summed proportional set size from
+`smaps_rollup`. Aggregate RSS and baseline-inclusive physical memory remain in
+the report as diagnostics because aggregate Electron RSS double-counts shared
+pages and the host baseline is outside the extension.
+
+Use `--progressive-preview` to measure the optional speed-first path. Reports
+are created exclusively with owner-only permissions and never overwrite an
+existing file.

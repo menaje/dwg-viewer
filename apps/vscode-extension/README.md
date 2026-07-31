@@ -32,12 +32,27 @@ normal drawing-open or cached first-frame path. If an adapter is missing, the
 viewer error screen exposes the same select-and-diagnose action.
 
 The first open creates a private cache under VS Code's extension storage.
-For a large uncached drawing, the same Native process first publishes a
-geometry-bounded, independently readable overview cache. The Webview displays
-that line frame while full detail continues, then replaces it with the
-validated canonical cache and deletes the preview. Preview failure and older
-compatible adapters fall back to the ordinary full-cache path. Subsequent
-opens reuse the canonical cache until the drawing or converter changes.
+The default memory-balanced path finishes the Native conversion before
+initializing Webview content. This avoids overlapping LibreDWG's parser
+footprint with a fully initialized Webview renderer. Subsequent opens reuse
+the canonical cache until the drawing or converter changes.
+
+An explicit speed-first mode can display a bounded line overview while full
+detail continues:
+
+```json
+{
+  "dwgViewer.progressivePreview": true
+}
+```
+
+This option is off by default because it trades memory for about two seconds
+of first-frame latency. On the 24,680,147-byte reference drawing, a stabilized
+VS Code host reached the balanced first frame in 3.736–3.795 seconds with
+530.4–595.7 MB incremental physical memory across four isolated runs. The
+progressive mode reached a frame in 1.824 seconds but used 664.7 MB; during an
+immediate cold-start overlap it reached 919.4 MB and failed the 800 MB hard
+limit. Both modes keep the same validated canonical cache.
 
 ## Engine boundary
 
@@ -97,11 +112,35 @@ compiled glyphs remain under the Webview's separate byte-bounded caches.
 ## Current scope
 
 - Read-only model-space viewing
-- Progressive Native overview while the first full cache is still being built
+- Memory-balanced first open with an optional progressive Native overview
 - Bounded cache range reads (maximum 8 MiB per request)
 - Layer visibility, pan, zoom, hatch, and text
 - Delayed SHX/BigFont discovery, mapping, diagnostics, and Korean fallback
 - Conversion cancellation when the editor closes
 - Retry and forced cache rebuild
 
-This is the first integration milestone tracked by GitHub issue #19.
+The initial integration milestone is recorded in GitHub issue #19; product
+qualification and release completion continue in issue #6.
+
+## Product qualification
+
+Build the VSIX first, then run the isolated VS Code qualification with an
+absolute CLI path, runtime path, adapter and private drawing:
+
+```bash
+pnpm --filter dwg-viewer-vscode package:vsix
+pnpm --filter dwg-viewer-vscode qualify:host -- \
+  --code "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
+  --runtime "/Applications/Visual Studio Code.app/Contents/MacOS/Code" \
+  --adapter /absolute/path/to/libredwg-adapter \
+  --drawing /absolute/path/to/reference.dwg \
+  --vsix apps/vscode-extension/dwg-viewer-vscode-0.1.0.vsix \
+  --output benchmarks/results/vscode-product.json
+```
+
+The runner installs the packaged extension into a private VS Code instance,
+waits for the host to stabilize, samples the complete process tree, measures
+de-duplicated physical memory on macOS or proportional set size on Linux, and
+checks cancellation cleanup. Reports contain source size and numeric metrics,
+not drawing paths or text. Add `--progressive-preview` only to qualify the
+speed-first option.

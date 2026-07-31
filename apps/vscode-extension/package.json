@@ -70,6 +70,12 @@
           "scope": "machine",
           "description": "Absolute path to the separately installed GPL LibreDWG adapter executable."
         },
+        "dwgViewer.progressivePreview": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "Show an overview while full conversion continues. This improves first-frame latency but substantially increases concurrent memory."
+        },
         "dwgViewer.shxFontDirectories": {
           "type": "array",
           "default": [],
@@ -98,8 +104,10 @@
     "prepare:package": "node scripts/prepare-package.mjs",
     "compile": "tsc -p tsconfig.json",
     "build": "pnpm run build:webview && pnpm run compile && pnpm run prepare:package",
-    "test": "pnpm run compile && node --test dist/test/*.test.js",
-    "check": "pnpm run build && node --test dist/test/*.test.js",
+    "test:qualification": "node --test scripts/*.test.mjs",
+    "qualify:host": "node scripts/qualify-extension-host.mjs",
+    "test": "pnpm run compile && node --test dist/test/*.test.js && pnpm run test:qualification",
+    "check": "pnpm run build && node --test dist/test/*.test.js && pnpm run test:qualification",
     "package:vsix": "pnpm run build && vsce package --no-dependencies"
   },
   "devDependencies": {

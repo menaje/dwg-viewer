@@ -90,10 +90,18 @@ only qualifies this boundary; the rejected real probe is reproducible under
 [`adapters/libredwg/wasm`](../adapters/libredwg/wasm/README.md) and is not
 exposed as a product backend.
 
-## Progressive Native first frame
+## Native first-frame modes
 
-The uncached Native path now separates “usable line frame” from “canonical
-cache complete” without changing parsers or adding another process:
+The default uncached path is memory-balanced: it starts conversion before
+initializing Webview content, waits for the Native process to exit, and only
+then publishes the canonical cache to the Webview. A second Webview renderer
+still belongs to VS Code's Custom Editor architecture, but deferring its
+content and full renderer workload keeps the stable-host incremental physical
+peak within the product target.
+
+The optional `dwgViewer.progressivePreview` path separates “usable line frame”
+from “canonical cache complete” without changing parsers or adding another
+converter process:
 
 ```text
 one LibreDWG parse
@@ -125,9 +133,16 @@ and 502.6 ms for the full cache. Combining the independently measured stages
 puts usable geometry at about 1.76 seconds instead of 3.81 seconds, a roughly
 2.1-second perceived-loading gain. Peak JavaScript heap was 29.41 MiB for the
 preview and 60.16 MiB for the full cache. The repeated overview work adds
-roughly 0.3–0.4 seconds to total conversion, which is accepted because the
-5-second conversion target still passes and the visible frame arrives much
-earlier.
+roughly 0.3–0.4 seconds to total conversion.
+
+Product-level qualification changed the default trade-off. In a stabilized VS
+Code 1.131 host, four isolated balanced runs reached the first frame in
+3,736–3,795 ms and added 530,435,720–595,660,352 bytes of de-duplicated
+physical memory above the host baseline. The progressive path reached a frame
+in 1,824 ms but added 664,686,480 bytes. During an immediate host-startup
+overlap it added 919,359,496 bytes and failed the 800 MB hard limit.
+Progressive preview therefore remains an explicit speed-first option rather
+than the default.
 
 ## Process boundary
 
@@ -147,6 +162,23 @@ If an inspect-only candidate already exceeds the 800,000,000-byte memory hard
 limit, the runner rejects it before a cache writer exists. Parsing is a
 mandatory subset of conversion. A candidate below that limit still remains
 incomplete until the full conversion phase is measured.
+
+The packaged-extension qualification is a separate process-tree measurement.
+It launches an isolated VS Code instance, waits four seconds for the renderer
+and extension-host baseline to stabilize, then opens the private reference
+drawing through a temporary local driver. It samples RSS every 100 ms, but
+uses de-duplicated macOS `footprint` or Linux proportional set size for the
+product memory gate. Aggregate Electron RSS is diagnostic only because shared
+code and mappings are counted once per process. Baseline-inclusive physical
+memory is also diagnostic because VS Code's pre-existing host cost is outside
+the extension. Reports contain numeric metrics and source size, never drawing
+paths or text.
+
+The runner performs both a full first-open and a close-during-conversion run.
+The final macOS arm64 sample reached a full first frame in 3,745 ms, added
+595,660,352 bytes above a 416,779,576-byte stable host baseline, and observed
+the converter gone 286 ms after disposal. Three prior stable full runs added
+530,435,720, 534,679,032 and 568,118,824 bytes; all passed the 600 MB target.
 
 On the macOS arm64 reference environment, the current process-isolated
 LibreDWG 0.14 inspection measured 810 ms median wall time and 591,380,480 bytes
@@ -596,13 +628,16 @@ Unicode names locally and supports individual, all-on and all-off changes.
 | Native conversion | <= 5 s | <= 8 s |
 | First usable frame | <= 5 s | <= 8 s |
 | Full refinement | <= 10 s | <= 15 s |
-| Total peak RSS | <= 600 MB | <= 800 MB |
+| Native converter peak RSS | <= 600 MB | <= 800 MB |
+| Product incremental physical memory | <= 600 MB | <= 800 MB |
 | Stable Webview memory | <= 200 MB | <= 300 MB |
 | Dropped blocks | 0 | 0 |
 | Hangul replacement/loss | 0 | 0 |
 
 These gates apply to the current 24MB/approximately 378k-entity reference
-drawing. Results from private drawings must not be committed.
+drawing. Product memory is measured above a stabilized VS Code baseline;
+baseline-inclusive physical memory and aggregate RSS remain diagnostics.
+Results from private drawings must not be committed.
 
 ## Privacy
 

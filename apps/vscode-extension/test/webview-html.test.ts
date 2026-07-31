@@ -119,11 +119,31 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   assert.match(mainModule, /type: "dwg-adapter-select\/1"/u);
 
   const manifest = JSON.parse(manifestText) as {
-    contributes?: { commands?: Array<{ command?: string }> };
+    contributes?: {
+      commands?: Array<{ command?: string }>;
+      configuration?: {
+        properties?: Record<
+          string,
+          { default?: unknown; type?: unknown }
+        >;
+      };
+    };
   };
   const commands = new Set(
     manifest.contributes?.commands?.map(({ command }) => command),
   );
   assert.equal(commands.has("dwgViewer.selectLibreDwgAdapter"), true);
   assert.equal(commands.has("dwgViewer.diagnoseLibreDwgAdapter"), true);
+  assert.deepEqual(
+    manifest.contributes?.configuration?.properties?.[
+      "dwgViewer.progressivePreview"
+    ],
+    {
+      type: "boolean",
+      default: false,
+      scope: "window",
+      description:
+        "Show an overview while full conversion continues. This improves first-frame latency but substantially increases concurrent memory.",
+    },
+  );
 });

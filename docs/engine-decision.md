@@ -209,12 +209,10 @@ whole-drawing geometry array is not allowed.
 
 ## Perceived-loading follow-on
 
-The selected Native engine no longer waits for the canonical cache before
-showing any geometry. After its single LibreDWG parse, it writes a temporary
-overview-only Scene Cache before the disk-backed detail sort, then continues
-the unchanged full conversion. This preserves the engine decision: it reuses
-the measured bounded C writer and process lifetime instead of adopting the
-rejected multi-gigabyte WASM path.
+The selected Native engine can write a temporary overview-only Scene Cache
+after its single LibreDWG parse and before the disk-backed detail sort. This
+preserves the engine decision: it reuses the measured bounded C writer and
+process lifetime instead of adopting the rejected multi-gigabyte WASM path.
 
 On the reference drawing, the 4,914,376-byte preview was ready at 1,241 ms and
 the full 177,049,408-byte cache at 3,312 ms. Chromium rendered them in 517.9 ms
@@ -222,9 +220,17 @@ and 502.6 ms respectively, putting the first usable line frame about 2.1
 seconds earlier when the measured stages are combined. Preview peak JavaScript
 heap was 29.41 MiB versus 60.16 MiB for the full-cache load. The final cache
 retained its prior SHA-256, while repeating the bounded overview traversal
-added roughly 0.3–0.4 seconds to total conversion. The trade is accepted:
-time-to-visible improves materially, conversion remains below the 5-second
-target, and no second whole-drawing model or memory class is introduced.
+added roughly 0.3–0.4 seconds to total conversion.
+
+The complete packaged-extension measurement makes this a speed-first option,
+not the default. Four stabilized balanced runs initialized Webview content
+after conversion and reached the first frame in 3,736–3,795 ms with
+530,435,720–595,660,352 bytes incremental physical memory. A stabilized
+progressive run reached 1,824 ms but used 664,686,480 bytes, missing the
+600 MB target. During immediate VS Code startup overlap it used 919,359,496
+bytes and failed the 800 MB hard limit. `dwgViewer.progressivePreview`
+therefore defaults to `false`; users can explicitly trade memory for the
+earlier frame without changing the chosen parser or canonical cache.
 
 ## WASM backend qualification
 

@@ -19,6 +19,12 @@ import {
   MAX_SHX_FONT_DIRECTORIES,
   ShxFontChannel,
 } from "./shx-font-channel";
+import {
+  createQualificationReporter,
+  type QualificationCloseStage,
+  type QualificationFields,
+  type QualificationReporter,
+} from "./qualification";
 import { renderWebviewHtml } from "./webview-html";
 
 const VIEW_TYPE = "dwgViewer.dwg";
@@ -235,6 +241,7 @@ class DwgEditorProvider
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
+    private readonly qualification?: QualificationReporter,
   ) {}
 
   openCustomDocument(
@@ -253,32 +260,46 @@ class DwgEditorProvider
     webviewPanel: vscode.WebviewPanel,
     token: vscode.CancellationToken,
   ): Promise<void> {
+    const qualificationSession = randomBytes(8).toString("hex");
+    const emitQualification = (
+      event: string,
+      fields: QualificationFields = {},
+    ): Promise<void> =>
+      this.qualification?.emit(event, {
+        session_id: qualificationSession,
+        ...fields,
+      }) ?? Promise.resolve();
+    const closeAfterQualification = (
+      stage: QualificationCloseStage,
+    ): void => {
+      if (!this.qualification?.claimClose(stage)) {
+        return;
+      }
+      setTimeout(() => {
+        void vscode.commands.executeCommand(
+          "workbench.action.closeActiveEditor",
+        );
+      }, stage === "conversion" ? 500 : 0);
+    };
+    void emitQualification("editor-open", {
+      extension_host_pid: process.pid,
+    });
     const mediaRoot = vscode.Uri.joinPath(
       this.context.extensionUri,
       "media",
       "webview",
     );
-    webviewPanel.webview.options = {
-      enableScripts: true,
-      localResourceRoots: [mediaRoot],
-    };
     const template = await readFile(
       path.join(mediaRoot.fsPath, "index.html"),
       "utf8",
     );
-    const nonce = randomBytes(24).toString("base64url");
-    webviewPanel.webview.html = renderWebviewHtml(template, {
-      cspSource: webviewPanel.webview.cspSource,
-      nonce,
-      stylesUri: webviewPanel.webview
-        .asWebviewUri(vscode.Uri.joinPath(mediaRoot, "styles.css"))
-        .toString(),
-      scriptUri: webviewPanel.webview
-        .asWebviewUri(vscode.Uri.joinPath(mediaRoot, "src", "main.mjs"))
-        .toString(),
-    });
+    const progressivePreview = vscode.workspace
+      .getConfiguration("dwgViewer", document.uri)
+      .get<boolean>("progressivePreview", false);
 
     let disposed = false;
+    let webviewInitialized = false;
+    let webviewReady = false;
     let generation = 0;
     let conversion: AbortController | undefined;
     const rangeChannels = new Map<string, CacheRangeChannel>();
@@ -287,21 +308,61 @@ class DwgEditorProvider
     let activeCacheId: string | undefined;
     let activeCacheReused = false;
     let activeEngine: SceneEngineDescriptor | undefined;
+    let activeCacheReadyMessage:
+      | Readonly<Record<string, boolean | number | string>>
+      | undefined;
+    let pendingStateMessage:
+      | Readonly<
+          Record<
+            string,
+            boolean | number | string | undefined
+          >
+        >
+      | undefined;
     let openStartedAt = 0;
     // LibreDWG can approach 600 MiB RSS, so retries never overlap processes.
     let startQueue: Promise<void> = Promise.resolve();
+
+    const initializeWebview = (): void => {
+      if (webviewInitialized || disposed) {
+        return;
+      }
+      webviewInitialized = true;
+      webviewPanel.webview.options = {
+        enableScripts: true,
+        localResourceRoots: [mediaRoot],
+      };
+      const nonce = randomBytes(24).toString("base64url");
+      webviewPanel.webview.html = renderWebviewHtml(template, {
+        cspSource: webviewPanel.webview.cspSource,
+        nonce,
+        stylesUri: webviewPanel.webview
+          .asWebviewUri(vscode.Uri.joinPath(mediaRoot, "styles.css"))
+          .toString(),
+        scriptUri: webviewPanel.webview
+          .asWebviewUri(
+            vscode.Uri.joinPath(mediaRoot, "src", "main.mjs"),
+          )
+          .toString(),
+      });
+    };
 
     const postState = async (
       state: "preparing" | "converting" | "validating" | "error",
       message: string,
       code?: string,
     ): Promise<void> => {
-      await webviewPanel.webview.postMessage({
+      const stateMessage = {
         type: "dwg-cache-state/1",
         state,
         message,
         code,
-      });
+      } as const;
+      if (!webviewReady) {
+        pendingStateMessage = stateMessage;
+        return;
+      }
+      await webviewPanel.webview.postMessage(stateMessage);
     };
 
     const stopCurrent = async (): Promise<void> => {
@@ -309,6 +370,8 @@ class DwgEditorProvider
       conversion = undefined;
       activeCacheId = undefined;
       activeEngine = undefined;
+      activeCacheReadyMessage = undefined;
+      pendingStateMessage = undefined;
       const channels = [...rangeChannels.values()];
       const releases = [...previewReleases.values()];
       rangeChannels.clear();
@@ -397,14 +460,18 @@ class DwgEditorProvider
       activeCacheId = undefined;
       activeCacheReused = false;
       openStartedAt = Date.now();
+      void emitQualification("conversion-start", { force });
       await postState(
         "preparing",
         force ? "캐시를 다시 만들 준비 중…" : "도면 캐시 확인 중…",
       );
 
       try {
-        const configuredPath = vscode.workspace
-          .getConfiguration("dwgViewer")
+        const configuration = vscode.workspace.getConfiguration(
+          "dwgViewer",
+          document.uri,
+        );
+        const configuredPath = configuration
           .get<string>("libredwgAdapterPath", "");
         const adapterPath = await resolveLibreDwgAdapter({
           configuredPath,
@@ -437,50 +504,55 @@ class DwgEditorProvider
               return await manager.prepare(document.uri.fsPath, {
                 force,
                 signal: controller.signal,
-                onPreview: async (preview) => {
-                  if (
-                    disposed ||
-                    controller.signal.aborted ||
-                    currentGeneration !== generation
-                  ) {
-                    await preview.release();
-                    return;
-                  }
-                  const channel = await CacheRangeChannel.open(
-                    preview.cacheId,
-                    preview.cachePath,
-                    preview.size,
-                    (message) =>
-                      webviewPanel.webview.postMessage(message),
-                  );
-                  if (
-                    disposed ||
-                    controller.signal.aborted ||
-                    currentGeneration !== generation
-                  ) {
-                    await channel.dispose();
-                    await preview.release();
-                    return;
-                  }
-                  rangeChannels.set(preview.cacheId, channel);
-                  previewReleases.set(
-                    preview.cacheId,
-                    preview.release,
-                  );
-                  try {
-                    await webviewPanel.webview.postMessage({
-                      type: "dwg-cache-preview-ready/1",
-                      cacheId: preview.cacheId,
-                      size: preview.size,
-                      engineId: preview.engine.engineId,
-                      engineVersion: preview.engine.engineVersion,
-                      engineBackend: preview.engine.backendId,
-                    });
-                  } catch (error) {
-                    await disposePreview(preview.cacheId);
-                    throw error;
-                  }
-                },
+                onPreview: progressivePreview
+                  ? async (preview) => {
+                      if (
+                        disposed ||
+                        controller.signal.aborted ||
+                        currentGeneration !== generation
+                      ) {
+                        await preview.release();
+                        return;
+                      }
+                      const channel = await CacheRangeChannel.open(
+                        preview.cacheId,
+                        preview.cachePath,
+                        preview.size,
+                        (message) =>
+                          webviewPanel.webview.postMessage(message),
+                      );
+                      if (
+                        disposed ||
+                        controller.signal.aborted ||
+                        currentGeneration !== generation
+                      ) {
+                        await channel.dispose();
+                        await preview.release();
+                        return;
+                      }
+                      rangeChannels.set(preview.cacheId, channel);
+                      previewReleases.set(
+                        preview.cacheId,
+                        preview.release,
+                      );
+                      try {
+                        await webviewPanel.webview.postMessage({
+                          type: "dwg-cache-preview-ready/1",
+                          cacheId: preview.cacheId,
+                          size: preview.size,
+                          engineId: preview.engine.engineId,
+                          engineVersion: preview.engine.engineVersion,
+                          engineBackend: preview.engine.backendId,
+                        });
+                        void emitQualification("preview-published", {
+                          size_bytes: preview.size,
+                        });
+                      } catch (error) {
+                        await disposePreview(preview.cacheId);
+                        throw error;
+                      }
+                    }
+                  : undefined,
                 onProgress: (event) => {
                   const phaseText: Record<
                     SceneEngineProgressPhase,
@@ -496,6 +568,13 @@ class DwgEditorProvider
                   };
                   const message = phaseText[event.phase];
                   progress.report({ message });
+                  void emitQualification("engine-progress", {
+                    phase: event.phase,
+                  }).finally(() => {
+                    if (event.phase === "parsing") {
+                      closeAfterQualification("conversion");
+                    }
+                  });
                   if (
                     event.phase === "parsing" ||
                     event.phase === "preview-ready" ||
@@ -523,6 +602,10 @@ class DwgEditorProvider
         ) {
           return;
         }
+        void emitQualification("cache-prepared", {
+          reused: prepared.reused,
+          size_bytes: prepared.size,
+        });
         const channel = await CacheRangeChannel.open(
           prepared.cacheId,
           prepared.cachePath,
@@ -542,7 +625,7 @@ class DwgEditorProvider
         activeCacheReused = prepared.reused;
         activeEngine = prepared.engine;
         fontChannel = createFontChannel(prepared.cacheId);
-        await webviewPanel.webview.postMessage({
+        activeCacheReadyMessage = {
           type: "dwg-cache-ready/1",
           cacheId: prepared.cacheId,
           size: prepared.size,
@@ -550,7 +633,13 @@ class DwgEditorProvider
           engineId: prepared.engine.engineId,
           engineVersion: prepared.engine.engineVersion,
           engineBackend: prepared.engine.backendId,
-        });
+        };
+        initializeWebview();
+        if (webviewReady) {
+          await webviewPanel.webview.postMessage(
+            activeCacheReadyMessage,
+          );
+        }
       } catch (error) {
         if (
           disposed ||
@@ -558,11 +647,13 @@ class DwgEditorProvider
           isSceneEngineAbort(error)
         ) {
           if (!disposed && currentGeneration === generation) {
+            void emitQualification("conversion-cancelled");
             await postState(
               "error",
               "변환이 취소되었습니다. 재시도할 수 있습니다.",
               "CONVERSION_CANCELLED",
             );
+            initializeWebview();
           }
           return;
         }
@@ -575,7 +666,9 @@ class DwgEditorProvider
             ? error.userMessage
             : "도면 뷰어를 준비하지 못했습니다.";
         this.output.appendLine(`[${code}] cache preparation failed`);
+        void emitQualification("conversion-failed", { code });
         await postState("error", message, code);
+        initializeWebview();
       } finally {
         if (conversion === controller) {
           conversion = undefined;
@@ -610,9 +703,21 @@ class DwgEditorProvider
           return;
         }
         switch (raw?.type) {
-          case "dwg-webview-ready/1":
-            requestStart(false);
+          case "dwg-webview-ready/1": {
+            webviewReady = true;
+            if (activeCacheReadyMessage) {
+              void webviewPanel.webview.postMessage(
+                activeCacheReadyMessage,
+              );
+            } else if (pendingStateMessage) {
+              void webviewPanel.webview.postMessage(
+                pendingStateMessage,
+              );
+            } else if (progressivePreview) {
+              requestStart(false);
+            }
             break;
+          }
           case "dwg-cache-retry/1":
             requestStart(false);
             break;
@@ -690,6 +795,10 @@ class DwgEditorProvider
                 } host_to_frame_ms=${hostElapsed} webview_frame_ms=${webviewElapsed}`,
               );
               void disposeInactivePreviews();
+              void emitQualification("full-first-frame", {
+                host_to_frame_ms: hostElapsed,
+                webview_frame_ms: webviewElapsed,
+              }).finally(() => closeAfterQualification("full"));
             } else if (
               typeof raw.cacheId === "string" &&
               previewReleases.has(raw.cacheId)
@@ -700,6 +809,9 @@ class DwgEditorProvider
                   activeEngine?.engineId ?? "libredwg"
                 } host_to_frame_ms=${hostElapsed}`,
               );
+              void emitQualification("preview-first-frame", {
+                host_to_frame_ms: hostElapsed,
+              }).finally(() => closeAfterQualification("preview"));
             }
             break;
           case "dwg-viewer-error/1":
@@ -746,7 +858,10 @@ class DwgEditorProvider
       fontConfigurationSubscription.dispose();
       resolutionCancellation?.dispose();
       resolutionCancellation = undefined;
-      void stopCurrent();
+      void emitQualification("editor-dispose-start");
+      void stopCurrent().finally(() =>
+        emitQualification("editor-disposed"),
+      );
     };
     const documentSession = document.addSession(disposeSession);
     webviewPanel.onDidDispose(() => {
@@ -759,12 +874,24 @@ class DwgEditorProvider
       resolutionCancellation.dispose();
       resolutionCancellation = undefined;
     }
+    if (progressivePreview) {
+      initializeWebview();
+    } else {
+      requestStart(false);
+    }
   }
 }
 
+let qualificationReporter: QualificationReporter | undefined;
+
 export function activate(context: vscode.ExtensionContext): void {
+  qualificationReporter = createQualificationReporter();
   const output = vscode.window.createOutputChannel("DWG Viewer");
-  const provider = new DwgEditorProvider(context, output);
+  const provider = new DwgEditorProvider(
+    context,
+    output,
+    qualificationReporter,
+  );
   context.subscriptions.push(
     output,
     vscode.commands.registerCommand(
@@ -788,4 +915,7 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 }
 
-export function deactivate(): void {}
+export async function deactivate(): Promise<void> {
+  await qualificationReporter?.close();
+  qualificationReporter = undefined;
+}
