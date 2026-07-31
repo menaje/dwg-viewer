@@ -357,6 +357,7 @@ export class WebGlLineRenderer {
     this.detailSelections = new Map();
     this.overviewScene = null;
     this.hatchFillScene = null;
+    this.hatchPatternScene = null;
     this.textOverlay = null;
     if (!this.instanceBuffer || !this.layerTexture) {
       throw new Error("cannot allocate WebGL buffers");
@@ -630,6 +631,39 @@ export class WebGlLineRenderer {
     });
   }
 
+  setHatchPatterns({ batches, vertices, metrics = null }) {
+    if (
+      !vertices ||
+      vertices.byteLength !== vertices.vertexCount * VERTEX_STRIDE ||
+      vertices.buffer.byteLength !== vertices.byteLength
+    ) {
+      throw new Error("HATCH pattern vertex payload is inconsistent");
+    }
+    let expectedFirstVertex = 0;
+    for (const batch of batches) {
+      if (
+        batch.firstVertex !== expectedFirstVertex ||
+        batch.vertexCount % 2 !== 0
+      ) {
+        throw new Error(`HATCH pattern batch ${batch.id} has an invalid range`);
+      }
+      expectedFirstVertex += batch.vertexCount;
+    }
+    if (expectedFirstVertex !== vertices.vertexCount) {
+      throw new Error("HATCH pattern batches do not cover the vertex buffer");
+    }
+    if (this.hatchPatternScene?.resource) {
+      this.deleteVertices(this.hatchPatternScene.resource);
+    }
+    const resource =
+      vertices.byteLength > 0 ? this.uploadVertices(vertices.buffer) : null;
+    this.hatchPatternScene = Object.freeze({
+      batches,
+      metrics,
+      resource,
+    });
+  }
+
   addDetailBatch(batch, vertices) {
     const existing = this.detailResources.get(batch.id);
     if (existing) {
@@ -675,6 +709,7 @@ export class WebGlLineRenderer {
     {
       detail = false,
       fill = false,
+      pattern = false,
       firstVertex = batch.firstVertex,
       instanceIndices = null,
       primitive = this.gl.LINES,
@@ -739,6 +774,11 @@ export class WebGlLineRenderer {
         metrics.hatchFillSubmittedVertices +=
           batch.vertexCount * instanceCount;
       }
+      if (pattern) {
+        metrics.hatchPatternDrawCalls += 1;
+        metrics.hatchPatternSubmittedVertices +=
+          batch.vertexCount * instanceCount;
+      }
     }
   }
 
@@ -759,6 +799,8 @@ export class WebGlLineRenderer {
       cachedDetailGpuBytes += entry.byteLength;
     }
     const hatchFillGpuBytes = this.hatchFillScene?.resource?.byteLength ?? 0;
+    const hatchPatternGpuBytes =
+      this.hatchPatternScene?.resource?.byteLength ?? 0;
     const metrics = {
       drawCalls: 0,
       detailDrawCalls: 0,
@@ -767,6 +809,10 @@ export class WebGlLineRenderer {
       hatchFillSubmittedVertices: 0,
       hatchFillGpuBytes,
       hatchFill: this.hatchFillScene?.metrics ?? null,
+      hatchPatternDrawCalls: 0,
+      hatchPatternSubmittedVertices: 0,
+      hatchPatternGpuBytes,
+      hatchPattern: this.hatchPatternScene?.metrics ?? null,
       submittedInstances: 0,
       submittedVertices: 0,
       detailSubmittedVertices: 0,
@@ -775,7 +821,8 @@ export class WebGlLineRenderer {
       gpuVertexBytes:
         this.overviewScene.resource.byteLength +
         cachedDetailGpuBytes +
-        hatchFillGpuBytes,
+        hatchFillGpuBytes +
+        hatchPatternGpuBytes,
       cachedDetailGpuBytes,
       cachedDetailBatches: this.detailResources.size,
       bounds: this.overviewScene.bounds,
@@ -818,6 +865,21 @@ export class WebGlLineRenderer {
     gl.uniformMatrix4fv(this.projectionLocation, false, camera.projection);
     gl.uniform1i(this.layerCountLocation, this.layerCount);
     gl.uniform1i(this.layerTextureLocation, 0);
+    if (this.hatchPatternScene?.resource) {
+      for (const batch of this.hatchPatternScene.batches) {
+        this.drawBatch(
+          batch,
+          this.hatchPatternScene.resource,
+          this.overviewScene.instanceGraph,
+          camera,
+          metrics,
+          {
+            pattern: true,
+            instanceIndices: batch.instanceIndices,
+          },
+        );
+      }
+    }
     for (const batch of this.overviewScene.batches) {
       if (batch.lodLevel !== 0) {
         break;
@@ -867,6 +929,7 @@ export class WebGlLineRenderer {
     this.textOverlay?.dispose();
     this.textOverlay = null;
     this.hatchFillScene = null;
+    this.hatchPatternScene = null;
     this.overviewScene = null;
   }
 }

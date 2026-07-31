@@ -940,12 +940,20 @@ json_hatch_fills (const LibreDwgHatchFillSummary *summary)
   printf (",\"gradient_colors\":%" PRIu64,
           summary->gradient_colors);
   printf (",\"seed_points\":%" PRIu64, summary->seed_points);
+  printf (",\"pattern_definition_lines\":%" PRIu64,
+          summary->pattern_definition_lines);
+  printf (",\"pattern_dashes\":%" PRIu64,
+          summary->pattern_dashes);
   printf (",\"truncated_fill_hatches\":%" PRIu64,
           summary->truncated_fill_hatches);
+  printf (",\"truncated_pattern_hatches\":%" PRIu64,
+          summary->truncated_pattern_hatches);
   printf (",\"skipped_open_paths\":%" PRIu64,
           summary->skipped_open_paths);
   printf (",\"skipped_invalid_paths\":%" PRIu64,
           summary->skipped_invalid_paths);
+  printf (",\"skipped_invalid_pattern_lines\":%" PRIu64,
+          summary->skipped_invalid_pattern_lines);
   putchar ('}');
 }
 

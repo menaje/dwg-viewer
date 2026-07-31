@@ -1,6 +1,6 @@
 export const CACHE_MAGIC = new Uint8Array([68, 87, 71, 83, 67, 78, 49, 0]);
 export const CACHE_VERSION_MAJOR = 1;
-export const MAX_CACHE_VERSION_MINOR = 6;
+export const MAX_CACHE_VERSION_MINOR = 7;
 export const HEADER_SIZE = 64;
 export const DIRECTORY_ENTRY_SIZE = 40;
 export const GPU_LINE_BATCH_RECORD_SIZE = 128;
@@ -13,6 +13,8 @@ export const HATCH_LOOP_RECORD_SIZE = 48;
 export const HATCH_VERTEX_RECORD_SIZE = 24;
 export const HATCH_GRADIENT_COLOR_RECORD_SIZE = 16;
 export const HATCH_SEED_POINT_RECORD_SIZE = 16;
+export const HATCH_PATTERN_LINE_RECORD_SIZE = 72;
+export const HATCH_PATTERN_DASH_RECORD_SIZE = 8;
 
 export const SectionKind = Object.freeze({
   Drawing: 1,
@@ -40,6 +42,8 @@ export const SectionKind = Object.freeze({
   HatchVertices: 34,
   HatchGradientColors: 35,
   HatchSeedPoints: 36,
+  HatchPatternLines: 37,
+  HatchPatternDashes: 38,
 });
 
 export const GpuLineBatchKind = Object.freeze({
@@ -58,12 +62,17 @@ const FIXED_RECORD_SIZES = new Map([
   [SectionKind.HatchVertices, HATCH_VERTEX_RECORD_SIZE],
   [SectionKind.HatchGradientColors, HATCH_GRADIENT_COLOR_RECORD_SIZE],
   [SectionKind.HatchSeedPoints, HATCH_SEED_POINT_RECORD_SIZE],
+  [SectionKind.HatchPatternLines, HATCH_PATTERN_LINE_RECORD_SIZE],
+  [SectionKind.HatchPatternDashes, HATCH_PATTERN_DASH_RECORD_SIZE],
 ]);
 const MAX_METADATA_SECTION_BYTES = 64 * 1024 * 1024;
 const MAX_CACHE_STRING_BYTES = 1024 * 1024;
 const MAX_OVERVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_DETAIL_BATCH_BYTES = 512 * 1024;
 const MAX_HATCH_SOURCE_RECORDS = 1_048_576;
+const MAX_HATCH_PATTERN_LINES = 262_144;
+const MAX_HATCH_PATTERN_LINES_PER_ENTITY = 4_096;
+const MAX_HATCH_PATTERN_DASHES_PER_ENTITY = 65_536;
 const STRING_TABLE_HEADER_SIZE = 16;
 const STRING_TABLE_FLAG = 1;
 
@@ -346,6 +355,12 @@ export class HatchSourceTable {
     gradientColorCount,
     seedPointBuffer,
     seedPointCount,
+    patternLineBuffer = new ArrayBuffer(0),
+    patternLineCount = 0,
+    patternDashBuffer = new ArrayBuffer(0),
+    patternDashCount = 0,
+    patternLineStarts = new Uint32Array(entityCount),
+    patternLineCounts = new Uint32Array(entityCount),
   }) {
     this.entityBuffer = entityBuffer;
     this.entityView = new DataView(entityBuffer);
@@ -363,6 +378,14 @@ export class HatchSourceTable {
     this.seedPointBuffer = seedPointBuffer;
     this.seedPointView = new DataView(seedPointBuffer);
     this.seedPointCount = seedPointCount;
+    this.patternLineBuffer = patternLineBuffer;
+    this.patternLineView = new DataView(patternLineBuffer);
+    this.patternLineCount = patternLineCount;
+    this.patternDashBuffer = patternDashBuffer;
+    this.patternDashView = new DataView(patternDashBuffer);
+    this.patternDashCount = patternDashCount;
+    this.patternLineStarts = patternLineStarts;
+    this.patternLineCounts = patternLineCounts;
     this.decoder = new TextDecoder("utf-8", { fatal: true });
   }
 
@@ -441,6 +464,8 @@ export class HatchSourceTable {
       offset + 188,
       true,
     );
+    target.firstPatternLine = this.patternLineStarts[index];
+    target.patternLineCount = this.patternLineCounts[index];
     return target;
   }
 
@@ -526,6 +551,55 @@ export class HatchSourceTable {
     target[0] = this.seedPointView.getFloat64(offset, true);
     target[1] = this.seedPointView.getFloat64(offset + 8, true);
     return target;
+  }
+
+  readPatternLine(index, target) {
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= this.patternLineCount
+    ) {
+      throw new RangeError(`HATCH pattern-line index is out of range: ${index}`);
+    }
+    if (!target || typeof target !== "object") {
+      throw new TypeError("HATCH pattern-line target must be an object");
+    }
+    const offset = index * HATCH_PATTERN_LINE_RECORD_SIZE;
+    target.index = index;
+    target.hatchIndex = readSafeU64(
+      this.patternLineView,
+      offset,
+      "HATCH pattern-line source index",
+    );
+    target.sourceLineIndex = this.patternLineView.getUint32(offset + 8, true);
+    target.angle = this.patternLineView.getFloat64(offset + 16, true);
+    target.basePoint ??= [0, 0];
+    target.basePoint[0] = this.patternLineView.getFloat64(offset + 24, true);
+    target.basePoint[1] = this.patternLineView.getFloat64(offset + 32, true);
+    target.offset ??= [0, 0];
+    target.offset[0] = this.patternLineView.getFloat64(offset + 40, true);
+    target.offset[1] = this.patternLineView.getFloat64(offset + 48, true);
+    target.firstDash = readSafeU64(
+      this.patternLineView,
+      offset + 56,
+      "HATCH pattern-dash offset",
+    );
+    target.dashCount = this.patternLineView.getUint32(offset + 64, true);
+    return target;
+  }
+
+  readPatternDash(index) {
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= this.patternDashCount
+    ) {
+      throw new RangeError(`HATCH pattern-dash index is out of range: ${index}`);
+    }
+    return this.patternDashView.getFloat64(
+      index * HATCH_PATTERN_DASH_RECORD_SIZE,
+      true,
+    );
   }
 
   get(index) {
@@ -706,6 +780,27 @@ export class SceneCacheReader {
       validateRecordSection(
         hatchSeedPoints,
         HATCH_SEED_POINT_RECORD_SIZE,
+      );
+    }
+    if (minor >= 7) {
+      const hatchPatternLines = sections.get(
+        SectionKind.HatchPatternLines,
+      );
+      const hatchPatternDashes = sections.get(
+        SectionKind.HatchPatternDashes,
+      );
+      if (!hatchPatternLines || !hatchPatternDashes) {
+        throw new Error(
+          "Scene Cache v1.7 is missing required HATCH pattern sections",
+        );
+      }
+      validateRecordSection(
+        hatchPatternLines,
+        HATCH_PATTERN_LINE_RECORD_SIZE,
+      );
+      validateRecordSection(
+        hatchPatternDashes,
+        HATCH_PATTERN_DASH_RECORD_SIZE,
       );
     }
 
@@ -950,6 +1045,14 @@ export class SceneCacheReader {
       const vertices = this.getSection(SectionKind.HatchVertices);
       const gradientColors = this.getSection(SectionKind.HatchGradientColors);
       const seedPoints = this.getSection(SectionKind.HatchSeedPoints);
+      const patternLines =
+        this.header.minor >= 7
+          ? this.getSection(SectionKind.HatchPatternLines)
+          : null;
+      const patternDashes =
+        this.header.minor >= 7
+          ? this.getSection(SectionKind.HatchPatternDashes)
+          : null;
       validateStringTableDirectoryEntry(entities, HATCH_ENTITY_RECORD_SIZE);
       validateRecordSection(loops, HATCH_LOOP_RECORD_SIZE);
       validateRecordSection(vertices, HATCH_VERTEX_RECORD_SIZE);
@@ -958,18 +1061,38 @@ export class SceneCacheReader {
         HATCH_GRADIENT_COLOR_RECORD_SIZE,
       );
       validateRecordSection(seedPoints, HATCH_SEED_POINT_RECORD_SIZE);
+      if (patternLines && patternDashes) {
+        validateRecordSection(
+          patternLines,
+          HATCH_PATTERN_LINE_RECORD_SIZE,
+        );
+        validateRecordSection(
+          patternDashes,
+          HATCH_PATTERN_DASH_RECORD_SIZE,
+        );
+      }
       for (const section of [
         entities,
         loops,
         vertices,
         gradientColors,
         seedPoints,
+        ...(patternLines ? [patternLines] : []),
+        ...(patternDashes ? [patternDashes] : []),
       ]) {
         if (section.recordCount > MAX_HATCH_SOURCE_RECORDS) {
           throw new Error(
             `HATCH section ${section.kind} exceeds the ${MAX_HATCH_SOURCE_RECORDS}-record limit`,
           );
         }
+      }
+      if (
+        patternLines &&
+        patternLines.recordCount > MAX_HATCH_PATTERN_LINES
+      ) {
+        throw new Error(
+          `HATCH pattern-line section exceeds the ${MAX_HATCH_PATTERN_LINES}-record limit`,
+        );
       }
 
       const [
@@ -978,18 +1101,28 @@ export class SceneCacheReader {
         vertexBuffer,
         gradientColorBuffer,
         seedPointBuffer,
+        patternLineBuffer,
+        patternDashBuffer,
       ] = await Promise.all([
         this.readWholeMetadataSection(entities),
         this.readWholeMetadataSection(loops),
         this.readWholeMetadataSection(vertices),
         this.readWholeMetadataSection(gradientColors),
         this.readWholeMetadataSection(seedPoints),
+        patternLines
+          ? this.readWholeMetadataSection(patternLines)
+          : Promise.resolve(new ArrayBuffer(0)),
+        patternDashes
+          ? this.readWholeMetadataSection(patternDashes)
+          : Promise.resolve(new ArrayBuffer(0)),
       ]);
       const entityView = new DataView(entityBuffer);
       const loopView = new DataView(loopBuffer);
       const vertexView = new DataView(vertexBuffer);
       const gradientColorView = new DataView(gradientColorBuffer);
       const seedPointView = new DataView(seedPointBuffer);
+      const patternLineView = new DataView(patternLineBuffer);
+      const patternDashView = new DataView(patternDashBuffer);
       const recordCount = entityView.getUint32(0, true);
       const recordSize = entityView.getUint32(4, true);
       const stringOffset = readSafeU64(
@@ -1216,6 +1349,102 @@ export class SceneCacheReader {
         }
       }
 
+      const patternLineStarts = new Uint32Array(entities.recordCount);
+      const patternLineCounts = new Uint32Array(entities.recordCount);
+      const patternDashCounts = new Uint32Array(entities.recordCount);
+      let expectedFirstDash = 0;
+      let previousHatchIndex = -1;
+      let previousSourceLineIndex = -1;
+      for (
+        let index = 0;
+        index < (patternLines?.recordCount ?? 0);
+        index += 1
+      ) {
+        const offset = index * HATCH_PATTERN_LINE_RECORD_SIZE;
+        const hatchIndex = readSafeU64(
+          patternLineView,
+          offset,
+          "HATCH pattern-line source index",
+        );
+        const sourceLineIndex = patternLineView.getUint32(offset + 8, true);
+        const flags = patternLineView.getUint32(offset + 12, true);
+        const firstDash = readSafeU64(
+          patternLineView,
+          offset + 56,
+          "HATCH pattern-dash offset",
+        );
+        const dashCount = patternLineView.getUint32(offset + 64, true);
+        const reserved = patternLineView.getUint32(offset + 68, true);
+        const definitionLineCount =
+          hatchIndex < entities.recordCount
+            ? entityView.getUint32(
+                STRING_TABLE_HEADER_SIZE +
+                  hatchIndex * HATCH_ENTITY_RECORD_SIZE +
+                  188,
+                true,
+              )
+            : 0;
+        if (
+          hatchIndex >= entities.recordCount ||
+          hatchIndex < previousHatchIndex ||
+          sourceLineIndex >= definitionLineCount ||
+          (hatchIndex === previousHatchIndex &&
+            sourceLineIndex <= previousSourceLineIndex) ||
+          flags !== 0 ||
+          reserved !== 0 ||
+          firstDash !== expectedFirstDash ||
+          patternLineCounts[hatchIndex] >=
+            MAX_HATCH_PATTERN_LINES_PER_ENTITY ||
+          patternDashCounts[hatchIndex] + dashCount >
+            MAX_HATCH_PATTERN_DASHES_PER_ENTITY ||
+          checkedAdd(firstDash, dashCount, "HATCH pattern-dash range") >
+            (patternDashes?.recordCount ?? 0) ||
+          [16, 24, 32, 40, 48].some(
+            (relativeOffset) =>
+              !Number.isFinite(
+                patternLineView.getFloat64(
+                  offset + relativeOffset,
+                  true,
+                ),
+              ),
+          )
+        ) {
+          throw new Error(`HATCH pattern line ${index} has invalid metadata`);
+        }
+        if (hatchIndex !== previousHatchIndex) {
+          previousSourceLineIndex = -1;
+        }
+        patternLineCounts[hatchIndex] += 1;
+        patternDashCounts[hatchIndex] += dashCount;
+        expectedFirstDash += dashCount;
+        previousHatchIndex = hatchIndex;
+        previousSourceLineIndex = sourceLineIndex;
+      }
+      if (expectedFirstDash !== (patternDashes?.recordCount ?? 0)) {
+        throw new Error("HATCH pattern-dash pool is not fully covered");
+      }
+      for (
+        let index = 0;
+        index < (patternDashes?.recordCount ?? 0);
+        index += 1
+      ) {
+        if (
+          !Number.isFinite(
+            patternDashView.getFloat64(
+              index * HATCH_PATTERN_DASH_RECORD_SIZE,
+              true,
+            ),
+          )
+        ) {
+          throw new Error(`HATCH pattern dash ${index} is non-finite`);
+        }
+      }
+      let firstPatternLine = 0;
+      for (let index = 0; index < patternLineCounts.length; index += 1) {
+        patternLineStarts[index] = firstPatternLine;
+        firstPatternLine += patternLineCounts[index];
+      }
+
       return new HatchSourceTable({
         entityBuffer,
         stringOffset,
@@ -1228,6 +1457,12 @@ export class SceneCacheReader {
         gradientColorCount: gradientColors.recordCount,
         seedPointBuffer,
         seedPointCount: seedPoints.recordCount,
+        patternLineBuffer,
+        patternLineCount: patternLines?.recordCount ?? 0,
+        patternDashBuffer,
+        patternDashCount: patternDashes?.recordCount ?? 0,
+        patternLineStarts,
+        patternLineCounts,
       });
     });
   }

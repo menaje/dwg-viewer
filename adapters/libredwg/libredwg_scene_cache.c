@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MPL-2.0
  *
- * A bounded-memory Scene Cache v1.6 writer for GNU LibreDWG. Geometry and
+ * A bounded-memory Scene Cache v1.7 writer for GNU LibreDWG. Geometry and
  * source text are traversed repeatedly and written directly to the
  * destination; the writer never creates a JSON or whole-drawing in-memory
  * representation. Large detail passes use private temporary files for an
@@ -68,6 +68,10 @@
 #define MAX_HATCH_BOUNDARY_SEGMENTS 65536u
 #define MAX_HATCH_FILL_VERTICES 1048576u
 #define MAX_HATCH_AUX_RECORDS 1048576u
+#define MAX_HATCH_PATTERN_LINES_PER_ENTITY 4096u
+#define MAX_HATCH_PATTERN_DASHES_PER_ENTITY 65536u
+#define MAX_HATCH_PATTERN_LINES 262144u
+#define MAX_HATCH_PATTERN_DASHES 1048576u
 #define HATCH_FLAG_SOLID 1u
 #define HATCH_FLAG_ASSOCIATIVE (1u << 1)
 #define HATCH_FLAG_DOUBLE (1u << 2)
@@ -102,7 +106,9 @@ enum
   SECTION_HATCH_LOOPS = 33,
   SECTION_HATCH_VERTICES = 34,
   SECTION_HATCH_GRADIENT_COLORS = 35,
-  SECTION_HATCH_SEED_POINTS = 36
+  SECTION_HATCH_SEED_POINTS = 36,
+  SECTION_HATCH_PATTERN_LINES = 37,
+  SECTION_HATCH_PATTERN_DASHES = 38
 };
 
 enum
@@ -128,7 +134,9 @@ enum
   HATCH_LOOP_RECORD_SIZE = 48,
   HATCH_VERTEX_RECORD_SIZE = 24,
   HATCH_GRADIENT_COLOR_RECORD_SIZE = 16,
-  HATCH_SEED_POINT_RECORD_SIZE = 16
+  HATCH_SEED_POINT_RECORD_SIZE = 16,
+  HATCH_PATTERN_LINE_RECORD_SIZE = 72,
+  HATCH_PATTERN_DASH_RECORD_SIZE = 8
 };
 
 typedef struct
@@ -410,6 +418,19 @@ typedef struct
 
 typedef struct
 {
+  uint64_t lines;
+  uint64_t dashes;
+  uint64_t invalid_lines;
+  int truncated;
+} HatchPatternScan;
+
+typedef int (*HatchPatternLineConsumer) (
+    void *context, uint64_t hatch_index, uint32_t source_line_index,
+    const Dwg_HATCH_DefLine *line, uint64_t first_dash,
+    uint32_t dash_count);
+
+typedef struct
+{
   OverviewPlan *overview;
   LineSegmentConsumer consumer;
   void *consumer_context;
@@ -452,7 +473,9 @@ static const uint32_t SECTION_KINDS[LIBREDWG_SCENE_SECTION_COUNT]
         SECTION_HATCH_LOOPS,
         SECTION_HATCH_VERTICES,
         SECTION_HATCH_GRADIENT_COLORS,
-        SECTION_HATCH_SEED_POINTS };
+        SECTION_HATCH_SEED_POINTS,
+        SECTION_HATCH_PATTERN_LINES,
+        SECTION_HATCH_PATTERN_DASHES };
 
 static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
     = { DRAWING_RECORD_SIZE,
@@ -479,7 +502,9 @@ static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
         HATCH_LOOP_RECORD_SIZE,
         HATCH_VERTEX_RECORD_SIZE,
         HATCH_GRADIENT_COLOR_RECORD_SIZE,
-        HATCH_SEED_POINT_RECORD_SIZE };
+        HATCH_SEED_POINT_RECORD_SIZE,
+        HATCH_PATTERN_LINE_RECORD_SIZE,
+        HATCH_PATTERN_DASH_RECORD_SIZE };
 
 static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
     = { "drawing",
@@ -506,7 +531,9 @@ static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
         "hatch_loops",
         "hatch_vertices",
         "hatch_gradient_colors",
-        "hatch_seed_points" };
+        "hatch_seed_points",
+        "hatch_pattern_lines",
+        "hatch_pattern_dashes" };
 
 static void
 set_error (CacheWriter *writer, const char *message)
@@ -5365,6 +5392,78 @@ scan_hatch_seed_points (const Dwg_Entity_HATCH *hatch,
   return count;
 }
 
+static int
+hatch_pattern_line_is_finite (const Dwg_HATCH_DefLine *line)
+{
+  size_t dash_index;
+  if (!line || !isfinite (line->angle) || !isfinite (line->pt0.x)
+      || !isfinite (line->pt0.y) || !isfinite (line->offset.x)
+      || !isfinite (line->offset.y)
+      || (line->num_dashes > 0u && !line->dashes))
+    return 0;
+  for (dash_index = 0; dash_index < (size_t)line->num_dashes;
+       dash_index++)
+    {
+      if (!isfinite (line->dashes[dash_index]))
+        return 0;
+    }
+  return 1;
+}
+
+static int
+scan_hatch_pattern_lines (
+    const Dwg_Entity_HATCH *hatch, uint64_t hatch_index,
+    uint64_t *global_lines, uint64_t *global_dashes,
+    HatchPatternLineConsumer consumer, void *consumer_context,
+    HatchPatternScan *scan)
+{
+  size_t source_line_index;
+  if (!hatch || !global_lines || !global_dashes || !scan)
+    return 0;
+  memset (scan, 0, sizeof (*scan));
+  if (hatch->num_deflines > 0u && !hatch->deflines)
+    {
+      scan->truncated = 1;
+      return 1;
+    }
+  for (source_line_index = 0;
+       hatch->deflines
+       && source_line_index < (size_t)hatch->num_deflines;
+       source_line_index++)
+    {
+      const Dwg_HATCH_DefLine *line
+          = &hatch->deflines[source_line_index];
+      uint64_t dash_count = (uint64_t)line->num_dashes;
+      uint64_t first_dash;
+      if (!hatch_pattern_line_is_finite (line))
+        {
+          scan->invalid_lines++;
+          continue;
+        }
+      if (scan->lines >= MAX_HATCH_PATTERN_LINES_PER_ENTITY
+          || scan->dashes
+                     > MAX_HATCH_PATTERN_DASHES_PER_ENTITY - dash_count
+          || *global_lines >= MAX_HATCH_PATTERN_LINES
+          || *global_dashes > MAX_HATCH_PATTERN_DASHES - dash_count)
+        {
+          scan->truncated = 1;
+          break;
+        }
+      first_dash = *global_dashes;
+      if (consumer
+          && !consumer (
+              consumer_context, hatch_index,
+              (uint32_t)source_line_index, line, first_dash,
+              (uint32_t)dash_count))
+        return 0;
+      (*global_lines)++;
+      *global_dashes += dash_count;
+      scan->lines++;
+      scan->dashes += dash_count;
+    }
+  return 1;
+}
+
 static double
 finite_or_default (double value, double fallback)
 {
@@ -5402,6 +5501,8 @@ write_hatch_entity_section (
   uint64_t global_vertices = 0;
   uint64_t global_gradient_colors = 0;
   uint64_t global_seed_points = 0;
+  uint64_t global_pattern_lines = 0;
+  uint64_t global_pattern_dashes = 0;
   uint64_t first_loop = 0;
   uint64_t hatch_index = 0;
   size_t object_index;
@@ -5429,6 +5530,7 @@ write_hatch_entity_section (
       const Dwg_Object *object = &dwg->object[object_index];
       const Dwg_Entity_HATCH *hatch;
       HatchEntityScan scan;
+      HatchPatternScan pattern_scan;
       char *pattern_name = NULL;
       char *gradient_name = NULL;
       uint32_t pattern_offset;
@@ -5441,7 +5543,7 @@ write_hatch_entity_section (
       uint64_t gradient_color_count;
       uint64_t seed_point_count;
       double normal[3];
-      int truncated = 0;
+      int fill_truncated = 0;
       if (object->fixedtype != DWG_TYPE_HATCH
           || !object->tio.entity
           || !(hatch = object->tio.entity->tio.HATCH))
@@ -5451,10 +5553,14 @@ write_hatch_entity_section (
               NULL, NULL, &scan))
         return 0;
       gradient_color_count = scan_hatch_gradient_colors (
-          hatch, &global_gradient_colors, &truncated);
+          hatch, &global_gradient_colors, &fill_truncated);
       seed_point_count = scan_hatch_seed_points (
-          hatch, &global_seed_points, &truncated);
-      truncated |= scan.truncated;
+          hatch, &global_seed_points, &fill_truncated);
+      fill_truncated |= scan.truncated;
+      if (!scan_hatch_pattern_lines (
+              hatch, hatch_index, &global_pattern_lines,
+              &global_pattern_dashes, NULL, NULL, &pattern_scan))
+        return 0;
       if (!copy_hatch_names (
               hatch, &pattern_name, &gradient_name)
           || !checked_string_layout (
@@ -5482,7 +5588,7 @@ write_hatch_entity_section (
         flags |= HATCH_FLAG_GRADIENT;
       if (hatch->single_color_gradient)
         flags |= HATCH_FLAG_SINGLE_COLOR_GRADIENT;
-      if (truncated)
+      if (fill_truncated || pattern_scan.truncated)
         flags |= HATCH_FLAG_TRUNCATED;
 
       if (!write_common (writer, object, tables)
@@ -5539,16 +5645,24 @@ write_hatch_entity_section (
       summary->fill_vertices += scan.vertices;
       summary->gradient_colors += gradient_color_count;
       summary->seed_points += seed_point_count;
+      summary->pattern_definition_lines += pattern_scan.lines;
+      summary->pattern_dashes += pattern_scan.dashes;
       summary->skipped_open_paths += scan.skipped_open_paths;
       summary->skipped_invalid_paths += scan.skipped_invalid_paths;
-      if (truncated)
+      summary->skipped_invalid_pattern_lines
+          += pattern_scan.invalid_lines;
+      if (fill_truncated)
         summary->truncated_fill_hatches++;
+      if (pattern_scan.truncated)
+        summary->truncated_pattern_hatches++;
       first_loop += scan.loops;
       hatch_index++;
     }
   if (hatch_index != counts->hatches
       || first_loop != summary->fill_loops
-      || global_vertices != summary->fill_vertices)
+      || global_vertices != summary->fill_vertices
+      || global_pattern_lines != summary->pattern_definition_lines
+      || global_pattern_dashes != summary->pattern_dashes)
     {
       set_error (writer, "HATCH entity counts changed while writing");
       return 0;
@@ -5812,6 +5926,148 @@ write_hatch_seed_point_section (CacheWriter *writer,
       writer, entry, SECTION_HATCH_SEED_POINTS,
       HATCH_SEED_POINT_RECORD_SIZE, "hatch_seed_points", offset,
       count);
+}
+
+typedef struct
+{
+  CacheWriter *writer;
+  uint64_t lines;
+} HatchPatternLineWriter;
+
+static int
+write_hatch_pattern_line (
+    void *context, uint64_t hatch_index, uint32_t source_line_index,
+    const Dwg_HATCH_DefLine *line, uint64_t first_dash,
+    uint32_t dash_count)
+{
+  HatchPatternLineWriter *writer
+      = (HatchPatternLineWriter *)context;
+  if (!write_u64 (writer->writer, hatch_index)
+      || !write_u32 (writer->writer, source_line_index)
+      || !write_u32 (writer->writer, 0)
+      || !write_f64 (writer->writer, line->angle)
+      || !write_f64 (writer->writer, line->pt0.x)
+      || !write_f64 (writer->writer, line->pt0.y)
+      || !write_f64 (writer->writer, line->offset.x)
+      || !write_f64 (writer->writer, line->offset.y)
+      || !write_u64 (writer->writer, first_dash)
+      || !write_u32 (writer->writer, dash_count)
+      || !write_u32 (writer->writer, 0))
+    return 0;
+  writer->lines++;
+  return 1;
+}
+
+static int
+write_hatch_pattern_line_section (CacheWriter *writer,
+                                  const Dwg_Data *dwg,
+                                  SectionEntry *entry)
+{
+  HatchPatternLineWriter line_writer;
+  uint64_t offset;
+  uint64_t global_lines = 0;
+  uint64_t global_dashes = 0;
+  uint64_t hatch_index = 0;
+  size_t object_index;
+  memset (&line_writer, 0, sizeof (line_writer));
+  line_writer.writer = writer;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_HATCH *hatch;
+      HatchPatternScan scan;
+      if (object->fixedtype != DWG_TYPE_HATCH
+          || !object->tio.entity
+          || !(hatch = object->tio.entity->tio.HATCH))
+        continue;
+      if (!scan_hatch_pattern_lines (
+              hatch, hatch_index, &global_lines, &global_dashes,
+              write_hatch_pattern_line, &line_writer, &scan))
+        return 0;
+      hatch_index++;
+    }
+  if (line_writer.lines != global_lines)
+    {
+      set_error (writer, "HATCH pattern-line pass changed record count");
+      return 0;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_HATCH_PATTERN_LINES,
+      HATCH_PATTERN_LINE_RECORD_SIZE, "hatch_pattern_lines", offset,
+      line_writer.lines);
+}
+
+typedef struct
+{
+  CacheWriter *writer;
+  uint64_t dashes;
+} HatchPatternDashWriter;
+
+static int
+write_hatch_pattern_dashes (
+    void *context, uint64_t hatch_index, uint32_t source_line_index,
+    const Dwg_HATCH_DefLine *line, uint64_t first_dash,
+    uint32_t dash_count)
+{
+  HatchPatternDashWriter *writer
+      = (HatchPatternDashWriter *)context;
+  size_t dash_index;
+  (void)hatch_index;
+  (void)source_line_index;
+  if (first_dash != writer->dashes)
+    return 0;
+  for (dash_index = 0; dash_index < (size_t)dash_count; dash_index++)
+    {
+      if (!write_f64 (writer->writer, line->dashes[dash_index]))
+        return 0;
+      writer->dashes++;
+    }
+  return 1;
+}
+
+static int
+write_hatch_pattern_dash_section (CacheWriter *writer,
+                                  const Dwg_Data *dwg,
+                                  SectionEntry *entry)
+{
+  HatchPatternDashWriter dash_writer;
+  uint64_t offset;
+  uint64_t global_lines = 0;
+  uint64_t global_dashes = 0;
+  uint64_t hatch_index = 0;
+  size_t object_index;
+  memset (&dash_writer, 0, sizeof (dash_writer));
+  dash_writer.writer = writer;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_HATCH *hatch;
+      HatchPatternScan scan;
+      if (object->fixedtype != DWG_TYPE_HATCH
+          || !object->tio.entity
+          || !(hatch = object->tio.entity->tio.HATCH))
+        continue;
+      if (!scan_hatch_pattern_lines (
+              hatch, hatch_index, &global_lines, &global_dashes,
+              write_hatch_pattern_dashes, &dash_writer, &scan))
+        return 0;
+      hatch_index++;
+    }
+  if (dash_writer.dashes != global_dashes)
+    {
+      set_error (writer, "HATCH pattern-dash pass changed record count");
+      return 0;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_HATCH_PATTERN_DASHES,
+      HATCH_PATTERN_DASH_RECORD_SIZE, "hatch_pattern_dashes", offset,
+      dash_writer.dashes);
 }
 
 static int
@@ -6842,6 +7098,10 @@ libredwg_write_scene_cache (
           &writer, dwg, &sections[23])
       || !write_hatch_seed_point_section (
           &writer, dwg, &sections[24])
+      || !write_hatch_pattern_line_section (
+          &writer, dwg, &sections[25])
+      || !write_hatch_pattern_dash_section (
+          &writer, dwg, &sections[26])
       || !position (&writer, &file_size)
       || !write_header (&writer, file_size, source_size, source_version,
                         (uint32_t)dwg->header.is_maint)

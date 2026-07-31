@@ -25,8 +25,12 @@ let activeInteraction;
 let activeTextStatus;
 let activeHatchStatus;
 let activeHatchWorker;
+let hatchPatternTimer;
+let lastPatternCameraKey;
+let patternRequestRevision = 0;
 let openRevision = 0;
 const glyphCache = new ShxGlyphCache();
+const HATCH_PATTERN_DEBOUNCE_MS = 160;
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -73,7 +77,9 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>Glyph 캐시</dt><dd>${formatBytes(glyphCache.stats.glyphBytes)}</dd></div>
     `
     : "";
-  const hatch = render?.hatchFill ?? activeHatchStatus?.metrics;
+  const hatch = render?.hatchFill ?? activeHatchStatus?.fillMetrics;
+  const pattern =
+    render?.hatchPattern ?? activeHatchStatus?.patternMetrics;
   const hatchRows = hatch
     ? `
       <div><dt>해치 원본</dt><dd>${hatch.sourceHatches.toLocaleString()}개</dd></div>
@@ -82,6 +88,17 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>채움 배치</dt><dd>${hatch.batches.toLocaleString()}개</dd></div>
       <div><dt>채움 GPU</dt><dd>${formatBytes(hatch.gpuBytes)}</dd></div>
       <div><dt>채움 원본 읽기</dt><dd>${formatBytes(activeHatchStatus?.reads?.bytesRead ?? 0)}</dd></div>
+    `
+    : "";
+  const patternRows = pattern
+    ? `
+      <div><dt>패턴 정의선</dt><dd>${pattern.patternDefinitions.toLocaleString()}개</dd></div>
+      <div><dt>패턴 표시</dt><dd>${pattern.renderedHatches.toLocaleString()}개</dd></div>
+      <div><dt>패턴 선분</dt><dd>${pattern.segments.toLocaleString()}개</dd></div>
+      <div><dt>패턴 오류 생략</dt><dd>${((pattern.skippedInvalidDefinitions ?? 0) + (pattern.skippedInvalidIntersections ?? 0) + (pattern.skippedInvalidSegments ?? 0)).toLocaleString()}건</dd></div>
+      <div><dt>패턴 배치</dt><dd>${pattern.batches.toLocaleString()}개</dd></div>
+      <div><dt>패턴 GPU</dt><dd>${formatBytes(pattern.gpuBytes)}</dd></div>
+      <div><dt>패턴 원본 읽기</dt><dd>${formatBytes(activeHatchStatus?.patternReads?.bytesRead ?? activeHatchStatus?.reads?.bytesRead ?? 0)}</dd></div>
     `
     : "";
   metrics.innerHTML = `
@@ -97,6 +114,7 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>전체 캐시</dt><dd>${formatBytes(value.cacheBytes)}</dd></div>
       ${detailRows}
       ${hatchRows}
+      ${patternRows}
       ${textRows}
     </dl>
   `;
@@ -202,56 +220,87 @@ async function initializeTextOverlay(scene, revision) {
       : `문자 ${textEntities.length.toLocaleString()}개 표시${missingFontSuffix()}(시스템 글꼴 대체)`;
 }
 
-function loadHatchFillWorker(file, scene) {
-  return new Promise((resolve, reject) => {
-    const worker = new Worker(
-      new URL("./hatch-worker.mjs", import.meta.url),
-      { type: "module" },
-    );
-    let settled = false;
-    const task = {
-      cancel() {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        worker.terminate();
-        reject(new DOMException("HATCH 작업 취소됨", "AbortError"));
-      },
-    };
-    activeHatchWorker = task;
-    worker.addEventListener("message", (event) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      worker.terminate();
-      if (activeHatchWorker === task) {
-        activeHatchWorker = undefined;
-      }
-      if (!event.data.ok) {
-        reject(new Error(event.data.error));
-        return;
-      }
-      resolve(event.data);
-    });
-    worker.addEventListener("error", (event) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      worker.terminate();
-      if (activeHatchWorker === task) {
-        activeHatchWorker = undefined;
-      }
-      reject(new Error(event.message || "HATCH worker failed"));
-    });
-    worker.postMessage({
-      file,
-      blocks: scene.metadata.blocks,
-      modelBlockIndices: [...scene.instanceGraph.modelBlockIndices],
-    });
+function workerCamera(camera) {
+  if (!camera) {
+    return null;
+  }
+  return {
+    origin: [...camera.origin],
+    worldWidth: camera.worldWidth,
+    worldHeight: camera.worldHeight,
+    width: camera.width,
+    height: camera.height,
+  };
+}
+
+function patternCameraKey(camera) {
+  return [
+    ...camera.origin,
+    camera.worldWidth,
+    camera.worldHeight,
+    camera.width,
+    camera.height,
+  ]
+    .map((value) => Number(value).toPrecision(12))
+    .join(":");
+}
+
+function createHatchWorker() {
+  const worker = new Worker(
+    new URL("./hatch-worker.mjs", import.meta.url),
+    { type: "module" },
+  );
+  const pending = new Map();
+  let nextRequestId = 1;
+  let closed = false;
+  const rejectPending = (error) => {
+    for (const request of pending.values()) {
+      request.reject(error);
+    }
+    pending.clear();
+  };
+  worker.addEventListener("message", (event) => {
+    const request = pending.get(event.data.requestId);
+    if (!request) {
+      return;
+    }
+    pending.delete(event.data.requestId);
+    if (event.data.ok) {
+      request.resolve(event.data);
+    } else {
+      request.reject(new Error(event.data.error));
+    }
   });
+  worker.addEventListener("error", (event) => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    rejectPending(new Error(event.message || "HATCH worker failed"));
+  });
+  return {
+    request(type, payload = {}) {
+      if (closed) {
+        return Promise.reject(
+          new DOMException("HATCH 작업 취소됨", "AbortError"),
+        );
+      }
+      const requestId = nextRequestId;
+      nextRequestId += 1;
+      return new Promise((resolve, reject) => {
+        pending.set(requestId, { resolve, reject });
+        worker.postMessage({ requestId, type, ...payload });
+      });
+    },
+    cancel() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      worker.terminate();
+      rejectPending(new DOMException("HATCH 작업 취소됨", "AbortError"));
+    },
+  };
 }
 
 async function initializeHatchFills(file, scene, revision) {
@@ -260,24 +309,105 @@ async function initializeHatchFills(file, scene, revision) {
   }
   activeHatchStatus = Object.freeze({ state: "loading" });
   status.textContent = "해치 원본을 별도 작업 공간에서 읽는 중";
-  const fill = await loadHatchFillWorker(file, scene);
+  const worker = createHatchWorker();
+  activeHatchWorker = worker;
+  const initialPatternCameraKey = patternCameraKey(scene.render.camera);
+  const result = await worker.request("initialize", {
+    file,
+    camera: workerCamera(scene.render.camera),
+  });
   if (revision !== openRevision || activeScene !== scene) {
     return;
   }
-  scene.renderer.setHatchFills(fill);
+  scene.renderer.setHatchFills(result.fill);
+  const currentCamera =
+    activeInteraction?.snapshot().render.camera ?? scene.render.camera;
+  const currentCameraKey = patternCameraKey(currentCamera);
+  const acceptedPattern =
+    result.pattern && currentCameraKey === initialPatternCameraKey
+      ? result.pattern
+      : null;
+  if (acceptedPattern) {
+    scene.renderer.setHatchPatterns(acceptedPattern);
+    lastPatternCameraKey = initialPatternCameraKey;
+  }
   activeHatchStatus = Object.freeze({
     state: "ready",
-    metrics: fill.metrics,
-    reads: fill.reads,
+    fillMetrics: result.fill.metrics,
+    patternMetrics: acceptedPattern?.metrics ?? null,
+    reads: result.reads,
   });
   activeInteraction?.refresh();
   const warnings =
-    fill.metrics.truncatedHatches +
-    fill.metrics.sourceTruncatedHatches +
-    fill.metrics.skippedTriangulations;
+    result.fill.metrics.truncatedHatches +
+    result.fill.metrics.sourceTruncatedHatches +
+    result.fill.metrics.skippedTriangulations +
+    (acceptedPattern?.metrics.truncatedHatches ?? 0);
   status.textContent =
-    `해치 ${fill.metrics.renderedHatches.toLocaleString()}개 표시 완료` +
+    `해치 ${result.fill.metrics.renderedHatches.toLocaleString()}개 · 패턴 ${(acceptedPattern?.metrics.renderedHatches ?? 0).toLocaleString()}개 표시 완료` +
     (warnings > 0 ? ` · 제한/건너뜀 ${warnings.toLocaleString()}건` : "");
+  if (currentCamera) {
+    scheduleHatchPatterns(scene, currentCamera, revision);
+  }
+}
+
+function scheduleHatchPatterns(scene, camera, revision) {
+  if (
+    scene.reader.header.minor < 7 ||
+    activeHatchStatus?.state !== "ready"
+  ) {
+    return;
+  }
+  const cameraKey = patternCameraKey(camera);
+  if (cameraKey === lastPatternCameraKey) {
+    return;
+  }
+  const requestRevision = ++patternRequestRevision;
+  if (hatchPatternTimer !== undefined) {
+    clearTimeout(hatchPatternTimer);
+  }
+  hatchPatternTimer = setTimeout(async () => {
+    hatchPatternTimer = undefined;
+    if (
+      revision !== openRevision ||
+      activeScene !== scene ||
+      cameraKey === lastPatternCameraKey
+    ) {
+      return;
+    }
+    const worker = activeHatchWorker;
+    if (!worker) {
+      return;
+    }
+    try {
+      const result = await worker.request("render-pattern", {
+        camera: workerCamera(camera),
+      });
+      if (
+        requestRevision !== patternRequestRevision ||
+        revision !== openRevision ||
+        activeScene !== scene
+      ) {
+        return;
+      }
+      scene.renderer.setHatchPatterns(result.pattern);
+      lastPatternCameraKey = cameraKey;
+      activeHatchStatus = Object.freeze({
+        ...activeHatchStatus,
+        patternMetrics: result.pattern.metrics,
+      });
+      activeInteraction?.refresh();
+    } catch (error) {
+      if (
+        error?.name !== "AbortError" &&
+        requestRevision === patternRequestRevision &&
+        revision === openRevision
+      ) {
+        status.textContent = `패턴 해치 표시 실패: ${error.message}`;
+        console.error(error);
+      }
+    }
+  }, HATCH_PATTERN_DEBOUNCE_MS);
 }
 
 async function registerFontFiles(files) {
@@ -314,6 +444,12 @@ async function openFile(file) {
   resetLayerPanel();
   activeTextStatus = undefined;
   activeHatchStatus = undefined;
+  lastPatternCameraKey = undefined;
+  patternRequestRevision += 1;
+  if (hatchPatternTimer !== undefined) {
+    clearTimeout(hatchPatternTimer);
+    hatchPatternTimer = undefined;
+  }
   activeHatchWorker?.cancel();
   activeHatchWorker = undefined;
   activeInteraction?.dispose();
@@ -342,6 +478,11 @@ async function openFile(file) {
     activeInteraction = new ViewportInteraction(activeScene, canvas, {
       onUpdate(viewport) {
         renderMetrics(activeScene, source, viewport);
+        scheduleHatchPatterns(
+          activeScene,
+          viewport.render.camera,
+          revision,
+        );
         status.textContent =
           viewport.detail.loading > 0
             ? `상세 청크 ${viewport.detail.loading.toLocaleString()}개 읽는 중`
@@ -468,6 +609,13 @@ layersHideAll.addEventListener("click", () => {
 
 window.addEventListener("beforeunload", () => {
   openRevision += 1;
+  patternRequestRevision += 1;
+  if (hatchPatternTimer !== undefined) {
+    clearTimeout(hatchPatternTimer);
+    hatchPatternTimer = undefined;
+  }
+  activeHatchWorker?.cancel();
+  activeHatchWorker = undefined;
   activeInteraction?.dispose();
   activeScene?.renderer.dispose();
   activeInteraction = undefined;

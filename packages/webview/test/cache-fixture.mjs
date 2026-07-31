@@ -5,6 +5,8 @@ import {
   HATCH_ENTITY_RECORD_SIZE,
   HATCH_GRADIENT_COLOR_RECORD_SIZE,
   HATCH_LOOP_RECORD_SIZE,
+  HATCH_PATTERN_DASH_RECORD_SIZE,
+  HATCH_PATTERN_LINE_RECORD_SIZE,
   HATCH_SEED_POINT_RECORD_SIZE,
   HATCH_VERTEX_RECORD_SIZE,
   HEADER_SIZE,
@@ -284,6 +286,7 @@ function makeHatchEntitySection() {
   view.setFloat64(offset + 160, 0, true);
   writeU64(view, offset + 168, 0);
   writeU64(view, offset + 176, 1);
+  view.setUint32(offset + 188, 2, true);
   new Uint8Array(buffer, stringOffset, pattern.byteLength).set(pattern);
   new Uint8Array(
     buffer,
@@ -375,6 +378,64 @@ function makeHatchSeedPointSection() {
     kind: SectionKind.HatchSeedPoints,
     recordSize: HATCH_SEED_POINT_RECORD_SIZE,
     recordCount: 1,
+    flags: 0,
+    buffer,
+  };
+}
+
+function makeHatchPatternLineSection() {
+  const rows = [
+    {
+      sourceLineIndex: 0,
+      angle: 0,
+      basePoint: [0, 0],
+      offset: [0, 2],
+      firstDash: 0,
+      dashCount: 2,
+    },
+    {
+      sourceLineIndex: 1,
+      angle: Math.PI / 2,
+      basePoint: [0, 0],
+      offset: [2, 0],
+      firstDash: 2,
+      dashCount: 0,
+    },
+  ];
+  const buffer = new ArrayBuffer(HATCH_PATTERN_LINE_RECORD_SIZE * rows.length);
+  const view = new DataView(buffer);
+  rows.forEach((row, index) => {
+    const offset = index * HATCH_PATTERN_LINE_RECORD_SIZE;
+    writeU64(view, offset, 0);
+    view.setUint32(offset + 8, row.sourceLineIndex, true);
+    view.setFloat64(offset + 16, row.angle, true);
+    view.setFloat64(offset + 24, row.basePoint[0], true);
+    view.setFloat64(offset + 32, row.basePoint[1], true);
+    view.setFloat64(offset + 40, row.offset[0], true);
+    view.setFloat64(offset + 48, row.offset[1], true);
+    writeU64(view, offset + 56, row.firstDash);
+    view.setUint32(offset + 64, row.dashCount, true);
+  });
+  return {
+    kind: SectionKind.HatchPatternLines,
+    recordSize: HATCH_PATTERN_LINE_RECORD_SIZE,
+    recordCount: rows.length,
+    flags: 0,
+    buffer,
+  };
+}
+
+function makeHatchPatternDashSection() {
+  const dashes = [3, -1];
+  const buffer = new ArrayBuffer(HATCH_PATTERN_DASH_RECORD_SIZE * dashes.length);
+  const view = new DataView(buffer);
+  dashes.forEach((dash, index) =>
+    view.setFloat64(index * HATCH_PATTERN_DASH_RECORD_SIZE, dash, true),
+  );
+  return {
+    kind: SectionKind.HatchPatternDashes,
+    recordSize: HATCH_PATTERN_DASH_RECORD_SIZE,
+    recordCount: dashes.length,
     flags: 0,
     buffer,
   };
@@ -522,6 +583,12 @@ export function makeFixtureCache({
           makeHatchVertexSection(),
           makeHatchGradientColorSection(),
           makeHatchSeedPointSection(),
+          ...(minorVersion >= 7
+            ? [
+                makeHatchPatternLineSection(),
+                makeHatchPatternDashSection(),
+              ]
+            : []),
         ]
       : []),
   ];

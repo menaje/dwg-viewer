@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Instant;
 
 use acadrust::entities::{
-    AttributeEntity, BoundaryEdge, EntityCommon, EntityType, Hatch, SplineEdge,
+    AttributeEntity, BoundaryEdge, EntityCommon, EntityType, Hatch, HatchPatternLine, SplineEdge,
 };
 use acadrust::types::{Color, Matrix3, Vector3};
 use acadrust::CadDocument;
@@ -16,7 +16,7 @@ use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, Inp
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 6;
+pub const CACHE_VERSION_MINOR: u16 = 7;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -43,6 +43,8 @@ const HATCH_LOOP_RECORD_SIZE: u32 = 48;
 const HATCH_VERTEX_RECORD_SIZE: u32 = 24;
 const HATCH_GRADIENT_COLOR_RECORD_SIZE: u32 = 16;
 const HATCH_SEED_POINT_RECORD_SIZE: u32 = 16;
+const HATCH_PATTERN_LINE_RECORD_SIZE: u32 = 72;
+const HATCH_PATTERN_DASH_RECORD_SIZE: u32 = 8;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
 const SECTION_FLAG_STRING_TABLE: u32 = 1;
 const MAX_CACHE_STRING_BYTES: u64 = 1024 * 1024;
@@ -64,6 +66,10 @@ const MAX_SPLINE_DEGREE: usize = 15;
 const MAX_HATCH_BOUNDARY_SEGMENTS: usize = 65_536;
 const MAX_HATCH_FILL_VERTICES: usize = 1_048_576;
 const MAX_HATCH_AUX_RECORDS: usize = 1_048_576;
+const MAX_HATCH_PATTERN_LINES_PER_ENTITY: usize = 4_096;
+const MAX_HATCH_PATTERN_DASHES_PER_ENTITY: usize = 65_536;
+const MAX_HATCH_PATTERN_LINES: usize = 262_144;
+const MAX_HATCH_PATTERN_DASHES: usize = 1_048_576;
 const CURVE_EPSILON: f64 = 1.0e-12;
 const HATCH_FLAG_SOLID: u32 = 1;
 const HATCH_FLAG_ASSOCIATIVE: u32 = 1 << 1;
@@ -166,9 +172,13 @@ pub struct HatchFillSummary {
     pub fill_vertices: u64,
     pub gradient_colors: u64,
     pub seed_points: u64,
+    pub pattern_definition_lines: u64,
+    pub pattern_dashes: u64,
     pub truncated_fill_hatches: u64,
+    pub truncated_pattern_hatches: u64,
     pub skipped_open_paths: u64,
     pub skipped_invalid_paths: u64,
+    pub skipped_invalid_pattern_lines: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -231,6 +241,8 @@ enum SectionKind {
     HatchVertices = 34,
     HatchGradientColors = 35,
     HatchSeedPoints = 36,
+    HatchPatternLines = 37,
+    HatchPatternDashes = 38,
 }
 
 impl SectionKind {
@@ -261,6 +273,8 @@ impl SectionKind {
             Self::HatchVertices => "hatch_vertices",
             Self::HatchGradientColors => "hatch_gradient_colors",
             Self::HatchSeedPoints => "hatch_seed_points",
+            Self::HatchPatternLines => "hatch_pattern_lines",
+            Self::HatchPatternDashes => "hatch_pattern_dashes",
         }
     }
 
@@ -291,6 +305,8 @@ impl SectionKind {
             34 => Some(Self::HatchVertices),
             35 => Some(Self::HatchGradientColors),
             36 => Some(Self::HatchSeedPoints),
+            37 => Some(Self::HatchPatternLines),
+            38 => Some(Self::HatchPatternDashes),
             _ => None,
         }
     }
@@ -320,6 +336,8 @@ impl SectionKind {
             Self::HatchVertices => HATCH_VERTEX_RECORD_SIZE,
             Self::HatchGradientColors => HATCH_GRADIENT_COLOR_RECORD_SIZE,
             Self::HatchSeedPoints => HATCH_SEED_POINT_RECORD_SIZE,
+            Self::HatchPatternLines => HATCH_PATTERN_LINE_RECORD_SIZE,
+            Self::HatchPatternDashes => HATCH_PATTERN_DASH_RECORD_SIZE,
         }
     }
 
@@ -440,6 +458,17 @@ struct HatchGradientColorRow {
     color: u32,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct HatchPatternLineRow {
+    hatch_index: u64,
+    source_line_index: u32,
+    angle: f64,
+    base_point: [f64; 2],
+    offset: [f64; 2],
+    first_dash: u64,
+    dash_count: u32,
+}
+
 #[derive(Debug)]
 struct HatchSourcePlan<'a> {
     entities: Vec<HatchEntityRow<'a>>,
@@ -447,6 +476,8 @@ struct HatchSourcePlan<'a> {
     vertices: Vec<Vector3>,
     gradient_colors: Vec<HatchGradientColorRow>,
     seed_points: Vec<[f64; 2]>,
+    pattern_lines: Vec<HatchPatternLineRow>,
+    pattern_dashes: Vec<f64>,
     summary: HatchFillSummary,
 }
 
@@ -745,6 +776,12 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
             SectionKind::HatchVertices,
             SectionKind::HatchGradientColors,
             SectionKind::HatchSeedPoints,
+        ]);
+    }
+    if minor_version >= 7 {
+        required.extend([
+            SectionKind::HatchPatternLines,
+            SectionKind::HatchPatternDashes,
         ]);
     }
     for kind in required {
@@ -1168,6 +1205,87 @@ fn validate_cross_section_references<R: Read + Seek>(
         }
     }
 
+    if let Some(pattern_lines) = find_section(entries, SectionKind::HatchPatternLines) {
+        let hatches = find_section(entries, SectionKind::HatchEntities)
+            .context("HATCH pattern lines exist without HATCH entities")?;
+        let pattern_dashes = find_section(entries, SectionKind::HatchPatternDashes)
+            .context("HATCH pattern lines exist without a dash pool")?;
+        if pattern_lines.record_count > MAX_HATCH_PATTERN_LINES as u64
+            || pattern_dashes.record_count > MAX_HATCH_PATTERN_DASHES as u64
+        {
+            anyhow::bail!("HATCH pattern source pool exceeds its record limit");
+        }
+        let mut expected_first_dash = 0_u64;
+        let mut previous_hatch_index = None;
+        let mut previous_source_line_index = None;
+        let mut source_definition_count = 0_u32;
+        let mut entity_line_count = 0_u64;
+        let mut entity_dash_count = 0_u64;
+
+        for line_index in 0..pattern_lines.record_count {
+            let mut record = [0_u8; HATCH_PATTERN_LINE_RECORD_SIZE as usize];
+            read_record(reader, pattern_lines, line_index, &mut record)?;
+            let hatch_index = slice_u64(&record, 0);
+            let source_line_index = slice_u32(&record, 8);
+            let flags = slice_u32(&record, 12);
+            let first_dash = slice_u64(&record, 56);
+            let dash_count = u64::from(slice_u32(&record, 64));
+            let reserved = slice_u32(&record, 68);
+            if hatch_index >= hatches.record_count || flags != 0 || reserved != 0 {
+                anyhow::bail!("HATCH pattern line contains invalid metadata");
+            }
+            if previous_hatch_index.is_some_and(|previous| hatch_index < previous) {
+                anyhow::bail!("HATCH pattern lines are not grouped by source entity");
+            }
+            if previous_hatch_index != Some(hatch_index) {
+                let mut hatch_record = [0_u8; HATCH_ENTITY_RECORD_SIZE as usize];
+                read_record(reader, hatches, hatch_index, &mut hatch_record)?;
+                source_definition_count = slice_u32(&hatch_record, 188);
+                previous_source_line_index = None;
+                entity_line_count = 0;
+                entity_dash_count = 0;
+            }
+            entity_line_count = entity_line_count
+                .checked_add(1)
+                .context("HATCH pattern line count overflow")?;
+            entity_dash_count = entity_dash_count
+                .checked_add(dash_count)
+                .context("HATCH pattern dash count overflow")?;
+            if source_line_index >= source_definition_count
+                || previous_source_line_index.is_some_and(|previous| source_line_index <= previous)
+                || entity_line_count > MAX_HATCH_PATTERN_LINES_PER_ENTITY as u64
+                || entity_dash_count > MAX_HATCH_PATTERN_DASHES_PER_ENTITY as u64
+                || first_dash != expected_first_dash
+                || [16, 24, 32, 40, 48]
+                    .into_iter()
+                    .any(|offset| !slice_f64(&record, offset).is_finite())
+            {
+                anyhow::bail!("HATCH pattern line contains invalid source data");
+            }
+            validate_pool_range(
+                "HATCH pattern dashes",
+                first_dash,
+                dash_count,
+                pattern_dashes.record_count,
+            )?;
+            expected_first_dash = first_dash
+                .checked_add(dash_count)
+                .context("HATCH pattern dash range overflow")?;
+            previous_hatch_index = Some(hatch_index);
+            previous_source_line_index = Some(source_line_index);
+        }
+        if expected_first_dash != pattern_dashes.record_count {
+            anyhow::bail!("HATCH pattern dash pool is not fully covered");
+        }
+        for dash_index in 0..pattern_dashes.record_count {
+            let mut record = [0_u8; HATCH_PATTERN_DASH_RECORD_SIZE as usize];
+            read_record(reader, pattern_dashes, dash_index, &mut record)?;
+            if !slice_f64(&record, 0).is_finite() {
+                anyhow::bail!("HATCH pattern dash contains a non-finite length");
+            }
+        }
+    }
+
     if let Some(batches) = find_section(entries, SectionKind::GpuLineBatches) {
         let vertices = find_section(entries, SectionKind::GpuLineVertices)
             .context("GPU line batches exist without a vertex pool")?;
@@ -1307,7 +1425,7 @@ fn write_scene_cache<W: Write + Seek>(
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
     let counts = PrimitiveCounts::from_document(document);
-    let section_count = 25_u32;
+    let section_count = 27_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
         directory_offset + u64::from(section_count) * u64::from(DIRECTORY_ENTRY_SIZE),
@@ -1405,6 +1523,8 @@ fn write_scene_cache<W: Write + Seek>(
     sections.push(write_hatch_vertex_section(writer, &hatch_plan)?);
     sections.push(write_hatch_gradient_color_section(writer, &hatch_plan)?);
     sections.push(write_hatch_seed_point_section(writer, &hatch_plan)?);
+    sections.push(write_hatch_pattern_line_section(writer, &hatch_plan)?);
+    sections.push(write_hatch_pattern_dash_section(writer, &hatch_plan)?);
     let hatch_fills = hatch_plan.summary;
 
     let file_size = writer.stream_position()?;
@@ -2167,6 +2287,8 @@ fn build_hatch_source_plan(document: &CadDocument) -> Result<HatchSourcePlan<'_>
         vertices: Vec::new(),
         gradient_colors: Vec::new(),
         seed_points: Vec::new(),
+        pattern_lines: Vec::new(),
+        pattern_dashes: Vec::new(),
         summary: HatchFillSummary::default(),
     };
 
@@ -2179,7 +2301,10 @@ fn build_hatch_source_plan(document: &CadDocument) -> Result<HatchSourcePlan<'_>
         let first_gradient_color = u64::try_from(plan.gradient_colors.len())?;
         let first_seed_point = u64::try_from(plan.seed_points.len())?;
         let mut hatch_vertex_count = 0_usize;
-        let mut truncated = false;
+        let mut hatch_pattern_line_count = 0_usize;
+        let mut hatch_pattern_dash_count = 0_usize;
+        let mut fill_truncated = false;
+        let mut pattern_truncated = false;
 
         plan.summary.source_hatches = plan
             .summary
@@ -2262,7 +2387,7 @@ fn build_hatch_source_plan(document: &CadDocument) -> Result<HatchSourcePlan<'_>
                         .context("invalid HATCH path count overflow")?;
                 }
                 HatchRingBuild::Truncated => {
-                    truncated = true;
+                    fill_truncated = true;
                     break;
                 }
             }
@@ -2270,7 +2395,7 @@ fn build_hatch_source_plan(document: &CadDocument) -> Result<HatchSourcePlan<'_>
 
         for color in &hatch.gradient_color.colors {
             if plan.gradient_colors.len() >= MAX_HATCH_AUX_RECORDS || !color.value.is_finite() {
-                truncated = true;
+                fill_truncated = true;
                 continue;
             }
             plan.gradient_colors.push(HatchGradientColorRow {
@@ -2283,10 +2408,51 @@ fn build_hatch_source_plan(document: &CadDocument) -> Result<HatchSourcePlan<'_>
                 || !seed.x.is_finite()
                 || !seed.y.is_finite()
             {
-                truncated = true;
+                fill_truncated = true;
                 continue;
             }
             plan.seed_points.push([seed.x, seed.y]);
+        }
+        for (source_line_index, line) in hatch.pattern.lines.iter().enumerate() {
+            if !hatch_pattern_line_is_finite(line) {
+                plan.summary.skipped_invalid_pattern_lines = plan
+                    .summary
+                    .skipped_invalid_pattern_lines
+                    .checked_add(1)
+                    .context("invalid HATCH pattern line count overflow")?;
+                continue;
+            }
+            let dash_count = line.dash_lengths.len();
+            if hatch_pattern_line_count >= MAX_HATCH_PATTERN_LINES_PER_ENTITY
+                || hatch_pattern_dash_count
+                    .checked_add(dash_count)
+                    .is_none_or(|count| count > MAX_HATCH_PATTERN_DASHES_PER_ENTITY)
+                || plan.pattern_lines.len() >= MAX_HATCH_PATTERN_LINES
+                || plan
+                    .pattern_dashes
+                    .len()
+                    .checked_add(dash_count)
+                    .is_none_or(|count| count > MAX_HATCH_PATTERN_DASHES)
+            {
+                pattern_truncated = true;
+                break;
+            }
+            let first_dash = u64::try_from(plan.pattern_dashes.len())?;
+            plan.pattern_dashes
+                .extend(line.dash_lengths.iter().copied());
+            plan.pattern_lines.push(HatchPatternLineRow {
+                hatch_index,
+                source_line_index: u32::try_from(source_line_index)
+                    .context("too many pattern lines in HATCH entity")?,
+                angle: line.angle,
+                base_point: [line.base_point.x, line.base_point.y],
+                offset: [line.offset.x, line.offset.y],
+                first_dash,
+                dash_count: u32::try_from(dash_count)
+                    .context("too many dashes in HATCH pattern line")?,
+            });
+            hatch_pattern_line_count += 1;
+            hatch_pattern_dash_count += dash_count;
         }
 
         let loop_count = u64::try_from(plan.loops.len())?
@@ -2298,12 +2464,19 @@ fn build_hatch_source_plan(document: &CadDocument) -> Result<HatchSourcePlan<'_>
         let seed_point_count = u64::try_from(plan.seed_points.len())?
             .checked_sub(first_seed_point)
             .context("HATCH seed-point range underflow")?;
-        if truncated {
+        if fill_truncated {
             plan.summary.truncated_fill_hatches = plan
                 .summary
                 .truncated_fill_hatches
                 .checked_add(1)
                 .context("truncated HATCH count overflow")?;
+        }
+        if pattern_truncated {
+            plan.summary.truncated_pattern_hatches = plan
+                .summary
+                .truncated_pattern_hatches
+                .checked_add(1)
+                .context("truncated pattern HATCH count overflow")?;
         }
         plan.entities.push(HatchEntityRow {
             hatch,
@@ -2315,7 +2488,7 @@ fn build_hatch_source_plan(document: &CadDocument) -> Result<HatchSourcePlan<'_>
             seed_point_count,
             definition_line_count: u32::try_from(hatch.pattern.lines.len())
                 .context("too many HATCH pattern definition lines")?,
-            truncated,
+            truncated: fill_truncated || pattern_truncated,
         });
     }
 
@@ -2323,7 +2496,18 @@ fn build_hatch_source_plan(document: &CadDocument) -> Result<HatchSourcePlan<'_>
     plan.summary.fill_vertices = u64::try_from(plan.vertices.len())?;
     plan.summary.gradient_colors = u64::try_from(plan.gradient_colors.len())?;
     plan.summary.seed_points = u64::try_from(plan.seed_points.len())?;
+    plan.summary.pattern_definition_lines = u64::try_from(plan.pattern_lines.len())?;
+    plan.summary.pattern_dashes = u64::try_from(plan.pattern_dashes.len())?;
     Ok(plan)
+}
+
+fn hatch_pattern_line_is_finite(line: &HatchPatternLine) -> bool {
+    line.angle.is_finite()
+        && line.base_point.x.is_finite()
+        && line.base_point.y.is_finite()
+        && line.offset.x.is_finite()
+        && line.offset.y.is_finite()
+        && line.dash_lengths.iter().all(|dash| dash.is_finite())
 }
 
 fn build_hatch_ring(
@@ -2664,6 +2848,50 @@ fn write_hatch_seed_point_section<W: Write + Seek>(
         HATCH_SEED_POINT_RECORD_SIZE,
         offset,
         u64::try_from(plan.seed_points.len())?,
+    )
+}
+
+fn write_hatch_pattern_line_section<W: Write + Seek>(
+    writer: &mut W,
+    plan: &HatchSourcePlan<'_>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    for line in &plan.pattern_lines {
+        write_u64(writer, line.hatch_index)?;
+        write_u32(writer, line.source_line_index)?;
+        write_u32(writer, 0)?;
+        write_f64(writer, line.angle)?;
+        write_f64(writer, line.base_point[0])?;
+        write_f64(writer, line.base_point[1])?;
+        write_f64(writer, line.offset[0])?;
+        write_f64(writer, line.offset[1])?;
+        write_u64(writer, line.first_dash)?;
+        write_u32(writer, line.dash_count)?;
+        write_u32(writer, 0)?;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::HatchPatternLines,
+        HATCH_PATTERN_LINE_RECORD_SIZE,
+        offset,
+        u64::try_from(plan.pattern_lines.len())?,
+    )
+}
+
+fn write_hatch_pattern_dash_section<W: Write + Seek>(
+    writer: &mut W,
+    plan: &HatchSourcePlan<'_>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    for dash in &plan.pattern_dashes {
+        write_f64(writer, *dash)?;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::HatchPatternDashes,
+        HATCH_PATTERN_DASH_RECORD_SIZE,
+        offset,
+        u64::try_from(plan.pattern_dashes.len())?,
     )
 }
 
@@ -5057,8 +5285,8 @@ mod tests {
 
     use acadrust::entities::{
         Arc, AttributeDefinition, AttributeEntity, BoundaryEdge, BoundaryPath, Circle,
-        CircularArcEdge, Ellipse, EntityType, Hatch, Insert, Line, LineEdge, LwPolyline, MText,
-        PolylineEdge, Spline, Text,
+        CircularArcEdge, Ellipse, EntityType, Hatch, HatchPatternLine, Insert, Line, LineEdge,
+        LwPolyline, MText, PolylineEdge, Spline, Text,
     };
     use acadrust::tables::BlockRecord;
     use acadrust::types::{Color, Vector2, Vector3};
@@ -5120,7 +5348,7 @@ mod tests {
         assert_eq!(read_u16(&bytes, 8), CACHE_VERSION_MAJOR);
         assert_eq!(read_u16(&bytes, 10), CACHE_VERSION_MINOR);
         assert_eq!(read_u32(&bytes, 12), HEADER_SIZE);
-        assert_eq!(read_u32(&bytes, 16), 25);
+        assert_eq!(read_u32(&bytes, 16), 27);
         assert_eq!(read_u64(&bytes, 48), 1234);
         assert_eq!(summary.counts.serialized_entities, 7);
         assert_eq!(summary.gpu_lines.model_segments, 43);
@@ -5131,7 +5359,7 @@ mod tests {
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
-        assert_eq!(validation.sections.len(), 25);
+        assert_eq!(validation.sections.len(), 27);
         assert_eq!(validation.source_size, 1234);
 
         let line = directory_entry(&bytes, SectionKind::Lines);
@@ -5411,6 +5639,70 @@ mod tests {
         assert_eq!(seeds.3, 1);
 
         validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
+    }
+
+    #[test]
+    fn pattern_hatch_preserves_definition_lines_and_dashes() {
+        let mut hatch = Hatch::new();
+        hatch.is_solid = false;
+        hatch.pattern.name = "ANSI31".to_owned();
+        hatch.pattern.lines.push(HatchPatternLine {
+            angle: std::f64::consts::FRAC_PI_4,
+            base_point: Vector2::new(1.0, 2.0),
+            offset: Vector2::new(-0.5, 0.5),
+            dash_lengths: vec![1.0, -0.5, 0.0],
+        });
+        let mut path = BoundaryPath::external();
+        for (start, end) in [
+            ((0.0, 0.0), (4.0, 0.0)),
+            ((4.0, 0.0), (4.0, 4.0)),
+            ((4.0, 4.0), (0.0, 4.0)),
+            ((0.0, 4.0), (0.0, 0.0)),
+        ] {
+            path.add_edge(BoundaryEdge::Line(LineEdge {
+                start: Vector2::new(start.0, start.1),
+                end: Vector2::new(end.0, end.1),
+            }));
+        }
+        hatch.add_path(path);
+
+        let mut document = CadDocument::new();
+        document.add_entity(EntityType::Hatch(hatch)).unwrap();
+        let mut cursor = Cursor::new(Vec::new());
+        let summary = write_scene_cache(&mut cursor, &document, 0).unwrap();
+        let bytes = cursor.into_inner();
+
+        assert_eq!(summary.hatch_fills.pattern_hatches, 1);
+        assert_eq!(summary.hatch_fills.pattern_definition_lines, 1);
+        assert_eq!(summary.hatch_fills.pattern_dashes, 3);
+        assert_eq!(summary.hatch_fills.truncated_pattern_hatches, 0);
+        assert_eq!(summary.hatch_fills.skipped_invalid_pattern_lines, 0);
+
+        let lines = directory_entry(&bytes, SectionKind::HatchPatternLines);
+        assert_eq!(lines.1, HATCH_PATTERN_LINE_RECORD_SIZE);
+        assert_eq!(lines.3, 1);
+        let line_offset = usize::try_from(lines.2).unwrap();
+        assert_eq!(read_u64(&bytes, line_offset), 0);
+        assert_eq!(read_u32(&bytes, line_offset + 8), 0);
+        assert!((read_f64(&bytes, line_offset + 16) - std::f64::consts::FRAC_PI_4).abs() < 1.0e-12);
+        assert_eq!(read_u64(&bytes, line_offset + 56), 0);
+        assert_eq!(read_u32(&bytes, line_offset + 64), 3);
+
+        let dashes = directory_entry(&bytes, SectionKind::HatchPatternDashes);
+        assert_eq!(dashes.1, HATCH_PATTERN_DASH_RECORD_SIZE);
+        assert_eq!(dashes.3, 3);
+        let dash_offset = usize::try_from(dashes.2).unwrap();
+        assert_eq!(read_f64(&bytes, dash_offset), 1.0);
+        assert_eq!(read_f64(&bytes, dash_offset + 8), -0.5);
+        assert_eq!(read_f64(&bytes, dash_offset + 16), 0.0);
+
+        validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
+
+        let mut invalid = bytes;
+        invalid[line_offset + 68..line_offset + 72].copy_from_slice(&1_u32.to_le_bytes());
+        let error = validate_scene_cache_reader(Cursor::new(invalid.clone()), invalid.len() as u64)
+            .unwrap_err();
+        assert!(error.to_string().contains("invalid metadata"));
     }
 
     #[test]

@@ -6,6 +6,7 @@ import {
   TrackedRangeSource,
 } from "../src/range-source.mjs";
 import {
+  DIRECTORY_ENTRY_SIZE,
   GPU_LINE_VERTEX_RECORD_SIZE,
   SceneCacheReader,
   SectionKind,
@@ -40,9 +41,9 @@ test("accepts the Scene Cache v1.3 header", async () => {
 test("rejects a newer unsupported Scene Cache minor version", async () => {
   await assert.rejects(
     SceneCacheReader.open(
-      new MemoryRangeSource(makeFixtureCache({ minorVersion: 7 })),
+      new MemoryRangeSource(makeFixtureCache({ minorVersion: 8 })),
     ),
-    /unsupported scene-cache version 1\.7/,
+    /unsupported scene-cache version 1\.8/,
   );
 });
 
@@ -81,6 +82,53 @@ test("reads bounded Scene Cache v1.6 HATCH source pools lazily", async () => {
   assert.deepEqual(hatches.readSeedPoint(0, [0, 0]), [1, 1]);
   assert.equal(hatches.readGradientColor(1, {}).value, 1);
   assert.equal(source.requests.length - requestsAfterOpen, 5);
+});
+
+test("reads bounded Scene Cache v1.7 HATCH pattern definitions lazily", async () => {
+  const source = new TrackedRangeSource(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 7 })),
+  );
+  const reader = await SceneCacheReader.open(source);
+  const requestsAfterOpen = source.requests.length;
+  const hatches = await reader.readHatchSource();
+
+  assert.equal(hatches.patternLineCount, 2);
+  assert.equal(hatches.patternDashCount, 2);
+  assert.equal(hatches.get(0).firstPatternLine, 0);
+  assert.equal(hatches.get(0).patternLineCount, 2);
+  assert.deepEqual(hatches.readPatternLine(0, {}), {
+    index: 0,
+    hatchIndex: 0,
+    sourceLineIndex: 0,
+    angle: 0,
+    basePoint: [0, 0],
+    offset: [0, 2],
+    firstDash: 0,
+    dashCount: 2,
+  });
+  assert.equal(hatches.readPatternDash(0), 3);
+  assert.equal(hatches.readPatternDash(1), -1);
+  assert.equal(source.requests.length - requestsAfterOpen, 7);
+});
+
+test("rejects reserved metadata in a v1.7 HATCH pattern line", async () => {
+  const buffer = makeFixtureCache({ minorVersion: 7 });
+  const view = new DataView(buffer);
+  const sectionCount = view.getUint32(16, true);
+  const directoryOffset = Number(view.getBigUint64(32, true));
+  let patternOffset;
+  for (let index = 0; index < sectionCount; index += 1) {
+    const offset = directoryOffset + index * DIRECTORY_ENTRY_SIZE;
+    if (view.getUint32(offset, true) === SectionKind.HatchPatternLines) {
+      patternOffset = Number(view.getBigUint64(offset + 8, true));
+      break;
+    }
+  }
+  assert.notEqual(patternOffset, undefined);
+  view.setUint32(patternOffset + 68, 1, true);
+
+  const reader = await SceneCacheReader.open(new MemoryRangeSource(buffer));
+  await assert.rejects(reader.readHatchSource(), /invalid metadata/);
 });
 
 test("preserves v1.4 Korean source text, style fonts and MTEXT columns", async () => {

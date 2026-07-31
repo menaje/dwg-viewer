@@ -184,7 +184,7 @@ test("redraws overview and independently uploaded detail vertex ranges", () => {
   renderer.dispose();
 });
 
-test("draws bounded HATCH fills before line geometry", () => {
+test("draws HATCH fills then patterns before boundary geometry", () => {
   const { gl, calls } = makeFakeGl();
   const canvas = {
     clientWidth: 200,
@@ -232,15 +232,39 @@ test("draws bounded HATCH fills before line geometry", () => {
     },
     metrics: { triangles: 1 },
   });
+  renderer.setHatchPatterns({
+    batches: [
+      {
+        id: 0,
+        kind: GpuLineBatchKind.ModelDetail,
+        lodLevel: 1,
+        firstVertex: 0,
+        vertexCount: 2,
+        blockIndex: null,
+        origin: [0, 0, 0],
+        bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+      },
+    ],
+    vertices: {
+      buffer: new ArrayBuffer(64),
+      byteLength: 64,
+      vertexCount: 2,
+    },
+    metrics: { segments: 1 },
+  });
 
   const redrawn = renderer.redraw(first.camera);
 
   assert.equal(redrawn.hatchFillDrawCalls, 1);
   assert.equal(redrawn.hatchFillSubmittedVertices, 3);
   assert.equal(redrawn.hatchFillGpuBytes, 96);
-  assert.equal(redrawn.gpuVertexBytes, 160);
-  assert.deepEqual(calls.drawArraysInstanced.slice(-2), [
+  assert.equal(redrawn.hatchPatternDrawCalls, 1);
+  assert.equal(redrawn.hatchPatternSubmittedVertices, 2);
+  assert.equal(redrawn.hatchPatternGpuBytes, 64);
+  assert.equal(redrawn.gpuVertexBytes, 224);
+  assert.deepEqual(calls.drawArraysInstanced.slice(-3), [
     { mode: gl.TRIANGLES, first: 0, count: 3, instances: 1 },
+    { mode: gl.LINES, first: 0, count: 2, instances: 1 },
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },
   ]);
   renderer.dispose();

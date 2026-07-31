@@ -1,6 +1,6 @@
 # Webview renderer
 
-Scene Cache v1.6 range reader, WebGL2 line/fill renderer and bounded CAD text
+Scene Cache v1.7 range reader, WebGL2 line/fill renderer and bounded CAD text
 overlay for the VS Code Webview.
 
 ## Implemented
@@ -24,23 +24,31 @@ overlay for the VS Code Webview.
   rereading geometry or rebuilding GPU buffers.
 - Displays bounded first-pass chords for arcs, circles, ellipses, polyline
   bulges, NURBS splines and HATCH boundaries emitted by the converter.
-- Starts a dedicated worker after the first line frame and range-reads only
-  the five v1.6 HATCH source sections.
+- Starts a persistent worker after the first line frame and range-reads the
+  v1.6/v1.7 HATCH source sections independently of the first frame.
 - Triangulates solid and gradient HATCH rings with pinned Earcut 3.2.3, keeps
   holes and source HATCH styles, and draws fills before boundary lines.
 - Retains shared block instances and layer visibility for fill geometry
   without expanding a whole-drawing scene graph.
 - Caps HATCH fill GPU vertices at 32 MiB, triangles at 65,536 per entity,
   loops at 2,048 per entity and local-origin batches at 24,576 vertices.
+- Preserves v1.7 pattern definition lines and dash/space arrays, clips their
+  strokes against normal/outer/ignore rings and draws fill, pattern and
+  boundary geometry in that order.
+- Regenerates pattern strokes only after a 160 ms viewport debounce, omits
+  definitions below 1.5 screen pixels and keeps shared blocks restricted to
+  visible instance indices instead of expanding their geometry.
+- Caps one pattern result at 250,000 segments (16 MiB of line vertices),
+  65,536 segments per HATCH and eight million boundary intersection tests.
 - Terminates the previous HATCH worker when another cache is selected.
 - Loads source text after the first geometry frame and renders selected local
   SHX/BigFont glyphs through byte-bounded caches, with a Korean system-font
   fallback when a CAD font is unavailable.
 
 The current page is an engine verification harness, not the final VS Code
-extension UI. Exact MTEXT/OCS layout, HATCH pattern strokes and lossless
-analytic boundary topology, real-world Korean SHX corpus expansion and
-view-adaptive high-zoom refinement remain follow-up work.
+extension UI. Exact MTEXT/OCS layout, lossless analytic HATCH boundary
+topology, real-world Korean SHX corpus expansion and view-adaptive high-zoom
+curve refinement remain follow-up work.
 
 ## Run
 
@@ -64,4 +72,5 @@ Tests cover bounded range reads, cache validation, nested block transforms,
 large-coordinate camera rebasing, camera controls, viewport detail selection,
 GPU resource ranges, layer visibility and LRU eviction/request coalescing.
 They also cover delayed Korean text reads, SHX/BigFont cache limits and the
-v1.6 HATCH range/triangulation/render-order contract.
+v1.7 HATCH range, triangulation, dashed-pattern, block-clipping, large-coordinate
+and render-order contracts.

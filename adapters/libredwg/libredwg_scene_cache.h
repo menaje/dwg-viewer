@@ -11,8 +11,8 @@
 #include <stdint.h>
 
 #define LIBREDWG_SCENE_CACHE_VERSION_MAJOR 1u
-#define LIBREDWG_SCENE_CACHE_VERSION_MINOR 6u
-#define LIBREDWG_SCENE_SECTION_COUNT 25
+#define LIBREDWG_SCENE_CACHE_VERSION_MINOR 7u
+#define LIBREDWG_SCENE_SECTION_COUNT 27
 
 typedef struct
 {
@@ -73,9 +73,13 @@ typedef struct
   uint64_t fill_vertices;
   uint64_t gradient_colors;
   uint64_t seed_points;
+  uint64_t pattern_definition_lines;
+  uint64_t pattern_dashes;
   uint64_t truncated_fill_hatches;
+  uint64_t truncated_pattern_hatches;
   uint64_t skipped_open_paths;
   uint64_t skipped_invalid_paths;
+  uint64_t skipped_invalid_pattern_lines;
 } LibreDwgHatchFillSummary;
 
 typedef struct

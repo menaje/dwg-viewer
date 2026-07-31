@@ -25,10 +25,11 @@ also proves UTF-8 TEXT, MTEXT, ATTDEF and attached ATTRIB preservation plus a
 bounded SHX/BigFont display path. Scene Cache v1.5 adds a bounded preview of
 HATCH line, circular, elliptic, bulge and spline boundaries without adding a
 whole-drawing fill mesh. Scene Cache v1.6 adds bounded HATCH source rings and
-worker-side solid/gradient fills while retaining pattern metadata. It does not
-become the primary engine until pattern strokes, the remaining source families
-and exact CAD text layout are proved. ACadSharp remains a fallback candidate
-through the same adapter protocol.
+worker-side solid/gradient fills. Scene Cache v1.7 adds resolved
+pattern-definition and dash pools plus viewport-clipped pattern rendering in
+the persistent HATCH worker. It does not become the primary engine until the
+remaining source families and exact CAD text layout are proved. ACadSharp
+remains a fallback candidate through the same adapter protocol.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -85,6 +86,24 @@ source coverage rises to 377,208 of 378,400 entities (99.68%); the remaining
 1,192 entities and skipped open/invalid HATCH paths stay explicit in the
 report.
 
+The Scene Cache v1.7 pattern milestone measured 4,140 ms median conversion
+wall time and 591,904,768 bytes median peak RSS; measured maximums were
+4,200 ms and 592,035,840 bytes. The deterministic 175,985,184-byte cache adds
+6,390 resolved pattern-definition records and 12,020 dash values. Those two
+sections add 556,320 bytes over v1.6 while the line overview and detail
+batches remain unchanged. The corresponding acadrust conversion measured
+7,642 ms median and 969,310,208 bytes median peak RSS, confirming that it still
+fails the memory hard gate while LibreDWG passes both conversion gates.
+
+Cross-engine conversion of public LibreDWG fixtures covers every HATCH mode.
+`example_2018.dwg` produces one pattern HATCH, two definition lines and four
+dash values; kinds 37–38 are byte-identical between acadrust and LibreDWG.
+`2018/Dynblocks.dwg` matches at one solid plus three pattern HATCHes, eight
+loops, 104 fill vertices and four definition lines, with identical pattern
+sections. `2004/HatchG.dwg` matches at two gradient HATCHes, two loops and 269
+fill vertices. Both generated caches validate in every case, with no
+truncation or invalid-record skip.
+
 The new text-style and text-source payload is 793,407 bytes on the reference
 drawing. Its 2,289 records include 2,259 logical TEXT/MTEXT/ATTDEF records and
 30 attached ATTRIB records. The cache reproduces the inspection fingerprint
@@ -112,6 +131,24 @@ It rendered 379 solid HATCHes as 5,585 triangles in a 536,160-byte GPU buffer;
 3,161 pattern HATCHes were retained but skipped, the 32 MiB GPU cap was not
 reached, and process peak RSS was about 122 MB. These are local qualification
 figures rather than a cross-device browser guarantee.
+
+With v1.7, two directory entries add 80 bytes to the same path: eight
+first-frame reads total 5,001,757 bytes, and the unchanged overview remains
+4 MiB. Loading the seven HATCH source sections took seven reads totaling
+2,504,181 bytes and 13.6 ms. An end-to-end persistent-worker qualification
+including its own block-instance graph, fill mesh and fitted-view pattern pass
+completed in about 414 ms at about 137 MB process RSS.
+
+An actual Chromium qualification produced the first usable line frame in
+449.1 ms. At drawing fit, the 1.5-pixel rule omitted all 6,442 visible
+definition passes and emitted no pattern buffer. After eight zoom-in actions
+(17.35x), the worker emitted 540 clipped segments (33.8 KiB) for 6 HATCHes.
+With the 32 MiB detail cache full, overview, detail, fill and pattern vertex
+buffers totaled 36.54 MiB. Layer all-off/all-on changed the visible count from
+234 to 0 and back to 234 without a source reread; no browser console error was
+reported. The largest measured sequential Node qualification RSS was about
+147 MB. These figures validate bounded behavior on the reference drawing, not
+a cross-device frame-rate guarantee.
 
 The external sort keeps either one 8,192-record run or its small merge windows
 resident, while two private unnamed files consume about 312 MB of temporary
@@ -141,15 +178,16 @@ batch around the camera before converting matrices to `f32`.
 
 ## Implemented cache slice
 
-Scene Cache v1.6 writes the drawing/layer/block/text-style tables and
+Scene Cache v1.7 writes the drawing/layer/block/text-style tables and
 source-precision LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE, ELLIPSE,
 SPLINE, TEXT, MTEXT, ATTDEF and ATTRIB records. The records retain owner
 handles so block definitions remain shared instead of being expanded per
 insertion. Text values, tags, prompts, font filenames and BigFont filenames
 remain UTF-8, while MTEXT column heights use a separate packed `f64` pool.
 HATCH adds source records plus bounded closed `f64` ring, gradient-color and
-seed-point pools. Original analytic HATCH edge topology and complete pattern
-definition lines are not yet lossless source records.
+seed-point pools. Pattern-definition lines preserve parser-resolved angles,
+bases, offsets and dash/gap/dot sequences in separate typed pools. Original
+analytic HATCH edge topology is not yet a lossless source record.
 
 The v1.2 display slice added local-origin `f32` line buffers. It keeps model
 space and block definitions separate, assigns every non-empty block a bounded
@@ -184,8 +222,25 @@ ownership and layer texture as line geometry, are split into local-origin
 batches and draw before boundary lines. Source planning is capped at 65,536
 vertices per HATCH and 1,048,576 globally; browser work is capped at 2,048
 loops and 65,536 triangles per entity and 32 MiB of GPU vertices overall.
-Pattern strokes remain deferred, and opening another file terminates the
-previous worker.
+Opening another file terminates the previous worker.
+
+The v1.7 pattern slice retains the same worker and source buffers after fill
+initialization. Camera changes are debounced by 160 ms and regenerate pattern
+strokes without cache reads. Infinite pattern lines are intersected with
+normal/outer/ignore ring groups, dashed in source units and clipped to the
+current viewport. Definitions below 1.5 screen pixels are omitted before
+intersection work. For shared block definitions, only the union of visible
+instance intervals is generated and the GPU draw uses an explicit visible
+instance-index set, so a heavily reused block does not expand into one mesh
+per INSERT.
+
+Pattern work is capped at 2,048 loops, 65,536 segments per HATCH, 250,000
+segments globally and eight million edge intersection tests; the packed
+vertices have both a 16 MiB effective segment cap and a 32 MiB byte guard.
+Local origins retain display precision at large coordinates. Positive dash
+values draw, negative values skip and zero values become one-pixel dots.
+User-defined double patterns add the perpendicular pass; predefined
+definition lines are already resolved by the native parser.
 
 Large-drawing detail records are ordered by group and a 32-bit interleaved XY
 Morton key computed from each segment midpoint within that group's finite

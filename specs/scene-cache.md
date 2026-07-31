@@ -1,8 +1,8 @@
-# Scene Cache v1.6
+# Scene Cache v1.7
 
 Status: source geometry/text writer, bounded HATCH rings and asynchronous
-solid/gradient fill path implemented; expansion tracked by GitHub issues #3
-and #9.
+solid/gradient fill and viewport-clipped pattern paths implemented; expansion
+tracked by GitHub issues #3 and #9.
 
 The cache is a little-endian, versioned binary container designed for range
 reads and browser `ArrayBuffer`/`DataView` access. Geometry is never encoded as
@@ -76,6 +76,8 @@ Section kinds currently written:
 | 34 | HATCH loop `f64[3]` vertex pool |
 | 35 | HATCH gradient-color pool |
 | 36 | HATCH seed-point pool |
+| 37 | HATCH pattern-definition-line records |
+| 38 | HATCH pattern dash/gap/dot value pool |
 
 Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
 Version 1.2 adds kinds 30–31 for straight and polyline GPU lines. Version 1.3
@@ -83,9 +85,10 @@ extends those GPU sections with bounded curve chords without changing their
 binary record sizes. Version 1.4 adds kinds 4 and 22–23 for source text and
 font-style metadata. Version 1.5 adds bounded HATCH boundary chords and expands
 the packed GPU source-kind field without changing a record size. Version 1.6
-adds kinds 32–36 for bounded source-backed HATCH fills. The validator continues
-to accept older v1 caches, while a v1.6 writer always emits all 25 sections,
-including empty pools.
+adds kinds 32–36 for bounded source-backed HATCH fills. Version 1.7 adds kinds
+37–38 for resolved pattern-definition lines and dash values. The validator
+continues to accept older v1 caches, while a v1.7 writer always emits all 27
+sections, including empty pools.
 
 ## Shared primitive prefix
 
@@ -233,9 +236,9 @@ normal, tolerances and begin/end tangents. It references four typed pools:
 All offset/count pairs are checked against their corresponding pool before the
 cache is accepted.
 
-## Bounded HATCH source and fill rings
+## Bounded HATCH source, fill rings and patterns
 
-Scene Cache v1.6 preserves every HATCH as a kind-32 source record, including
+Scene Cache v1.7 preserves every HATCH as a kind-32 source record, including
 its shared primitive prefix, pattern and gradient names, style, flags,
 elevation, normal, pattern transform, gradient parameters, seed-point range
 and pattern-definition-line count. Closed usable boundary paths become
@@ -305,13 +308,57 @@ bytes. Kind 36 stores one `f64[2]` seed point in 16 bytes. Entity ranges are
 contiguous and monotonic; loop-to-entity, loop-to-vertex, gradient-color and
 seed-point ranges are all validated before the cache is accepted.
 
+### HATCH pattern-definition and dash pools
+
+Kind 37 stores each parser-resolved pattern-definition line in a 72-byte
+record:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u64` | owning kind-32 HATCH index |
+| 8 | `u32` | source definition-line index within the HATCH |
+| 12 | `u32` | flags; currently zero |
+| 16 | `f64` | resolved line angle in radians |
+| 24 | `f64[2]` | resolved base point in HATCH OCS |
+| 40 | `f64[2]` | resolved offset vector in HATCH OCS |
+| 56 | `u64` | first kind-38 dash value |
+| 64 | `u32` | dash-value count |
+| 68 | `u32` | reserved; zero |
+
+Kind 38 is a packed `f64` pool. A positive value is a drawn dash length, a
+negative value is a gap length, and zero is a dot. The two native writers
+preserve the values exposed by their parser after the DWG pattern angle and
+scale have been resolved; the Webview therefore does not apply the entity
+transform a second time. A user-defined pattern with the HATCH double flag
+adds one perpendicular display pass. Predefined pattern definitions already
+contain their complete resolved line families.
+
+Definition records are grouped by HATCH and ordered by source definition-line
+index. Their dash ranges are contiguous, monotonic and cover the complete
+kind-38 pool. The validator checks owner indices, source order, flags,
+reserved values, finite angle/base/offset/dash values and all range
+arithmetic. One HATCH contributes at most 4,096 definition lines and 65,536
+dash values; global pools are capped at 262,144 lines and 1,048,576 dash
+values. Truncation sets the HATCH source flag and is reported separately from
+invalid skipped definitions.
+
 The Webview starts this work only after the first line frame. A dedicated
-worker range-reads the five HATCH sections, applies normal/outer/ignore ring
-nesting, triangulates solid and gradient fills and transfers only the final
-GPU buffer. Pattern HATCHes are counted but not triangulated. Runtime limits
-are 2,048 loops and 65,536 triangles per entity, 32 MiB of fill GPU vertices
-overall and 24,576 vertices per local-origin batch. A new file cancels and
-terminates the previous worker.
+worker range-reads the seven HATCH sections, applies normal/outer/ignore ring
+nesting, triangulates solid and gradient fills, and retains the packed source
+and block-instance graph for viewport pattern requests. Pattern definitions
+are clipped first to nested HATCH rings and then to the union of visible
+model/block-instance viewport intervals. The worker transfers only final
+local-origin GPU buffers. Pattern regeneration is debounced by 160 ms and
+never rereads the cache. A new file cancels and terminates the previous
+worker.
+
+Fill runtime limits are 2,048 loops and 65,536 triangles per entity, 32 MiB of
+GPU vertices overall and 24,576 vertices per local-origin batch. Pattern
+runtime limits are 2,048 loops and 65,536 segments per HATCH, 250,000 segments
+(16 MiB) globally, eight million boundary intersection tests and 32 MiB of
+GPU bytes. Definitions closer than 1.5 screen pixels are omitted before
+geometry generation. Shared block pattern vertices are stored once, and draw
+calls submit only the visible instance indices selected for that viewport.
 
 ## Viewport and LOD GPU lines
 
@@ -406,8 +453,7 @@ available in the source sections for later high-zoom refinement.
 - automatic trusted SHX font discovery and project font mapping;
 - linetype override table;
 - view-adaptive high-zoom refinement beyond the bounded v1.3 curve chords;
-- lossless HATCH analytic-edge and pattern-definition-line records, plus
-  clipped pattern-stroke rendering;
+- lossless HATCH analytic-edge topology beyond the bounded fill rings;
 - entity-selection index and source fingerprint.
 
 Cache files can contain project names and drawing text. They are local,
@@ -415,7 +461,7 @@ generated artifacts and must not be committed.
 
 ## LibreDWG qualification writer
 
-The optional LibreDWG adapter currently writes a valid but partial v1.6 cache
+The optional LibreDWG adapter currently writes a valid but partial v1.7 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
@@ -424,12 +470,12 @@ ATTRIB source records. Its GPU sections render LINE and normalized polyline
 segments plus bounded ARC/CIRCLE/ELLIPSE, bulge, SPLINE and HATCH-boundary
 chords. Circular curves use the same 16-segments-per-revolution limit; SPLINE
 evaluation and malformed-input fallback use the 256-segments-per-entity limit.
-It also writes the five bounded HATCH source/fill sections. The Webview
-range-reads those sections after the first line frame, triangulates solid and
-gradient rings in a worker and uploads at most 32 MiB of local-origin fill
-vertices. Pattern HATCH metadata is retained, but pattern strokes remain
-deferred. All omitted logical entities, skipped paths and HATCH caps are
-exposed in the conversion report rather than silently treated as supported.
+It also writes the seven bounded HATCH source/fill/pattern sections. The
+Webview range-reads those sections after the first line frame, triangulates
+solid and gradient rings, and regenerates clipped pattern strokes in the same
+persistent worker. All omitted logical entities, skipped paths and HATCH caps
+are exposed in the conversion report rather than silently treated as
+supported.
 
 This qualification writer keeps the same 4 MiB overview and 512 KiB detail
 limits and uses disk-backed group-local XY Morton ordering for detail batches.
