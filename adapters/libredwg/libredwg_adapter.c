@@ -884,6 +884,8 @@ json_conversion_coverage (const LibreDwgPrimitiveCounts *counts)
           counts->attribute_definitions);
   printf (",\"attributes\":%" PRIu64, counts->attributes);
   printf (",\"hatches\":%" PRIu64, counts->hatches);
+  printf (",\"points\":%" PRIu64, counts->points);
+  printf (",\"solids\":%" PRIu64, counts->solids);
   putchar ('}');
 }
 

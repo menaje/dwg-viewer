@@ -39,6 +39,7 @@ function makeFakeGl() {
     ONE_MINUS_SRC_ALPHA: 24,
     LINES: 25,
     TRIANGLES: 26,
+    POINTS: 27,
     createShader: () => ({ id: ++nextId }),
     shaderSource(_shader, source) {
       calls.shaderSources.push(source);
@@ -83,6 +84,7 @@ function makeFakeGl() {
     useProgram() {},
     uniformMatrix4fv() {},
     uniform1i() {},
+    uniform1f() {},
     drawArraysInstanced(mode, first, count, instances) {
       calls.drawArraysInstanced.push({ mode, first, count, instances });
     },
@@ -267,5 +269,97 @@ test("draws HATCH fills then patterns before boundary geometry", () => {
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },
   ]);
+  renderer.dispose();
+});
+
+test("draws deferred SOLID fills and outlines before POINT markers", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const overview = batch({
+    id: 0,
+    kind: GpuLineBatchKind.ModelOverview,
+    lodLevel: 0,
+    firstVertex: 0,
+  });
+  const first = renderer.renderOverview({
+    batches: [overview],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set(),
+    },
+    vertices: {
+      buffer: new ArrayBuffer(64),
+      byteLength: 64,
+      vertexCount: 2,
+    },
+  });
+  const makePrimitiveBatch = (vertexCount) => ({
+    id: 0,
+    kind: GpuLineBatchKind.ModelDetail,
+    lodLevel: 1,
+    firstVertex: 0,
+    vertexCount,
+    blockIndex: null,
+    origin: [0, 0, 0],
+    bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+  });
+  renderer.setPrimitiveMeshes({
+    points: {
+      batches: [makePrimitiveBatch(1)],
+      vertices: {
+        buffer: new ArrayBuffer(32),
+        byteLength: 32,
+        vertexCount: 1,
+      },
+    },
+    solidFills: {
+      batches: [makePrimitiveBatch(3)],
+      vertices: {
+        buffer: new ArrayBuffer(96),
+        byteLength: 96,
+        vertexCount: 3,
+      },
+    },
+    solidOutlines: {
+      batches: [makePrimitiveBatch(2)],
+      vertices: {
+        buffer: new ArrayBuffer(64),
+        byteLength: 64,
+        vertexCount: 2,
+      },
+    },
+    metrics: { sourcePoints: 1, sourceSolids: 1, gpuBytes: 192 },
+  });
+
+  const redrawn = renderer.redraw(first.camera);
+
+  assert.equal(redrawn.solidFillDrawCalls, 1);
+  assert.equal(redrawn.solidOutlineDrawCalls, 1);
+  assert.equal(redrawn.pointDrawCalls, 1);
+  assert.equal(redrawn.solidFillGpuBytes, 96);
+  assert.equal(redrawn.solidOutlineGpuBytes, 64);
+  assert.equal(redrawn.pointGpuBytes, 32);
+  assert.equal(redrawn.gpuVertexBytes, 256);
+  assert.deepEqual(calls.drawArraysInstanced.slice(-4), [
+    { mode: gl.TRIANGLES, first: 0, count: 3, instances: 1 },
+    { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+    { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+    { mode: gl.POINTS, first: 0, count: 1, instances: 1 },
+  ]);
+  assert.ok(
+    calls.shaderSources.some((source) =>
+      source.includes("gl_PointCoord"),
+    ),
+  );
   renderer.dispose();
 });

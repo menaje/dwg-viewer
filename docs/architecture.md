@@ -32,9 +32,10 @@ HATCH line, circular, elliptic, bulge and spline boundaries without adding a
 whole-drawing fill mesh. Scene Cache v1.6 adds bounded HATCH source rings and
 worker-side solid/gradient fills. Scene Cache v1.7 adds resolved
 pattern-definition and dash pools plus viewport-clipped pattern rendering in
-the persistent HATCH worker. Remaining source families and exact CAD text
-layout are product-completeness gates on this selected engine, not an open
-parser choice.
+the persistent HATCH worker. Scene Cache v1.8 adds lossless POINT and SOLID
+source records plus a bounded one-shot display worker. Remaining source
+families and exact CAD text layout are product-completeness gates on this
+selected engine, not an open parser choice.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -106,6 +107,14 @@ batches remain unchanged. The corresponding acadrust conversion measured
 7,642 ms median and 969,310,208 bytes median peak RSS, confirming that it still
 fails the memory hard gate while LibreDWG passes both conversion gates.
 
+The Scene Cache v1.8 POINT/SOLID milestone measured 2,986 ms median conversion
+wall time and 591,511,552 bytes median peak RSS; measured maximums were
+3,028 ms and 592,150,528 bytes. It adds 621 POINT records (69,552 bytes), 350
+SOLID records (58,800 bytes) and two 40-byte directory entries. The
+deterministic cache is 176,113,616 bytes, exactly 128,432 bytes larger than
+v1.7. Logical source coverage rises from 377,208 to 378,179 of 378,400
+entities (99.94%), leaving 221 deferred. Both conversion gates still pass.
+
 The 0.14 cache and normalized conversion report are byte-identical to the
 0.13.4 result on the reference drawing, while median conversion time improves
 from 4,140 ms to 2,941 ms. Nightly `0.14.xxxx` prereleases are not used as the
@@ -119,7 +128,9 @@ fingerprints, but parser memory alone exceeds the hard limit by more than
 
 Cross-engine conversion of public LibreDWG fixtures covers every HATCH mode.
 `example_2018.dwg` produces one pattern HATCH, two definition lines and four
-dash values; kinds 37–38 are byte-identical between acadrust and LibreDWG.
+dash values; kinds 37–38 are byte-identical between acadrust and LibreDWG. Its
+46 POINT and 15 SOLID records also produce byte-identical kind-39 and kind-40
+payloads.
 `2018/Dynblocks.dwg` matches at one solid plus three pattern HATCHes, eight
 loops, 104 fill vertices and four definition lines, with identical pattern
 sections. `2004/HatchG.dwg` matches at two gradient HATCHes, two loops and 269
@@ -161,6 +172,17 @@ first-frame reads total 5,001,757 bytes, and the unchanged overview remains
 including its own block-instance graph, fill mesh and fitted-view pattern pass
 completed in about 414 ms at about 137 MB process RSS.
 
+With v1.8, two more directory entries add 80 bytes: the first-frame path is
+still eight reads and now totals 5,001,837 bytes. POINT and SOLID data are not
+part of those reads. Their one-shot post-frame qualification used six reads
+totaling 686,107 bytes, including block and INSERT metadata, and completed
+validation, instance-graph construction and mesh generation in 289.2 ms at
+about 111 MB process RSS. It rendered all 621 POINT and 350 SOLID records into
+a 66,624-byte GPU payload without reaching a cap or skipping an owner.
+An actual Chromium run produced the first usable line frame in 506.2 ms,
+reported all 621 POINT and 350 SOLID records, used 4.57 MiB of GPU vertex
+buffers at drawing fit and emitted no console warning or error.
+
 An actual Chromium qualification produced the first usable line frame in
 449.1 ms. At drawing fit, the 1.5-pixel rule omitted all 6,442 visible
 definition passes and emitted no pattern buffer. After eight zoom-in actions
@@ -177,7 +199,7 @@ resident, while two private unnamed files consume about 312 MB of temporary
 disk at peak for the reference drawing and disappear on close.
 
 The parser itself accounts for almost all measured RSS: the current conversion
-maximum is only 7,734,784 bytes below the 600,000,000-byte target. Therefore
+maximum is only 7,849,472 bytes below the 600,000,000-byte target. Therefore
 future LibreDWG coverage must retain streaming or disk-backed bounded passes;
 a whole-drawing geometry vector would erase the margin.
 
@@ -200,12 +222,13 @@ batch around the camera before converting matrices to `f32`.
 
 ## Implemented cache slice
 
-Scene Cache v1.7 writes the drawing/layer/block/text-style tables and
+Scene Cache v1.8 writes the drawing/layer/block/text-style tables and
 source-precision LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE, ELLIPSE,
-SPLINE, TEXT, MTEXT, ATTDEF and ATTRIB records. The records retain owner
-handles so block definitions remain shared instead of being expanded per
-insertion. Text values, tags, prompts, font filenames and BigFont filenames
-remain UTF-8, while MTEXT column heights use a separate packed `f64` pool.
+SPLINE, TEXT, MTEXT, ATTDEF, ATTRIB, POINT and SOLID records. The records
+retain owner handles so block definitions remain shared instead of being
+expanded per insertion. Text values, tags, prompts, font filenames and BigFont
+filenames remain UTF-8, while MTEXT column heights use a separate packed `f64`
+pool.
 HATCH adds source records plus bounded closed `f64` ring, gradient-color and
 seed-point pools. Pattern-definition lines preserve parser-resolved angles,
 bases, offsets and dash/gap/dot sequences in separate typed pools. Original
@@ -263,6 +286,20 @@ Local origins retain display precision at large coordinates. Positive dash
 values draw, negative values skip and zero values become one-pixel dots.
 User-defined double patterns add the perpendicular pass; predefined
 definition lines are already resolved by the native parser.
+
+The v1.8 POINT/SOLID slice also stays outside the line first frame. A
+one-shot worker range-reads the two source sections plus block and INSERT
+metadata, reuses the instance graph, transfers only the packed display
+buffers and exits. POINT keeps WCS location and drawing `PDMODE`/`PDSIZE`;
+its shader draws bounded screen-space glyphs. SOLID keeps four OCS corners
+and drawing `FILLMODE`; the worker applies the arbitrary-axis transform and
+emits either fill triangles or three/four outline edges.
+
+POINT source is capped at 262,144 records and 8 MiB of GPU vertices. SOLID
+source is capped at 131,072 records, 16 MiB of fill vertices and 8 MiB of
+outline vertices. The combined GPU hard limit is 32 MiB. This worker runs
+before HATCH initialization so the two source-buffer peaks do not overlap,
+and opening another file cancels unfinished work.
 
 Large-drawing detail records are ordered by group and a 32-bit interleaved XY
 Morton key computed from each segment midpoint within that group's finite

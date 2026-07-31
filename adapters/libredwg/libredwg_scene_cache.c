@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MPL-2.0
  *
- * A bounded-memory Scene Cache v1.7 writer for GNU LibreDWG. Geometry and
+ * A bounded-memory Scene Cache v1.8 writer for GNU LibreDWG. Geometry and
  * source text are traversed repeatedly and written directly to the
  * destination; the writer never creates a JSON or whole-drawing in-memory
  * representation. Large detail passes use private temporary files for an
@@ -108,7 +108,9 @@ enum
   SECTION_HATCH_GRADIENT_COLORS = 35,
   SECTION_HATCH_SEED_POINTS = 36,
   SECTION_HATCH_PATTERN_LINES = 37,
-  SECTION_HATCH_PATTERN_DASHES = 38
+  SECTION_HATCH_PATTERN_DASHES = 38,
+  SECTION_POINT_ENTITIES = 39,
+  SECTION_SOLID_ENTITIES = 40
 };
 
 enum
@@ -136,7 +138,9 @@ enum
   HATCH_GRADIENT_COLOR_RECORD_SIZE = 16,
   HATCH_SEED_POINT_RECORD_SIZE = 16,
   HATCH_PATTERN_LINE_RECORD_SIZE = 72,
-  HATCH_PATTERN_DASH_RECORD_SIZE = 8
+  HATCH_PATTERN_DASH_RECORD_SIZE = 8,
+  POINT_ENTITY_RECORD_SIZE = 112,
+  SOLID_ENTITY_RECORD_SIZE = 168
 };
 
 typedef struct
@@ -475,7 +479,9 @@ static const uint32_t SECTION_KINDS[LIBREDWG_SCENE_SECTION_COUNT]
         SECTION_HATCH_GRADIENT_COLORS,
         SECTION_HATCH_SEED_POINTS,
         SECTION_HATCH_PATTERN_LINES,
-        SECTION_HATCH_PATTERN_DASHES };
+        SECTION_HATCH_PATTERN_DASHES,
+        SECTION_POINT_ENTITIES,
+        SECTION_SOLID_ENTITIES };
 
 static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
     = { DRAWING_RECORD_SIZE,
@@ -504,7 +510,9 @@ static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
         HATCH_GRADIENT_COLOR_RECORD_SIZE,
         HATCH_SEED_POINT_RECORD_SIZE,
         HATCH_PATTERN_LINE_RECORD_SIZE,
-        HATCH_PATTERN_DASH_RECORD_SIZE };
+        HATCH_PATTERN_DASH_RECORD_SIZE,
+        POINT_ENTITY_RECORD_SIZE,
+        SOLID_ENTITY_RECORD_SIZE };
 
 static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
     = { "drawing",
@@ -533,7 +541,9 @@ static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
         "hatch_gradient_colors",
         "hatch_seed_points",
         "hatch_pattern_lines",
-        "hatch_pattern_dashes" };
+        "hatch_pattern_dashes",
+        "point_entities",
+        "solid_entities" };
 
 static void
 set_error (CacheWriter *writer, const char *message)
@@ -1470,6 +1480,14 @@ count_primitives (const Dwg_Data *dwg)
               && object->tio.entity->tio.HATCH)
             counts.hatches++;
           break;
+        case DWG_TYPE_POINT:
+          if (object->tio.entity && object->tio.entity->tio.POINT)
+            counts.points++;
+          break;
+        case DWG_TYPE_SOLID:
+          if (object->tio.entity && object->tio.entity->tio.SOLID)
+            counts.solids++;
+          break;
         default:
           break;
         }
@@ -1488,7 +1506,8 @@ count_primitives (const Dwg_Data *dwg)
                                + counts.splines + counts.texts
                                + counts.mtexts
                                + counts.attribute_definitions
-                               + counts.hatches;
+                               + counts.hatches + counts.points
+                               + counts.solids;
   counts.deferred_entities
       = counts.total_entities - counts.serialized_entities;
   return counts;
@@ -6072,6 +6091,125 @@ write_hatch_pattern_dash_section (CacheWriter *writer,
 }
 
 static int
+write_point_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
+                            const CacheTables *tables,
+                            SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t object_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_POINT *point;
+      double location[3];
+      double normal[3];
+      if (object->fixedtype != DWG_TYPE_POINT || !object->tio.entity
+          || !(point = object->tio.entity->tio.POINT))
+        continue;
+      location[0] = point->x;
+      location[1] = point->y;
+      location[2] = point->z;
+      if (!isfinite (location[0]) || !isfinite (location[1])
+          || !isfinite (location[2]) || !isfinite (point->thickness)
+          || !isfinite (point->x_ang)
+          || !isfinite (dwg->header_vars.PDSIZE))
+        {
+          set_error (writer, "POINT source contains a non-finite value");
+          return 0;
+        }
+      finite_normal_or_unit_z (
+          point->extrusion.x, point->extrusion.y, point->extrusion.z,
+          normal);
+      if (!write_common (writer, object, tables)
+          || !write_vec3 (writer, location)
+          || !write_vec3 (writer, normal)
+          || !write_f64 (writer, point->thickness)
+          || !write_f64 (writer, point->x_ang)
+          || !write_f64 (writer, dwg->header_vars.PDSIZE)
+          || !write_i16 (writer, (int16_t)dwg->header_vars.PDMODE)
+          || !write_u16 (writer, 0) || !write_u32 (writer, 0))
+        return 0;
+      count++;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_POINT_ENTITIES, POINT_ENTITY_RECORD_SIZE,
+      "point_entities", offset, count);
+}
+
+static int
+write_solid_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
+                            const CacheTables *tables,
+                            SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t object_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_SOLID *solid;
+      double corners[4][3];
+      double normal[3];
+      size_t corner_index;
+      if (object->fixedtype != DWG_TYPE_SOLID || !object->tio.entity
+          || !(solid = object->tio.entity->tio.SOLID))
+        continue;
+      corners[0][0] = solid->corner1.x;
+      corners[0][1] = solid->corner1.y;
+      corners[1][0] = solid->corner2.x;
+      corners[1][1] = solid->corner2.y;
+      corners[2][0] = solid->corner3.x;
+      corners[2][1] = solid->corner3.y;
+      corners[3][0] = solid->corner4.x;
+      corners[3][1] = solid->corner4.y;
+      for (corner_index = 0; corner_index < 4; corner_index++)
+        corners[corner_index][2] = solid->elevation;
+      if (!isfinite (solid->elevation)
+          || !isfinite (solid->thickness))
+        {
+          set_error (writer, "SOLID source contains a non-finite value");
+          return 0;
+        }
+      for (corner_index = 0; corner_index < 4; corner_index++)
+        {
+          if (!isfinite (corners[corner_index][0])
+              || !isfinite (corners[corner_index][1]))
+            {
+              set_error (
+                  writer, "SOLID source contains a non-finite corner");
+              return 0;
+            }
+        }
+      finite_normal_or_unit_z (
+          solid->extrusion.x, solid->extrusion.y, solid->extrusion.z,
+          normal);
+      if (!write_common (writer, object, tables)
+          || !write_u32 (writer, dwg->header_vars.FILLMODE ? 1u : 0u)
+          || !write_u32 (writer, 0))
+        return 0;
+      for (corner_index = 0; corner_index < 4; corner_index++)
+        {
+          if (!write_vec3 (writer, corners[corner_index]))
+            return 0;
+        }
+      if (!write_vec3 (writer, normal)
+          || !write_f64 (writer, solid->thickness))
+        return 0;
+      count++;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_SOLID_ENTITIES, SOLID_ENTITY_RECORD_SIZE,
+      "solid_entities", offset, count);
+}
+
+static int
 count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
                     LibreDwgGpuLineSummary *summary,
                     OverviewPlan *overview)
@@ -7103,6 +7241,10 @@ libredwg_write_scene_cache (
           &writer, dwg, &sections[25])
       || !write_hatch_pattern_dash_section (
           &writer, dwg, &sections[26])
+      || !write_point_entity_section (
+          &writer, dwg, &tables, &sections[27])
+      || !write_solid_entity_section (
+          &writer, dwg, &tables, &sections[28])
       || !position (&writer, &file_size)
       || !write_header (
           &writer, file_size, source_size, source_version,

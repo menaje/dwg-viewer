@@ -1,8 +1,8 @@
-# Scene Cache v1.7
+# Scene Cache v1.8
 
 Status: source geometry/text writer, bounded HATCH rings and asynchronous
-solid/gradient fill and viewport-clipped pattern paths implemented; expansion
-tracked by GitHub issues #3 and #9.
+solid/gradient fill, viewport-clipped pattern, POINT marker and SOLID
+fill/outline paths implemented; expansion tracked by GitHub issues #3 and #9.
 
 The cache is a little-endian, versioned binary container designed for range
 reads and browser `ArrayBuffer`/`DataView` access. Geometry is never encoded as
@@ -78,6 +78,8 @@ Section kinds currently written:
 | 36 | HATCH seed-point pool |
 | 37 | HATCH pattern-definition-line records |
 | 38 | HATCH pattern dash/gap/dot value pool |
+| 39 | POINT source records |
+| 40 | SOLID source records |
 
 Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
 Version 1.2 adds kinds 30–31 for straight and polyline GPU lines. Version 1.3
@@ -86,9 +88,10 @@ binary record sizes. Version 1.4 adds kinds 4 and 22–23 for source text and
 font-style metadata. Version 1.5 adds bounded HATCH boundary chords and expands
 the packed GPU source-kind field without changing a record size. Version 1.6
 adds kinds 32–36 for bounded source-backed HATCH fills. Version 1.7 adds kinds
-37–38 for resolved pattern-definition lines and dash values. The validator
-continues to accept older v1 caches, while a v1.7 writer always emits all 27
-sections, including empty pools.
+37–38 for resolved pattern-definition lines and dash values. Version 1.8 adds
+kinds 39–40 for POINT and SOLID source records. The validator continues to
+accept older v1 caches, while a v1.8 writer always emits all 29 sections,
+including empty pools.
 
 ## Shared primitive prefix
 
@@ -360,6 +363,73 @@ GPU bytes. Definitions closer than 1.5 screen pixels are omitted before
 geometry generation. Shared block pattern vertices are stored once, and draw
 calls submit only the visible instance indices selected for that viewport.
 
+## POINT and SOLID source/display
+
+Scene Cache v1.8 preserves POINT and SOLID independently of the first line
+frame. Both fixed-size sections use the shared primitive prefix and retain
+owner handles, so a block definition is converted once and displayed through
+the existing INSERT/MINSERT instance graph.
+
+### POINT record
+
+Each kind-39 record is 112 bytes:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u8[32]` | shared primitive prefix |
+| 32 | `f64[3]` | source WCS location |
+| 56 | `f64[3]` | finite normal |
+| 80 | `f64` | thickness |
+| 88 | `f64` | source X-axis angle in radians |
+| 96 | `f64` | drawing `PDSIZE` snapshot |
+| 104 | `i16` | drawing `PDMODE` snapshot |
+| 106 | `u16` | reserved; zero |
+| 108 | `u32` | reserved; zero |
+
+The Webview emits one local-origin 32-byte vertex per visible marker. Its
+payload stores relative `f32[3]` position, layer, color, normalized marker
+angle, bounded `PDSIZE` and `PDMODE` plus invisibility. A dedicated point
+shader draws the base dot/plus/X/tick and optional circle/square bits in
+screen space. Positive `PDSIZE` is converted from drawing units, negative
+values are viewport percentages and zero uses five percent of viewport
+height; non-dot markers are clamped to 5–64 pixels and the plain dot uses
+three pixels. `PDMODE=1` emits no marker.
+
+### SOLID record
+
+Each kind-40 record is 168 bytes:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u8[32]` | shared primitive prefix |
+| 32 | `u32` | flags; bit 0 is the drawing `FILLMODE` snapshot |
+| 36 | `u32` | reserved; zero |
+| 40 | `f64[3]` | first OCS corner |
+| 64 | `f64[3]` | second OCS corner |
+| 88 | `f64[3]` | third OCS corner |
+| 112 | `f64[3]` | fourth OCS corner |
+| 136 | `f64[3]` | finite OCS normal |
+| 160 | `f64` | thickness |
+
+The fourth corner equals the third for a triangle. The worker converts OCS
+corners to WCS once, triangulates a filled quadrilateral as `(1,2,3)` and
+`(1,3,4)`, and omits a degenerate second triangle. With `FILLMODE` off it
+emits three or four boundary edges instead. Fill vertices use the same
+layer-aware 32-byte layout as HATCH fills; outlines use the existing 32-byte
+line layout.
+
+The v1.8 source reader caps POINT at 262,144 records and SOLID at 131,072
+records in addition to the 64 MiB per-section guard. After the first line
+frame, a one-shot worker reads only kinds 39–40 plus block/INSERT metadata,
+builds the shared-instance meshes, transfers the final buffers and exits.
+POINT GPU data is capped at 8 MiB, SOLID fills at 16 MiB and SOLID outlines at
+8 MiB, for a 32 MiB combined hard limit. The POINT/SOLID worker completes
+before the HATCH worker starts, avoiding simultaneous source-geometry peaks.
+Per-owner scratch batches start at one primitive instead of reserving a fixed
+block and grow only as needed up to 24,576 vertices, so many tiny block
+definitions cannot multiply a large initial allocation. Opening another file
+terminates either outstanding worker.
+
 ## Viewport and LOD GPU lines
 
 LINE and normalized polyline segments are emitted as interleaved, GPU-ready
@@ -461,7 +531,7 @@ generated artifacts and must not be committed.
 
 ## LibreDWG qualification writer
 
-The optional LibreDWG adapter currently writes a valid but partial v1.7 cache
+The optional LibreDWG adapter currently writes a valid but partial v1.8 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
@@ -470,10 +540,12 @@ ATTRIB source records. Its GPU sections render LINE and normalized polyline
 segments plus bounded ARC/CIRCLE/ELLIPSE, bulge, SPLINE and HATCH-boundary
 chords. Circular curves use the same 16-segments-per-revolution limit; SPLINE
 evaluation and malformed-input fallback use the 256-segments-per-entity limit.
-It also writes the seven bounded HATCH source/fill/pattern sections. The
-Webview range-reads those sections after the first line frame, triangulates
-solid and gradient rings, and regenerates clipped pattern strokes in the same
-persistent worker. All omitted logical entities, skipped paths and HATCH caps
+It also writes the seven bounded HATCH source/fill/pattern sections and the
+POINT/SOLID source sections, including `PDMODE`, `PDSIZE` and `FILLMODE`. The
+Webview range-reads those sections after the first line frame, builds POINT
+markers and SOLID geometry in a one-shot worker, triangulates solid and
+gradient HATCH rings, and regenerates clipped HATCH pattern strokes in the
+persistent worker. All omitted logical entities, skipped paths and safety caps
 are exposed in the conversion report rather than silently treated as
 supported.
 

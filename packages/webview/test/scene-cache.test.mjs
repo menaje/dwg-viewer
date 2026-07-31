@@ -41,9 +41,9 @@ test("accepts the Scene Cache v1.3 header", async () => {
 test("rejects a newer unsupported Scene Cache minor version", async () => {
   await assert.rejects(
     SceneCacheReader.open(
-      new MemoryRangeSource(makeFixtureCache({ minorVersion: 8 })),
+      new MemoryRangeSource(makeFixtureCache({ minorVersion: 9 })),
     ),
-    /unsupported scene-cache version 1\.8/,
+    /unsupported scene-cache version 1\.9/,
   );
 });
 
@@ -129,6 +129,72 @@ test("rejects reserved metadata in a v1.7 HATCH pattern line", async () => {
 
   const reader = await SceneCacheReader.open(new MemoryRangeSource(buffer));
   await assert.rejects(reader.readHatchSource(), /invalid metadata/);
+});
+
+test("reads bounded Scene Cache v1.8 POINT and SOLID source lazily", async () => {
+  const source = new TrackedRangeSource(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 8 })),
+  );
+  const reader = await SceneCacheReader.open(source);
+  const requestsAfterOpen = source.requests.length;
+  const primitives = await reader.readPrimitiveSource();
+
+  assert.equal(reader.header.minor, 8);
+  assert.equal(primitives.points.length, 1);
+  assert.equal(primitives.solids.length, 2);
+  assert.deepEqual(primitives.points.get(0).location, [11, 2, 0]);
+  assert.equal(primitives.points.get(0).displayMode, 66);
+  assert.equal(primitives.points.get(0).displaySize, -3);
+  assert.equal(primitives.solids.get(0).fillMode, true);
+  assert.deepEqual(primitives.solids.get(0).corners[3], [0, 3, 0]);
+  assert.equal(primitives.solids.get(1).fillMode, false);
+  assert.equal(source.requests.length - requestsAfterOpen, 2);
+});
+
+test("rejects reserved metadata in a v1.8 POINT record", async () => {
+  const buffer = makeFixtureCache({ minorVersion: 8 });
+  const view = new DataView(buffer);
+  const sectionCount = view.getUint32(16, true);
+  const directoryOffset = Number(view.getBigUint64(32, true));
+  let pointOffset;
+  for (let index = 0; index < sectionCount; index += 1) {
+    const offset = directoryOffset + index * DIRECTORY_ENTRY_SIZE;
+    if (view.getUint32(offset, true) === SectionKind.PointEntities) {
+      pointOffset = Number(view.getBigUint64(offset + 8, true));
+      break;
+    }
+  }
+  assert.notEqual(pointOffset, undefined);
+  view.setUint32(pointOffset + 108, 1, true);
+
+  const reader = await SceneCacheReader.open(new MemoryRangeSource(buffer));
+  await assert.rejects(
+    reader.readPointEntities(),
+    /nonzero reserved metadata/,
+  );
+});
+
+test("rejects invalid flags in a v1.8 SOLID record", async () => {
+  const buffer = makeFixtureCache({ minorVersion: 8 });
+  const view = new DataView(buffer);
+  const sectionCount = view.getUint32(16, true);
+  const directoryOffset = Number(view.getBigUint64(32, true));
+  let solidOffset;
+  for (let index = 0; index < sectionCount; index += 1) {
+    const offset = directoryOffset + index * DIRECTORY_ENTRY_SIZE;
+    if (view.getUint32(offset, true) === SectionKind.SolidEntities) {
+      solidOffset = Number(view.getBigUint64(offset + 8, true));
+      break;
+    }
+  }
+  assert.notEqual(solidOffset, undefined);
+  view.setUint32(solidOffset + 32, 2, true);
+
+  const reader = await SceneCacheReader.open(new MemoryRangeSource(buffer));
+  await assert.rejects(
+    reader.readSolidEntities(),
+    /invalid flags or reserved metadata/,
+  );
 });
 
 test("preserves v1.4 Korean source text, style fonts and MTEXT columns", async () => {

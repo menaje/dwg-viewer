@@ -12,6 +12,7 @@ const VERTEX_STRIDE = 32;
 const FILL_VERTEX_STRIDE = 32;
 const INSTANCE_STRIDE = 64;
 const MAX_INSTANCES_PER_DRAW = 16_384;
+const MAX_PRIMITIVE_GPU_BYTES = 32 * 1024 * 1024;
 const MODEL_INSTANCES = Object.freeze({
   data: identityMat4(),
   count: 1,
@@ -185,6 +186,133 @@ void main() {
 }
 `;
 
+const POINT_VERTEX_SHADER = `#version 300 es
+precision highp float;
+precision highp int;
+
+layout(location = 0) in vec3 a_localPosition;
+layout(location = 1) in uint a_encodedColor;
+layout(location = 2) in uint a_layerIndex;
+layout(location = 3) in uint a_style;
+layout(location = 4) in float a_angle;
+layout(location = 5) in float a_displaySize;
+layout(location = 6) in mat4 a_instanceMatrix;
+
+uniform mat4 u_projection;
+uniform float u_viewportHeight;
+uniform float u_pixelsPerWorld;
+
+flat out uint v_encodedColor;
+flat out uint v_layerIndex;
+flat out uint v_style;
+flat out float v_angle;
+flat out float v_markerSize;
+
+void main() {
+  gl_Position = u_projection * a_instanceMatrix * vec4(a_localPosition, 1.0);
+  uint mode = a_style & 65535u;
+  float markerSize =
+    a_displaySize > 0.0
+      ? a_displaySize * u_pixelsPerWorld
+      : (a_displaySize < 0.0
+          ? -a_displaySize * u_viewportHeight * 0.01
+          : u_viewportHeight * 0.05);
+  gl_PointSize = mode == 0u
+    ? 3.0
+    : clamp(markerSize, 5.0, 64.0);
+  v_encodedColor = a_encodedColor;
+  v_layerIndex = a_layerIndex;
+  v_style = a_style;
+  v_angle = a_angle;
+  v_markerSize = gl_PointSize;
+}
+`;
+
+const POINT_FRAGMENT_SHADER = `#version 300 es
+precision highp float;
+precision highp int;
+
+flat in uint v_encodedColor;
+flat in uint v_layerIndex;
+flat in uint v_style;
+flat in float v_angle;
+flat in float v_markerSize;
+
+uniform sampler2D u_layerColors;
+uniform int u_layerCount;
+
+out vec4 outColor;
+
+vec3 aciColor(uint index) {
+  if (index == 1u) return vec3(1.0, 0.18, 0.18);
+  if (index == 2u) return vec3(1.0, 1.0, 0.2);
+  if (index == 3u) return vec3(0.2, 1.0, 0.35);
+  if (index == 4u) return vec3(0.2, 0.95, 1.0);
+  if (index == 5u) return vec3(0.35, 0.55, 1.0);
+  if (index == 6u) return vec3(1.0, 0.25, 1.0);
+  if (index == 7u) return vec3(0.92);
+  float gray = 0.35 + 0.6 * float(index % 16u) / 15.0;
+  return vec3(gray);
+}
+
+vec4 resolveColor() {
+  uint kind = v_encodedColor >> 30u;
+  if (kind == 0u) {
+    if (v_layerIndex >= uint(u_layerCount)) return vec4(0.92, 0.92, 0.92, 1.0);
+    return texelFetch(u_layerColors, ivec2(int(v_layerIndex), 0), 0);
+  }
+  if (kind == 1u) return vec4(0.92, 0.92, 0.92, 1.0);
+  if (kind == 2u) return vec4(aciColor(v_encodedColor & 255u), 1.0);
+  return vec4(
+    float((v_encodedColor >> 16u) & 255u) / 255.0,
+    float((v_encodedColor >> 8u) & 255u) / 255.0,
+    float(v_encodedColor & 255u) / 255.0,
+    1.0
+  );
+}
+
+void main() {
+  if ((v_style & (1u << 16u)) != 0u) discard;
+  if (
+    v_layerIndex < uint(u_layerCount) &&
+    texelFetch(u_layerColors, ivec2(int(v_layerIndex), 0), 0).a <= 0.0
+  ) discard;
+
+  uint mode = v_style & 65535u;
+  if (mode == 1u) discard;
+  vec2 point = gl_PointCoord * 2.0 - 1.0;
+  float cosine = cos(v_angle);
+  float sine = sin(v_angle);
+  point = mat2(cosine, -sine, sine, cosine) * point;
+  float lineWidth = clamp(2.0 / max(v_markerSize, 1.0), 0.04, 0.2);
+  uint base = mode & 31u;
+  bool visible = false;
+  if (base == 0u) {
+    visible = length(point) <= 0.35;
+  } else if (base == 2u) {
+    visible = min(abs(point.x), abs(point.y)) <= lineWidth;
+  } else if (base == 3u) {
+    visible =
+      min(abs(point.x - point.y), abs(point.x + point.y)) <=
+      lineWidth * 1.41421356;
+  } else if (base == 4u) {
+    visible = abs(point.x) <= lineWidth && point.y >= -lineWidth;
+  } else {
+    visible = length(point) <= 0.2;
+  }
+  if ((mode & 32u) != 0u) {
+    visible = visible || abs(length(point) - 0.78) <= lineWidth;
+  }
+  if ((mode & 64u) != 0u) {
+    visible =
+      visible || abs(max(abs(point.x), abs(point.y)) - 0.78) <= lineWidth;
+  }
+  if (!visible) discard;
+  outColor = resolveColor();
+  if (outColor.a <= 0.0) discard;
+}
+`;
+
 function compileShader(gl, type, source) {
   const shader = gl.createShader(type);
   if (!shader) {
@@ -330,6 +458,38 @@ function calculateOverviewBounds(batches, instanceGraph) {
   return bounds;
 }
 
+function validatePackedScene(
+  scene,
+  verticesPerPrimitive,
+  label,
+) {
+  if (
+    !scene ||
+    !Array.isArray(scene.batches) ||
+    !scene.vertices ||
+    !(scene.vertices.buffer instanceof ArrayBuffer) ||
+    scene.vertices.byteLength !==
+      scene.vertices.vertexCount * VERTEX_STRIDE ||
+    scene.vertices.buffer.byteLength !== scene.vertices.byteLength
+  ) {
+    throw new Error(`${label} vertex payload is inconsistent`);
+  }
+  let expectedFirstVertex = 0;
+  for (const batch of scene.batches) {
+    if (
+      batch.firstVertex !== expectedFirstVertex ||
+      batch.vertexCount <= 0 ||
+      batch.vertexCount % verticesPerPrimitive !== 0
+    ) {
+      throw new Error(`${label} batch ${batch.id} has an invalid range`);
+    }
+    expectedFirstVertex += batch.vertexCount;
+  }
+  if (expectedFirstVertex !== scene.vertices.vertexCount) {
+    throw new Error(`${label} batches do not cover the vertex buffer`);
+  }
+}
+
 export class WebGlLineRenderer {
   constructor(canvas) {
     const gl = canvas.getContext("webgl2", {
@@ -350,6 +510,11 @@ export class WebGlLineRenderer {
       FILL_VERTEX_SHADER,
       FILL_FRAGMENT_SHADER,
     );
+    this.pointProgram = createProgram(
+      gl,
+      POINT_VERTEX_SHADER,
+      POINT_FRAGMENT_SHADER,
+    );
     this.instanceBuffer = gl.createBuffer();
     this.layerTexture = gl.createTexture();
     this.vertexResources = new Set();
@@ -358,6 +523,10 @@ export class WebGlLineRenderer {
     this.overviewScene = null;
     this.hatchFillScene = null;
     this.hatchPatternScene = null;
+    this.pointScene = null;
+    this.solidFillScene = null;
+    this.solidOutlineScene = null;
+    this.primitiveMetrics = null;
     this.textOverlay = null;
     if (!this.instanceBuffer || !this.layerTexture) {
       throw new Error("cannot allocate WebGL buffers");
@@ -376,6 +545,26 @@ export class WebGlLineRenderer {
     this.fillLayerTextureLocation = gl.getUniformLocation(
       this.fillProgram,
       "u_layerColors",
+    );
+    this.pointProjectionLocation = gl.getUniformLocation(
+      this.pointProgram,
+      "u_projection",
+    );
+    this.pointLayerCountLocation = gl.getUniformLocation(
+      this.pointProgram,
+      "u_layerCount",
+    );
+    this.pointLayerTextureLocation = gl.getUniformLocation(
+      this.pointProgram,
+      "u_layerColors",
+    );
+    this.pointViewportHeightLocation = gl.getUniformLocation(
+      this.pointProgram,
+      "u_viewportHeight",
+    );
+    this.pointPixelsPerWorldLocation = gl.getUniformLocation(
+      this.pointProgram,
+      "u_pixelsPerWorld",
     );
     this.layerCount = 0;
     this.layers = Object.freeze([]);
@@ -557,6 +746,55 @@ export class WebGlLineRenderer {
     return resource;
   }
 
+  uploadPointVertices(arrayBuffer) {
+    const gl = this.gl;
+    const vertexBuffer = gl.createBuffer();
+    const vertexArray = gl.createVertexArray();
+    if (!vertexBuffer || !vertexArray) {
+      throw new Error("cannot allocate POINT WebGL resources");
+    }
+    gl.bindVertexArray(vertexArray);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vertexBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, arrayBuffer, gl.STATIC_DRAW);
+
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 3, gl.FLOAT, false, VERTEX_STRIDE, 0);
+    gl.enableVertexAttribArray(1);
+    gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, VERTEX_STRIDE, 16);
+    gl.enableVertexAttribArray(2);
+    gl.vertexAttribIPointer(2, 1, gl.UNSIGNED_INT, VERTEX_STRIDE, 12);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribIPointer(3, 1, gl.UNSIGNED_INT, VERTEX_STRIDE, 28);
+    gl.enableVertexAttribArray(4);
+    gl.vertexAttribPointer(4, 1, gl.FLOAT, false, VERTEX_STRIDE, 20);
+    gl.enableVertexAttribArray(5);
+    gl.vertexAttribPointer(5, 1, gl.FLOAT, false, VERTEX_STRIDE, 24);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
+    for (let column = 0; column < 4; column += 1) {
+      const location = 6 + column;
+      gl.enableVertexAttribArray(location);
+      gl.vertexAttribPointer(
+        location,
+        4,
+        gl.FLOAT,
+        false,
+        INSTANCE_STRIDE,
+        column * 16,
+      );
+      gl.vertexAttribDivisor(location, 1);
+    }
+    gl.bindVertexArray(null);
+
+    const resource = Object.freeze({
+      vertexBuffer,
+      vertexArray,
+      byteLength: arrayBuffer.byteLength,
+    });
+    this.vertexResources.add(resource);
+    return resource;
+  }
+
   deleteVertices(resource) {
     if (!this.vertexResources.delete(resource)) {
       return;
@@ -664,6 +902,57 @@ export class WebGlLineRenderer {
     });
   }
 
+  setPrimitiveMeshes({
+    points,
+    solidFills,
+    solidOutlines,
+    metrics = null,
+  }) {
+    validatePackedScene(points, 1, "POINT");
+    validatePackedScene(solidFills, 3, "SOLID fill");
+    validatePackedScene(solidOutlines, 2, "SOLID outline");
+    const gpuBytes =
+      points.vertices.byteLength +
+      solidFills.vertices.byteLength +
+      solidOutlines.vertices.byteLength;
+    if (gpuBytes > MAX_PRIMITIVE_GPU_BYTES) {
+      throw new Error(
+        `primitive GPU payload exceeds the ${MAX_PRIMITIVE_GPU_BYTES}-byte limit`,
+      );
+    }
+    for (const scene of [
+      this.pointScene,
+      this.solidFillScene,
+      this.solidOutlineScene,
+    ]) {
+      if (scene?.resource) {
+        this.deleteVertices(scene.resource);
+      }
+    }
+    this.pointScene = Object.freeze({
+      batches: points.batches,
+      resource:
+        points.vertices.byteLength > 0
+          ? this.uploadPointVertices(points.vertices.buffer)
+          : null,
+    });
+    this.solidFillScene = Object.freeze({
+      batches: solidFills.batches,
+      resource:
+        solidFills.vertices.byteLength > 0
+          ? this.uploadHatchFillVertices(solidFills.vertices.buffer)
+          : null,
+    });
+    this.solidOutlineScene = Object.freeze({
+      batches: solidOutlines.batches,
+      resource:
+        solidOutlines.vertices.byteLength > 0
+          ? this.uploadVertices(solidOutlines.vertices.buffer)
+          : null,
+    });
+    this.primitiveMetrics = metrics;
+  }
+
   addDetailBatch(batch, vertices) {
     const existing = this.detailResources.get(batch.id);
     if (existing) {
@@ -710,6 +999,9 @@ export class WebGlLineRenderer {
       detail = false,
       fill = false,
       pattern = false,
+      point = false,
+      solidFill = false,
+      solidOutline = false,
       firstVertex = batch.firstVertex,
       instanceIndices = null,
       primitive = this.gl.LINES,
@@ -779,6 +1071,20 @@ export class WebGlLineRenderer {
         metrics.hatchPatternSubmittedVertices +=
           batch.vertexCount * instanceCount;
       }
+      if (point) {
+        metrics.pointDrawCalls += 1;
+        metrics.pointSubmittedVertices += batch.vertexCount * instanceCount;
+      }
+      if (solidFill) {
+        metrics.solidFillDrawCalls += 1;
+        metrics.solidFillSubmittedVertices +=
+          batch.vertexCount * instanceCount;
+      }
+      if (solidOutline) {
+        metrics.solidOutlineDrawCalls += 1;
+        metrics.solidOutlineSubmittedVertices +=
+          batch.vertexCount * instanceCount;
+      }
     }
   }
 
@@ -801,6 +1107,11 @@ export class WebGlLineRenderer {
     const hatchFillGpuBytes = this.hatchFillScene?.resource?.byteLength ?? 0;
     const hatchPatternGpuBytes =
       this.hatchPatternScene?.resource?.byteLength ?? 0;
+    const pointGpuBytes = this.pointScene?.resource?.byteLength ?? 0;
+    const solidFillGpuBytes =
+      this.solidFillScene?.resource?.byteLength ?? 0;
+    const solidOutlineGpuBytes =
+      this.solidOutlineScene?.resource?.byteLength ?? 0;
     const metrics = {
       drawCalls: 0,
       detailDrawCalls: 0,
@@ -813,6 +1124,16 @@ export class WebGlLineRenderer {
       hatchPatternSubmittedVertices: 0,
       hatchPatternGpuBytes,
       hatchPattern: this.hatchPatternScene?.metrics ?? null,
+      pointDrawCalls: 0,
+      pointSubmittedVertices: 0,
+      pointGpuBytes,
+      solidFillDrawCalls: 0,
+      solidFillSubmittedVertices: 0,
+      solidFillGpuBytes,
+      solidOutlineDrawCalls: 0,
+      solidOutlineSubmittedVertices: 0,
+      solidOutlineGpuBytes,
+      primitives: this.primitiveMetrics,
       submittedInstances: 0,
       submittedVertices: 0,
       detailSubmittedVertices: 0,
@@ -822,7 +1143,10 @@ export class WebGlLineRenderer {
         this.overviewScene.resource.byteLength +
         cachedDetailGpuBytes +
         hatchFillGpuBytes +
-        hatchPatternGpuBytes,
+        hatchPatternGpuBytes +
+        pointGpuBytes +
+        solidFillGpuBytes +
+        solidOutlineGpuBytes,
       cachedDetailGpuBytes,
       cachedDetailBatches: this.detailResources.size,
       bounds: this.overviewScene.bounds,
@@ -837,7 +1161,10 @@ export class WebGlLineRenderer {
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.layerTexture);
 
-    if (this.hatchFillScene?.resource) {
+    if (
+      this.solidFillScene?.resource ||
+      this.hatchFillScene?.resource
+    ) {
       gl.useProgram(this.fillProgram);
       gl.uniformMatrix4fv(
         this.fillProjectionLocation,
@@ -846,18 +1173,35 @@ export class WebGlLineRenderer {
       );
       gl.uniform1i(this.fillLayerCountLocation, this.layerCount);
       gl.uniform1i(this.fillLayerTextureLocation, 0);
-      for (const batch of this.hatchFillScene.batches) {
-        this.drawBatch(
-          batch,
-          this.hatchFillScene.resource,
-          this.overviewScene.instanceGraph,
-          camera,
-          metrics,
-          {
-            fill: true,
-            primitive: gl.TRIANGLES,
-          },
-        );
+      if (this.solidFillScene?.resource) {
+        for (const batch of this.solidFillScene.batches) {
+          this.drawBatch(
+            batch,
+            this.solidFillScene.resource,
+            this.overviewScene.instanceGraph,
+            camera,
+            metrics,
+            {
+              solidFill: true,
+              primitive: gl.TRIANGLES,
+            },
+          );
+        }
+      }
+      if (this.hatchFillScene?.resource) {
+        for (const batch of this.hatchFillScene.batches) {
+          this.drawBatch(
+            batch,
+            this.hatchFillScene.resource,
+            this.overviewScene.instanceGraph,
+            camera,
+            metrics,
+            {
+              fill: true,
+              primitive: gl.TRIANGLES,
+            },
+          );
+        }
       }
     }
 
@@ -876,6 +1220,20 @@ export class WebGlLineRenderer {
           {
             pattern: true,
             instanceIndices: batch.instanceIndices,
+          },
+        );
+      }
+    }
+    if (this.solidOutlineScene?.resource) {
+      for (const batch of this.solidOutlineScene.batches) {
+        this.drawBatch(
+          batch,
+          this.solidOutlineScene.resource,
+          this.overviewScene.instanceGraph,
+          camera,
+          metrics,
+          {
+            solidOutline: true,
           },
         );
       }
@@ -911,6 +1269,34 @@ export class WebGlLineRenderer {
       );
       metrics.detailBatches += 1;
     }
+    if (this.pointScene?.resource) {
+      gl.useProgram(this.pointProgram);
+      gl.uniformMatrix4fv(
+        this.pointProjectionLocation,
+        false,
+        camera.projection,
+      );
+      gl.uniform1i(this.pointLayerCountLocation, this.layerCount);
+      gl.uniform1i(this.pointLayerTextureLocation, 0);
+      gl.uniform1f(this.pointViewportHeightLocation, camera.height);
+      gl.uniform1f(
+        this.pointPixelsPerWorldLocation,
+        camera.height / camera.worldHeight,
+      );
+      for (const batch of this.pointScene.batches) {
+        this.drawBatch(
+          batch,
+          this.pointScene.resource,
+          this.overviewScene.instanceGraph,
+          camera,
+          metrics,
+          {
+            point: true,
+            primitive: gl.POINTS,
+          },
+        );
+      }
+    }
     gl.bindVertexArray(null);
     metrics.text = this.textOverlay?.redraw(camera, this.layerVisibility) ?? null;
     return Object.freeze(metrics);
@@ -924,12 +1310,17 @@ export class WebGlLineRenderer {
     this.gl.deleteTexture(this.layerTexture);
     this.gl.deleteProgram(this.program);
     this.gl.deleteProgram(this.fillProgram);
+    this.gl.deleteProgram(this.pointProgram);
     this.detailResources.clear();
     this.detailSelections.clear();
     this.textOverlay?.dispose();
     this.textOverlay = null;
     this.hatchFillScene = null;
     this.hatchPatternScene = null;
+    this.pointScene = null;
+    this.solidFillScene = null;
+    this.solidOutlineScene = null;
+    this.primitiveMetrics = null;
     this.overviewScene = null;
   }
 }

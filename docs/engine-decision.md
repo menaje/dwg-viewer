@@ -22,9 +22,10 @@ adapter is retained so the result can be reproduced, but a second Scene Cache
 writer will not be implemented: parsing alone already exceeds the memory hard
 limit, so adding a writer cannot make the candidate eligible.
 
-Selection does not mean that the viewer is feature-complete. The remaining
-1,192 source entities and exact CAD text layout stay as product work on the
-LibreDWG path rather than reasons to keep the engine choice open.
+Selection does not mean that the viewer is feature-complete. The follow-on
+Scene Cache v1.8 POINT/SOLID milestone leaves 221 source entities plus exact
+CAD text layout as product work on the LibreDWG path rather than reasons to
+keep the engine choice open.
 
 ## Reproducible evidence
 
@@ -62,6 +63,13 @@ required Korean text fingerprint and the current line, curve, spline and HATCH
 display paths. The first line frame range-reads 5,001,757 bytes including a
 fixed 4 MiB overview rather than loading the complete cache.
 
+The follow-on v1.8 writer adds 621 POINT and 350 SOLID records and raises
+coverage to 378,179 of 378,400 entities (99.94%). Its deterministic
+176,113,616-byte cache measured 2,986 ms median conversion wall time and
+591,511,552 bytes median peak RSS; maximums were 3,028 ms and 592,150,528
+bytes. It therefore preserves the engine-selection result while reducing the
+deferred count from 1,192 to 221.
+
 The stable 0.14 release replaces the earlier 0.13.4 qualification pin. Its
 normalized conversion report and cache are byte-identical to 0.13.4 on the
 reference drawing, while median conversion wall time improves from 4,140 ms to
@@ -78,7 +86,7 @@ used as a reproducible product dependency.
 - Korean strings and CP949 support are available in the native parse path,
   while SHX/BigFont glyph parsing stays lazy in the Webview.
 - Public cross-engine fixtures validate all current HATCH modes and exact
-  pattern-section payloads.
+  pattern-section payloads; POINT and SOLID sections also match byte for byte.
 
 The memory margin to the 600,000,000-byte target is small. New LibreDWG
 coverage must keep the current bounded streaming or disk-backed design; a
@@ -118,8 +126,8 @@ engineering distribution policy, not legal advice.
 
 ## Consequences
 
-- Finish POINT, SOLID, DIMENSION, 3DFACE and WIPEOUT source/display decisions
-  on the LibreDWG writer.
+- Finish DIMENSION, 3DFACE and WIPEOUT source/display decisions on the
+  LibreDWG writer.
 - Continue Korean SHX/BigFont and exact MTEXT/OCS work in issues #5 and #7.
 - Use acadrust only for public cross-engine fixtures and regression oracles.
 - Keep the ACadSharp inspection adapter, package lock and parser preflight test;

@@ -1,6 +1,6 @@
 # Webview renderer
 
-Scene Cache v1.7 range reader, WebGL2 line/fill renderer and bounded CAD text
+Scene Cache v1.8 range reader, WebGL2 line/fill/point renderer and bounded CAD text
 overlay for the VS Code Webview.
 
 ## Implemented
@@ -41,6 +41,13 @@ overlay for the VS Code Webview.
 - Caps one pattern result at 250,000 segments (16 MiB of line vertices),
   65,536 segments per HATCH and eight million boundary intersection tests.
 - Terminates the previous HATCH worker when another cache is selected.
+- Range-reads v1.8 POINT and SOLID source only after the first line frame,
+  preserving shared block instances without expanding geometry per INSERT.
+- Draws `PDMODE` point markers in screen space and converts SOLID OCS corners
+  to bounded fill triangles or `FILLMODE`-off outlines.
+- Caps POINT, SOLID-fill and SOLID-outline GPU vertices at 8, 16 and 8 MiB,
+  runs their one-shot worker before HATCH work, and releases its source
+  buffers when the final GPU payload is transferred.
 - Loads source text after the first geometry frame and renders selected local
   SHX/BigFont glyphs through byte-bounded caches, with a Korean system-font
   fallback when a CAD font is unavailable.
@@ -72,5 +79,6 @@ Tests cover bounded range reads, cache validation, nested block transforms,
 large-coordinate camera rebasing, camera controls, viewport detail selection,
 GPU resource ranges, layer visibility and LRU eviction/request coalescing.
 They also cover delayed Korean text reads, SHX/BigFont cache limits and the
-v1.7 HATCH range, triangulation, dashed-pattern, block-clipping, large-coordinate
-and render-order contracts.
+v1.7 HATCH range, triangulation, dashed-pattern, block-clipping,
+large-coordinate and render-order contracts, plus v1.8 POINT/SOLID range,
+OCS, instance-sharing and GPU-budget behavior.

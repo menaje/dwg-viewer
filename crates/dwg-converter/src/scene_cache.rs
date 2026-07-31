@@ -16,7 +16,7 @@ use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, Inp
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 7;
+pub const CACHE_VERSION_MINOR: u16 = 8;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -45,6 +45,8 @@ const HATCH_GRADIENT_COLOR_RECORD_SIZE: u32 = 16;
 const HATCH_SEED_POINT_RECORD_SIZE: u32 = 16;
 const HATCH_PATTERN_LINE_RECORD_SIZE: u32 = 72;
 const HATCH_PATTERN_DASH_RECORD_SIZE: u32 = 8;
+const POINT_ENTITY_RECORD_SIZE: u32 = 112;
+const SOLID_ENTITY_RECORD_SIZE: u32 = 168;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
 const SECTION_FLAG_STRING_TABLE: u32 = 1;
 const MAX_CACHE_STRING_BYTES: u64 = 1024 * 1024;
@@ -137,6 +139,8 @@ pub struct PrimitiveCounts {
     pub attribute_definitions: u64,
     pub attributes: u64,
     pub hatches: u64,
+    pub points: u64,
+    pub solids: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, Serialize)]
@@ -243,6 +247,8 @@ enum SectionKind {
     HatchSeedPoints = 36,
     HatchPatternLines = 37,
     HatchPatternDashes = 38,
+    PointEntities = 39,
+    SolidEntities = 40,
 }
 
 impl SectionKind {
@@ -275,6 +281,8 @@ impl SectionKind {
             Self::HatchSeedPoints => "hatch_seed_points",
             Self::HatchPatternLines => "hatch_pattern_lines",
             Self::HatchPatternDashes => "hatch_pattern_dashes",
+            Self::PointEntities => "point_entities",
+            Self::SolidEntities => "solid_entities",
         }
     }
 
@@ -307,6 +315,8 @@ impl SectionKind {
             36 => Some(Self::HatchSeedPoints),
             37 => Some(Self::HatchPatternLines),
             38 => Some(Self::HatchPatternDashes),
+            39 => Some(Self::PointEntities),
+            40 => Some(Self::SolidEntities),
             _ => None,
         }
     }
@@ -338,6 +348,8 @@ impl SectionKind {
             Self::HatchSeedPoints => HATCH_SEED_POINT_RECORD_SIZE,
             Self::HatchPatternLines => HATCH_PATTERN_LINE_RECORD_SIZE,
             Self::HatchPatternDashes => HATCH_PATTERN_DASH_RECORD_SIZE,
+            Self::PointEntities => POINT_ENTITY_RECORD_SIZE,
+            Self::SolidEntities => SOLID_ENTITY_RECORD_SIZE,
         }
     }
 
@@ -783,6 +795,9 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
             SectionKind::HatchPatternLines,
             SectionKind::HatchPatternDashes,
         ]);
+    }
+    if minor_version >= 8 {
+        required.extend([SectionKind::PointEntities, SectionKind::SolidEntities]);
     }
     for kind in required {
         let count = entries
@@ -1286,6 +1301,58 @@ fn validate_cross_section_references<R: Read + Seek>(
         }
     }
 
+    if let Some(points) = find_section(entries, SectionKind::PointEntities) {
+        let layers = find_section(entries, SectionKind::Layers)
+            .context("POINT entities exist without a layer table")?;
+        for index in 0..points.record_count {
+            let mut record = [0_u8; POINT_ENTITY_RECORD_SIZE as usize];
+            read_record(reader, points, index, &mut record)?;
+            validate_primitive_common(&record, layers.record_count, "POINT")?;
+            if slice_u16(&record, 106) != 0 || slice_u32(&record, 108) != 0 {
+                anyhow::bail!("POINT entity has nonzero reserved metadata");
+            }
+            if [32, 40, 48, 56, 64, 72, 80, 88, 96]
+                .into_iter()
+                .any(|offset| !slice_f64(&record, offset).is_finite())
+            {
+                anyhow::bail!("POINT entity contains a non-finite value");
+            }
+            let normal_length_squared = [56, 64, 72]
+                .into_iter()
+                .map(|offset| slice_f64(&record, offset).powi(2))
+                .sum::<f64>();
+            if !normal_length_squared.is_finite() || normal_length_squared <= CURVE_EPSILON {
+                anyhow::bail!("POINT entity has an invalid normal");
+            }
+        }
+    }
+
+    if let Some(solids) = find_section(entries, SectionKind::SolidEntities) {
+        let layers = find_section(entries, SectionKind::Layers)
+            .context("SOLID entities exist without a layer table")?;
+        for index in 0..solids.record_count {
+            let mut record = [0_u8; SOLID_ENTITY_RECORD_SIZE as usize];
+            read_record(reader, solids, index, &mut record)?;
+            validate_primitive_common(&record, layers.record_count, "SOLID")?;
+            if slice_u32(&record, 32) & !1 != 0 || slice_u32(&record, 36) != 0 {
+                anyhow::bail!("SOLID entity has invalid flags or reserved metadata");
+            }
+            if (40..=160)
+                .step_by(8)
+                .any(|offset| !slice_f64(&record, offset).is_finite())
+            {
+                anyhow::bail!("SOLID entity contains a non-finite value");
+            }
+            let normal_length_squared = [136, 144, 152]
+                .into_iter()
+                .map(|offset| slice_f64(&record, offset).powi(2))
+                .sum::<f64>();
+            if !normal_length_squared.is_finite() || normal_length_squared <= CURVE_EPSILON {
+                anyhow::bail!("SOLID entity has an invalid normal");
+            }
+        }
+    }
+
     if let Some(batches) = find_section(entries, SectionKind::GpuLineBatches) {
         let vertices = find_section(entries, SectionKind::GpuLineVertices)
             .context("GPU line batches exist without a vertex pool")?;
@@ -1380,6 +1447,17 @@ fn validate_cross_section_references<R: Read + Seek>(
     Ok(())
 }
 
+fn validate_primitive_common(record: &[u8], layer_count: u64, entity_name: &str) -> Result<()> {
+    let layer_index = slice_u32(record, 16);
+    if layer_index != u32::MAX && u64::from(layer_index) >= layer_count {
+        anyhow::bail!("{entity_name} entity references an invalid layer");
+    }
+    if slice_u16(record, 26) & !1 != 0 || slice_u32(record, 28) != 0 {
+        anyhow::bail!("{entity_name} entity has invalid common metadata");
+    }
+    Ok(())
+}
+
 fn find_section(entries: &[RawSectionEntry], kind: SectionKind) -> Option<&RawSectionEntry> {
     entries.iter().find(|entry| entry.kind == kind as u32)
 }
@@ -1425,7 +1503,7 @@ fn write_scene_cache<W: Write + Seek>(
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
     let counts = PrimitiveCounts::from_document(document);
-    let section_count = 27_u32;
+    let section_count = 29_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
         directory_offset + u64::from(section_count) * u64::from(DIRECTORY_ENTRY_SIZE),
@@ -1526,6 +1604,16 @@ fn write_scene_cache<W: Write + Seek>(
     sections.push(write_hatch_pattern_line_section(writer, &hatch_plan)?);
     sections.push(write_hatch_pattern_dash_section(writer, &hatch_plan)?);
     let hatch_fills = hatch_plan.summary;
+    sections.push(write_point_entity_section(
+        writer,
+        document,
+        &layer_indices,
+    )?);
+    sections.push(write_solid_entity_section(
+        writer,
+        document,
+        &layer_indices,
+    )?);
 
     let file_size = writer.stream_position()?;
     writer.seek(SeekFrom::Start(0))?;
@@ -1592,6 +1680,8 @@ impl PrimitiveCounts {
                 EntityType::AttributeDefinition(_) => counts.attribute_definitions += 1,
                 EntityType::AttributeEntity(_) => counts.attributes += 1,
                 EntityType::Hatch(_) => counts.hatches += 1,
+                EntityType::Point(_) => counts.points += 1,
+                EntityType::Solid(_) => counts.solids += 1,
                 _ => {}
             }
         }
@@ -1607,7 +1697,9 @@ impl PrimitiveCounts {
             + counts.texts
             + counts.mtexts
             + counts.attribute_definitions
-            + counts.hatches;
+            + counts.hatches
+            + counts.points
+            + counts.solids;
         counts.deferred_entities = counts
             .total_entities
             .saturating_sub(counts.serialized_entities);
@@ -2892,6 +2984,72 @@ fn write_hatch_pattern_dash_section<W: Write + Seek>(
         HATCH_PATTERN_DASH_RECORD_SIZE,
         offset,
         u64::try_from(plan.pattern_dashes.len())?,
+    )
+}
+
+fn write_point_entity_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+    layer_indices: &HashMap<String, u32>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+    for entity in document.entities() {
+        let EntityType::Point(point) = entity else {
+            continue;
+        };
+        write_common(writer, entity, layer_indices)?;
+        write_vec3(writer, point.location)?;
+        write_vec3(writer, point.normal)?;
+        write_f64(writer, point.thickness)?;
+        write_f64(writer, point.x_axis_angle)?;
+        write_f64(writer, document.header.point_display_size)?;
+        write_i16(writer, document.header.point_display_mode)?;
+        write_u16(writer, 0)?;
+        write_u32(writer, 0)?;
+        count += 1;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::PointEntities,
+        POINT_ENTITY_RECORD_SIZE,
+        offset,
+        count,
+    )
+}
+
+fn write_solid_entity_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+    layer_indices: &HashMap<String, u32>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+    for entity in document.entities() {
+        let EntityType::Solid(solid) = entity else {
+            continue;
+        };
+        write_common(writer, entity, layer_indices)?;
+        write_u32(writer, u32::from(document.header.fill_mode))?;
+        write_u32(writer, 0)?;
+        for corner in [
+            solid.first_corner,
+            solid.second_corner,
+            solid.third_corner,
+            solid.fourth_corner,
+        ] {
+            write_vec3(writer, corner)?;
+        }
+        write_vec3(writer, solid.normal)?;
+        write_f64(writer, solid.thickness)?;
+        count += 1;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::SolidEntities,
+        SOLID_ENTITY_RECORD_SIZE,
+        offset,
+        count,
     )
 }
 
@@ -5286,7 +5444,7 @@ mod tests {
     use acadrust::entities::{
         Arc, AttributeDefinition, AttributeEntity, BoundaryEdge, BoundaryPath, Circle,
         CircularArcEdge, Ellipse, EntityType, Hatch, HatchPatternLine, Insert, Line, LineEdge,
-        LwPolyline, MText, PolylineEdge, Spline, Text,
+        LwPolyline, MText, Point, PolylineEdge, Solid, Spline, Text,
     };
     use acadrust::tables::BlockRecord;
     use acadrust::types::{Color, Vector2, Vector3};
@@ -5348,7 +5506,7 @@ mod tests {
         assert_eq!(read_u16(&bytes, 8), CACHE_VERSION_MAJOR);
         assert_eq!(read_u16(&bytes, 10), CACHE_VERSION_MINOR);
         assert_eq!(read_u32(&bytes, 12), HEADER_SIZE);
-        assert_eq!(read_u32(&bytes, 16), 27);
+        assert_eq!(read_u32(&bytes, 16), 29);
         assert_eq!(read_u64(&bytes, 48), 1234);
         assert_eq!(summary.counts.serialized_entities, 7);
         assert_eq!(summary.gpu_lines.model_segments, 43);
@@ -5359,7 +5517,7 @@ mod tests {
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
-        assert_eq!(validation.sections.len(), 27);
+        assert_eq!(validation.sections.len(), 29);
         assert_eq!(validation.source_size, 1234);
 
         let line = directory_entry(&bytes, SectionKind::Lines);
@@ -6004,7 +6162,7 @@ mod tests {
     }
 
     #[test]
-    fn primitive_counts_track_deferred_entities() {
+    fn point_and_solid_are_counted_as_serialized_entities() {
         let mut document = CadDocument::new();
         document
             .add_entity(EntityType::Line(Line::from_coords(
@@ -6012,15 +6170,88 @@ mod tests {
             )))
             .unwrap();
         document
-            .add_entity(EntityType::Point(acadrust::entities::Point::from_coords(
-                2.0, 3.0, 0.0,
+            .add_entity(EntityType::Point(Point::from_coords(2.0, 3.0, 0.0)))
+            .unwrap();
+        document
+            .add_entity(EntityType::Solid(Solid::triangle(
+                Vector3::new(0.0, 0.0, 0.0),
+                Vector3::new(2.0, 0.0, 0.0),
+                Vector3::new(1.0, 1.0, 0.0),
             )))
             .unwrap();
 
         let counts = PrimitiveCounts::from_document(&document);
-        assert_eq!(counts.total_entities, 2);
-        assert_eq!(counts.serialized_entities, 1);
-        assert_eq!(counts.deferred_entities, 1);
+        assert_eq!(counts.total_entities, 3);
+        assert_eq!(counts.points, 1);
+        assert_eq!(counts.solids, 1);
+        assert_eq!(counts.serialized_entities, 3);
+        assert_eq!(counts.deferred_entities, 0);
+    }
+
+    #[test]
+    fn point_and_solid_source_records_are_lossless() {
+        let mut document = CadDocument::new();
+        document.header.point_display_mode = 66;
+        document.header.point_display_size = -3.5;
+        document.header.fill_mode = false;
+
+        let mut point = Point::from_coords(2.0, 3.0, 4.0);
+        point.normal = Vector3::new(0.0, 1.0, 0.0);
+        point.thickness = 0.75;
+        point.x_axis_angle = 0.25;
+        point.common.color = Color::Index(3);
+        point.common.invisible = true;
+        document.add_entity(EntityType::Point(point)).unwrap();
+
+        let mut solid = Solid::new(
+            Vector3::new(10.0, 20.0, 2.0),
+            Vector3::new(14.0, 20.0, 2.0),
+            Vector3::new(14.0, 23.0, 2.0),
+            Vector3::new(10.0, 23.0, 2.0),
+        );
+        solid.normal = Vector3::new(0.0, 0.0, -1.0);
+        solid.thickness = 1.25;
+        document.add_entity(EntityType::Solid(solid)).unwrap();
+
+        let mut cursor = Cursor::new(Vec::new());
+        let summary = write_scene_cache(&mut cursor, &document, 999).unwrap();
+        let bytes = cursor.into_inner();
+        validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
+
+        assert_eq!(summary.counts.points, 1);
+        assert_eq!(summary.counts.solids, 1);
+        assert_eq!(summary.counts.deferred_entities, 0);
+
+        let point_entry = directory_entry(&bytes, SectionKind::PointEntities);
+        assert_eq!(point_entry.1, POINT_ENTITY_RECORD_SIZE);
+        assert_eq!(point_entry.3, 1);
+        let point_offset = point_entry.2 as usize;
+        assert_eq!(read_u16(&bytes, point_offset + 26), 1);
+        assert_eq!(read_f64(&bytes, point_offset + 32), 2.0);
+        assert_eq!(read_f64(&bytes, point_offset + 48), 4.0);
+        assert_eq!(read_f64(&bytes, point_offset + 64), 1.0);
+        assert_eq!(read_f64(&bytes, point_offset + 80), 0.75);
+        assert_eq!(read_f64(&bytes, point_offset + 88), 0.25);
+        assert_eq!(read_f64(&bytes, point_offset + 96), -3.5);
+        assert_eq!(
+            i16::from_le_bytes(
+                bytes[point_offset + 104..point_offset + 106]
+                    .try_into()
+                    .unwrap()
+            ),
+            66
+        );
+
+        let solid_entry = directory_entry(&bytes, SectionKind::SolidEntities);
+        assert_eq!(solid_entry.1, SOLID_ENTITY_RECORD_SIZE);
+        assert_eq!(solid_entry.3, 1);
+        let solid_offset = solid_entry.2 as usize;
+        assert_eq!(read_u32(&bytes, solid_offset + 32), 0);
+        assert_eq!(read_f64(&bytes, solid_offset + 40), 10.0);
+        assert_eq!(read_f64(&bytes, solid_offset + 64), 14.0);
+        assert_eq!(read_f64(&bytes, solid_offset + 112), 10.0);
+        assert_eq!(read_f64(&bytes, solid_offset + 152), -1.0);
+        assert_eq!(read_f64(&bytes, solid_offset + 160), 1.25);
     }
 
     fn directory_entry(bytes: &[u8], expected_kind: SectionKind) -> (u32, u32, u64, u64) {

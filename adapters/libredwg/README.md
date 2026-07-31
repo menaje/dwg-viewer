@@ -5,7 +5,7 @@ This optional process-isolated adapter measures LibreDWG with the same
 acadrust engine. It traverses LibreDWG's object model directly instead of
 creating a full JSON dump.
 
-The `convert` path writes Scene Cache v1.7 without a whole-drawing intermediate
+The `convert` path writes Scene Cache v1.8 without a whole-drawing intermediate
 model. It repeatedly traverses LibreDWG objects and streams sections and
 bounded GPU batches directly to a new cache file. For large drawings, it
 spills fixed-size detail records into private unnamed temporary files, sorts
@@ -43,8 +43,13 @@ This is a deliberately partial conversion milestone:
 - pattern-definition lines retain their resolved angle, base, offset and dash
   sequence in packed source sections; one HATCH is capped at 4,096 definition
   lines and 65,536 dash values, with global caps of 262,144 and 1,048,576;
+- POINT retains WCS location, normal, thickness, X-axis angle and drawing
+  `PDMODE`/`PDSIZE`; SOLID retains four OCS corners, normal, thickness and
+  drawing `FILLMODE`;
 - after the first line frame, the Webview fills solid/gradient rings and
   clips pattern strokes to the current viewport in one persistent worker;
+- a preceding one-shot worker builds instanced POINT markers and SOLID
+  fill/outline meshes under a combined 32 MiB GPU limit, then exits;
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
 - bounded SHX/BigFont and system-font fallback display is implemented in the
@@ -114,10 +119,10 @@ keeps raw counts under `drawing.raw_*` and `embedded_text`, but normalizes the
 main `drawing.entities`, `drawing.objects`, `entity_types` and `text` fields to
 the shared logical inspection contract.
 
-On the private 24 MB reference drawing, the Scene Cache v1.7 milestone had a
-2,941 ms median process wall time and 591,659,008-byte median peak RSS across
-three isolated measured runs. The maximums were 2,957 ms and 591,740,928 bytes,
-so both target gates pass. The deterministic 175,985,184-byte cache contains
+On the private 24 MB reference drawing, the Scene Cache v1.8 milestone had a
+2,986 ms median process wall time and 591,511,552-byte median peak RSS across
+three isolated measured runs. The maximums were 3,028 ms and 592,150,528 bytes,
+so both target gates pass. The deterministic 176,113,616-byte cache contains
 1,659,755 full-detail segments, including 35,550 HATCH boundary segments; no
 HATCH reached the boundary or fill-vertex cap and no non-finite display
 segment was skipped.
@@ -125,19 +130,23 @@ segment was skipped.
 The seven HATCH sections contain 3,553 source records, 6,365 usable closed
 loops, 31,511 fill vertices, 6,704 gradient colors, 3,653 seed points, 6,390
 pattern-definition lines and 12,020 dash values. Open and invalid paths stay
-explicit in the report. Logical source coverage is 377,208 of 378,400
-entities; 392 HATCHes are solid and 3,161 are patterns.
+explicit in the report. Adding 621 POINT and 350 SOLID records raises logical
+source coverage to 378,179 of 378,400 entities (99.94%); 221 remain deferred.
+The 392 solid and 3,161 pattern HATCH counts are unchanged.
 
 Public LibreDWG fixtures provide a reproducible cross-engine check. Both
 writers validated `example_2018.dwg` as one pattern HATCH with two definition
 lines and four dash values; the complete kind-37 and kind-38 payloads were
-byte-identical. `2018/Dynblocks.dwg` matched at one solid and three pattern
+byte-identical. The same fixture also matched at 46 POINT and 15 SOLID records,
+with byte-identical kind-39 and kind-40 payloads. `2018/Dynblocks.dwg` matched
+at one solid and three pattern
 HATCHes, eight loops, 104 fill vertices and four definition lines, again with
 byte-identical pattern sections. `2004/HatchG.dwg` matched at two gradient
 HATCHes, two loops and 269 fill vertices. None of those fixtures reached a cap
 or skipped an invalid source record.
 
-The browser opens the cache with eight range reads totaling 5,001,757 bytes,
+The browser first-frame path opens the cache with eight range reads totaling
+5,001,837 bytes,
 including the unchanged 4 MiB overview. A local range-reader qualification
 then loaded the seven HATCH sections in seven reads totaling 2,504,181 bytes
 in 13.6 ms. A persistent-worker qualification, including block-instance graph
@@ -146,7 +155,21 @@ in about 414 ms with about 137 MB process RSS. It triangulated 379 usable
 solid fills into 5,585 triangles and a 536,160-byte GPU buffer. At drawing fit,
 the 1.5-pixel density rule correctly omitted all pattern strokes.
 
-An actual Chromium qualification produced the first usable line frame in
+The v1.8 POINT/SOLID qualification used six range reads totaling 686,107 bytes
+after the first line frame, including the block and INSERT metadata needed by
+its isolated worker. It completed source validation, instance-graph
+construction and mesh generation in 289.2 ms at about 111 MB process RSS. All
+621 POINT and 350 SOLID records rendered without a cap or invalid-owner skip;
+the transferred GPU payload was 66,624 bytes. The worker then exited before
+HATCH initialization, so its packed source buffers do not remain resident or
+overlap the HATCH source peak.
+
+An actual v1.8 Chromium qualification produced the first usable line frame in
+506.2 ms. At drawing fit, all 621 POINT and 350 SOLID records were active,
+HATCH fills and patterns completed, GPU vertex buffers totaled 4.57 MiB and
+the browser console contained no warnings or errors.
+
+The earlier v1.7 Chromium qualification produced the first usable line frame in
 449.1 ms. At drawing fit, all 6,442 visible definition passes were below the
 1.5-pixel density threshold and the pattern buffer remained empty. After eight
 zoom-in actions (17.35x), the worker generated 540 clipped segments in

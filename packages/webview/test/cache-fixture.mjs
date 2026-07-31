@@ -10,7 +10,9 @@ import {
   HATCH_SEED_POINT_RECORD_SIZE,
   HATCH_VERTEX_RECORD_SIZE,
   HEADER_SIZE,
+  POINT_ENTITY_RECORD_SIZE,
   SectionKind,
+  SOLID_ENTITY_RECORD_SIZE,
   TEXT_COLUMN_HEIGHT_RECORD_SIZE,
   TEXT_ENTITY_RECORD_SIZE,
   TEXT_STYLE_RECORD_SIZE,
@@ -441,6 +443,88 @@ function makeHatchPatternDashSection() {
   };
 }
 
+function writePrimitiveCommon(
+  view,
+  offset,
+  { handle, ownerHandle, color = 0, invisible = false },
+) {
+  writeU64(view, offset, handle);
+  writeU64(view, offset + 8, ownerHandle);
+  view.setUint32(offset + 16, 0, true);
+  view.setUint32(offset + 20, color >>> 0, true);
+  view.setInt16(offset + 24, -1, true);
+  view.setUint16(offset + 26, invisible ? 1 : 0, true);
+}
+
+function makePointEntitySection() {
+  const buffer = new ArrayBuffer(POINT_ENTITY_RECORD_SIZE);
+  const view = new DataView(buffer);
+  writePrimitiveCommon(view, 0, {
+    handle: 501,
+    ownerHandle: 101,
+    color: (2 << 30) | 3,
+  });
+  writeVec3(view, 32, [11, 2, 0]);
+  writeVec3(view, 56, [0, 0, 1]);
+  view.setFloat64(80, 0, true);
+  view.setFloat64(88, Math.PI / 6, true);
+  view.setFloat64(96, -3, true);
+  view.setInt16(104, 66, true);
+  return {
+    kind: SectionKind.PointEntities,
+    recordSize: POINT_ENTITY_RECORD_SIZE,
+    recordCount: 1,
+    flags: 0,
+    buffer,
+  };
+}
+
+function makeSolidEntitySection() {
+  const rows = [
+    {
+      handle: 601,
+      ownerHandle: 100,
+      fillMode: true,
+      corners: [
+        [0, 0, 0],
+        [4, 0, 0],
+        [4, 3, 0],
+        [0, 3, 0],
+      ],
+    },
+    {
+      handle: 602,
+      ownerHandle: 101,
+      fillMode: false,
+      corners: [
+        [10, 0, 0],
+        [12, 0, 0],
+        [11, 2, 0],
+        [11, 2, 0],
+      ],
+    },
+  ];
+  const buffer = new ArrayBuffer(SOLID_ENTITY_RECORD_SIZE * rows.length);
+  const view = new DataView(buffer);
+  rows.forEach((row, index) => {
+    const offset = index * SOLID_ENTITY_RECORD_SIZE;
+    writePrimitiveCommon(view, offset, row);
+    view.setUint32(offset + 32, row.fillMode ? 1 : 0, true);
+    row.corners.forEach((corner, cornerIndex) =>
+      writeVec3(view, offset + 40 + cornerIndex * 24, corner),
+    );
+    writeVec3(view, offset + 136, [0, 0, 1]);
+    view.setFloat64(offset + 160, 0, true);
+  });
+  return {
+    kind: SectionKind.SolidEntities,
+    recordSize: SOLID_ENTITY_RECORD_SIZE,
+    recordCount: rows.length,
+    flags: 0,
+    buffer,
+  };
+}
+
 function writeInsert(view, offset, values) {
   writeU64(view, offset, values.handle);
   writeU64(view, offset + 8, values.ownerHandle);
@@ -590,6 +674,9 @@ export function makeFixtureCache({
               ]
             : []),
         ]
+      : []),
+    ...(minorVersion >= 8
+      ? [makePointEntitySection(), makeSolidEntitySection()]
       : []),
   ];
   const directoryOffset = HEADER_SIZE;

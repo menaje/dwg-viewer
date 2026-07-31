@@ -25,6 +25,8 @@ let activeInteraction;
 let activeTextStatus;
 let activeHatchStatus;
 let activeHatchWorker;
+let activePrimitiveStatus;
+let activePrimitiveWorker;
 let hatchPatternTimer;
 let lastPatternCameraKey;
 let patternRequestRevision = 0;
@@ -101,6 +103,18 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>패턴 원본 읽기</dt><dd>${formatBytes(activeHatchStatus?.patternReads?.bytesRead ?? activeHatchStatus?.reads?.bytesRead ?? 0)}</dd></div>
     `
     : "";
+  const primitives =
+    render?.primitives ?? activePrimitiveStatus?.metrics;
+  const primitiveRows = primitives
+    ? `
+      <div><dt>점 원본/표시</dt><dd>${primitives.sourcePoints.toLocaleString()} / ${primitives.renderedPoints.toLocaleString()}개</dd></div>
+      <div><dt>솔리드 원본</dt><dd>${primitives.sourceSolids.toLocaleString()}개</dd></div>
+      <div><dt>솔리드 채움</dt><dd>${primitives.renderedFilledSolids.toLocaleString()}개</dd></div>
+      <div><dt>솔리드 외곽선</dt><dd>${primitives.renderedOutlineSolids.toLocaleString()}개</dd></div>
+      <div><dt>점·솔리드 GPU</dt><dd>${formatBytes(primitives.gpuBytes)}</dd></div>
+      <div><dt>점·솔리드 원본 읽기</dt><dd>${formatBytes(activePrimitiveStatus?.reads?.bytesRead ?? 0)}</dd></div>
+    `
+    : "";
   metrics.innerHTML = `
     <dl>
       <div><dt>첫 화면</dt><dd>${value.timings.firstFrameMs.toFixed(1)} ms</dd></div>
@@ -115,6 +129,7 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       ${detailRows}
       ${hatchRows}
       ${patternRows}
+      ${primitiveRows}
       ${textRows}
     </dl>
   `;
@@ -303,6 +318,111 @@ function createHatchWorker() {
   };
 }
 
+function createPrimitiveWorker() {
+  const worker = new Worker(
+    new URL("./primitive-worker.mjs", import.meta.url),
+    { type: "module" },
+  );
+  let settled = false;
+  let rejectRequest;
+  return {
+    initialize(file) {
+      if (settled) {
+        return Promise.reject(
+          new DOMException("점·솔리드 작업 취소됨", "AbortError"),
+        );
+      }
+      return new Promise((resolve, reject) => {
+        rejectRequest = reject;
+        worker.addEventListener(
+          "message",
+          (event) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            worker.terminate();
+            rejectRequest = undefined;
+            if (event.data.ok) {
+              resolve(event.data);
+            } else {
+              reject(new Error(event.data.error));
+            }
+          },
+          { once: true },
+        );
+        worker.addEventListener(
+          "error",
+          (event) => {
+            if (settled) {
+              return;
+            }
+            settled = true;
+            worker.terminate();
+            rejectRequest = undefined;
+            reject(new Error(event.message || "점·솔리드 worker failed"));
+          },
+          { once: true },
+        );
+        worker.postMessage({
+          requestId: 1,
+          type: "initialize",
+          file,
+        });
+      });
+    },
+    cancel() {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      worker.terminate();
+      rejectRequest?.(
+        new DOMException("점·솔리드 작업 취소됨", "AbortError"),
+      );
+      rejectRequest = undefined;
+    },
+  };
+}
+
+async function initializePrimitives(file, scene, revision) {
+  if (scene.reader.header.minor < 8) {
+    return;
+  }
+  activePrimitiveStatus = Object.freeze({ state: "loading" });
+  status.textContent = "점과 솔리드 원본을 별도 작업 공간에서 읽는 중";
+  const worker = createPrimitiveWorker();
+  activePrimitiveWorker = worker;
+  let result;
+  try {
+    result = await worker.initialize(file);
+  } finally {
+    if (activePrimitiveWorker === worker) {
+      activePrimitiveWorker = undefined;
+    }
+  }
+  if (revision !== openRevision || activeScene !== scene) {
+    return;
+  }
+  scene.renderer.setPrimitiveMeshes(result.primitives);
+  activePrimitiveStatus = Object.freeze({
+    state: "ready",
+    metrics: result.primitives.metrics,
+    reads: result.reads,
+  });
+  activeInteraction?.refresh();
+  const value = result.primitives.metrics;
+  const warnings =
+    value.skippedOwners +
+    value.skippedDegenerateTriangles +
+    Number(value.pointGpuLimitReached) +
+    Number(value.solidFillGpuLimitReached) +
+    Number(value.solidOutlineGpuLimitReached);
+  status.textContent =
+    `점 ${value.renderedPoints.toLocaleString()}개 · 솔리드 ${(value.renderedFilledSolids + value.renderedOutlineSolids).toLocaleString()}개 표시 완료` +
+    (warnings > 0 ? ` · 제한/건너뜀 ${warnings.toLocaleString()}건` : "");
+}
+
 async function initializeHatchFills(file, scene, revision) {
   if (scene.reader.header.minor < 6) {
     return;
@@ -410,6 +530,36 @@ function scheduleHatchPatterns(scene, camera, revision) {
   }, HATCH_PATTERN_DEBOUNCE_MS);
 }
 
+async function initializeDeferredGeometry(file, scene, revision) {
+  try {
+    await initializePrimitives(file, scene, revision);
+  } catch (error) {
+    if (revision === openRevision && activeScene === scene) {
+      activePrimitiveStatus = Object.freeze({
+        state: "error",
+        error: error.message,
+      });
+      status.textContent = `점·솔리드 표시 실패: ${error.message}`;
+      console.error(error);
+    }
+  }
+  if (revision !== openRevision || activeScene !== scene) {
+    return;
+  }
+  try {
+    await initializeHatchFills(file, scene, revision);
+  } catch (error) {
+    if (revision === openRevision && activeScene === scene) {
+      activeHatchStatus = Object.freeze({
+        state: "error",
+        error: error.message,
+      });
+      status.textContent = `해치 표시 실패: ${error.message}`;
+      console.error(error);
+    }
+  }
+}
+
 async function registerFontFiles(files) {
   if (files.length === 0) {
     return;
@@ -444,6 +594,7 @@ async function openFile(file) {
   resetLayerPanel();
   activeTextStatus = undefined;
   activeHatchStatus = undefined;
+  activePrimitiveStatus = undefined;
   lastPatternCameraKey = undefined;
   patternRequestRevision += 1;
   if (hatchPatternTimer !== undefined) {
@@ -452,6 +603,8 @@ async function openFile(file) {
   }
   activeHatchWorker?.cancel();
   activeHatchWorker = undefined;
+  activePrimitiveWorker?.cancel();
+  activePrimitiveWorker = undefined;
   activeInteraction?.dispose();
   activeInteraction = undefined;
   activeScene?.renderer.dispose();
@@ -495,16 +648,9 @@ async function openFile(file) {
       },
     });
     setControlsEnabled(true);
-    initializeHatchFills(file, activeScene, revision).catch((error) => {
-      if (revision === openRevision) {
-        activeHatchStatus = Object.freeze({
-          state: "error",
-          error: error.message,
-        });
-        status.textContent = `해치 표시 실패: ${error.message}`;
-        console.error(error);
-      }
-    });
+    initializeDeferredGeometry(file, activeScene, revision).catch(
+      console.error,
+    );
     initializeTextOverlay(activeScene, revision).catch((error) => {
       if (revision === openRevision) {
         status.textContent = `문자 표시 실패: ${error.message}`;
@@ -616,6 +762,8 @@ window.addEventListener("beforeunload", () => {
   }
   activeHatchWorker?.cancel();
   activeHatchWorker = undefined;
+  activePrimitiveWorker?.cancel();
+  activePrimitiveWorker = undefined;
   activeInteraction?.dispose();
   activeScene?.renderer.dispose();
   activeInteraction = undefined;

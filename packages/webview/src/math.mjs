@@ -102,7 +102,12 @@ export function insertCellMatrix(insert, blockBasePoint, column = 0, row = 0) {
   ].reduce(multiplyMat4);
 }
 
-export function transformPoint(matrix, point, matrixOffset = 0) {
+export function transformPoint(
+  matrix,
+  point,
+  matrixOffset = 0,
+  target = [0, 0, 0],
+) {
   const x = point[0];
   const y = point[1];
   const z = point[2];
@@ -110,25 +115,27 @@ export function transformPoint(matrix, point, matrixOffset = 0) {
     matrix[matrixOffset + 3] * x +
     matrix[matrixOffset + 7] * y +
     matrix[matrixOffset + 11] * z +
-    matrix[matrixOffset + 15];
+      matrix[matrixOffset + 15];
   const divisor = Math.abs(w) < 1e-12 ? 1 : w;
-  return [
+  target[0] =
     (matrix[matrixOffset] * x +
       matrix[matrixOffset + 4] * y +
       matrix[matrixOffset + 8] * z +
       matrix[matrixOffset + 12]) /
-      divisor,
+    divisor;
+  target[1] =
     (matrix[matrixOffset + 1] * x +
       matrix[matrixOffset + 5] * y +
       matrix[matrixOffset + 9] * z +
       matrix[matrixOffset + 13]) /
-      divisor,
+    divisor;
+  target[2] =
     (matrix[matrixOffset + 2] * x +
       matrix[matrixOffset + 6] * y +
       matrix[matrixOffset + 10] * z +
       matrix[matrixOffset + 14]) /
-      divisor,
-  ];
+    divisor;
+  return target;
 }
 
 export function batchRelativeInstanceMatrix(
