@@ -1,21 +1,10 @@
 import { buildInstanceGraph } from "./instance-graph.mjs";
+import { readJsHeapSnapshot } from "./memory-telemetry.mjs";
 import { WebGlLineRenderer } from "./renderer.mjs";
 import { SceneCacheReader } from "./scene-cache.mjs";
 
 function now() {
   return globalThis.performance?.now?.() ?? Date.now();
-}
-
-function memorySnapshot() {
-  const memory = globalThis.performance?.memory;
-  if (!memory) {
-    return null;
-  }
-  return Object.freeze({
-    usedJsHeapBytes: memory.usedJSHeapSize,
-    totalJsHeapBytes: memory.totalJSHeapSize,
-    jsHeapLimitBytes: memory.jsHeapSizeLimit,
-  });
 }
 
 export async function loadFirstFrame(
@@ -69,7 +58,7 @@ export async function loadFirstFrame(
     }),
     renderer: render,
     instanceDiagnostics: instanceGraph.diagnostics,
-    memory: memorySnapshot(),
+    memory: readJsHeapSnapshot(),
   });
   onProgress("첫 화면 완료");
 

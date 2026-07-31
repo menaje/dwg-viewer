@@ -1,6 +1,7 @@
 import { ViewportInteraction } from "./interaction.mjs";
 import { applyMaskOrderToInstanceGraph } from "./instance-graph.mjs";
 import { buildMaskOrderPlan } from "./mask-order.mjs";
+import { WebviewMemoryTelemetry } from "./memory-telemetry.mjs";
 import { BlobRangeSource, TrackedRangeSource } from "./range-source.mjs";
 import { WebGlLineRenderer } from "./renderer.mjs";
 import { ShxGlyphCache } from "./shx-glyph-cache.mjs";
@@ -32,6 +33,7 @@ let activePrimitiveWorker;
 let activeMaskOrder;
 let activeRenderInstanceGraph;
 let activeMaskStatus;
+let activeMemoryTelemetry;
 let hatchPatternTimer;
 let lastPatternCameraKey;
 let patternRequestRevision = 0;
@@ -63,6 +65,9 @@ function renderMetrics(scene, rangeSource, viewport = null) {
   const value = scene.metrics;
   const reads = rangeSource.snapshot();
   const render = viewport?.render ?? value.renderer;
+  const memory = activeMemoryTelemetry?.sample(
+    render?.gpuTrackedBytes ?? 0,
+  );
   const detail = viewport?.detail;
   const detailRows = detail
     ? `
@@ -137,6 +142,23 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>순서 계산</dt><dd>${activeMaskStatus.buildMs.toFixed(1)} ms</dd></div>
     `
     : "";
+  const memoryRows = memory
+    ? `
+      <div><dt>GPU 추적 메모리</dt><dd>${formatBytes(memory.gpuTrackedBytes)}</dd></div>
+      <div><dt>GPU 추적 최고</dt><dd>${formatBytes(memory.peakGpuTrackedBytes)}</dd></div>
+      <div><dt>인스턴스 작업 버퍼</dt><dd>${formatBytes(render.instanceScratchBytes ?? 0)}</dd></div>
+      ${
+        memory.jsHeapAvailable
+          ? `
+      <div><dt>JavaScript 힙</dt><dd>${formatBytes(memory.usedJsHeapBytes)}</dd></div>
+      <div><dt>JavaScript 힙 최고</dt><dd>${formatBytes(memory.peakUsedJsHeapBytes)} / ${formatBytes(memory.hardLimitBytes)}${memory.hardLimitExceeded ? " · 기준 초과" : ""}</dd></div>
+      `
+          : `
+      <div><dt>JavaScript 힙</dt><dd>브라우저 계측 미지원</dd></div>
+      `
+      }
+    `
+    : "";
   metrics.innerHTML = `
     <dl>
       <div><dt>첫 화면</dt><dd>${value.timings.firstFrameMs.toFixed(1)} ms</dd></div>
@@ -148,6 +170,7 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>제출 정점</dt><dd>${render.submittedVertices.toLocaleString()}</dd></div>
       <div><dt>GPU 정점 버퍼</dt><dd>${formatBytes(render.gpuVertexBytes)}</dd></div>
       <div><dt>전체 캐시</dt><dd>${formatBytes(value.cacheBytes)}</dd></div>
+      ${memoryRows}
       ${detailRows}
       ${hatchRows}
       ${patternRows}
@@ -715,6 +738,7 @@ async function openFile(file) {
   activeMaskOrder = undefined;
   activeRenderInstanceGraph = undefined;
   activeMaskStatus = undefined;
+  activeMemoryTelemetry = new WebviewMemoryTelemetry();
   lastPatternCameraKey = undefined;
   patternRequestRevision += 1;
   if (hatchPatternTimer !== undefined) {
@@ -927,6 +951,7 @@ window.addEventListener("beforeunload", () => {
   activeScene?.renderer.dispose();
   activeInteraction = undefined;
   activeScene = undefined;
+  activeMemoryTelemetry = undefined;
   glyphCache.dispose();
   resetLayerPanel();
 });

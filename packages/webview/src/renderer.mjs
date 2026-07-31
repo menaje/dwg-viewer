@@ -608,6 +608,10 @@ export class WebGlLineRenderer {
     this.solidFillScene = null;
     this.solidOutlineScene = null;
     this.wipeoutMaskScene = null;
+    this.instanceScratch = new Float32Array(0);
+    this.instanceBufferBytes = 0;
+    this.peakInstanceBufferBytes = 0;
+    this.peakGpuTrackedBytes = 0;
     this.primitiveMetrics = null;
     this.textOverlay = null;
     this.maskOrder = null;
@@ -653,6 +657,29 @@ export class WebGlLineRenderer {
     this.layerCount = 0;
     this.layers = Object.freeze([]);
     this.layerVisibility = [];
+  }
+
+  instanceScratchView(instanceCount) {
+    if (
+      !Number.isSafeInteger(instanceCount) ||
+      instanceCount <= 0 ||
+      instanceCount > MAX_INSTANCES_PER_DRAW
+    ) {
+      throw new RangeError("instance scratch count is outside the draw limit");
+    }
+    const requiredValues = instanceCount * INSTANCE_VALUES;
+    if (this.instanceScratch.length < requiredValues) {
+      let capacity = Math.max(
+        1,
+        Math.floor(this.instanceScratch.length / INSTANCE_VALUES),
+      );
+      while (capacity < instanceCount) {
+        capacity *= 2;
+      }
+      capacity = Math.min(capacity, MAX_INSTANCES_PER_DRAW);
+      this.instanceScratch = new Float32Array(capacity * INSTANCE_VALUES);
+    }
+    return this.instanceScratch.subarray(0, requiredValues);
   }
 
   setLayers(layers) {
@@ -1180,7 +1207,7 @@ export class WebGlLineRenderer {
         MAX_INSTANCES_PER_DRAW,
         totalInstances - firstInstance,
       );
-      const packed = new Float32Array(instanceCount * INSTANCE_VALUES);
+      const packed = this.instanceScratchView(instanceCount);
       for (let index = 0; index < instanceCount; index += 1) {
         const matrixIndex =
           instanceIndices?.[firstInstance + index] ?? firstInstance + index;
@@ -1202,6 +1229,11 @@ export class WebGlLineRenderer {
       }
       gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, packed, gl.DYNAMIC_DRAW);
+      this.instanceBufferBytes = packed.byteLength;
+      this.peakInstanceBufferBytes = Math.max(
+        this.peakInstanceBufferBytes,
+        packed.byteLength,
+      );
       gl.drawArraysInstanced(
         primitive,
         firstVertex,
@@ -1504,6 +1536,19 @@ export class WebGlLineRenderer {
     }
     gl.bindVertexArray(null);
     metrics.text = this.textOverlay?.redraw(camera, this.layerVisibility) ?? null;
+    metrics.instanceScratchBytes = this.instanceScratch.byteLength;
+    metrics.instanceBufferBytes = this.instanceBufferBytes;
+    metrics.peakInstanceBufferBytes = this.peakInstanceBufferBytes;
+    metrics.layerTextureBytes = Math.max(this.layerCount, 1) * 4;
+    metrics.gpuTrackedBytes =
+      metrics.gpuVertexBytes +
+      metrics.instanceBufferBytes +
+      metrics.layerTextureBytes;
+    this.peakGpuTrackedBytes = Math.max(
+      this.peakGpuTrackedBytes,
+      metrics.gpuTrackedBytes,
+    );
+    metrics.peakGpuTrackedBytes = this.peakGpuTrackedBytes;
     return Object.freeze(metrics);
   }
 
@@ -1526,6 +1571,10 @@ export class WebGlLineRenderer {
     this.solidFillScene = null;
     this.solidOutlineScene = null;
     this.wipeoutMaskScene = null;
+    this.instanceScratch = new Float32Array(0);
+    this.instanceBufferBytes = 0;
+    this.peakInstanceBufferBytes = 0;
+    this.peakGpuTrackedBytes = 0;
     this.primitiveMetrics = null;
     this.maskOrder = null;
     this.blocks = Object.freeze([]);

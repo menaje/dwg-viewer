@@ -169,6 +169,19 @@ error, and the console had no warning or error. The public fixture also
 activates both naturally ordered WIPEOUTs as 12 triangles without requiring a
 sort table.
 
+A renderer-memory audit then replaced one `Float32Array` allocation per
+instanced draw with a single 1.06 MiB bounded scratch buffer and exposed
+current/peak heap and tracked WebGL counters. A repeat Chromium run produced a
+517.4 ms first frame, 58.23 MiB fitted-view peak JavaScript heap and 4.64 MiB
+tracked WebGL memory. At 5.95x zoom, 297 detail batches reached the intentional
+32 MiB detail cap; peak JavaScript heap was 141.26 MiB and tracked WebGL memory
+was 36.64 MiB. Returning to fit selected zero detail batches and reduced the
+current heap to 44.66 MiB while retaining the bounded detail LRU. A separate
+DevTools snapshot reported 20,761,368 bytes used heap, 22,401,296 bytes backing
+storage and 4,621,392 bytes embedder heap after return. These counters remain
+category measurements rather than a Chromium renderer-process RSS claim.
+Console warnings/errors and the WebGL error flag remained zero.
+
 The stable 0.14 release replaces the earlier 0.13.4 qualification pin. Its
 normalized conversion report and cache are byte-identical to 0.13.4 on the
 reference drawing, while median conversion wall time improves from 4,140 ms to

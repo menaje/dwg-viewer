@@ -458,6 +458,18 @@ to 32 MiB. GPU detail resources use a 96 MiB LRU budget. Camera revisions stop
 stale queued work, while at most two in-flight local reads are allowed to
 finish and become reusable cache entries.
 
+The per-draw instance upload uses one geometrically growing `Float32Array`
+scratch buffer capped at 16,384 matrices (1,114,112 bytes with the mask-base
+value). Every matrix value is overwritten before upload, so subsequent batched
+draws reuse the same backing store instead of allocating a new array for every
+draw call. Renderer metrics report the current scratch size, the current and
+peak instance-buffer allocation, layer-texture bytes, vertex-buffer bytes and
+their tracked WebGL total. A per-drawing telemetry object samples Chromium's
+current and peak JavaScript heap when `performance.memory` is available. It
+reports the API as unavailable elsewhere rather than inventing a process-memory
+estimate. Driver allocations, shader programs and the browser-owned default
+framebuffer are explicitly outside the tracked WebGL total.
+
 Text is deliberately outside the first geometry frame. The Webview then reads
 the three v1.4 text ranges and keeps the 336-byte records in their packed
 buffer. Numeric display fields are read into one reused scratch record;

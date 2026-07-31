@@ -72,7 +72,11 @@ function makeFakeGl() {
     bindVertexArray() {},
     bindBuffer() {},
     bufferData(_target, value, usage) {
-      calls.bufferData.push({ byteLength: value.byteLength, usage });
+      calls.bufferData.push({
+        buffer: ArrayBuffer.isView(value) ? value.buffer : value,
+        byteLength: value.byteLength,
+        usage,
+      });
     },
     enableVertexAttribArray() {},
     vertexAttribPointer() {},
@@ -182,6 +186,10 @@ test("redraws overview and independently uploaded detail vertex ranges", () => {
   });
 
   assert.equal(first.drawCalls, 1);
+  assert.equal(first.instanceScratchBytes, 68);
+  assert.equal(first.instanceBufferBytes, 68);
+  assert.equal(first.layerTextureBytes, 8);
+  assert.equal(first.gpuTrackedBytes, 140);
   assert.deepEqual(renderer.getLayerVisibility(), [true, false]);
   renderer.setLayerVisibility(1, true);
   assert.deepEqual(renderer.getLayerVisibility(), [true, true]);
@@ -214,6 +222,18 @@ test("redraws overview and independently uploaded detail vertex ranges", () => {
   assert.equal(redrawn.drawCalls, 2);
   assert.equal(redrawn.detailBatches, 1);
   assert.equal(redrawn.cachedDetailGpuBytes, 64);
+  assert.equal(redrawn.instanceScratchBytes, 68);
+  assert.equal(redrawn.gpuTrackedBytes, 204);
+  assert.equal(redrawn.peakGpuTrackedBytes, 204);
+  const instanceUploads = calls.bufferData.filter(
+    (call) => call.usage === gl.DYNAMIC_DRAW,
+  );
+  assert.ok(instanceUploads.length >= 3);
+  assert.equal(
+    new Set(instanceUploads.map((call) => call.buffer)).size,
+    1,
+    "all instance draws must reuse one bounded backing buffer",
+  );
   assert.deepEqual(calls.drawArraysInstanced.slice(-2), [
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },

@@ -20,6 +20,12 @@ overlay for the VS Code Webview.
 - Streams at most two detail reads concurrently and coalesces redraws.
 - Caps one visible detail set at 32 MiB and cached GPU detail at 96 MiB.
 - Cancels stale queued work and safely releases in-flight results on disposal.
+- Reuses one geometrically growing instance-upload scratch buffer instead of
+  allocating a new typed-array backing store per batched draw call.
+- Displays current/peak Chromium JavaScript heap when available and current/
+  peak tracked WebGL vertex, instance and layer-texture allocations. It labels
+  unsupported heap telemetry and does not count driver-owned framebuffer or
+  shader memory as tracked GPU bytes.
 - Searches Hangul layer names and toggles individual or all layers without
   rereading geometry or rebuilding GPU buffers.
 - Displays bounded first-pass chords for arcs, circles, ellipses, polyline
