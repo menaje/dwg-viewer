@@ -3,6 +3,9 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import * as vscode from "vscode";
 import {
+  normalizeBigFontEncodingMappings,
+} from "./bigfont-encoding";
+import {
   diagnoseLibreDwgAdapter,
   LibreDwgNativeSceneEngine,
   resolveLibreDwgAdapter,
@@ -309,7 +312,7 @@ class DwgEditorProvider
     let activeCacheReused = false;
     let activeEngine: SceneEngineDescriptor | undefined;
     let activeCacheReadyMessage:
-      | Readonly<Record<string, boolean | number | string>>
+      | Readonly<Record<string, unknown>>
       | undefined;
     let pendingStateMessage:
       | Readonly<
@@ -434,6 +437,13 @@ class DwgEditorProvider
       );
     };
 
+    const bigFontEncodings = (): Readonly<Record<string, string>> =>
+      normalizeBigFontEncodingMappings(
+        vscode.workspace
+          .getConfiguration("dwgViewer", document.uri)
+          .get<unknown>("shxBigFontEncodings", {}),
+      );
+
     const reloadFontConfiguration = (): void => {
       fontChannel?.dispose();
       fontChannel = activeCacheId
@@ -443,6 +453,7 @@ class DwgEditorProvider
         void webviewPanel.webview.postMessage({
           type: "dwg-font-configuration-changed/1",
           cacheId: activeCacheId,
+          bigFontEncodings: bigFontEncodings(),
         });
       }
     };
@@ -543,6 +554,7 @@ class DwgEditorProvider
                           engineId: preview.engine.engineId,
                           engineVersion: preview.engine.engineVersion,
                           engineBackend: preview.engine.backendId,
+                          bigFontEncodings: bigFontEncodings(),
                         });
                         void emitQualification("preview-published", {
                           size_bytes: preview.size,
@@ -633,6 +645,7 @@ class DwgEditorProvider
           engineId: prepared.engine.engineId,
           engineVersion: prepared.engine.engineVersion,
           engineBackend: prepared.engine.backendId,
+          bigFontEncodings: bigFontEncodings(),
         };
         initializeWebview();
         if (webviewReady) {
@@ -839,6 +852,10 @@ class DwgEditorProvider
           ) &&
           !event.affectsConfiguration(
             "dwgViewer.shxFontMappings",
+            document.uri,
+          ) &&
+          !event.affectsConfiguration(
+            "dwgViewer.shxBigFontEncodings",
             document.uri,
           )
         ) {

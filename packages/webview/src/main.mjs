@@ -89,14 +89,24 @@ function displayFontName(value) {
 function requiredFonts(styles) {
   const required = new Map();
   for (const style of styles) {
-    for (const name of [style.fontFile, style.bigFontFile]) {
+    for (const [name, isBigFont] of [
+      [style.fontFile, false],
+      [style.bigFontFile, true],
+    ]) {
       const key = normalizeShxFontName(name);
-      if (key && !required.has(key)) {
+      if (!key) {
+        continue;
+      }
+      const existing = required.get(key);
+      if (!existing) {
         required.set(key, {
           key,
           name,
           displayName: displayFontName(name),
+          isBigFont,
         });
+      } else if (isBigFont && !existing.isBigFont) {
+        required.set(key, { ...existing, isBigFont: true });
       }
     }
   }
@@ -115,6 +125,17 @@ function fontStateLabel(state) {
       "too-large": "크기 초과",
       "budget-exceeded": "한도 초과",
     }[state] ?? "확인 중"
+  );
+}
+
+function bigFontEncodingLabel(encoding) {
+  return (
+    {
+      auto: "자동(EUC-KR → CP949 → Johab)",
+      "euc-kr": "EUC-KR",
+      cp949: "CP949/UHC",
+      johab: "Johab/CP1361",
+    }[encoding] ?? "자동"
   );
 }
 
@@ -158,12 +179,20 @@ function renderFontDiagnostics() {
     state.dataset.state = entry.state;
     state.textContent = fontStateLabel(entry.state);
     item.append(name, state);
-    const detailText =
+    const resolution =
       entry.state === "mapped"
         ? `${displayFontName(entry.resolvedName)} 파일로 대체`
         : entry.state === "loaded" && entry.size
           ? `${entry.source === "drawing" ? "도면 폴더" : entry.source === "configured" ? "등록 폴더" : "현재 세션"} · ${formatBytes(entry.size)}`
           : entry.error;
+    const detailText = [
+      resolution,
+      entry.isBigFont
+        ? `문자 코드: ${bigFontEncodingLabel(entry.encoding)}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
     if (detailText) {
       const detail = document.createElement("span");
       detail.className = "font-resolution";
@@ -186,16 +215,22 @@ function syncFontDiagnostics(styles) {
   for (const descriptor of required.values()) {
     const existing = fontDiagnostics.get(descriptor.key);
     const cacheStatus = glyphCache.fontStatus(descriptor.name);
+    const encoding = descriptor.isBigFont
+      ? glyphCache.legacyEncodingForFont(descriptor.name)
+      : undefined;
     if (cacheStatus.state === "invalid") {
       fontDiagnostics.set(descriptor.key, {
+        ...existing,
         ...descriptor,
+        encoding,
         state: "invalid",
         error: "SHX 파일 형식을 해석할 수 없습니다.",
       });
     } else if (cacheStatus.state === "registered") {
       fontDiagnostics.set(descriptor.key, {
-        ...descriptor,
         ...existing,
+        ...descriptor,
+        encoding,
         state:
           existing?.state === "mapped" ? "mapped" : "loaded",
         size: existing?.size ?? cacheStatus.size,
@@ -204,6 +239,7 @@ function syncFontDiagnostics(styles) {
     } else if (!existing) {
       fontDiagnostics.set(descriptor.key, {
         ...descriptor,
+        encoding,
         state: "missing",
         error: vscodeApi
           ? "도면 폴더와 등록된 글꼴 폴더에서 찾지 못했습니다."
@@ -228,15 +264,20 @@ function requestHostFonts(styles = activeTextStyles, revision = openRevision) {
       continue;
     }
     attemptedHostFontKeys.add(descriptor.key);
+    const encoding = descriptor.isBigFont
+      ? glyphCache.legacyEncodingForFont(descriptor.name)
+      : undefined;
     const requestId = nextHostFontRequestId;
     nextHostFontRequestId += 1;
     pendingHostFontRequests.set(requestId, {
       ...descriptor,
+      encoding,
       cacheId: activeHostCacheId,
       revision,
     });
     fontDiagnostics.set(descriptor.key, {
       ...descriptor,
+      encoding,
       state: "loading",
     });
     vscodeApi.postMessage({
@@ -342,6 +383,7 @@ function handleFontConfigurationChanged(message) {
   ) {
     return;
   }
+  glyphCache.configureLegacyEncodings(message.bigFontEncodings);
   for (const key of hostLoadedFontKeys) {
     glyphCache.unregisterFont(key);
   }
@@ -1256,6 +1298,7 @@ async function openCache(source, workerSource) {
 
 function openFile(file) {
   activeHostCacheId = undefined;
+  glyphCache.configureLegacyEncodings({});
   return openCache(
     new TrackedRangeSource(new BlobRangeSource(file)),
     { kind: "blob", file },
@@ -1263,6 +1306,7 @@ function openFile(file) {
 }
 
 function openHostedCache(message) {
+  glyphCache.configureLegacyEncodings(message.bigFontEncodings);
   activeHostCacheId = message.cacheId;
   const source = createVsCodeRangeSource(vscodeApi, {
     cacheId: message.cacheId,

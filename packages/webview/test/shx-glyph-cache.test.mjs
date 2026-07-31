@@ -125,6 +125,68 @@ test("maps Unicode Hangul to a paired EUC-KR BigFont code", () => {
   assert.equal(glyph.segmentCount, 1);
 });
 
+test("probes CP949 and Johab glyph codes without a filename heuristic", () => {
+  const cp949CodePoint = "갂".codePointAt(0);
+  const cp949Cache = new ShxGlyphCache({
+    fontFactory: bigFontFactory(0x8141),
+  });
+  cp949Cache.registerFont("unknown-bigfont.shx", new Uint8Array([1]));
+  assert.equal(
+    cp949Cache.getGlyph(
+      { fontFile: "", bigFontFile: "unknown-bigfont.shx" },
+      cp949CodePoint,
+    )?.encodedCode,
+    0x8141,
+  );
+
+  const johabCodePoint = "한".codePointAt(0);
+  const johabCache = new ShxGlyphCache({
+    fontFactory: bigFontFactory(0xd065),
+  });
+  johabCache.registerFont("another-bigfont.shx", new Uint8Array([1]));
+  assert.equal(
+    johabCache.getGlyph(
+      { fontFile: "", bigFontFile: "another-bigfont.shx" },
+      johabCodePoint,
+    )?.encodedCode,
+    0xd065,
+  );
+});
+
+test("applies a per-BigFont encoding override and rejects invalid values", () => {
+  const codePoint = "갂".codePointAt(0);
+  const cache = new ShxGlyphCache({
+    fontFactory: bigFontFactory(0x8141),
+  });
+  cache.registerFont("KOREAN.SHX", new Uint8Array([1]));
+
+  assert.deepEqual(
+    cache.configureLegacyEncodings({
+      "KOREAN.SHX": "euc-kr",
+      "ignored.shx": "not-an-encoding",
+    }),
+    { "korean.shx": "euc-kr" },
+  );
+  assert.equal(cache.legacyEncodingForFont("korean"), "euc-kr");
+  assert.equal(
+    cache.getGlyph(
+      { fontFile: "", bigFontFile: "korean.shx" },
+      codePoint,
+    ),
+    undefined,
+  );
+
+  cache.configureLegacyEncodings({ "KOREAN.SHX": "CP949" });
+  assert.equal(cache.legacyEncodingForFont("KOREAN.SHX"), "cp949");
+  assert.equal(
+    cache.getGlyph(
+      { fontFile: "", bigFontFile: "korean.shx" },
+      codePoint,
+    )?.encodedCode,
+    0x8141,
+  );
+});
+
 test("evicts least-recently-used compiled glyphs at the configured cap", () => {
   const cache = new ShxGlyphCache({
     maximumGlyphs: 2,

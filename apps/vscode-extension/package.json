@@ -95,6 +95,22 @@
             "type": "string"
           },
           "description": "Map a DWG-requested SHX name to a replacement filename in the configured folders or to an absolute SHX file path."
+        },
+        "dwgViewer.shxBigFontEncodings": {
+          "type": "object",
+          "default": {},
+          "scope": "window",
+          "maxProperties": 128,
+          "additionalProperties": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "euc-kr",
+              "cp949",
+              "johab"
+            ]
+          },
+          "description": "Map a DWG-requested BigFont name to auto glyph probing, strict EUC-KR, Windows CP949/UHC, or Johab CP1361 codes."
         }
       }
     }

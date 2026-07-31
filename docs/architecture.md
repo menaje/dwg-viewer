@@ -602,10 +602,27 @@ embedded in the DWG style table.
 
 Host font reads are isolated by cache ID and capped at 128 requests, 32 MiB per
 file and 64 MiB transferred per drawing. Primary SHX and paired BigFont names
-are normalized by basename, extension and case. Hangul is mapped to paired
-legacy BigFont codes through an on-demand EUC-KR reverse index. Glyphs are
-parsed lazily into compact `Float32Array` line pairs and retained in a
-byte-bounded LRU. Webview limits are
+are normalized by basename, extension and case. Legacy Korean codes are not
+inferred from filenames. Automatic mode probes the actual font in strict
+EUC-KR, CP949/UHC and Johab/CP1361 order, de-duplicating identical code
+candidates. A window-scoped map can force one of those encodings for up to 128
+requested BigFont names; only normalized names and encoding labels cross into
+the Webview.
+
+Strict EUC-KR is limited to the KS X 1001 `A1A1-FEFE` two-byte region
+documented by [Unicode](https://www.unicode.org/iuc/iuc15/tb1/slides.pdf).
+The CP949 path adds the ordered UHC Hangul extension and was checked against
+all 11,172 modern syllables in Unicode's
+[CP949 mapping](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WINDOWS/CP949.TXT).
+Johab uses its initial/medial/final five-bit composition and matches the
+11,172-row [Unicode Technical Note #60 data](https://www.unicode.org/notes/tn60/tn60-2.html).
+Current Johab support is deliberately limited to modern precomposed Hangul;
+non-Hangul CP1361 symbols and Hanja fall through to a direct Unicode SHX glyph
+or the local system-font fallback.
+
+Glyphs are parsed lazily into compact `Float32Array` line pairs and retained
+in a byte-bounded LRU. Switching an encoding map clears compiled glyph
+lookups but retains the registered font bytes. Webview limits are
 32 MiB per font file, 64 MiB registered font bytes, 48 MiB concurrently parsed
 font bytes, 4,096 compiled glyphs, 64 MiB compiled glyph bytes and 8,192
 segments per glyph. One malformed glyph is negatively cached without disabling

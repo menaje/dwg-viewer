@@ -146,4 +146,21 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
         "Show an overview while full conversion continues. This improves first-frame latency but substantially increases concurrent memory.",
     },
   );
+  assert.deepEqual(
+    manifest.contributes?.configuration?.properties?.[
+      "dwgViewer.shxBigFontEncodings"
+    ],
+    {
+      type: "object",
+      default: {},
+      scope: "window",
+      maxProperties: 128,
+      additionalProperties: {
+        type: "string",
+        enum: ["auto", "euc-kr", "cp949", "johab"],
+      },
+      description:
+        "Map a DWG-requested BigFont name to auto glyph probing, strict EUC-KR, Windows CP949/UHC, or Johab CP1361 codes.",
+    },
+  );
 });

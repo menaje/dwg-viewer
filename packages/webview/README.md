@@ -78,6 +78,10 @@ overlay for the VS Code Webview.
 - Loads source text after the first geometry frame and renders selected local
   SHX/BigFont glyphs through byte-bounded caches, with a Korean system-font
   fallback when a CAD font is unavailable.
+- Separates strict EUC-KR from CP949/UHC, encodes all 11,172 modern Hangul
+  syllables as Johab/CP1361, and probes actual glyph presence instead of
+  guessing from BigFont filenames. A per-font override resolves ambiguous
+  fonts without duplicating compiled glyph geometry.
 
 The current page is an engine verification harness, not the final VS Code
 extension UI. Exact MTEXT/OCS layout, lossless analytic HATCH boundary
@@ -106,7 +110,8 @@ Tests cover bounded range reads, cache validation, nested/DIMENSION block
 transforms, invalid targets, cycles and instance/depth caps, large-coordinate
 camera rebasing, camera controls, viewport detail selection, GPU resource
 ranges, layer visibility and LRU eviction/request coalescing.
-They also cover delayed Korean text reads, SHX/BigFont cache limits and the
+They also cover delayed Korean text reads, strict EUC-KR, CP949 and Johab
+mapping, per-BigFont overrides, SHX/BigFont cache limits and the
 v1.7 HATCH range, triangulation, dashed-pattern, block-clipping,
 large-coordinate and render-order contracts, plus v1.8 POINT/SOLID, v1.9
 3DFACE and v1.10 WIPEOUT range, WCS/OCS, clip-boundary, frame-setting,

@@ -109,6 +109,27 @@ requests are isolated to the active cache, served serially, and capped at 128
 files, 32 MiB per file and 64 MiB transferred per drawing. Parsed fonts and
 compiled glyphs remain under the Webview's separate byte-bounded caches.
 
+Legacy Korean BigFont codes default to glyph-based automatic probing: strict
+EUC-KR first, then the CP949/UHC extension, then Johab/CP1361. The viewer does
+not infer an encoding from a font filename. If a font contains ambiguous code
+slots, configure the requested DWG BigFont name explicitly:
+
+```json
+{
+  "dwgViewer.shxBigFontEncodings": {
+    "ksc.shx": "euc-kr",
+    "whgtxt.shx": "cp949",
+    "hanjohab.shx": "johab"
+  }
+}
+```
+
+The accepted values are `auto`, `euc-kr`, `cp949`, and `johab`, with at most
+128 mappings per window. The font panel displays the effective choice. Strict
+EUC-KR and CP949 are separate, and the Johab path covers all 11,172 modern
+Hangul syllables. Non-Hangul Johab symbols and Hanja still require a direct
+Unicode glyph or the system-font fallback.
+
 ## Current scope
 
 - Read-only model-space viewing

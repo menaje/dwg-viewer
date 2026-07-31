@@ -2,6 +2,11 @@ import {
   ShxFont,
   resolveAdvanceWidth,
 } from "#shx-parser";
+import {
+  encodeLegacyBigFontCode,
+  legacyKoreanCodeCandidates,
+  normalizeLegacyKoreanEncoding,
+} from "./legacy-korean-encoding.mjs";
 
 const DEFAULT_MAX_FONT_FILE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MAX_TOTAL_FONT_BYTES = 64 * 1024 * 1024;
@@ -10,10 +15,9 @@ const DEFAULT_MAX_GLYPH_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_GLYPHS = 4_096;
 const DEFAULT_MAX_SEGMENTS_PER_GLYPH = 8_192;
 const DEFAULT_PARSER_GLYPH_WINDOW = 256;
+const DEFAULT_MAX_ENCODING_OVERRIDES = 128;
 const COMPILED_SEGMENT_BYTES = 4 * Float32Array.BYTES_PER_ELEMENT;
 const GLYPH_OVERHEAD_BYTES = 64;
-
-const legacyCodeMaps = new Map();
 
 export function normalizeShxFontName(value) {
   if (typeof value !== "string") {
@@ -48,53 +52,6 @@ function asExactArrayBuffer(value) {
     );
   }
   throw new TypeError("SHX font data must be an ArrayBuffer or typed-array view");
-}
-
-function buildLegacyCodeMap(encoding) {
-  let decoder;
-  try {
-    decoder = new TextDecoder(encoding, { fatal: true });
-  } catch {
-    return new Map();
-  }
-  const bytes = new Uint8Array(2);
-  const mapping = new Map();
-  for (let lead = 0x81; lead <= 0xfe; lead += 1) {
-    bytes[0] = lead;
-    for (let trail = 0x40; trail <= 0xfe; trail += 1) {
-      if (trail === 0x7f) {
-        continue;
-      }
-      bytes[1] = trail;
-      try {
-        const decoded = decoder.decode(bytes);
-        const characters = [...decoded];
-        if (characters.length !== 1) {
-          continue;
-        }
-        const codePoint = characters[0].codePointAt(0);
-        if (codePoint > 0x7f && !mapping.has(codePoint)) {
-          mapping.set(codePoint, (lead << 8) | trail);
-        }
-      } catch {
-        // Invalid byte pairs are expected while building the reverse index.
-      }
-    }
-  }
-  return mapping;
-}
-
-export function encodeLegacyBigFontCode(
-  codePoint,
-  encoding = "euc-kr",
-) {
-  if (!Number.isInteger(codePoint) || codePoint < 0 || codePoint > 0x10ffff) {
-    return undefined;
-  }
-  if (!legacyCodeMaps.has(encoding)) {
-    legacyCodeMaps.set(encoding, buildLegacyCodeMap(encoding));
-  }
-  return legacyCodeMaps.get(encoding).get(codePoint);
 }
 
 function compileGlyph(shape, maximumSegments) {
@@ -138,7 +95,9 @@ export class ShxGlyphCache {
     maximumGlyphs = DEFAULT_MAX_GLYPHS,
     maximumSegmentsPerGlyph = DEFAULT_MAX_SEGMENTS_PER_GLYPH,
     parserGlyphWindow = DEFAULT_PARSER_GLYPH_WINDOW,
-    legacyEncoding = "euc-kr",
+    legacyEncoding = "auto",
+    legacyEncodingOverrides = {},
+    maximumEncodingOverrides = DEFAULT_MAX_ENCODING_OVERRIDES,
     fontFactory = (buffer) => new ShxFont(buffer),
   } = {}) {
     for (const [label, value] of Object.entries({
@@ -149,6 +108,7 @@ export class ShxGlyphCache {
       maximumGlyphs,
       maximumSegmentsPerGlyph,
       parserGlyphWindow,
+      maximumEncodingOverrides,
     })) {
       if (!Number.isSafeInteger(value) || value <= 0) {
         throw new RangeError(`${label} must be a positive safe integer`);
@@ -161,7 +121,9 @@ export class ShxGlyphCache {
     this.maximumGlyphs = maximumGlyphs;
     this.maximumSegmentsPerGlyph = maximumSegmentsPerGlyph;
     this.parserGlyphWindow = parserGlyphWindow;
-    this.legacyEncoding = legacyEncoding;
+    this.maximumEncodingOverrides = maximumEncodingOverrides;
+    this.legacyEncoding = normalizeLegacyKoreanEncoding(legacyEncoding);
+    this.legacyEncodingOverrides = new Map();
     this.fontFactory = fontFactory;
     this.aliases = new Map();
     this.fonts = new Set();
@@ -175,6 +137,67 @@ export class ShxGlyphCache {
     this.hitCount = 0;
     this.missCount = 0;
     this.evictionCount = 0;
+    this.configureLegacyEncodings(legacyEncodingOverrides);
+  }
+
+  configureLegacyEncodings(overrides = {}) {
+    const configured = new Map();
+    let configuredFonts = 0;
+    if (
+      typeof overrides === "object" &&
+      overrides !== null &&
+      !Array.isArray(overrides)
+    ) {
+      for (const [name, value] of Object.entries(overrides)) {
+        const normalizedName = normalizeShxFontName(name);
+        if (
+          !normalizedName ||
+          typeof value !== "string"
+        ) {
+          continue;
+        }
+        const normalizedEncoding =
+          normalizeLegacyKoreanEncoding(value, "");
+        if (!normalizedEncoding) {
+          continue;
+        }
+        const aliases = fontAliases(normalizedName);
+        const alreadyConfigured = aliases.some((alias) =>
+          configured.has(alias),
+        );
+        if (
+          !alreadyConfigured &&
+          configuredFonts >= this.maximumEncodingOverrides
+        ) {
+          continue;
+        }
+        for (const alias of aliases) {
+          configured.set(alias, normalizedEncoding);
+        }
+        if (!alreadyConfigured) {
+          configuredFonts += 1;
+        }
+      }
+    }
+    this.legacyEncodingOverrides = configured;
+    this.clearGlyphs();
+    return Object.freeze(
+      Object.fromEntries(
+        [...configured.entries()].filter(([name]) =>
+          name.endsWith(".shx"),
+        ),
+      ),
+    );
+  }
+
+  legacyEncodingForFont(name) {
+    for (const alias of fontAliases(name)) {
+      const configured = this.legacyEncodingOverrides.get(alias);
+      if (configured) {
+        return configured;
+      }
+    }
+    return this.legacyEncoding;
   }
 
   registerFont(name, data) {
@@ -260,6 +283,7 @@ export class ShxGlyphCache {
       name: record.name,
       size: record.buffer.byteLength,
       error: record.error?.message,
+      legacyEncoding: this.legacyEncodingForFont(name),
     });
   }
 
@@ -298,13 +322,15 @@ export class ShxGlyphCache {
       }
     }
     if (codePoint > 0x7f) {
-      const legacyCode = encodeLegacyBigFontCode(
-        codePoint,
-        this.legacyEncoding,
+      const legacyEncoding = this.legacyEncodingForFont(
+        style?.bigFontFile || style?.fontFile,
       );
-      if (legacyCode !== undefined) {
+      for (const candidate of legacyKoreanCodeCandidates(
+        codePoint,
+        legacyEncoding,
+      )) {
         for (const record of [big, primary]) {
-          const glyph = this.#getGlyphForCode(record, legacyCode);
+          const glyph = this.#getGlyphForCode(record, candidate.code);
           if (glyph) {
             return glyph;
           }
@@ -512,7 +538,9 @@ export {
   DEFAULT_MAX_FONT_FILE_BYTES,
   DEFAULT_MAX_GLYPH_BYTES,
   DEFAULT_MAX_GLYPHS,
+  DEFAULT_MAX_ENCODING_OVERRIDES,
   DEFAULT_MAX_PARSED_FONT_BYTES,
   DEFAULT_MAX_SEGMENTS_PER_GLYPH,
   DEFAULT_MAX_TOTAL_FONT_BYTES,
+  encodeLegacyBigFontCode,
 };
