@@ -1,9 +1,10 @@
-# Scene Cache v1.9
+# Scene Cache v1.10
 
 Status: source geometry/text writer, resolved DIMENSION picture-block
 instances, bounded HATCH rings and asynchronous solid/gradient fill,
 viewport-clipped pattern, POINT marker, SOLID fill/outline and 3DFACE
-wireframe paths implemented; expansion tracked by GitHub issues #3 and #9.
+wireframe paths, plus lossless WIPEOUT source and frame display implemented;
+expansion tracked by GitHub issues #3 and #9.
 
 The cache is a little-endian, versioned binary container designed for range
 reads and browser `ArrayBuffer`/`DataView` access. Geometry is never encoded as
@@ -82,6 +83,8 @@ Section kinds currently written:
 | 39 | POINT source records |
 | 40 | SOLID source records |
 | 41 | 3DFACE source records |
+| 42 | WIPEOUT source records |
+| 43 | WIPEOUT clip-boundary `f64[2]` vertex pool |
 
 Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
 Version 1.2 adds kinds 30–31 for straight and polyline GPU lines. Version 1.3
@@ -94,8 +97,11 @@ adds kinds 32–36 for bounded source-backed HATCH fills. Version 1.7 adds kinds
 kinds 39–40 for POINT and SOLID source records. Resolved DIMENSION picture
 blocks reuse the unchanged kind-13 record and therefore require no version
 bump or new section. Version 1.9 adds kind 41 for WCS 3DFACE corners and
-invisible-edge flags. The validator continues to accept older v1 caches,
-while a v1.9 writer always emits all 30 sections, including empty pools.
+invisible-edge flags. Version 1.10 adds kinds 42–43 for WIPEOUT image bases,
+display metadata and exact clip vertices; drawing metadata offset 12 stores
+the drawing-wide frame setting. The validator continues to accept older v1
+caches, while a v1.10 writer always emits all 32 sections, including empty
+pools.
 
 ## Shared primitive prefix
 
@@ -117,6 +123,25 @@ ACI index and `11` 24-bit RGB.
 Source coordinates are stored as `f64` in v1 to avoid losing precision in large
 civil drawings. The v1.2+ GPU sections contain derived, batch-local `f32`
 coordinates without replacing these source-precision records.
+
+## Drawing record
+
+Kind 1 contains one 80-byte record:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u32` | source DWG version code |
+| 4 | `u32` | source maintenance version |
+| 8 | `i32` | insertion units |
+| 12 | `u32` | v1.10 WIPEOUT frame setting: 0, 1, 2, or `0xffffffff` when unavailable |
+| 16 | `u64` | total logical entity count |
+| 24 | `u64` | serialized logical entity count |
+| 32 | `f64[3]` | drawing minimum bounds |
+| 56 | `f64[3]` | drawing maximum bounds |
+
+Before v1.10, offset 12 is reserved and must be zero. Readers expose the
+v1.10 value as nullable metadata so the first-frame reader can pass it to the
+later primitive worker without rereading kind 1.
 
 ## String-table sections
 
@@ -400,7 +425,7 @@ GPU bytes. Definitions closer than 1.5 screen pixels are omitted before
 geometry generation. Shared block pattern vertices are stored once, and draw
 calls submit only the visible instance indices selected for that viewport.
 
-## POINT, SOLID and 3DFACE source/display
+## POINT, SOLID, 3DFACE and WIPEOUT source/display
 
 Scene Cache v1.8 preserves POINT and SOLID independently of the first line
 frame, and v1.9 adds 3DFACE to the same deferred path. All three fixed-size
@@ -490,6 +515,58 @@ Per-owner scratch batches start at one primitive instead of reserving a fixed
 block and grow only as needed up to 24,576 vertices, so many tiny block
 definitions cannot multiply a large initial allocation. Opening another file
 terminates either outstanding worker.
+
+### WIPEOUT source and frame display
+
+Scene Cache v1.10 preserves WIPEOUT without adding it to the first line frame.
+Each kind-42 record is 168 bytes:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u8[32]` | shared primitive prefix |
+| 32 | `i32` | source class version |
+| 36 | `u16` | display properties; only bits 0–3 are valid |
+| 38 | `u8` | clip-boundary type: 1 rectangular, 2 polygonal |
+| 39 | `u8` | clipping enabled: 0 or 1 |
+| 40 | `u8` | brightness, 0–100 |
+| 41 | `u8` | contrast, 0–100 |
+| 42 | `u8` | fade, 0–100 |
+| 43 | `u8` | clip mode: 0 outside, 1 inside/inverted |
+| 44 | `u32` | reserved; zero |
+| 48 | `u64` | first kind-43 clip vertex |
+| 56 | `u32` | clip-vertex count |
+| 60 | `u32` | reserved; zero |
+| 64 | `u64` | image-definition handle, or zero |
+| 72 | `u64` | image-definition-reactor handle, or zero |
+| 80 | `f64[3]` | insertion point |
+| 104 | `f64[3]` | image U vector |
+| 128 | `f64[3]` | image V vector |
+| 152 | `f64[2]` | positive image size |
+
+Kind 43 stores one little-endian `f64[2]` local image coordinate per
+16-byte record. Entity ranges must be contiguous and cover the complete pool.
+A rectangular boundary contains exactly two opposite corners; a polygonal
+boundary contains at least three points. The image basis must be finite and
+non-degenerate. Readers cap source at 65,536 entities and 1,048,576 clip
+vertices, with the existing 64 MiB per-section guard.
+
+The worker displays a frame only when the drawing-wide setting is 1 or 2.
+When clipping is enabled and display-property bit 2 (`4`) requests clipping,
+the frame follows the clip boundary; otherwise it follows the full image
+rectangle from `[-0.5,-0.5]` to `[size.x-0.5,size.y-0.5]`. Rectangular
+two-corner clips are expanded to four edges. Each local point `[x,y]` becomes
+`insertion + U*x + V*y`, and the result retains the source owner, layer,
+color, handle and block-instance sharing. Frames append to the shared 8 MiB
+surface-outline buffer used by SOLID and 3DFACE. Degenerate edges and budget
+exhaustion are reported explicitly.
+
+The background mask itself is deliberately not synthesized yet. Correct
+WIPEOUT masking depends on entity draw order, including block-local
+`SORTENTSTABLE` order and nested INSERT ordering. Drawing a mask after the
+current type-grouped geometry would erase valid foreground text and lines.
+The Webview therefore reports visible source masks as
+`deferredWipeoutMasks` while preserving every source field needed by the
+draw-order-aware renderer tracked in issue #4.
 
 ## Viewport and LOD GPU lines
 
@@ -583,7 +660,8 @@ available in the source sections for later high-zoom refinement.
   fidelity beyond the bounded first pass;
 - automatic trusted SHX font discovery and project font mapping;
 - linetype override table;
-- WIPEOUT source preservation and display;
+- draw-order-aware WIPEOUT mask fill, including block-local sort tables and
+  nested INSERT order;
 - view-adaptive high-zoom refinement beyond the bounded v1.3 curve chords;
 - lossless HATCH analytic-edge topology beyond the bounded fill rings;
 - entity-selection index and source fingerprint.
@@ -593,7 +671,7 @@ generated artifacts and must not be committed.
 
 ## LibreDWG qualification writer
 
-The optional LibreDWG adapter currently writes a valid but partial v1.9 cache
+The optional LibreDWG adapter currently writes a valid but partial v1.10 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
@@ -604,11 +682,13 @@ plus bounded ARC/CIRCLE/ELLIPSE, bulge, SPLINE and HATCH-boundary chords.
 Circular curves use the same 16-segments-per-revolution limit; SPLINE
 evaluation and malformed-input fallback use the 256-segments-per-entity limit.
 It also writes the seven bounded HATCH source/fill/pattern sections and the
-POINT/SOLID/3DFACE source sections, including `PDMODE`, `PDSIZE`, `FILLMODE`
-and invisible face edges. The Webview range-reads those sections after the
-first line frame, builds POINT markers, SOLID geometry and 3DFACE wireframe
-edges in a one-shot worker, triangulates solid and gradient HATCH rings, and
-regenerates clipped HATCH pattern strokes in the persistent worker. All
+POINT/SOLID/3DFACE/WIPEOUT source sections, including `PDMODE`, `PDSIZE`,
+`FILLMODE`, invisible face edges, exact WIPEOUT clip vertices and the global
+frame setting. The Webview range-reads those sections after the first line
+frame, builds POINT markers, SOLID geometry, 3DFACE wireframe edges and safe
+WIPEOUT frames in a one-shot worker, triangulates solid and gradient HATCH
+rings, and regenerates clipped HATCH pattern strokes in the persistent worker.
+WIPEOUT masks remain explicitly deferred until draw-order rendering exists. All
 omitted logical entities, unresolved DIMENSION blocks, skipped paths and
 safety caps are exposed in the conversion report rather than silently treated
 as supported.

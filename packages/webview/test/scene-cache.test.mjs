@@ -41,9 +41,9 @@ test("accepts the Scene Cache v1.3 header", async () => {
 test("rejects a newer unsupported Scene Cache minor version", async () => {
   await assert.rejects(
     SceneCacheReader.open(
-      new MemoryRangeSource(makeFixtureCache({ minorVersion: 10 })),
+      new MemoryRangeSource(makeFixtureCache({ minorVersion: 11 })),
     ),
-    /unsupported scene-cache version 1\.10/,
+    /unsupported scene-cache version 1\.11/,
   );
 });
 
@@ -174,6 +174,87 @@ test("reads bounded Scene Cache v1.9 3DFACE source lazily", async () => {
     primitives.faces.get(4).corners[2],
   );
   assert.equal(source.requests.length - requestsAfterOpen, 3);
+});
+
+test("reads bounded Scene Cache v1.10 WIPEOUT source lazily", async () => {
+  const source = new TrackedRangeSource(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 10 })),
+  );
+  const reader = await SceneCacheReader.open(source);
+  const wipeoutEntities = reader.getSection(SectionKind.WipeoutEntities);
+  const wipeoutClipVertices = reader.getSection(
+    SectionKind.WipeoutClipVertices,
+  );
+  const metadata = await reader.readRenderMetadata();
+
+  assert.equal(metadata.drawing.wipeoutFrame, 1);
+  assert.equal(
+    source.requests.some(
+      (request) =>
+        request.offset === wipeoutEntities.offset ||
+        request.offset === wipeoutClipVertices.offset,
+    ),
+    false,
+  );
+
+  const requestsBeforePrimitives = source.requests.length;
+  const primitives = await reader.readPrimitiveSource();
+  assert.equal(primitives.wipeouts.length, 3);
+  assert.equal(primitives.wipeouts.clipVertexCount, 9);
+  assert.equal(primitives.wipeouts.get(0).clipType, 2);
+  assert.equal(primitives.wipeouts.get(0).displayProperties, 5);
+  assert.deepEqual(
+    primitives.wipeouts.get(0).clipBoundaryVertices,
+    [
+      [0, 0],
+      [2, 0],
+      [2, 1],
+      [0, 1],
+    ],
+  );
+  assert.equal(primitives.wipeouts.get(1).ownerHandle, 101n);
+  assert.deepEqual(primitives.wipeouts.get(1).size, [8, 6]);
+  assert.equal(primitives.wipeouts.get(2).clippingEnabled, false);
+  assert.equal(source.requests.length - requestsBeforePrimitives, 5);
+});
+
+test("rejects invalid metadata in a v1.10 WIPEOUT record", async () => {
+  const buffer = makeFixtureCache({ minorVersion: 10 });
+  const view = new DataView(buffer);
+  const sectionCount = view.getUint32(16, true);
+  const directoryOffset = Number(view.getBigUint64(32, true));
+  let wipeoutOffset;
+  for (let index = 0; index < sectionCount; index += 1) {
+    const offset = directoryOffset + index * DIRECTORY_ENTRY_SIZE;
+    if (view.getUint32(offset, true) === SectionKind.WipeoutEntities) {
+      wipeoutOffset = Number(view.getBigUint64(offset + 8, true));
+      break;
+    }
+  }
+  assert.notEqual(wipeoutOffset, undefined);
+  view.setUint8(wipeoutOffset + 40, 101);
+
+  const reader = await SceneCacheReader.open(new MemoryRangeSource(buffer));
+  await assert.rejects(
+    reader.readWipeoutEntities(),
+    /invalid metadata/,
+  );
+});
+
+test("rejects a v1.10 WIPEOUT source table above its record cap", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(
+      makeFixtureCache({
+        minorVersion: 10,
+        wipeoutRecordCount: 65_537,
+      }),
+    ),
+  );
+
+  await assert.rejects(
+    reader.readWipeoutEntities(),
+    /exceeds the 65536-record limit/,
+  );
 });
 
 test("rejects invalid flags in a v1.9 3DFACE record", async () => {

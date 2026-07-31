@@ -6,8 +6,9 @@ use std::time::Instant;
 
 use acadrust::entities::{
     AttributeEntity, BoundaryEdge, Dimension, EntityCommon, EntityType, Hatch, HatchPatternLine,
-    SplineEdge,
+    SplineEdge, Wipeout, WipeoutClipMode, WipeoutClipType,
 };
+use acadrust::objects::ObjectType;
 use acadrust::types::{Color, Matrix3, Vector3};
 use acadrust::CadDocument;
 use anyhow::{Context, Result};
@@ -17,7 +18,7 @@ use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, Inp
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 9;
+pub const CACHE_VERSION_MINOR: u16 = 10;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -49,6 +50,8 @@ const HATCH_PATTERN_DASH_RECORD_SIZE: u32 = 8;
 const POINT_ENTITY_RECORD_SIZE: u32 = 112;
 const SOLID_ENTITY_RECORD_SIZE: u32 = 168;
 const FACE_ENTITY_RECORD_SIZE: u32 = 136;
+const WIPEOUT_ENTITY_RECORD_SIZE: u32 = 168;
+const WIPEOUT_CLIP_VERTEX_RECORD_SIZE: u32 = 16;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
 const SECTION_FLAG_STRING_TABLE: u32 = 1;
 const MAX_CACHE_STRING_BYTES: u64 = 1024 * 1024;
@@ -74,6 +77,8 @@ const MAX_HATCH_PATTERN_LINES_PER_ENTITY: usize = 4_096;
 const MAX_HATCH_PATTERN_DASHES_PER_ENTITY: usize = 65_536;
 const MAX_HATCH_PATTERN_LINES: usize = 262_144;
 const MAX_HATCH_PATTERN_DASHES: usize = 1_048_576;
+const MAX_WIPEOUT_SOURCE_RECORDS: usize = 65_536;
+const MAX_WIPEOUT_CLIP_VERTICES: usize = 1_048_576;
 const CURVE_EPSILON: f64 = 1.0e-12;
 const HATCH_FLAG_SOLID: u32 = 1;
 const HATCH_FLAG_ASSOCIATIVE: u32 = 1 << 1;
@@ -145,6 +150,7 @@ pub struct PrimitiveCounts {
     pub points: u64,
     pub solids: u64,
     pub faces: u64,
+    pub wipeouts: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -260,6 +266,8 @@ enum SectionKind {
     PointEntities = 39,
     SolidEntities = 40,
     FaceEntities = 41,
+    WipeoutEntities = 42,
+    WipeoutClipVertices = 43,
 }
 
 impl SectionKind {
@@ -295,6 +303,8 @@ impl SectionKind {
             Self::PointEntities => "point_entities",
             Self::SolidEntities => "solid_entities",
             Self::FaceEntities => "face_entities",
+            Self::WipeoutEntities => "wipeout_entities",
+            Self::WipeoutClipVertices => "wipeout_clip_vertices",
         }
     }
 
@@ -330,6 +340,8 @@ impl SectionKind {
             39 => Some(Self::PointEntities),
             40 => Some(Self::SolidEntities),
             41 => Some(Self::FaceEntities),
+            42 => Some(Self::WipeoutEntities),
+            43 => Some(Self::WipeoutClipVertices),
             _ => None,
         }
     }
@@ -364,6 +376,8 @@ impl SectionKind {
             Self::PointEntities => POINT_ENTITY_RECORD_SIZE,
             Self::SolidEntities => SOLID_ENTITY_RECORD_SIZE,
             Self::FaceEntities => FACE_ENTITY_RECORD_SIZE,
+            Self::WipeoutEntities => WIPEOUT_ENTITY_RECORD_SIZE,
+            Self::WipeoutClipVertices => WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
         }
     }
 
@@ -708,7 +722,7 @@ fn validate_scene_cache_reader<R: Read + Seek>(
     for entry in &entries {
         validate_section_layout(&mut reader, entry)?;
     }
-    validate_cross_section_references(&mut reader, &entries)?;
+    validate_cross_section_references(&mut reader, &entries, minor)?;
 
     Ok(CacheValidationReport {
         schema: "dwg-scene-cache-validation/1",
@@ -815,6 +829,12 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
     }
     if minor_version >= 9 {
         required.push(SectionKind::FaceEntities);
+    }
+    if minor_version >= 10 {
+        required.extend([
+            SectionKind::WipeoutEntities,
+            SectionKind::WipeoutClipVertices,
+        ]);
     }
     for kind in required {
         let count = entries
@@ -1004,7 +1024,19 @@ fn validate_utf8_reference<R: Read + Seek>(
 fn validate_cross_section_references<R: Read + Seek>(
     reader: &mut R,
     entries: &[RawSectionEntry],
+    minor_version: u16,
 ) -> Result<()> {
+    if let Some(drawing) = find_section(entries, SectionKind::Drawing) {
+        let mut record = [0_u8; DRAWING_RECORD_SIZE as usize];
+        read_record(reader, drawing, 0, &mut record)?;
+        let wipeout_frame = slice_u32(&record, 12);
+        if (minor_version < 10 && wipeout_frame != 0)
+            || (minor_version >= 10 && wipeout_frame != u32::MAX && wipeout_frame > 2)
+        {
+            anyhow::bail!("drawing contains an invalid WIPEOUT frame setting");
+        }
+    }
+
     if let Some(texts) = find_section(entries, SectionKind::TextEntities) {
         let styles = find_section(entries, SectionKind::TextStyles)
             .context("text entities exist without a text-style table")?;
@@ -1389,6 +1421,88 @@ fn validate_cross_section_references<R: Read + Seek>(
         }
     }
 
+    if let Some(wipeouts) = find_section(entries, SectionKind::WipeoutEntities) {
+        let layers = find_section(entries, SectionKind::Layers)
+            .context("WIPEOUT entities exist without a layer table")?;
+        let clip_vertices = find_section(entries, SectionKind::WipeoutClipVertices)
+            .context("WIPEOUT entities exist without a clip-vertex pool")?;
+        if wipeouts.record_count > MAX_WIPEOUT_SOURCE_RECORDS as u64
+            || clip_vertices.record_count > MAX_WIPEOUT_CLIP_VERTICES as u64
+        {
+            anyhow::bail!("WIPEOUT source exceeds its record limit");
+        }
+        let mut expected_first_vertex = 0_u64;
+        for index in 0..wipeouts.record_count {
+            let mut record = [0_u8; WIPEOUT_ENTITY_RECORD_SIZE as usize];
+            read_record(reader, wipeouts, index, &mut record)?;
+            validate_primitive_common(&record, layers.record_count, "WIPEOUT")?;
+            let display_properties = slice_u16(&record, 36);
+            let clip_type = record[38];
+            let clipping_enabled = record[39];
+            let brightness = record[40];
+            let contrast = record[41];
+            let fade = record[42];
+            let clip_mode = record[43];
+            let first_vertex = slice_u64(&record, 48);
+            let vertex_count = u64::from(slice_u32(&record, 56));
+            if display_properties & !0xf != 0
+                || !matches!(clip_type, 1 | 2)
+                || clipping_enabled > 1
+                || brightness > 100
+                || contrast > 100
+                || fade > 100
+                || clip_mode > 1
+                || slice_u32(&record, 44) != 0
+                || slice_u32(&record, 60) != 0
+                || first_vertex != expected_first_vertex
+                || (clip_type == 1 && vertex_count != 2)
+                || (clip_type == 2 && vertex_count < 3)
+            {
+                anyhow::bail!("WIPEOUT entity contains invalid metadata");
+            }
+            validate_pool_range(
+                "WIPEOUT clip vertices",
+                first_vertex,
+                vertex_count,
+                clip_vertices.record_count,
+            )?;
+            expected_first_vertex = first_vertex
+                .checked_add(vertex_count)
+                .context("WIPEOUT clip-vertex range overflow")?;
+            if (80..168)
+                .step_by(8)
+                .any(|offset| !slice_f64(&record, offset).is_finite())
+            {
+                anyhow::bail!("WIPEOUT entity contains a non-finite value");
+            }
+            let ux = slice_f64(&record, 104);
+            let uy = slice_f64(&record, 112);
+            let uz = slice_f64(&record, 120);
+            let vx = slice_f64(&record, 128);
+            let vy = slice_f64(&record, 136);
+            let vz = slice_f64(&record, 144);
+            let cross = [uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx];
+            let basis_length_squared = cross.into_iter().map(|value| value * value).sum::<f64>();
+            if !basis_length_squared.is_finite()
+                || basis_length_squared <= 1.0e-24
+                || slice_f64(&record, 152) <= 0.0
+                || slice_f64(&record, 160) <= 0.0
+            {
+                anyhow::bail!("WIPEOUT entity has an invalid image basis or size");
+            }
+        }
+        if expected_first_vertex != clip_vertices.record_count {
+            anyhow::bail!("WIPEOUT clip-vertex pool is not fully covered");
+        }
+        for index in 0..clip_vertices.record_count {
+            let mut record = [0_u8; WIPEOUT_CLIP_VERTEX_RECORD_SIZE as usize];
+            read_record(reader, clip_vertices, index, &mut record)?;
+            if !slice_f64(&record, 0).is_finite() || !slice_f64(&record, 8).is_finite() {
+                anyhow::bail!("WIPEOUT clip vertex contains a non-finite coordinate");
+            }
+        }
+    }
+
     if let Some(batches) = find_section(entries, SectionKind::GpuLineBatches) {
         let vertices = find_section(entries, SectionKind::GpuLineVertices)
             .context("GPU line batches exist without a vertex pool")?;
@@ -1538,7 +1652,7 @@ fn write_scene_cache<W: Write + Seek>(
     document: &CadDocument,
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
-    let section_count = 30_u32;
+    let section_count = 32_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
         directory_offset + u64::from(section_count) * u64::from(DIRECTORY_ENTRY_SIZE),
@@ -1559,6 +1673,7 @@ fn write_scene_cache<W: Write + Seek>(
         .collect::<Result<_>>()?;
     let block_targets = collect_block_instance_targets(document)?;
     let counts = PrimitiveCounts::from_document(document, &block_targets);
+    let wipeout_frame = drawing_wipeout_frame(document)?;
     let text_style_indices: HashMap<String, u32> = document
         .text_styles
         .iter()
@@ -1572,7 +1687,12 @@ fn write_scene_cache<W: Write + Seek>(
         .collect::<Result<_>>()?;
 
     let mut sections = Vec::with_capacity(section_count as usize);
-    sections.push(write_drawing_section(writer, document, &counts)?);
+    sections.push(write_drawing_section(
+        writer,
+        document,
+        &counts,
+        wipeout_frame,
+    )?);
     sections.push(write_layer_section(writer, document)?);
     sections.push(write_block_section(writer, document)?);
     sections.push(write_text_style_section(writer, document)?);
@@ -1641,6 +1761,12 @@ fn write_scene_cache<W: Write + Seek>(
         &layer_indices,
     )?);
     sections.push(write_face_entity_section(writer, document, &layer_indices)?);
+    sections.push(write_wipeout_entity_section(
+        writer,
+        document,
+        &layer_indices,
+    )?);
+    sections.push(write_wipeout_clip_vertex_section(writer, document)?);
 
     let file_size = writer.stream_position()?;
     writer.seek(SeekFrom::Start(0))?;
@@ -1718,6 +1844,7 @@ impl PrimitiveCounts {
                 EntityType::Point(_) => counts.points += 1,
                 EntityType::Solid(_) => counts.solids += 1,
                 EntityType::Face3D(_) => counts.faces += 1,
+                EntityType::Wipeout(_) => counts.wipeouts += 1,
                 _ => {}
             }
         }
@@ -1737,7 +1864,8 @@ impl PrimitiveCounts {
             + counts.hatches
             + counts.points
             + counts.solids
-            + counts.faces;
+            + counts.faces
+            + counts.wipeouts;
         counts.deferred_entities = counts
             .total_entities
             .saturating_sub(counts.serialized_entities);
@@ -1810,10 +1938,29 @@ fn write_directory_entry<W: Write>(writer: &mut W, entry: &SectionEntry) -> Resu
     Ok(())
 }
 
+fn drawing_wipeout_frame(document: &CadDocument) -> Result<u32> {
+    let mut setting = None;
+    for object in document.objects.values() {
+        let ObjectType::WipeoutVariables(value) = object else {
+            continue;
+        };
+        if !(0..=2).contains(&value.display_frame) {
+            anyhow::bail!("WIPEOUT frame setting is outside the supported range");
+        }
+        let raw = u32::try_from(value.display_frame)?;
+        if setting.is_some_and(|previous| previous != raw) {
+            anyhow::bail!("drawing contains conflicting WIPEOUT frame settings");
+        }
+        setting = Some(raw);
+    }
+    Ok(setting.unwrap_or(u32::MAX))
+}
+
 fn write_drawing_section<W: Write + Seek>(
     writer: &mut W,
     document: &CadDocument,
     counts: &PrimitiveCounts,
+    wipeout_frame: u32,
 ) -> Result<SectionEntry> {
     let offset = aligned_position(writer)?;
     let bounds = drawing_bounds(document).unwrap_or(Bounds3 {
@@ -1823,7 +1970,7 @@ fn write_drawing_section<W: Write + Seek>(
     write_u32(writer, document.version.version_code().into())?;
     write_u32(writer, document.maintenance_version.into())?;
     write_i32(writer, document.header.insertion_units.into())?;
-    write_u32(writer, 0)?;
+    write_u32(writer, wipeout_frame)?;
     write_u64(writer, counts.total_entities)?;
     write_u64(writer, counts.serialized_entities)?;
     for value in bounds.min.into_iter().chain(bounds.max) {
@@ -3156,6 +3303,154 @@ fn write_face_entity_section<W: Write + Seek>(
         writer,
         SectionKind::FaceEntities,
         FACE_ENTITY_RECORD_SIZE,
+        offset,
+        count,
+    )
+}
+
+fn validate_wipeout_source(wipeout: &Wipeout) -> Result<()> {
+    let display_properties = wipeout.flags.bits();
+    if display_properties < 0 || display_properties & !0xf != 0 {
+        anyhow::bail!("WIPEOUT source contains unsupported display properties");
+    }
+    if wipeout.brightness > 100 || wipeout.contrast > 100 || wipeout.fade > 100 {
+        anyhow::bail!("WIPEOUT source contains an invalid image adjustment");
+    }
+    let vertex_count = wipeout.clip_boundary_vertices.len();
+    match wipeout.clip_type {
+        WipeoutClipType::Rectangular if vertex_count != 2 => {
+            anyhow::bail!("rectangular WIPEOUT must contain two clip vertices");
+        }
+        WipeoutClipType::Polygonal if vertex_count < 3 => {
+            anyhow::bail!("polygonal WIPEOUT must contain at least three clip vertices");
+        }
+        _ => {}
+    }
+    if !vector_is_finite(wipeout.insertion_point)
+        || !vector_is_finite(wipeout.u_vector)
+        || !vector_is_finite(wipeout.v_vector)
+        || !wipeout.size.x.is_finite()
+        || !wipeout.size.y.is_finite()
+        || wipeout.size.x <= 0.0
+        || wipeout.size.y <= 0.0
+        || wipeout
+            .clip_boundary_vertices
+            .iter()
+            .any(|point| !point.x.is_finite() || !point.y.is_finite())
+    {
+        anyhow::bail!("WIPEOUT source contains a non-finite or invalid coordinate");
+    }
+    let cross = [
+        wipeout.u_vector.y * wipeout.v_vector.z - wipeout.u_vector.z * wipeout.v_vector.y,
+        wipeout.u_vector.z * wipeout.v_vector.x - wipeout.u_vector.x * wipeout.v_vector.z,
+        wipeout.u_vector.x * wipeout.v_vector.y - wipeout.u_vector.y * wipeout.v_vector.x,
+    ];
+    let basis_length_squared = cross.into_iter().map(|value| value * value).sum::<f64>();
+    if !basis_length_squared.is_finite() || basis_length_squared <= 1.0e-24 {
+        anyhow::bail!("WIPEOUT source contains a degenerate image basis");
+    }
+    Ok(())
+}
+
+fn write_wipeout_entity_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+    layer_indices: &HashMap<String, u32>,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+    let mut first_clip_vertex = 0_u64;
+    for entity in document.entities() {
+        let EntityType::Wipeout(wipeout) = entity else {
+            continue;
+        };
+        validate_wipeout_source(wipeout)?;
+        count = count.checked_add(1).context("WIPEOUT count overflow")?;
+        if count > MAX_WIPEOUT_SOURCE_RECORDS as u64 {
+            anyhow::bail!("WIPEOUT source exceeds its entity limit");
+        }
+        let clip_vertex_count = u32::try_from(wipeout.clip_boundary_vertices.len())
+            .context("WIPEOUT clip boundary is too large")?;
+        let next_clip_vertex = first_clip_vertex
+            .checked_add(u64::from(clip_vertex_count))
+            .context("WIPEOUT clip-vertex count overflow")?;
+        if next_clip_vertex > MAX_WIPEOUT_CLIP_VERTICES as u64 {
+            anyhow::bail!("WIPEOUT source exceeds its clip-vertex limit");
+        }
+        let display_properties = u16::try_from(wipeout.flags.bits())?;
+        let clip_type = match wipeout.clip_type {
+            WipeoutClipType::Rectangular => 1,
+            WipeoutClipType::Polygonal => 2,
+        };
+        let clip_mode = match wipeout.clip_mode {
+            WipeoutClipMode::Outside => 0,
+            WipeoutClipMode::Inside => 1,
+        };
+        write_common(writer, entity, layer_indices)?;
+        write_i32(writer, wipeout.class_version)?;
+        write_u16(writer, display_properties)?;
+        write_u8(writer, clip_type)?;
+        write_u8(writer, u8::from(wipeout.clipping_enabled))?;
+        write_u8(writer, wipeout.brightness)?;
+        write_u8(writer, wipeout.contrast)?;
+        write_u8(writer, wipeout.fade)?;
+        write_u8(writer, clip_mode)?;
+        write_u32(writer, 0)?;
+        write_u64(writer, first_clip_vertex)?;
+        write_u32(writer, clip_vertex_count)?;
+        write_u32(writer, 0)?;
+        write_u64(
+            writer,
+            wipeout.definition_handle.map_or(0, |handle| handle.value()),
+        )?;
+        write_u64(
+            writer,
+            wipeout
+                .definition_reactor_handle
+                .map_or(0, |handle| handle.value()),
+        )?;
+        write_vec3(writer, wipeout.insertion_point)?;
+        write_vec3(writer, wipeout.u_vector)?;
+        write_vec3(writer, wipeout.v_vector)?;
+        write_f64(writer, wipeout.size.x)?;
+        write_f64(writer, wipeout.size.y)?;
+        first_clip_vertex = next_clip_vertex;
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::WipeoutEntities,
+        WIPEOUT_ENTITY_RECORD_SIZE,
+        offset,
+        count,
+    )
+}
+
+fn write_wipeout_clip_vertex_section<W: Write + Seek>(
+    writer: &mut W,
+    document: &CadDocument,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    let mut count = 0_u64;
+    for entity in document.entities() {
+        let EntityType::Wipeout(wipeout) = entity else {
+            continue;
+        };
+        validate_wipeout_source(wipeout)?;
+        for point in &wipeout.clip_boundary_vertices {
+            write_f64(writer, point.x)?;
+            write_f64(writer, point.y)?;
+            count = count
+                .checked_add(1)
+                .context("WIPEOUT clip-vertex count overflow")?;
+            if count > MAX_WIPEOUT_CLIP_VERTICES as u64 {
+                anyhow::bail!("WIPEOUT source exceeds its clip-vertex limit");
+            }
+        }
+    }
+    finish_fixed_section(
+        writer,
+        SectionKind::WipeoutClipVertices,
+        WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
         offset,
         count,
     )
@@ -5541,6 +5836,11 @@ fn write_vec3<W: Write>(writer: &mut W, value: Vector3) -> Result<()> {
     Ok(())
 }
 
+fn write_u8<W: Write>(writer: &mut W, value: u8) -> Result<()> {
+    writer.write_all(&[value])?;
+    Ok(())
+}
+
 fn write_u16<W: Write>(writer: &mut W, value: u16) -> Result<()> {
     writer.write_all(&value.to_le_bytes())?;
     Ok(())
@@ -5604,10 +5904,12 @@ mod tests {
         Arc, AttributeDefinition, AttributeEntity, BoundaryEdge, BoundaryPath, Circle,
         CircularArcEdge, Dimension, DimensionLinear, Ellipse, EntityType, Face3D, Hatch,
         HatchPatternLine, Insert, InvisibleEdgeFlags, Line, LineEdge, LwPolyline, MText, Point,
-        PolylineEdge, Solid, Spline, Text,
+        PolylineEdge, Solid, Spline, Text, Wipeout, WipeoutClipMode, WipeoutClipType,
+        WipeoutDisplayFlags,
     };
+    use acadrust::objects::WipeoutVariables;
     use acadrust::tables::BlockRecord;
-    use acadrust::types::{Color, Vector2, Vector3};
+    use acadrust::types::{Color, Handle, Vector2, Vector3};
 
     use super::*;
 
@@ -5666,7 +5968,7 @@ mod tests {
         assert_eq!(read_u16(&bytes, 8), CACHE_VERSION_MAJOR);
         assert_eq!(read_u16(&bytes, 10), CACHE_VERSION_MINOR);
         assert_eq!(read_u32(&bytes, 12), HEADER_SIZE);
-        assert_eq!(read_u32(&bytes, 16), 30);
+        assert_eq!(read_u32(&bytes, 16), 32);
         assert_eq!(read_u64(&bytes, 48), 1234);
         assert_eq!(summary.counts.serialized_entities, 7);
         assert_eq!(summary.gpu_lines.model_segments, 43);
@@ -5677,7 +5979,7 @@ mod tests {
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
-        assert_eq!(validation.sections.len(), 30);
+        assert_eq!(validation.sections.len(), 32);
         assert_eq!(validation.source_size, 1234);
 
         let line = directory_entry(&bytes, SectionKind::Lines);
@@ -6407,7 +6709,7 @@ mod tests {
     }
 
     #[test]
-    fn point_solid_and_face_are_counted_as_serialized_entities() {
+    fn point_solid_face_and_wipeout_are_counted_as_serialized_entities() {
         let mut document = CadDocument::new();
         document
             .add_entity(EntityType::Line(Line::from_coords(
@@ -6431,19 +6733,23 @@ mod tests {
                 Vector3::new(1.0, 1.0, 1.0),
             )))
             .unwrap();
+        document
+            .add_entity(EntityType::Wipeout(Wipeout::new()))
+            .unwrap();
 
         let block_targets = collect_block_instance_targets(&document).unwrap();
         let counts = PrimitiveCounts::from_document(&document, &block_targets);
-        assert_eq!(counts.total_entities, 4);
+        assert_eq!(counts.total_entities, 5);
         assert_eq!(counts.points, 1);
         assert_eq!(counts.solids, 1);
         assert_eq!(counts.faces, 1);
-        assert_eq!(counts.serialized_entities, 4);
+        assert_eq!(counts.wipeouts, 1);
+        assert_eq!(counts.serialized_entities, 5);
         assert_eq!(counts.deferred_entities, 0);
     }
 
     #[test]
-    fn point_solid_and_face_source_records_are_lossless() {
+    fn point_solid_face_and_wipeout_source_records_are_lossless() {
         let mut document = CadDocument::new();
         document.header.point_display_mode = 66;
         document.header.point_display_size = -3.5;
@@ -6481,6 +6787,36 @@ mod tests {
         };
         document.add_entity(EntityType::Face3D(face)).unwrap();
 
+        let mut wipeout = Wipeout::new();
+        wipeout.class_version = 5;
+        wipeout.insertion_point = Vector3::new(20.0, 30.0, 4.0);
+        wipeout.u_vector = Vector3::new(2.0, 0.5, 0.0);
+        wipeout.v_vector = Vector3::new(-0.25, 3.0, 0.0);
+        wipeout.size = Vector2::new(8.0, 6.0);
+        wipeout.flags = WipeoutDisplayFlags::from_bits(15).unwrap();
+        wipeout.clipping_enabled = true;
+        wipeout.brightness = 40;
+        wipeout.contrast = 60;
+        wipeout.fade = 20;
+        wipeout.clip_mode = WipeoutClipMode::Inside;
+        wipeout.clip_type = WipeoutClipType::Polygonal;
+        wipeout.clip_boundary_vertices = vec![
+            Vector2::new(-0.5, -0.5),
+            Vector2::new(7.5, -0.5),
+            Vector2::new(3.5, 5.5),
+        ];
+        wipeout.definition_handle = Some(Handle::new(0x901));
+        wipeout.definition_reactor_handle = Some(Handle::new(0x902));
+        document.add_entity(EntityType::Wipeout(wipeout)).unwrap();
+        document.objects.insert(
+            Handle::new(0x903),
+            ObjectType::WipeoutVariables(WipeoutVariables {
+                handle: Handle::new(0x903),
+                owner: Handle::NULL,
+                display_frame: 1,
+            }),
+        );
+
         let mut cursor = Cursor::new(Vec::new());
         let summary = write_scene_cache(&mut cursor, &document, 999).unwrap();
         let bytes = cursor.into_inner();
@@ -6489,7 +6825,11 @@ mod tests {
         assert_eq!(summary.counts.points, 1);
         assert_eq!(summary.counts.solids, 1);
         assert_eq!(summary.counts.faces, 1);
+        assert_eq!(summary.counts.wipeouts, 1);
         assert_eq!(summary.counts.deferred_entities, 0);
+
+        let drawing_entry = directory_entry(&bytes, SectionKind::Drawing);
+        assert_eq!(read_u32(&bytes, drawing_entry.2 as usize + 12), 1);
 
         let point_entry = directory_entry(&bytes, SectionKind::PointEntities);
         assert_eq!(point_entry.1, POINT_ENTITY_RECORD_SIZE);
@@ -6534,6 +6874,37 @@ mod tests {
         assert_eq!(read_f64(&bytes, face_offset + 88), 7.0);
         assert_eq!(read_f64(&bytes, face_offset + 112), 10.0);
         assert_eq!(read_f64(&bytes, face_offset + 128), 12.0);
+
+        let wipeout_entry = directory_entry(&bytes, SectionKind::WipeoutEntities);
+        assert_eq!(wipeout_entry.1, WIPEOUT_ENTITY_RECORD_SIZE);
+        assert_eq!(wipeout_entry.3, 1);
+        let wipeout_offset = wipeout_entry.2 as usize;
+        assert_eq!(read_u32(&bytes, wipeout_offset + 32), 5);
+        assert_eq!(read_u16(&bytes, wipeout_offset + 36), 15);
+        assert_eq!(bytes[wipeout_offset + 38], 2);
+        assert_eq!(bytes[wipeout_offset + 39], 1);
+        assert_eq!(bytes[wipeout_offset + 40], 40);
+        assert_eq!(bytes[wipeout_offset + 41], 60);
+        assert_eq!(bytes[wipeout_offset + 42], 20);
+        assert_eq!(bytes[wipeout_offset + 43], 1);
+        assert_eq!(read_u64(&bytes, wipeout_offset + 48), 0);
+        assert_eq!(read_u32(&bytes, wipeout_offset + 56), 3);
+        assert_eq!(read_u64(&bytes, wipeout_offset + 64), 0x901);
+        assert_eq!(read_u64(&bytes, wipeout_offset + 72), 0x902);
+        assert_eq!(read_f64(&bytes, wipeout_offset + 80), 20.0);
+        assert_eq!(read_f64(&bytes, wipeout_offset + 104), 2.0);
+        assert_eq!(read_f64(&bytes, wipeout_offset + 128), -0.25);
+        assert_eq!(read_f64(&bytes, wipeout_offset + 152), 8.0);
+        assert_eq!(read_f64(&bytes, wipeout_offset + 160), 6.0);
+
+        let clip_entry = directory_entry(&bytes, SectionKind::WipeoutClipVertices);
+        assert_eq!(clip_entry.1, WIPEOUT_CLIP_VERTEX_RECORD_SIZE);
+        assert_eq!(clip_entry.3, 3);
+        let clip_offset = clip_entry.2 as usize;
+        assert_eq!(read_f64(&bytes, clip_offset), -0.5);
+        assert_eq!(read_f64(&bytes, clip_offset + 8), -0.5);
+        assert_eq!(read_f64(&bytes, clip_offset + 32), 3.5);
+        assert_eq!(read_f64(&bytes, clip_offset + 40), 5.5);
     }
 
     fn directory_entry(bytes: &[u8], expected_kind: SectionKind) -> (u32, u32, u64, u64) {

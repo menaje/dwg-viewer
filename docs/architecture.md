@@ -37,9 +37,12 @@ source records plus a bounded one-shot display worker. Resolved DIMENSION
 picture blocks reuse the existing kind-13 instance stream, so their nested
 block geometry reaches every renderer without a cache-version change or a
 second geometry copy. Scene Cache v1.9 adds lossless 3DFACE WCS corners and
-invisible-edge flags to the same deferred worker. Remaining source families
-and exact CAD text layout are product-completeness gates on this selected
-engine, not an open parser choice.
+invisible-edge flags to the same deferred worker. Scene Cache v1.10 adds
+lossless WIPEOUT image bases, clip boundaries and drawing-wide frame metadata;
+the worker displays enabled frames while keeping background masks deferred
+until block-local and nested-INSERT draw order is available. Remaining exact
+CAD text layout and draw-order work are product-completeness gates on this
+selected engine, not an open parser choice.
 
 The complete mlightcad/LibreDWG WASM object-model pipeline is intentionally not
 used for large drawings because the full JavaScript model, structured cloning,
@@ -139,6 +142,17 @@ clean process-isolated conversions completed in 3,153 / 3,715 / 4,082 ms with
 591,446,016 / 591,675,392 / 591,888,384 bytes peak RSS (minimum / median /
 maximum). Output was deterministic and both conversion gates passed.
 
+The Scene Cache v1.10 WIPEOUT milestone adds two 40-byte directory entries,
+16 fixed 168-byte entity records and 627 16-byte clip vertices. The
+deterministic cache grows by exactly 12,800 bytes to 176,154,336 bytes.
+Kinds 2–41 remain byte-identical. Logical source coverage reaches all 378,400
+entities with zero converter-deferred records, while all 16 background masks
+remain explicitly deferred at the Webview layer until draw-order rendering is
+implemented. Three clean process-isolated conversions completed in
+2,880 / 2,886 / 2,890 ms with
+591,691,776 / 591,724,544 / 591,724,544 bytes peak RSS (minimum / median /
+maximum). Output was deterministic and both conversion target gates passed.
+
 The 0.14 cache and normalized conversion report are byte-identical to the
 0.13.4 result on the reference drawing, while median conversion time improves
 from 4,140 ms to 2,941 ms. Nightly `0.14.xxxx` prereleases are not used as the
@@ -159,6 +173,10 @@ and produce 19 total kind-13 records: ten source INSERTs plus nine dimension
 references.
 `2000/entities-3d.dwg` adds a reproducible 3DFACE check: both engines preserve
 the same invisible-edge flags and four WCS corners.
+`example_2018.dwg` also provides two polygonal WIPEOUTs and 16 clip vertices;
+both engines produce byte-identical kind-42/kind-43 payloads and drawing-wide
+frame setting 1. The Webview emits 16 frame edges in 1,024 GPU bytes while
+reporting both masks as draw-order deferred.
 `2018/Dynblocks.dwg` matches at one solid plus three pattern HATCHes, eight
 loops, 104 fill vertices and four definition lines, with identical pattern
 sections. `2004/HatchG.dwg` matches at two gradient HATCHes, two loops and 269
@@ -232,6 +250,20 @@ An actual v1.9 Chromium run produced the first usable line frame in 464.0 ms,
 reported all 34 faces and 114 visible edges, used 4.58 MiB of GPU vertex
 buffers at drawing fit and emitted no console warning or error.
 
+With v1.10, the two new directory entries add 80 bytes to the first-frame
+path: eight reads total 5,025,213 bytes and do not touch kinds 42–43. The
+isolated primitive worker uses nine reads totaling 726,827 bytes for
+block/INSERT metadata and kinds 39–43. It validates all 16 WIPEOUTs and 627
+clip vertices. The reference drawing's global frame setting is off, so
+WIPEOUT adds zero GPU bytes; the complete primitive payload remains 73,920
+bytes, and 16 masks are reported as awaiting draw-order rendering.
+
+An actual v1.10 Chromium run produced the first usable line frame in 502.8 ms,
+reported all 16 WIPEOUT sources, zero frames and 16 deferred masks, used
+4.58 MiB of total GPU vertex buffers at drawing fit and emitted no console
+warning or error. The public fixture reported both enabled WIPEOUT frames and
+both deferred masks without a console error.
+
 An actual Chromium qualification produced the first usable line frame in
 449.1 ms. At drawing fit, the 1.5-pixel rule omitted all 6,442 visible
 definition passes and emitted no pattern buffer. After eight zoom-in actions
@@ -247,8 +279,8 @@ The external sort keeps either one 8,192-record run or its small merge windows
 resident, while two private unnamed files consume about 312 MB of temporary
 disk at peak for the reference drawing and disappear on close.
 
-The parser itself accounts for almost all measured RSS: the current v1.9
-conversion maximum is only 8,111,616 bytes below the 600,000,000-byte target.
+The parser itself accounts for almost all measured RSS: the current v1.10
+conversion maximum is only 8,275,456 bytes below the 600,000,000-byte target.
 Therefore future LibreDWG coverage must retain streaming or disk-backed
 bounded passes; a whole-drawing geometry vector would erase the margin.
 
@@ -272,14 +304,14 @@ batch around the camera before converting matrices to `f32`.
 
 ## Implemented cache slice
 
-Scene Cache v1.9 writes the drawing/layer/block/text-style tables and
+Scene Cache v1.10 writes the drawing/layer/block/text-style tables and
 source-precision LINE, ARC, CIRCLE, INSERT, LWPOLYLINE/POLYLINE, ELLIPSE,
-SPLINE, TEXT, MTEXT, ATTDEF, ATTRIB, POINT, SOLID and 3DFACE records. Resolved
-DIMENSION picture blocks share the kind-13 block-instance stream. The records
-retain owner handles so block definitions remain shared instead of being
-expanded per insertion. Text values, tags, prompts, font filenames and
-BigFont filenames remain UTF-8, while MTEXT column heights use a separate
-packed `f64` pool.
+SPLINE, TEXT, MTEXT, ATTDEF, ATTRIB, POINT, SOLID, 3DFACE and WIPEOUT
+records. Resolved DIMENSION picture blocks share the kind-13 block-instance
+stream. The records retain owner handles so block definitions remain shared
+instead of being expanded per insertion. Text values, tags, prompts, font
+filenames and BigFont filenames remain UTF-8, while MTEXT column heights and
+WIPEOUT clip points use separate packed `f64` pools.
 HATCH adds source records plus bounded closed `f64` ring, gradient-color and
 seed-point pools. Pattern-definition lines preserve parser-resolved angles,
 bases, offsets and dash/gap/dot sequences in separate typed pools. Original
@@ -354,9 +386,19 @@ appends them to the existing surface-outline packed buffer. It does not fill
 faces implicitly; retaining the complete source record leaves that decision
 for a future explicit shaded mode without reparsing the DWG.
 
+The v1.10 WIPEOUT slice adds its insertion/U/V image basis, size, display and
+clipping metadata, definition handles, exact rectangular or polygonal clip
+vertices, and the drawing-wide frame setting. The first-frame reader touches
+only the enlarged directory and existing drawing record. The one-shot worker
+reads WIPEOUT source later and appends enabled frames to the shared surface
+outline buffer. Actual masks remain source-only because the current
+type-grouped renderer cannot preserve block-local `SORTENTSTABLE` and nested
+INSERT order.
+
 POINT source is capped at 262,144 records and 8 MiB of GPU vertices. SOLID
-and 3DFACE source are each capped at 131,072 records. SOLID fill vertices are
-capped at 16 MiB, while SOLID and 3DFACE share the existing 8 MiB outline
+and 3DFACE source are each capped at 131,072 records. WIPEOUT is capped at
+65,536 records and 1,048,576 clip vertices. SOLID fill vertices are capped at
+16 MiB, while SOLID, 3DFACE and WIPEOUT share the existing 8 MiB outline
 buffer. The combined GPU hard limit remains 32 MiB. This worker runs before
 HATCH initialization so the two source-buffer peaks do not overlap, and
 opening another file cancels unfinished work.

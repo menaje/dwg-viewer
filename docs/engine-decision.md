@@ -23,9 +23,10 @@ writer will not be implemented: parsing alone already exceeds the memory hard
 limit, so adding a writer cannot make the candidate eligible.
 
 Selection does not mean that the viewer is feature-complete. The follow-on
-3DFACE milestone leaves 16 WIPEOUT source entities plus exact CAD text layout
-as product work on the LibreDWG path rather than reasons to keep the engine
-choice open.
+WIPEOUT milestone preserves every logical source entity in the reference
+drawing, but draw-order-aware background masking and exact CAD text layout
+remain product work on the LibreDWG path rather than reasons to keep the
+engine choice open.
 
 ## Reproducible evidence
 
@@ -38,6 +39,7 @@ absolute coordinates. Private reports remain under the ignored
 | Candidate | Measured phase | Wall min / median / max | Peak RSS min / median / max | Result |
 | --- | --- | ---: | ---: | --- |
 | LibreDWG 0.14 | Scene Cache v1.7 conversion | 2,930 / 2,941 / 2,957 ms | 591,560,704 / 591,659,008 / 591,740,928 B | pass |
+| LibreDWG 0.14 | Scene Cache v1.10 conversion | 2,880 / 2,886 / 2,890 ms | 591,691,776 / 591,724,544 / 591,724,544 B | pass |
 | acadrust 0.4.1 | Scene Cache v1.7 conversion | 7,556 / 7,642 / 7,904 ms | 968,900,608 / 969,310,208 / 969,392,128 B | memory hard fail |
 | ACadSharp 3.6.51 | parser inspection preflight | 4,012 / 4,014 / 4,098 ms | 1,441,251,328 / 1,452,392,448 / 1,452,474,368 B | memory hard fail |
 
@@ -111,6 +113,29 @@ Chromium run produced the first usable line frame in 464.0 ms, reported all
 34 faces, used 4.58 MiB of GPU vertex buffers at drawing fit and emitted no
 console warning or error.
 
+Scene Cache v1.10 adds kinds 42–43 without changing kinds 2–41. It preserves
+all 16 WIPEOUT records and 627 clip vertices in the reference drawing, growing
+the deterministic cache by exactly 12,800 bytes to 176,154,336 bytes. Logical
+source coverage reaches 378,400 of 378,400 with zero converter-deferred
+entities. That is a source-preservation result: the 16 background masks remain
+explicitly deferred because correct masking depends on block-local sort tables
+and nested INSERT draw order. The drawing-wide frame setting is off, so no
+WIPEOUT GPU vertices are generated for this drawing.
+
+Three clean process-isolated v1.10 conversions completed in
+2,880 / 2,886 / 2,890 ms with
+591,691,776 / 591,724,544 / 591,724,544 bytes peak RSS (minimum / median /
+maximum). Output was deterministic and both target gates passed. The
+first-frame path remains eight reads and grows only 80 bytes to 5,025,213
+bytes; it reads neither WIPEOUT source section. The isolated primitive worker
+uses nine bounded reads totaling 726,827 bytes. On the public
+`example_2018.dwg` fixture, both engines produce byte-identical kinds 42–43
+for two WIPEOUTs and 16 clip vertices plus the same frame setting. The enabled
+public frames produce 16 edges in a 1,024-byte GPU payload.
+An actual v1.10 Chromium run produced the reference drawing's first usable
+line frame in 502.8 ms and reported all 16 source masks as deferred with no
+console warning or error.
+
 The stable 0.14 release replaces the earlier 0.13.4 qualification pin. Its
 normalized conversion report and cache are byte-identical to 0.13.4 on the
 reference drawing, while median conversion wall time improves from 4,140 ms to
@@ -170,7 +195,9 @@ engineering distribution policy, not legal advice.
 
 ## Consequences
 
-- Finish WIPEOUT source/display decisions on the LibreDWG writer.
+- Add block-local and nested-INSERT draw ordering before enabling WIPEOUT
+  background masks; retain the completed source/frame path as the regression
+  baseline.
 - Continue Korean SHX/BigFont and exact MTEXT/OCS work in issues #5 and #7.
 - Use acadrust only for public cross-engine fixtures and regression oracles.
 - Keep the ACadSharp inspection adapter, package lock and parser preflight test;
@@ -189,3 +216,6 @@ engineering distribution policy, not legal advice.
 - [GNU GPL FAQ on separate programs and aggregation](https://www.gnu.org/licenses/gpl-faq.html#MereAggregation)
 - [Autodesk 3DFACE DXF group codes](https://help.autodesk.com/cloudhelp/2024/ENU/AutoCAD-DXF/files/GUID-747865D5-51F0-45F2-BEFE-9572DBC5B151.htm)
 - [Autodesk 3DFACE wireframe/shaded behavior](https://help.autodesk.com/cloudhelp/2021/ENU/AutoCAD-Core/files/GUID-5E88BB23-9110-45FB-B54A-3FF2E2002585.htm)
+- [Autodesk WIPEOUT DXF group codes](https://help.autodesk.com/cloudhelp/2021/ENU/AutoCAD-DXF/files/GUID-2229F9C4-3C80-4C67-9EDA-45ED684808DC.htm)
+- [Autodesk WIPEOUTFRAME system variable](https://help.autodesk.com/view/ACD/2024/ENU/?guid=GUID-AF1A9E90-35FB-4A49-AA39-E3456B4F264D)
+- [Autodesk object draw order](https://help.autodesk.com/cloudhelp/2020/ENU/AutoCAD-LT-MAC/files/GUID-8203C80A-3D51-49F0-B756-56FDF5D96697.htm)

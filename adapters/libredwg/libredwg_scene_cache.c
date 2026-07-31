@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MPL-2.0
  *
- * A bounded-memory Scene Cache v1.9 writer for GNU LibreDWG. Geometry and
+ * A bounded-memory Scene Cache v1.10 writer for GNU LibreDWG. Geometry and
  * source text are traversed repeatedly and written directly to the
  * destination; the writer never creates a JSON or whole-drawing in-memory
  * representation. Large detail passes use private temporary files for an
@@ -72,6 +72,8 @@
 #define MAX_HATCH_PATTERN_DASHES_PER_ENTITY 65536u
 #define MAX_HATCH_PATTERN_LINES 262144u
 #define MAX_HATCH_PATTERN_DASHES 1048576u
+#define MAX_WIPEOUT_SOURCE_RECORDS 65536u
+#define MAX_WIPEOUT_CLIP_VERTICES 1048576u
 #define HATCH_FLAG_SOLID 1u
 #define HATCH_FLAG_ASSOCIATIVE (1u << 1)
 #define HATCH_FLAG_DOUBLE (1u << 2)
@@ -111,7 +113,9 @@ enum
   SECTION_HATCH_PATTERN_DASHES = 38,
   SECTION_POINT_ENTITIES = 39,
   SECTION_SOLID_ENTITIES = 40,
-  SECTION_FACE_ENTITIES = 41
+  SECTION_FACE_ENTITIES = 41,
+  SECTION_WIPEOUT_ENTITIES = 42,
+  SECTION_WIPEOUT_CLIP_VERTICES = 43
 };
 
 enum
@@ -142,7 +146,9 @@ enum
   HATCH_PATTERN_DASH_RECORD_SIZE = 8,
   POINT_ENTITY_RECORD_SIZE = 112,
   SOLID_ENTITY_RECORD_SIZE = 168,
-  FACE_ENTITY_RECORD_SIZE = 136
+  FACE_ENTITY_RECORD_SIZE = 136,
+  WIPEOUT_ENTITY_RECORD_SIZE = 168,
+  WIPEOUT_CLIP_VERTEX_RECORD_SIZE = 16
 };
 
 typedef struct
@@ -484,7 +490,9 @@ static const uint32_t SECTION_KINDS[LIBREDWG_SCENE_SECTION_COUNT]
         SECTION_HATCH_PATTERN_DASHES,
         SECTION_POINT_ENTITIES,
         SECTION_SOLID_ENTITIES,
-        SECTION_FACE_ENTITIES };
+        SECTION_FACE_ENTITIES,
+        SECTION_WIPEOUT_ENTITIES,
+        SECTION_WIPEOUT_CLIP_VERTICES };
 
 static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
     = { DRAWING_RECORD_SIZE,
@@ -516,7 +524,9 @@ static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
         HATCH_PATTERN_DASH_RECORD_SIZE,
         POINT_ENTITY_RECORD_SIZE,
         SOLID_ENTITY_RECORD_SIZE,
-        FACE_ENTITY_RECORD_SIZE };
+        FACE_ENTITY_RECORD_SIZE,
+        WIPEOUT_ENTITY_RECORD_SIZE,
+        WIPEOUT_CLIP_VERTEX_RECORD_SIZE };
 
 static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
     = { "drawing",
@@ -548,7 +558,9 @@ static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
         "hatch_pattern_dashes",
         "point_entities",
         "solid_entities",
-        "face_entities" };
+        "face_entities",
+        "wipeout_entities",
+        "wipeout_clip_vertices" };
 
 static void
 set_error (CacheWriter *writer, const char *message)
@@ -573,6 +585,12 @@ write_bytes (CacheWriter *writer, const void *value, size_t size)
       return 0;
     }
   return 1;
+}
+
+static int
+write_u8 (CacheWriter *writer, uint8_t value)
+{
+  return write_bytes (writer, &value, sizeof (value));
 }
 
 static int
@@ -1547,6 +1565,10 @@ count_primitives (const Dwg_Data *dwg, const CacheTables *tables)
           if (object->tio.entity && object->tio.entity->tio._3DFACE)
             counts.faces++;
           break;
+        case DWG_TYPE_WIPEOUT:
+          if (object->tio.entity && object->tio.entity->tio.WIPEOUT)
+            counts.wipeouts++;
+          break;
         case DWG_TYPE_DIMENSION_LINEAR:
         case DWG_TYPE_DIMENSION_ALIGNED:
         case DWG_TYPE_DIMENSION_ANG2LN:
@@ -1582,16 +1604,55 @@ count_primitives (const Dwg_Data *dwg, const CacheTables *tables)
                                + counts.mtexts
                                + counts.attribute_definitions
                                + counts.hatches + counts.points
-                               + counts.solids + counts.faces;
+                               + counts.solids + counts.faces
+                               + counts.wipeouts;
   counts.deferred_entities
       = counts.total_entities - counts.serialized_entities;
   return counts;
 }
 
 static int
+read_drawing_wipeout_frame (CacheWriter *writer, const Dwg_Data *dwg,
+                            uint32_t *result)
+{
+  uint32_t setting = UINT32_MAX;
+  size_t object_index;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Object_WIPEOUTVARIABLES *variables;
+      uint32_t raw;
+      if (object->fixedtype != DWG_TYPE_WIPEOUTVARIABLES
+          || !object->tio.object
+          || !(variables = object->tio.object->tio.WIPEOUTVARIABLES))
+        continue;
+      raw = (uint32_t)variables->display_frame;
+      if (raw > 2u)
+        {
+          set_error (
+              writer,
+              "WIPEOUT frame setting is outside the supported range");
+          return 0;
+        }
+      if (setting != UINT32_MAX && setting != raw)
+        {
+          set_error (
+              writer,
+              "drawing contains conflicting WIPEOUT frame settings");
+          return 0;
+        }
+      setting = raw;
+    }
+  *result = setting;
+  return 1;
+}
+
+static int
 write_drawing_section (CacheWriter *writer, Dwg_Data *dwg,
                        const LibreDwgPrimitiveCounts *counts,
-                       uint32_t source_version, SectionEntry *entry)
+                       uint32_t source_version, uint32_t wipeout_frame,
+                       SectionEntry *entry)
 {
   uint64_t offset;
   double min[3];
@@ -1618,7 +1679,7 @@ write_drawing_section (CacheWriter *writer, Dwg_Data *dwg,
       || !write_u32 (writer,
                      (uint32_t)LIBREDWG_MAINTENANCE_VERSION (dwg))
       || !write_i32 (writer, (int32_t)dwg->header_vars.INSUNITS)
-      || !write_u32 (writer, 0)
+      || !write_u32 (writer, wipeout_frame)
       || !write_u64 (writer, counts->total_entities)
       || !write_u64 (writer, counts->serialized_entities)
       || !write_vec3 (writer, min) || !write_vec3 (writer, max))
@@ -6364,6 +6425,220 @@ write_face_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
 }
 
 static int
+validate_wipeout_source (CacheWriter *writer,
+                         const Dwg_Entity_WIPEOUT *wipeout)
+{
+  double cross_x;
+  double cross_y;
+  double cross_z;
+  double basis_length_squared;
+  uint32_t vertex_index;
+  if ((uint32_t)wipeout->class_version > INT32_MAX)
+    {
+      set_error (writer, "WIPEOUT class version exceeds cache limits");
+      return 0;
+    }
+  if (((uint32_t)wipeout->display_props & ~15u) != 0)
+    {
+      set_error (
+          writer,
+          "WIPEOUT source contains unsupported display properties");
+      return 0;
+    }
+  if ((uint32_t)wipeout->clipping > 1u
+      || (uint32_t)wipeout->clip_mode > 1u
+      || (uint32_t)wipeout->brightness > 100u
+      || (uint32_t)wipeout->contrast > 100u
+      || (uint32_t)wipeout->fade > 100u)
+    {
+      set_error (writer, "WIPEOUT source contains invalid image metadata");
+      return 0;
+    }
+  if (((uint32_t)wipeout->clip_boundary_type == 1u
+       && (uint32_t)wipeout->num_clip_verts != 2u)
+      || ((uint32_t)wipeout->clip_boundary_type == 2u
+          && (uint32_t)wipeout->num_clip_verts < 3u)
+      || ((uint32_t)wipeout->clip_boundary_type != 1u
+          && (uint32_t)wipeout->clip_boundary_type != 2u))
+    {
+      set_error (writer, "WIPEOUT source contains an invalid clip boundary");
+      return 0;
+    }
+  if ((uint32_t)wipeout->num_clip_verts > MAX_WIPEOUT_CLIP_VERTICES
+      || (wipeout->num_clip_verts && !wipeout->clip_verts))
+    {
+      set_error (writer, "WIPEOUT clip boundary exceeds cache limits");
+      return 0;
+    }
+  if (!isfinite (wipeout->pt0.x) || !isfinite (wipeout->pt0.y)
+      || !isfinite (wipeout->pt0.z) || !isfinite (wipeout->uvec.x)
+      || !isfinite (wipeout->uvec.y) || !isfinite (wipeout->uvec.z)
+      || !isfinite (wipeout->vvec.x) || !isfinite (wipeout->vvec.y)
+      || !isfinite (wipeout->vvec.z)
+      || !isfinite (wipeout->image_size.x)
+      || !isfinite (wipeout->image_size.y)
+      || wipeout->image_size.x <= 0.0 || wipeout->image_size.y <= 0.0)
+    {
+      set_error (
+          writer,
+          "WIPEOUT source contains a non-finite or invalid coordinate");
+      return 0;
+    }
+  for (vertex_index = 0;
+       vertex_index < (uint32_t)wipeout->num_clip_verts; vertex_index++)
+    {
+      if (!isfinite (wipeout->clip_verts[vertex_index].x)
+          || !isfinite (wipeout->clip_verts[vertex_index].y))
+        {
+          set_error (
+              writer,
+              "WIPEOUT source contains a non-finite clip coordinate");
+          return 0;
+        }
+    }
+  cross_x = wipeout->uvec.y * wipeout->vvec.z
+            - wipeout->uvec.z * wipeout->vvec.y;
+  cross_y = wipeout->uvec.z * wipeout->vvec.x
+            - wipeout->uvec.x * wipeout->vvec.z;
+  cross_z = wipeout->uvec.x * wipeout->vvec.y
+            - wipeout->uvec.y * wipeout->vvec.x;
+  basis_length_squared
+      = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
+  if (!isfinite (basis_length_squared)
+      || basis_length_squared <= 1.0e-24)
+    {
+      set_error (writer, "WIPEOUT source contains a degenerate image basis");
+      return 0;
+    }
+  return 1;
+}
+
+static int
+write_wipeout_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
+                              const CacheTables *tables,
+                              SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  uint64_t first_clip_vertex = 0;
+  size_t object_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_WIPEOUT *wipeout;
+      uint32_t clip_vertex_count;
+      double insertion_point[3];
+      double u_vector[3];
+      double v_vector[3];
+      if (object->fixedtype != DWG_TYPE_WIPEOUT || !object->tio.entity
+          || !(wipeout = object->tio.entity->tio.WIPEOUT))
+        continue;
+      if (!validate_wipeout_source (writer, wipeout))
+        return 0;
+      count++;
+      if (count > MAX_WIPEOUT_SOURCE_RECORDS)
+        {
+          set_error (writer, "WIPEOUT source exceeds its entity limit");
+          return 0;
+        }
+      clip_vertex_count = (uint32_t)wipeout->num_clip_verts;
+      if (first_clip_vertex
+          > (uint64_t)MAX_WIPEOUT_CLIP_VERTICES - clip_vertex_count)
+        {
+          set_error (
+              writer,
+              "WIPEOUT source exceeds its clip-vertex limit");
+          return 0;
+        }
+      insertion_point[0] = wipeout->pt0.x;
+      insertion_point[1] = wipeout->pt0.y;
+      insertion_point[2] = wipeout->pt0.z;
+      u_vector[0] = wipeout->uvec.x;
+      u_vector[1] = wipeout->uvec.y;
+      u_vector[2] = wipeout->uvec.z;
+      v_vector[0] = wipeout->vvec.x;
+      v_vector[1] = wipeout->vvec.y;
+      v_vector[2] = wipeout->vvec.z;
+      if (!write_common (writer, object, tables)
+          || !write_i32 (writer, (int32_t)wipeout->class_version)
+          || !write_u16 (writer, (uint16_t)wipeout->display_props)
+          || !write_u8 (
+              writer, (uint8_t)wipeout->clip_boundary_type)
+          || !write_u8 (writer, (uint8_t)wipeout->clipping)
+          || !write_u8 (writer, (uint8_t)wipeout->brightness)
+          || !write_u8 (writer, (uint8_t)wipeout->contrast)
+          || !write_u8 (writer, (uint8_t)wipeout->fade)
+          || !write_u8 (writer, (uint8_t)wipeout->clip_mode)
+          || !write_u32 (writer, 0)
+          || !write_u64 (writer, first_clip_vertex)
+          || !write_u32 (writer, clip_vertex_count)
+          || !write_u32 (writer, 0)
+          || !write_u64 (writer, reference_handle (wipeout->imagedef))
+          || !write_u64 (
+              writer, reference_handle (wipeout->imagedefreactor))
+          || !write_vec3 (writer, insertion_point)
+          || !write_vec3 (writer, u_vector)
+          || !write_vec3 (writer, v_vector)
+          || !write_f64 (writer, wipeout->image_size.x)
+          || !write_f64 (writer, wipeout->image_size.y))
+        return 0;
+      first_clip_vertex += clip_vertex_count;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_WIPEOUT_ENTITIES,
+      WIPEOUT_ENTITY_RECORD_SIZE, "wipeout_entities", offset, count);
+}
+
+static int
+write_wipeout_clip_vertex_section (CacheWriter *writer,
+                                   const Dwg_Data *dwg,
+                                   SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t object_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_WIPEOUT *wipeout;
+      uint32_t vertex_index;
+      if (object->fixedtype != DWG_TYPE_WIPEOUT || !object->tio.entity
+          || !(wipeout = object->tio.entity->tio.WIPEOUT))
+        continue;
+      if (!validate_wipeout_source (writer, wipeout))
+        return 0;
+      if (count > (uint64_t)MAX_WIPEOUT_CLIP_VERTICES
+                      - (uint32_t)wipeout->num_clip_verts)
+        {
+          set_error (
+              writer,
+              "WIPEOUT source exceeds its clip-vertex limit");
+          return 0;
+        }
+      for (vertex_index = 0;
+           vertex_index < (uint32_t)wipeout->num_clip_verts;
+           vertex_index++)
+        {
+          if (!write_f64 (writer, wipeout->clip_verts[vertex_index].x)
+              || !write_f64 (
+                  writer, wipeout->clip_verts[vertex_index].y))
+            return 0;
+        }
+      count += (uint32_t)wipeout->num_clip_verts;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_WIPEOUT_CLIP_VERTICES,
+      WIPEOUT_CLIP_VERTEX_RECORD_SIZE, "wipeout_clip_vertices", offset,
+      count);
+}
+
+static int
 count_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
                     LibreDwgGpuLineSummary *summary,
                     OverviewPlan *overview)
@@ -7266,6 +7541,7 @@ libredwg_write_scene_cache (
   uint64_t body_offset;
   uint64_t file_size;
   uint64_t gpu_segment_count;
+  uint32_t wipeout_frame;
   int separate_overview;
   int descriptor = -1;
   FILE *file = NULL;
@@ -7293,6 +7569,8 @@ libredwg_write_scene_cache (
       return 0;
     }
   counts = count_primitives (dwg, &tables);
+  if (!read_drawing_wipeout_frame (&writer, dwg, &wipeout_frame))
+    goto done;
   if (!initialize_overview_plan (&tables, &overview))
     {
       if (error_message && error_message_size)
@@ -7351,8 +7629,9 @@ libredwg_write_scene_cache (
           + (uint64_t)LIBREDWG_SCENE_SECTION_COUNT * DIRECTORY_ENTRY_SIZE,
       8);
   if (!seek_to (&writer, body_offset)
-      || !write_drawing_section (&writer, dwg, &counts, source_version,
-                                 &sections[0])
+      || !write_drawing_section (
+          &writer, dwg, &counts, source_version, wipeout_frame,
+          &sections[0])
       || !write_layer_section (&writer, &tables, &sections[1])
       || !write_block_section (&writer, &tables, &sections[2])
       || !write_text_style_section (&writer, &tables, &sections[3])
@@ -7401,6 +7680,10 @@ libredwg_write_scene_cache (
           &writer, dwg, &tables, &sections[28])
       || !write_face_entity_section (
           &writer, dwg, &tables, &sections[29])
+      || !write_wipeout_entity_section (
+          &writer, dwg, &tables, &sections[30])
+      || !write_wipeout_clip_vertex_section (
+          &writer, dwg, &sections[31])
       || !position (&writer, &file_size)
       || !write_header (
           &writer, file_size, source_size, source_version,

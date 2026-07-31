@@ -17,6 +17,8 @@ import {
   TEXT_COLUMN_HEIGHT_RECORD_SIZE,
   TEXT_ENTITY_RECORD_SIZE,
   TEXT_STYLE_RECORD_SIZE,
+  WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
+  WIPEOUT_ENTITY_RECORD_SIZE,
 } from "../src/scene-cache.mjs";
 
 const encoder = new TextEncoder();
@@ -33,10 +35,11 @@ function writeVec3(view, offset, values) {
   values.forEach((value, axis) => view.setFloat64(offset + axis * 8, value, true));
 }
 
-function makeDrawingSection() {
+function makeDrawingSection(rawWipeoutFrame = 0) {
   const buffer = new ArrayBuffer(80);
   const view = new DataView(buffer);
   view.setUint32(0, 1032, true);
+  view.setUint32(12, rawWipeoutFrame >>> 0, true);
   writeU64(view, 16, 5);
   writeU64(view, 24, 5);
   writeVec3(view, 32, [0, 0, 0]);
@@ -603,6 +606,127 @@ function makeFaceEntitySection(recordCount = 5) {
   };
 }
 
+const WIPEOUT_ROWS = Object.freeze([
+  Object.freeze({
+    handle: 801,
+    ownerHandle: 100,
+    classVersion: 1,
+    displayProperties: 5,
+    clipType: 2,
+    clippingEnabled: true,
+    brightness: 50,
+    contrast: 50,
+    fade: 0,
+    clipMode: 0,
+    insertionPoint: [50, 0, 0],
+    uVector: [2, 0, 0],
+    vVector: [0, 3, 0],
+    size: [10, 10],
+    clipVertices: [
+      [0, 0],
+      [2, 0],
+      [2, 1],
+      [0, 1],
+    ],
+  }),
+  Object.freeze({
+    handle: 802,
+    ownerHandle: 101,
+    classVersion: 2,
+    displayProperties: 5,
+    clipType: 1,
+    clippingEnabled: true,
+    brightness: 40,
+    contrast: 60,
+    fade: 10,
+    clipMode: 0,
+    insertionPoint: [60, 0, 0],
+    uVector: [1, 0, 0],
+    vVector: [0, 1, 0],
+    size: [8, 6],
+    clipVertices: [
+      [-0.5, -0.5],
+      [7.5, 5.5],
+    ],
+  }),
+  Object.freeze({
+    handle: 803,
+    ownerHandle: 100,
+    classVersion: 3,
+    displayProperties: 1,
+    clipType: 2,
+    clippingEnabled: false,
+    brightness: 50,
+    contrast: 50,
+    fade: 0,
+    clipMode: 1,
+    insertionPoint: [70, 0, 0],
+    uVector: [1, 0, 0],
+    vVector: [0, 1, 0],
+    size: [4, 3],
+    clipVertices: [
+      [0, 0],
+      [1, 0],
+      [0, 1],
+    ],
+  }),
+]);
+
+function makeWipeoutEntitySection(recordCount = WIPEOUT_ROWS.length) {
+  const buffer = new ArrayBuffer(WIPEOUT_ENTITY_RECORD_SIZE * recordCount);
+  const view = new DataView(buffer);
+  let firstClipVertex = 0;
+  WIPEOUT_ROWS.slice(0, recordCount).forEach((row, index) => {
+    const offset = index * WIPEOUT_ENTITY_RECORD_SIZE;
+    writePrimitiveCommon(view, offset, row);
+    view.setInt32(offset + 32, row.classVersion, true);
+    view.setUint16(offset + 36, row.displayProperties, true);
+    view.setUint8(offset + 38, row.clipType);
+    view.setUint8(offset + 39, Number(row.clippingEnabled));
+    view.setUint8(offset + 40, row.brightness);
+    view.setUint8(offset + 41, row.contrast);
+    view.setUint8(offset + 42, row.fade);
+    view.setUint8(offset + 43, row.clipMode);
+    writeU64(view, offset + 48, firstClipVertex);
+    view.setUint32(offset + 56, row.clipVertices.length, true);
+    writeU64(view, offset + 64, 900 + index * 2);
+    writeU64(view, offset + 72, 901 + index * 2);
+    writeVec3(view, offset + 80, row.insertionPoint);
+    writeVec3(view, offset + 104, row.uVector);
+    writeVec3(view, offset + 128, row.vVector);
+    view.setFloat64(offset + 152, row.size[0], true);
+    view.setFloat64(offset + 160, row.size[1], true);
+    firstClipVertex += row.clipVertices.length;
+  });
+  return {
+    kind: SectionKind.WipeoutEntities,
+    recordSize: WIPEOUT_ENTITY_RECORD_SIZE,
+    recordCount,
+    flags: 0,
+    buffer,
+  };
+}
+
+function makeWipeoutClipVertexSection() {
+  const vertices = WIPEOUT_ROWS.flatMap((row) => row.clipVertices);
+  const buffer = new ArrayBuffer(
+    WIPEOUT_CLIP_VERTEX_RECORD_SIZE * vertices.length,
+  );
+  const view = new DataView(buffer);
+  vertices.forEach((point, index) => {
+    const offset = index * WIPEOUT_CLIP_VERTEX_RECORD_SIZE;
+    view.setFloat64(offset, point[0], true);
+    view.setFloat64(offset + 8, point[1], true);
+  });
+  return {
+    kind: SectionKind.WipeoutClipVertices,
+    recordSize: WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
+    recordCount: vertices.length,
+    flags: 0,
+    buffer,
+  };
+}
+
 function writeInsert(view, offset, values) {
   writeU64(view, offset, values.handle);
   writeU64(view, offset + 8, values.ownerHandle);
@@ -727,9 +851,11 @@ export function makeFixtureCache({
   includeText = minorVersion >= 4,
   includeHatch = minorVersion >= 6,
   faceRecordCount = 5,
+  wipeoutFrame = 1,
+  wipeoutRecordCount = WIPEOUT_ROWS.length,
 } = {}) {
   const sections = [
-    makeDrawingSection(),
+    makeDrawingSection(minorVersion >= 10 ? wipeoutFrame : 0),
     makeLayerSection(),
     makeBlockSection(),
     ...(includeText ? [makeTextStyleSection()] : []),
@@ -759,6 +885,12 @@ export function makeFixtureCache({
       : []),
     ...(minorVersion >= 9
       ? [makeFaceEntitySection(faceRecordCount)]
+      : []),
+    ...(minorVersion >= 10
+      ? [
+          makeWipeoutEntitySection(wipeoutRecordCount),
+          makeWipeoutClipVertexSection(),
+        ]
       : []),
   ];
   const directoryOffset = HEADER_SIZE;

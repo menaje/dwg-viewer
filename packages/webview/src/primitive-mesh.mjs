@@ -287,6 +287,16 @@ function solidOutlineAttributes(entity) {
   };
 }
 
+function wipeoutPoint(entity, localPoint, target) {
+  for (let axis = 0; axis < 3; axis += 1) {
+    target[axis] =
+      entity.insertionPoint[axis] +
+      entity.uVector[axis] * localPoint[0] +
+      entity.vVector[axis] * localPoint[1];
+  }
+  return target;
+}
+
 export function buildPrimitiveMeshes(
   source,
   blocks,
@@ -295,6 +305,7 @@ export function buildPrimitiveMeshes(
     maximumPointGpuBytes = MAX_POINT_GPU_BYTES,
     maximumSolidFillGpuBytes = MAX_SOLID_FILL_GPU_BYTES,
     maximumSolidOutlineGpuBytes = MAX_SOLID_OUTLINE_GPU_BYTES,
+    wipeoutFrame = null,
   } = {},
 ) {
   if (
@@ -303,11 +314,20 @@ export function buildPrimitiveMeshes(
     !source?.solids ||
     typeof source.solids.readEntity !== "function" ||
     !source?.faces ||
-    typeof source.faces.readEntity !== "function"
+    typeof source.faces.readEntity !== "function" ||
+    !source?.wipeouts ||
+    typeof source.wipeouts.readEntity !== "function" ||
+    typeof source.wipeouts.readClipVertex !== "function"
   ) {
     throw new TypeError(
-      "primitive mesh builder requires POINT, SOLID and 3DFACE source tables",
+      "primitive mesh builder requires POINT, SOLID, 3DFACE and WIPEOUT source tables",
     );
+  }
+  if (
+    wipeoutFrame !== null &&
+    (!Number.isInteger(wipeoutFrame) || wipeoutFrame < 0 || wipeoutFrame > 2)
+  ) {
+    throw new RangeError("WIPEOUT frame setting must be null, 0, 1 or 2");
   }
   requireBudget(
     maximumPointGpuBytes,
@@ -356,6 +376,24 @@ export function buildPrimitiveMeshes(
       [0, 0, 0],
     ],
   };
+  const wipeout = {
+    insertionPoint: [0, 0, 0],
+    uVector: [0, 0, 0],
+    vVector: [0, 0, 0],
+    size: [0, 0],
+  };
+  const wipeoutLocalStart = [0, 0];
+  const wipeoutLocalEnd = [0, 0];
+  const wipeoutRectangle = [
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [0, 0],
+  ];
+  const wipeoutWorldEdge = [
+    [0, 0, 0],
+    [0, 0, 0],
+  ];
   const transformedCorners = [
     [0, 0, 0],
     [0, 0, 0],
@@ -387,17 +425,25 @@ export function buildPrimitiveMeshes(
     renderedFaceEdges: 0,
     hiddenFaceEdges: 0,
     skippedDegenerateFaceEdges: 0,
+    sourceWipeouts: source.wipeouts.length,
+    deferredWipeoutMasks: 0,
+    renderedWipeoutFrames: 0,
+    renderedWipeoutFrameEdges: 0,
+    skippedDegenerateWipeoutEdges: 0,
+    wipeoutFrameSetting: wipeoutFrame,
     skippedOwners: 0,
     skippedDegenerateTriangles: 0,
     pointVertices: 0,
     solidFillVertices: 0,
     solidOutlineVertices: 0,
     faceOutlineVertices: 0,
+    wipeoutOutlineVertices: 0,
     surfaceOutlineVertices: 0,
     pointGpuBytes: 0,
     solidFillGpuBytes: 0,
     solidOutlineGpuBytes: 0,
     faceOutlineGpuBytes: 0,
+    wipeoutOutlineGpuBytes: 0,
     surfaceOutlineGpuBytes: 0,
     gpuBytes: 0,
     batches: 0,
@@ -405,6 +451,7 @@ export function buildPrimitiveMeshes(
     solidFillGpuLimitReached: false,
     solidOutlineGpuLimitReached: false,
     faceOutlineGpuLimitReached: false,
+    wipeoutOutlineGpuLimitReached: false,
   };
 
   for (let index = 0; index < source.points.length; index += 1) {
@@ -547,6 +594,112 @@ export function buildPrimitiveMeshes(
     }
   }
 
+  let wipeoutBudgetExhausted = false;
+  for (let index = 0; index < source.wipeouts.length; index += 1) {
+    source.wipeouts.readEntity(index, wipeout);
+    if (
+      (wipeout.displayProperties & 1) !== 0 &&
+      (wipeout.commonFlags & 1) === 0
+    ) {
+      metrics.deferredWipeoutMasks += 1;
+    }
+    if (
+      wipeoutBudgetExhausted ||
+      (wipeoutFrame !== 1 && wipeoutFrame !== 2)
+    ) {
+      continue;
+    }
+    const owner = classifyOwner(
+      wipeout,
+      blocks,
+      instanceGraph,
+      blockIndexByHandle,
+    );
+    if (!owner) {
+      metrics.skippedOwners += 1;
+      continue;
+    }
+    const usesClipBoundary =
+      wipeout.clippingEnabled &&
+      (wipeout.displayProperties & 4) !== 0;
+    let edgeCount;
+    if (usesClipBoundary && wipeout.clipType === 2) {
+      edgeCount = wipeout.clipVertexCount;
+    } else {
+      if (usesClipBoundary) {
+        source.wipeouts.readClipVertex(
+          wipeout.firstClipVertex,
+          wipeoutLocalStart,
+        );
+        source.wipeouts.readClipVertex(
+          wipeout.firstClipVertex + 1,
+          wipeoutLocalEnd,
+        );
+        wipeoutRectangle[0][0] = wipeoutLocalStart[0];
+        wipeoutRectangle[0][1] = wipeoutLocalStart[1];
+        wipeoutRectangle[1][0] = wipeoutLocalEnd[0];
+        wipeoutRectangle[1][1] = wipeoutLocalStart[1];
+        wipeoutRectangle[2][0] = wipeoutLocalEnd[0];
+        wipeoutRectangle[2][1] = wipeoutLocalEnd[1];
+        wipeoutRectangle[3][0] = wipeoutLocalStart[0];
+        wipeoutRectangle[3][1] = wipeoutLocalEnd[1];
+      } else {
+        wipeoutRectangle[0][0] = -0.5;
+        wipeoutRectangle[0][1] = -0.5;
+        wipeoutRectangle[1][0] = wipeout.size[0] - 0.5;
+        wipeoutRectangle[1][1] = -0.5;
+        wipeoutRectangle[2][0] = wipeout.size[0] - 0.5;
+        wipeoutRectangle[2][1] = wipeout.size[1] - 0.5;
+        wipeoutRectangle[3][0] = -0.5;
+        wipeoutRectangle[3][1] = wipeout.size[1] - 0.5;
+      }
+      edgeCount = 4;
+    }
+
+    let rendered = false;
+    const attributes = solidOutlineAttributes(wipeout);
+    for (let edge = 0; edge < edgeCount; edge += 1) {
+      if (usesClipBoundary && wipeout.clipType === 2) {
+        source.wipeouts.readClipVertex(
+          wipeout.firstClipVertex + edge,
+          wipeoutLocalStart,
+        );
+        source.wipeouts.readClipVertex(
+          wipeout.firstClipVertex + ((edge + 1) % edgeCount),
+          wipeoutLocalEnd,
+        );
+      } else {
+        wipeoutLocalStart[0] = wipeoutRectangle[edge][0];
+        wipeoutLocalStart[1] = wipeoutRectangle[edge][1];
+        wipeoutLocalEnd[0] = wipeoutRectangle[(edge + 1) % edgeCount][0];
+        wipeoutLocalEnd[1] = wipeoutRectangle[(edge + 1) % edgeCount][1];
+      }
+      wipeoutPoint(wipeout, wipeoutLocalStart, wipeoutWorldEdge[0]);
+      wipeoutPoint(wipeout, wipeoutLocalEnd, wipeoutWorldEdge[1]);
+      if (pointsNear(wipeoutWorldEdge[0], wipeoutWorldEdge[1])) {
+        metrics.skippedDegenerateWipeoutEdges += 1;
+        continue;
+      }
+      if (
+        !surfaceOutlineMesh.write(
+          owner,
+          wipeoutWorldEdge,
+          attributes,
+        )
+      ) {
+        metrics.wipeoutOutlineGpuLimitReached = true;
+        wipeoutBudgetExhausted = true;
+        break;
+      }
+      metrics.renderedWipeoutFrameEdges += 1;
+      metrics.wipeoutOutlineVertices += wipeoutWorldEdge.length;
+      rendered = true;
+    }
+    if (rendered) {
+      metrics.renderedWipeoutFrames += 1;
+    }
+  }
+
   const points = pointMesh.finish();
   const solidFills = solidFillMesh.finish();
   const solidOutlines = surfaceOutlineMesh.finish();
@@ -559,6 +712,8 @@ export function buildPrimitiveMeshes(
     metrics.solidOutlineVertices * PRIMITIVE_VERTEX_STRIDE;
   metrics.faceOutlineGpuBytes =
     metrics.faceOutlineVertices * PRIMITIVE_VERTEX_STRIDE;
+  metrics.wipeoutOutlineGpuBytes =
+    metrics.wipeoutOutlineVertices * PRIMITIVE_VERTEX_STRIDE;
   metrics.surfaceOutlineGpuBytes = solidOutlines.vertices.byteLength;
   metrics.gpuBytes =
     metrics.pointGpuBytes +

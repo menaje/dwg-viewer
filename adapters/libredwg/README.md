@@ -5,7 +5,7 @@ This optional process-isolated adapter measures LibreDWG with the same
 acadrust engine. It traverses LibreDWG's object model directly instead of
 creating a full JSON dump.
 
-The `convert` path writes Scene Cache v1.9 without a whole-drawing intermediate
+The `convert` path writes Scene Cache v1.10 without a whole-drawing intermediate
 model. It repeatedly traverses LibreDWG objects and streams sections and
 bounded GPU batches directly to a new cache file. For large drawings, it
 spills fixed-size detail records into private unnamed temporary files, sorts
@@ -51,11 +51,15 @@ This is a deliberately partial conversion milestone:
   drawing `FILLMODE`;
 - 3DFACE retains four WCS corners and all four invisible-edge bits; its current
   wireframe display emits only visible, non-degenerate edges;
+- WIPEOUT retains its image basis, display properties, exact rectangular or
+  polygonal clip vertices, definition handles and the drawing-wide frame
+  setting; enabled frames are displayed while masks remain explicitly
+  deferred until draw-order-aware rendering exists;
 - after the first line frame, the Webview fills solid/gradient rings and
   clips pattern strokes to the current viewport in one persistent worker;
 - a preceding one-shot worker builds instanced POINT markers, SOLID
-  fill/outline meshes and 3DFACE edges under a combined 32 MiB GPU limit,
-  then exits;
+  fill/outline meshes, 3DFACE edges and enabled WIPEOUT frames under a
+  combined 32 MiB GPU limit, then exits;
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
 - bounded SHX/BigFont and system-font fallback display is implemented in the
@@ -160,6 +164,17 @@ clean process-isolated conversions completed in
 peak RSS (minimum / median / maximum). Output was deterministic and both time
 and memory gates passed.
 
+Scene Cache v1.10 adds 16 fixed-size WIPEOUT records (2,688 bytes), 627 exact
+clip vertices (10,032 bytes) and two 40-byte directory entries. The
+deterministic cache grows by exactly 12,800 bytes to 176,154,336 bytes.
+Kinds 2–41 remain byte-identical. Source coverage reaches all 378,400 logical
+entities with zero converter-deferred records; that figure means lossless
+source preservation, not that background masks are already rendered. Three
+clean process-isolated conversions completed in 2,880 / 2,886 / 2,890 ms
+with 591,691,776 / 591,724,544 / 591,724,544 bytes peak RSS (minimum /
+median / maximum). Output was deterministic and both time and memory target
+gates passed.
+
 Public LibreDWG fixtures provide a reproducible cross-engine check. Both
 writers validated `example_2018.dwg` as one pattern HATCH with two definition
 lines and four dash values; the complete kind-37 and kind-38 payloads were
@@ -168,7 +183,9 @@ with byte-identical kind-39 and kind-40 payloads. Both engines also resolve all
 nine DIMENSION picture blocks, producing 19 kind-13 records from ten source
 INSERTs and nine dimension references. `2000/entities-3d.dwg` contains one
 3DFACE; both engines produce the same invisible-edge flags and four WCS
-corners. `2018/Dynblocks.dwg` matched at one
+corners. `example_2018.dwg` also contains two polygonal WIPEOUT records with
+16 clip vertices and frame setting 1; kinds 42–43 and the drawing setting are
+byte-identical between both engines. `2018/Dynblocks.dwg` matched at one
 solid and three pattern
 HATCHes, eight loops, 104 fill vertices and four definition lines, again with
 byte-identical pattern sections. `2004/HatchG.dwg` matched at two gradient
@@ -201,6 +218,25 @@ It validated and displayed all 34 faces as 114 visible edges, omitted ten
 source-hidden and twelve degenerate edges, and added 7,296 GPU bytes. The
 complete POINT/SOLID/3DFACE payload is 73,920 bytes and no source, owner or GPU
 cap was reached.
+
+With v1.10, two directory entries add only 80 bytes to the first frame: eight
+reads total 5,025,213 bytes and do not touch either WIPEOUT source section.
+The isolated post-frame primitive worker uses nine reads totaling 726,827
+bytes, including block/INSERT metadata and kinds 39–43. On the reference
+drawing it validates 16 WIPEOUTs and 627 clip vertices. The drawing-wide frame
+setting is off, so it adds zero GPU bytes; all 16 background masks remain
+explicitly reported as awaiting draw-order rendering. The existing
+POINT/SOLID/3DFACE payload remains 73,920 bytes and no source, owner or GPU cap
+is reached.
+
+An actual v1.10 Chromium qualification produced the first usable line frame
+in 502.8 ms. It reported all 16 WIPEOUT sources, zero frames and 16
+draw-order-deferred masks, matching the drawing-wide off setting. The
+post-frame primitive GPU payload stayed 72.2 KiB, total GPU vertex buffers
+were 4.58 MiB at drawing fit, the drawing rendered visibly, and the browser
+console contained no warning or error. Loading the public fixture in the same
+Webview reported both enabled frames and both deferred masks with no console
+error.
 
 An actual v1.9 Chromium qualification produced the first usable line frame in
 464.0 ms. It reported all 34 faces and 114 visible face edges, GPU vertex

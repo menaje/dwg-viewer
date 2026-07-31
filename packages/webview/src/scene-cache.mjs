@@ -1,6 +1,6 @@
 export const CACHE_MAGIC = new Uint8Array([68, 87, 71, 83, 67, 78, 49, 0]);
 export const CACHE_VERSION_MAJOR = 1;
-export const MAX_CACHE_VERSION_MINOR = 9;
+export const MAX_CACHE_VERSION_MINOR = 10;
 export const HEADER_SIZE = 64;
 export const DIRECTORY_ENTRY_SIZE = 40;
 export const GPU_LINE_BATCH_RECORD_SIZE = 128;
@@ -18,6 +18,8 @@ export const HATCH_PATTERN_DASH_RECORD_SIZE = 8;
 export const POINT_ENTITY_RECORD_SIZE = 112;
 export const SOLID_ENTITY_RECORD_SIZE = 168;
 export const FACE_ENTITY_RECORD_SIZE = 136;
+export const WIPEOUT_ENTITY_RECORD_SIZE = 168;
+export const WIPEOUT_CLIP_VERTEX_RECORD_SIZE = 16;
 
 export const SectionKind = Object.freeze({
   Drawing: 1,
@@ -50,6 +52,8 @@ export const SectionKind = Object.freeze({
   PointEntities: 39,
   SolidEntities: 40,
   FaceEntities: 41,
+  WipeoutEntities: 42,
+  WipeoutClipVertices: 43,
 });
 
 export const GpuLineBatchKind = Object.freeze({
@@ -73,6 +77,8 @@ const FIXED_RECORD_SIZES = new Map([
   [SectionKind.PointEntities, POINT_ENTITY_RECORD_SIZE],
   [SectionKind.SolidEntities, SOLID_ENTITY_RECORD_SIZE],
   [SectionKind.FaceEntities, FACE_ENTITY_RECORD_SIZE],
+  [SectionKind.WipeoutEntities, WIPEOUT_ENTITY_RECORD_SIZE],
+  [SectionKind.WipeoutClipVertices, WIPEOUT_CLIP_VERTEX_RECORD_SIZE],
 ]);
 const MAX_METADATA_SECTION_BYTES = 64 * 1024 * 1024;
 const MAX_CACHE_STRING_BYTES = 1024 * 1024;
@@ -85,6 +91,8 @@ const MAX_HATCH_PATTERN_DASHES_PER_ENTITY = 65_536;
 const MAX_POINT_SOURCE_RECORDS = 262_144;
 const MAX_SOLID_SOURCE_RECORDS = 131_072;
 const MAX_FACE_SOURCE_RECORDS = 131_072;
+const MAX_WIPEOUT_SOURCE_RECORDS = 65_536;
+const MAX_WIPEOUT_CLIP_VERTICES = 1_048_576;
 const STRING_TABLE_HEADER_SIZE = 16;
 const STRING_TABLE_FLAG = 1;
 
@@ -837,6 +845,113 @@ export class FaceSourceTable {
   }
 }
 
+export class WipeoutSourceTable {
+  constructor(entityBuffer, recordCount, clipVertexBuffer, clipVertexCount) {
+    this.entityBuffer = entityBuffer;
+    this.entityView = new DataView(entityBuffer);
+    this.recordCount = recordCount;
+    this.clipVertexBuffer = clipVertexBuffer;
+    this.clipVertexView = new DataView(clipVertexBuffer);
+    this.clipVertexCount = clipVertexCount;
+  }
+
+  get length() {
+    return this.recordCount;
+  }
+
+  readEntity(index, target) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.recordCount) {
+      throw new RangeError(`WIPEOUT entity index is out of range: ${index}`);
+    }
+    if (!target || typeof target !== "object") {
+      throw new TypeError("WIPEOUT entity target must be an object");
+    }
+    const offset = index * WIPEOUT_ENTITY_RECORD_SIZE;
+    target.index = index;
+    readPrimitiveCommon(this.entityView, offset, target);
+    target.classVersion = this.entityView.getInt32(offset + 32, true);
+    target.displayProperties = this.entityView.getUint16(offset + 36, true);
+    target.clipType = this.entityView.getUint8(offset + 38);
+    target.clippingEnabled = Boolean(this.entityView.getUint8(offset + 39));
+    target.brightness = this.entityView.getUint8(offset + 40);
+    target.contrast = this.entityView.getUint8(offset + 41);
+    target.fade = this.entityView.getUint8(offset + 42);
+    target.clipMode = this.entityView.getUint8(offset + 43);
+    target.firstClipVertex = readSafeU64(
+      this.entityView,
+      offset + 48,
+      `WIPEOUT entity ${index} first clip vertex`,
+    );
+    target.clipVertexCount = this.entityView.getUint32(offset + 56, true);
+    target.definitionHandle = this.entityView.getBigUint64(offset + 64, true);
+    target.definitionReactorHandle = this.entityView.getBigUint64(
+      offset + 72,
+      true,
+    );
+    target.insertionPoint ??= [0, 0, 0];
+    target.uVector ??= [0, 0, 0];
+    target.vVector ??= [0, 0, 0];
+    target.size ??= [0, 0];
+    for (let axis = 0; axis < 3; axis += 1) {
+      target.insertionPoint[axis] = this.entityView.getFloat64(
+        offset + 80 + axis * 8,
+        true,
+      );
+      target.uVector[axis] = this.entityView.getFloat64(
+        offset + 104 + axis * 8,
+        true,
+      );
+      target.vVector[axis] = this.entityView.getFloat64(
+        offset + 128 + axis * 8,
+        true,
+      );
+    }
+    target.size[0] = this.entityView.getFloat64(offset + 152, true);
+    target.size[1] = this.entityView.getFloat64(offset + 160, true);
+    return target;
+  }
+
+  readClipVertex(index, target) {
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= this.clipVertexCount
+    ) {
+      throw new RangeError(`WIPEOUT clip vertex index is out of range: ${index}`);
+    }
+    if (!Array.isArray(target) || target.length < 2) {
+      throw new TypeError("WIPEOUT clip vertex target must be a two-value array");
+    }
+    const offset = index * WIPEOUT_CLIP_VERTEX_RECORD_SIZE;
+    target[0] = this.clipVertexView.getFloat64(offset, true);
+    target[1] = this.clipVertexView.getFloat64(offset + 8, true);
+    return target;
+  }
+
+  get(index) {
+    const record = this.readEntity(index, {
+      insertionPoint: [0, 0, 0],
+      uVector: [0, 0, 0],
+      vVector: [0, 0, 0],
+      size: [0, 0],
+    });
+    const clipBoundaryVertices = new Array(record.clipVertexCount);
+    for (let vertex = 0; vertex < record.clipVertexCount; vertex += 1) {
+      clipBoundaryVertices[vertex] = Object.freeze(
+        this.readClipVertex(record.firstClipVertex + vertex, [0, 0]),
+      );
+    }
+    return Object.freeze({
+      ...record,
+      insertionPoint: Object.freeze([...record.insertionPoint]),
+      uVector: Object.freeze([...record.uVector]),
+      vVector: Object.freeze([...record.vVector]),
+      size: Object.freeze([...record.size]),
+      clipBoundaryVertices: Object.freeze(clipBoundaryVertices),
+    });
+  }
+}
+
 export class SceneCacheReader {
   constructor(source, header, sections) {
     this.source = source;
@@ -1035,6 +1150,22 @@ export class SceneCacheReader {
       }
       validateRecordSection(faceEntities, FACE_ENTITY_RECORD_SIZE);
     }
+    if (minor >= 10) {
+      const wipeoutEntities = sections.get(SectionKind.WipeoutEntities);
+      const wipeoutClipVertices = sections.get(
+        SectionKind.WipeoutClipVertices,
+      );
+      if (!wipeoutEntities || !wipeoutClipVertices) {
+        throw new Error(
+          "Scene Cache v1.10 is missing required WIPEOUT sections",
+        );
+      }
+      validateRecordSection(wipeoutEntities, WIPEOUT_ENTITY_RECORD_SIZE);
+      validateRecordSection(
+        wipeoutClipVertices,
+        WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
+      );
+    }
 
     return new SceneCacheReader(
       source,
@@ -1072,10 +1203,23 @@ export class SceneCacheReader {
         min: ensureFiniteVector(readVec3F64(view, 32), "drawing minimum bounds"),
         max: ensureFiniteVector(readVec3F64(view, 56), "drawing maximum bounds"),
       };
+      const rawWipeoutFrame = view.getUint32(12, true);
+      if (
+        (this.header.minor < 10 && rawWipeoutFrame !== 0) ||
+        (this.header.minor >= 10 &&
+          rawWipeoutFrame !== 0xffffffff &&
+          rawWipeoutFrame > 2)
+      ) {
+        throw new Error("drawing contains an invalid WIPEOUT frame setting");
+      }
       return Object.freeze({
         version: view.getUint32(0, true),
         maintenanceVersion: view.getUint32(4, true),
         insertionUnits: view.getInt32(8, true),
+        wipeoutFrame:
+          this.header.minor >= 10 && rawWipeoutFrame !== 0xffffffff
+            ? rawWipeoutFrame
+            : null,
         totalEntities: readSafeU64(view, 16, "drawing entity count"),
         serializedEntities: readSafeU64(view, 24, "serialized entity count"),
         bounds,
@@ -1821,13 +1965,153 @@ export class SceneCacheReader {
     });
   }
 
+  async readWipeoutEntities() {
+    return this.memoize("wipeout-entities", async () => {
+      if (this.header.minor < 10) {
+        return new WipeoutSourceTable(
+          new ArrayBuffer(0),
+          0,
+          new ArrayBuffer(0),
+          0,
+        );
+      }
+      const entities = this.getSection(SectionKind.WipeoutEntities);
+      const clipVertices = this.getSection(
+        SectionKind.WipeoutClipVertices,
+      );
+      validateRecordSection(entities, WIPEOUT_ENTITY_RECORD_SIZE);
+      validateRecordSection(
+        clipVertices,
+        WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
+      );
+      if (entities.recordCount > MAX_WIPEOUT_SOURCE_RECORDS) {
+        throw new Error(
+          `WIPEOUT section exceeds the ${MAX_WIPEOUT_SOURCE_RECORDS}-record limit`,
+        );
+      }
+      if (clipVertices.recordCount > MAX_WIPEOUT_CLIP_VERTICES) {
+        throw new Error(
+          `WIPEOUT clip vertices exceed the ${MAX_WIPEOUT_CLIP_VERTICES}-record limit`,
+        );
+      }
+      const layerCount = this.getSection(SectionKind.Layers).recordCount;
+      const [entityBuffer, clipVertexBuffer] = await Promise.all([
+        this.readWholeMetadataSection(entities),
+        this.readWholeMetadataSection(clipVertices),
+      ]);
+      const entityView = new DataView(entityBuffer);
+      const clipVertexView = new DataView(clipVertexBuffer);
+      let expectedFirstVertex = 0;
+      for (let index = 0; index < entities.recordCount; index += 1) {
+        const offset = index * WIPEOUT_ENTITY_RECORD_SIZE;
+        validatePrimitiveCommon(
+          entityView,
+          offset,
+          layerCount,
+          "WIPEOUT",
+          index,
+        );
+        const displayProperties = entityView.getUint16(offset + 36, true);
+        const clipType = entityView.getUint8(offset + 38);
+        const clippingEnabled = entityView.getUint8(offset + 39);
+        const brightness = entityView.getUint8(offset + 40);
+        const contrast = entityView.getUint8(offset + 41);
+        const fade = entityView.getUint8(offset + 42);
+        const clipMode = entityView.getUint8(offset + 43);
+        const firstVertex = readSafeU64(
+          entityView,
+          offset + 48,
+          `WIPEOUT entity ${index} first clip vertex`,
+        );
+        const vertexCount = entityView.getUint32(offset + 56, true);
+        if (
+          displayProperties & ~0xf ||
+          (clipType !== 1 && clipType !== 2) ||
+          clippingEnabled > 1 ||
+          brightness > 100 ||
+          contrast > 100 ||
+          fade > 100 ||
+          clipMode > 1 ||
+          entityView.getUint32(offset + 44, true) !== 0 ||
+          entityView.getUint32(offset + 60, true) !== 0 ||
+          firstVertex !== expectedFirstVertex ||
+          (clipType === 1 && vertexCount !== 2) ||
+          (clipType === 2 && vertexCount < 3)
+        ) {
+          throw new Error(`WIPEOUT entity ${index} has invalid metadata`);
+        }
+        expectedFirstVertex = checkedAdd(
+          firstVertex,
+          vertexCount,
+          `WIPEOUT entity ${index} clip-vertex range`,
+        );
+        if (expectedFirstVertex > clipVertices.recordCount) {
+          throw new Error(
+            `WIPEOUT entity ${index} has an invalid clip-vertex range`,
+          );
+        }
+        for (let valueOffset = 80; valueOffset < 168; valueOffset += 8) {
+          if (
+            !Number.isFinite(entityView.getFloat64(offset + valueOffset, true))
+          ) {
+            throw new Error(
+              `WIPEOUT entity ${index} contains a non-finite value`,
+            );
+          }
+        }
+        const ux = entityView.getFloat64(offset + 104, true);
+        const uy = entityView.getFloat64(offset + 112, true);
+        const uz = entityView.getFloat64(offset + 120, true);
+        const vx = entityView.getFloat64(offset + 128, true);
+        const vy = entityView.getFloat64(offset + 136, true);
+        const vz = entityView.getFloat64(offset + 144, true);
+        const crossX = uy * vz - uz * vy;
+        const crossY = uz * vx - ux * vz;
+        const crossZ = ux * vy - uy * vx;
+        const basisLengthSquared =
+          crossX * crossX + crossY * crossY + crossZ * crossZ;
+        if (
+          !Number.isFinite(basisLengthSquared) ||
+          basisLengthSquared <= 1e-24 ||
+          entityView.getFloat64(offset + 152, true) <= 0 ||
+          entityView.getFloat64(offset + 160, true) <= 0
+        ) {
+          throw new Error(
+            `WIPEOUT entity ${index} has an invalid image basis or size`,
+          );
+        }
+      }
+      if (expectedFirstVertex !== clipVertices.recordCount) {
+        throw new Error("WIPEOUT clip-vertex pool is not fully covered");
+      }
+      for (let index = 0; index < clipVertices.recordCount; index += 1) {
+        const offset = index * WIPEOUT_CLIP_VERTEX_RECORD_SIZE;
+        if (
+          !Number.isFinite(clipVertexView.getFloat64(offset, true)) ||
+          !Number.isFinite(clipVertexView.getFloat64(offset + 8, true))
+        ) {
+          throw new Error(
+            `WIPEOUT clip vertex ${index} contains a non-finite coordinate`,
+          );
+        }
+      }
+      return new WipeoutSourceTable(
+        entityBuffer,
+        entities.recordCount,
+        clipVertexBuffer,
+        clipVertices.recordCount,
+      );
+    });
+  }
+
   async readPrimitiveSource() {
-    const [points, solids, faces] = await Promise.all([
+    const [points, solids, faces, wipeouts] = await Promise.all([
       this.readPointEntities(),
       this.readSolidEntities(),
       this.readFaceEntities(),
+      this.readWipeoutEntities(),
     ]);
-    return Object.freeze({ points, solids, faces });
+    return Object.freeze({ points, solids, faces, wipeouts });
   }
 
   async readInserts() {

@@ -113,6 +113,9 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>솔리드 외곽선</dt><dd>${primitives.renderedOutlineSolids.toLocaleString()}개</dd></div>
       <div><dt>3D 면 원본/표시</dt><dd>${primitives.sourceFaces.toLocaleString()} / ${primitives.renderedFaces.toLocaleString()}개</dd></div>
       <div><dt>3D 면 가장자리</dt><dd>${primitives.renderedFaceEdges.toLocaleString()}개</dd></div>
+      <div><dt>가림 객체 원본</dt><dd>${primitives.sourceWipeouts.toLocaleString()}개</dd></div>
+      <div><dt>가림 프레임</dt><dd>${primitives.renderedWipeoutFrames.toLocaleString()}개</dd></div>
+      <div><dt>순서 처리 대기 가림</dt><dd>${primitives.deferredWipeoutMasks.toLocaleString()}개</dd></div>
       <div><dt>후처리 GPU</dt><dd>${formatBytes(primitives.gpuBytes)}</dd></div>
       <div><dt>후처리 원본 읽기</dt><dd>${formatBytes(activePrimitiveStatus?.reads?.bytesRead ?? 0)}</dd></div>
     `
@@ -328,7 +331,7 @@ function createPrimitiveWorker() {
   let settled = false;
   let rejectRequest;
   return {
-    initialize(file) {
+    initialize(file, wipeoutFrame) {
       if (settled) {
         return Promise.reject(
           new DOMException("후처리 작업 취소됨", "AbortError"),
@@ -370,6 +373,7 @@ function createPrimitiveWorker() {
           requestId: 1,
           type: "initialize",
           file,
+          wipeoutFrame,
         });
       });
     },
@@ -392,12 +396,16 @@ async function initializePrimitives(file, scene, revision) {
     return;
   }
   activePrimitiveStatus = Object.freeze({ state: "loading" });
-  status.textContent = "점·솔리드·3D 면 원본을 별도 작업 공간에서 읽는 중";
+  status.textContent =
+    "점·솔리드·3D 면·가림 객체 원본을 별도 작업 공간에서 읽는 중";
   const worker = createPrimitiveWorker();
   activePrimitiveWorker = worker;
   let result;
   try {
-    result = await worker.initialize(file);
+    result = await worker.initialize(
+      file,
+      scene.metadata.drawing.wipeoutFrame,
+    );
   } finally {
     if (activePrimitiveWorker === worker) {
       activePrimitiveWorker = undefined;
@@ -420,9 +428,10 @@ async function initializePrimitives(file, scene, revision) {
     Number(value.pointGpuLimitReached) +
     Number(value.solidFillGpuLimitReached) +
     Number(value.solidOutlineGpuLimitReached) +
-    Number(value.faceOutlineGpuLimitReached);
+    Number(value.faceOutlineGpuLimitReached) +
+    Number(value.wipeoutOutlineGpuLimitReached);
   status.textContent =
-    `점 ${value.renderedPoints.toLocaleString()}개 · 솔리드 ${(value.renderedFilledSolids + value.renderedOutlineSolids).toLocaleString()}개 · 3D 면 ${value.renderedFaces.toLocaleString()}개 표시 완료` +
+    `점 ${value.renderedPoints.toLocaleString()}개 · 솔리드 ${(value.renderedFilledSolids + value.renderedOutlineSolids).toLocaleString()}개 · 3D 면 ${value.renderedFaces.toLocaleString()}개 · 가림 프레임 ${value.renderedWipeoutFrames.toLocaleString()}개 표시 완료` +
     (warnings > 0 ? ` · 제한/건너뜀 ${warnings.toLocaleString()}건` : "");
 }
 

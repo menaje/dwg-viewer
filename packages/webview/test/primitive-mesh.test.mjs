@@ -28,6 +28,33 @@ async function primitiveFixture(minorVersion = 8) {
   return { source, metadata, instanceGraph };
 }
 
+function verticesForHandle(scene, handle) {
+  const view = new DataView(scene.vertices.buffer);
+  const points = [];
+  for (const batch of scene.batches) {
+    for (
+      let vertex = batch.firstVertex;
+      vertex < batch.firstVertex + batch.vertexCount;
+      vertex += 1
+    ) {
+      const offset = vertex * PRIMITIVE_VERTEX_STRIDE;
+      const encodedHandle =
+        BigInt(view.getUint32(offset + 20, true)) |
+        (BigInt(view.getUint32(offset + 24, true)) << 32n);
+      if (encodedHandle !== handle) {
+        continue;
+      }
+      points.push({
+        blockIndex: batch.blockIndex,
+        point: batch.origin.map(
+          (origin, axis) => origin + view.getFloat32(offset + axis * 4, true),
+        ),
+      });
+    }
+  }
+  return points;
+}
+
 test("builds instanced POINT markers and FILLMODE-aware SOLID meshes", async () => {
   const { source, metadata, instanceGraph } = await primitiveFixture();
   const result = buildPrimitiveMeshes(
@@ -102,6 +129,85 @@ test("renders visible 3DFACE edges in the shared surface buffer", async () => {
   );
 });
 
+test("renders WIPEOUT polygon, rectangular and full-image frames without masks", async () => {
+  const { source, metadata, instanceGraph } = await primitiveFixture(10);
+  const result = buildPrimitiveMeshes(
+    source,
+    metadata.blocks,
+    instanceGraph,
+    { wipeoutFrame: metadata.drawing.wipeoutFrame },
+  );
+
+  assert.equal(result.metrics.sourceWipeouts, 3);
+  assert.equal(result.metrics.deferredWipeoutMasks, 3);
+  assert.equal(result.metrics.renderedWipeoutFrames, 3);
+  assert.equal(result.metrics.renderedWipeoutFrameEdges, 12);
+  assert.equal(result.metrics.skippedDegenerateWipeoutEdges, 0);
+  assert.equal(result.metrics.wipeoutOutlineVertices, 24);
+  assert.equal(
+    result.metrics.wipeoutOutlineGpuBytes,
+    24 * PRIMITIVE_VERTEX_STRIDE,
+  );
+  assert.equal(result.metrics.surfaceOutlineVertices, 60);
+  assert.equal(result.metrics.gpuBytes, 67 * PRIMITIVE_VERTEX_STRIDE);
+
+  const polygon = verticesForHandle(result.solidOutlines, 801n);
+  assert.equal(polygon.length, 8);
+  assert.deepEqual(
+    [
+      Math.min(...polygon.map(({ point }) => point[0])),
+      Math.max(...polygon.map(({ point }) => point[0])),
+      Math.min(...polygon.map(({ point }) => point[1])),
+      Math.max(...polygon.map(({ point }) => point[1])),
+    ],
+    [50, 54, 0, 3],
+  );
+
+  const rectangle = verticesForHandle(result.solidOutlines, 802n);
+  assert.equal(rectangle.length, 8);
+  assert.ok(rectangle.every(({ blockIndex }) => blockIndex === 1));
+  assert.deepEqual(
+    [
+      Math.min(...rectangle.map(({ point }) => point[0])),
+      Math.max(...rectangle.map(({ point }) => point[0])),
+      Math.min(...rectangle.map(({ point }) => point[1])),
+      Math.max(...rectangle.map(({ point }) => point[1])),
+    ],
+    [59.5, 67.5, -0.5, 5.5],
+  );
+
+  const fullImage = verticesForHandle(result.solidOutlines, 803n);
+  assert.equal(fullImage.length, 8);
+  assert.deepEqual(
+    [
+      Math.min(...fullImage.map(({ point }) => point[0])),
+      Math.max(...fullImage.map(({ point }) => point[0])),
+      Math.min(...fullImage.map(({ point }) => point[1])),
+      Math.max(...fullImage.map(({ point }) => point[1])),
+    ],
+    [69.5, 73.5, -0.5, 2.5],
+  );
+});
+
+test("keeps WIPEOUT masks deferred and omits frames when the setting is off", async () => {
+  const { source, metadata, instanceGraph } = await primitiveFixture(10);
+  const result = buildPrimitiveMeshes(
+    source,
+    metadata.blocks,
+    instanceGraph,
+    { wipeoutFrame: 0 },
+  );
+
+  assert.equal(result.metrics.sourceWipeouts, 3);
+  assert.equal(result.metrics.deferredWipeoutMasks, 3);
+  assert.equal(result.metrics.renderedWipeoutFrames, 0);
+  assert.equal(result.metrics.renderedWipeoutFrameEdges, 0);
+  assert.equal(result.metrics.wipeoutOutlineVertices, 0);
+  assert.equal(result.metrics.wipeoutOutlineGpuBytes, 0);
+  assert.equal(result.metrics.surfaceOutlineVertices, 36);
+  assert.equal(result.metrics.gpuBytes, 43 * PRIMITIVE_VERTEX_STRIDE);
+});
+
 test("stops each deferred primitive stream at its GPU budget", async () => {
   const { source, metadata, instanceGraph } = await primitiveFixture();
   const result = buildPrimitiveMeshes(
@@ -146,4 +252,24 @@ test("stops 3DFACE edges at the shared surface GPU budget", async () => {
     result.metrics.surfaceOutlineGpuBytes,
     PRIMITIVE_VERTEX_STRIDE * 8,
   );
+});
+
+test("stops WIPEOUT frames at the shared surface GPU budget", async () => {
+  const { source, metadata, instanceGraph } = await primitiveFixture(10);
+  const result = buildPrimitiveMeshes(
+    source,
+    metadata.blocks,
+    instanceGraph,
+    {
+      maximumSolidOutlineGpuBytes: PRIMITIVE_VERTEX_STRIDE * 44,
+      wipeoutFrame: 1,
+    },
+  );
+
+  assert.equal(result.metrics.wipeoutOutlineGpuLimitReached, true);
+  assert.equal(result.metrics.deferredWipeoutMasks, 3);
+  assert.equal(result.metrics.renderedWipeoutFrames, 1);
+  assert.equal(result.metrics.renderedWipeoutFrameEdges, 4);
+  assert.equal(result.metrics.wipeoutOutlineVertices, 8);
+  assert.equal(result.solidOutlines.vertices.vertexCount, 44);
 });
