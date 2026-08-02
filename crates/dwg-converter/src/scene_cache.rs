@@ -18,7 +18,10 @@ use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, Inp
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
+/// Version emitted by the built-in acadrust writer.
 pub const CACHE_VERSION_MINOR: u16 = 14;
+/// Newest version understood by the shared validator and product Webview.
+pub const MAX_CACHE_VERSION_MINOR: u16 = 18;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -56,6 +59,17 @@ const DRAW_ORDER_TABLE_RECORD_SIZE: u32 = 40;
 const DRAW_ORDER_ENTRY_RECORD_SIZE: u32 = 16;
 const INSERT_CLIP_RECORD_SIZE: u32 = 32;
 const INSERT_CLIP_VERTEX_RECORD_SIZE: u32 = 16;
+const LINETYPE_RECORD_SIZE: u32 = 64;
+const LINETYPE_DASH_RECORD_SIZE: u32 = 72;
+const LAYOUT_RECORD_SIZE: u32 = 256;
+const VIEWPORT_RECORD_SIZE: u32 = 272;
+const VIEWPORT_FROZEN_LAYER_RECORD_SIZE: u32 = 8;
+const VIEWPORT_CLIP_VERTEX_RECORD_SIZE: u32 = 16;
+const IMAGE_ENTITY_RECORD_SIZE: u32 = 176;
+const IMAGE_CLIP_VERTEX_RECORD_SIZE: u32 = 16;
+const EXTENDED_DRAWING_RECORD_SIZE: u32 = 104;
+const CURRENT_DRAWING_RECORD_SIZE: u32 = 160;
+const CURRENT_GPU_LINE_VERTEX_RECORD_SIZE: u32 = 36;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
 const SECTION_FLAG_STRING_TABLE: u32 = 1;
 const MAX_CACHE_STRING_BYTES: u64 = 1024 * 1024;
@@ -278,6 +292,14 @@ enum SectionKind {
     DrawOrderEntries = 45,
     InsertClips = 46,
     InsertClipVertices = 47,
+    Linetypes = 48,
+    LinetypeDashes = 49,
+    Layouts = 50,
+    Viewports = 51,
+    ViewportFrozenLayers = 52,
+    ViewportClipVertices = 53,
+    ImageEntities = 54,
+    ImageClipVertices = 55,
 }
 
 impl SectionKind {
@@ -319,6 +341,14 @@ impl SectionKind {
             Self::DrawOrderEntries => "draw_order_entries",
             Self::InsertClips => "insert_clips",
             Self::InsertClipVertices => "insert_clip_vertices",
+            Self::Linetypes => "linetypes",
+            Self::LinetypeDashes => "linetype_dashes",
+            Self::Layouts => "layouts",
+            Self::Viewports => "viewports",
+            Self::ViewportFrozenLayers => "viewport_frozen_layers",
+            Self::ViewportClipVertices => "viewport_clip_vertices",
+            Self::ImageEntities => "image_entities",
+            Self::ImageClipVertices => "image_clip_vertices",
         }
     }
 
@@ -360,12 +390,22 @@ impl SectionKind {
             45 => Some(Self::DrawOrderEntries),
             46 => Some(Self::InsertClips),
             47 => Some(Self::InsertClipVertices),
+            48 => Some(Self::Linetypes),
+            49 => Some(Self::LinetypeDashes),
+            50 => Some(Self::Layouts),
+            51 => Some(Self::Viewports),
+            52 => Some(Self::ViewportFrozenLayers),
+            53 => Some(Self::ViewportClipVertices),
+            54 => Some(Self::ImageEntities),
+            55 => Some(Self::ImageClipVertices),
             _ => None,
         }
     }
 
-    fn expected_record_size(self) -> u32 {
+    fn expected_record_size(self, minor_version: u16) -> u32 {
         match self {
+            Self::Drawing if minor_version >= 17 => CURRENT_DRAWING_RECORD_SIZE,
+            Self::Drawing if minor_version >= 15 => EXTENDED_DRAWING_RECORD_SIZE,
             Self::Drawing => DRAWING_RECORD_SIZE,
             Self::Layers => LAYER_RECORD_SIZE,
             Self::Blocks => BLOCK_RECORD_SIZE,
@@ -383,6 +423,7 @@ impl SectionKind {
             Self::TextEntities => TEXT_ENTITY_RECORD_SIZE,
             Self::TextColumnHeights => TEXT_COLUMN_HEIGHT_RECORD_SIZE,
             Self::GpuLineBatches => GPU_LINE_BATCH_RECORD_SIZE,
+            Self::GpuLineVertices if minor_version >= 15 => CURRENT_GPU_LINE_VERTEX_RECORD_SIZE,
             Self::GpuLineVertices => GPU_LINE_VERTEX_RECORD_SIZE,
             Self::HatchEntities => HATCH_ENTITY_RECORD_SIZE,
             Self::HatchLoops => HATCH_LOOP_RECORD_SIZE,
@@ -400,6 +441,14 @@ impl SectionKind {
             Self::DrawOrderEntries => DRAW_ORDER_ENTRY_RECORD_SIZE,
             Self::InsertClips => INSERT_CLIP_RECORD_SIZE,
             Self::InsertClipVertices => INSERT_CLIP_VERTEX_RECORD_SIZE,
+            Self::Linetypes => LINETYPE_RECORD_SIZE,
+            Self::LinetypeDashes => LINETYPE_DASH_RECORD_SIZE,
+            Self::Layouts => LAYOUT_RECORD_SIZE,
+            Self::Viewports => VIEWPORT_RECORD_SIZE,
+            Self::ViewportFrozenLayers => VIEWPORT_FROZEN_LAYER_RECORD_SIZE,
+            Self::ViewportClipVertices => VIEWPORT_CLIP_VERTEX_RECORD_SIZE,
+            Self::ImageEntities => IMAGE_ENTITY_RECORD_SIZE,
+            Self::ImageClipVertices => IMAGE_CLIP_VERTEX_RECORD_SIZE,
         }
     }
 
@@ -411,6 +460,11 @@ impl SectionKind {
                 | Self::TextStyles
                 | Self::TextEntities
                 | Self::HatchEntities
+                | Self::Linetypes
+                | Self::LinetypeDashes
+                | Self::Layouts
+                | Self::Viewports
+                | Self::ImageEntities
         )
     }
 }
@@ -704,7 +758,7 @@ fn validate_scene_cache_reader<R: Read + Seek>(
 
     let major = slice_u16(&header, 8);
     let minor = slice_u16(&header, 10);
-    if major != CACHE_VERSION_MAJOR || minor > CACHE_VERSION_MINOR {
+    if major != CACHE_VERSION_MAJOR || minor > MAX_CACHE_VERSION_MINOR {
         anyhow::bail!("unsupported cache version {major}.{minor}");
     }
     if slice_u32(&header, 12) != HEADER_SIZE {
@@ -877,6 +931,20 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
     if minor_version >= 13 {
         required.extend([SectionKind::InsertClips, SectionKind::InsertClipVertices]);
     }
+    if minor_version >= 15 {
+        required.extend([SectionKind::Linetypes, SectionKind::LinetypeDashes]);
+    }
+    if minor_version >= 16 {
+        required.extend([
+            SectionKind::Layouts,
+            SectionKind::Viewports,
+            SectionKind::ViewportFrozenLayers,
+            SectionKind::ViewportClipVertices,
+        ]);
+    }
+    if minor_version >= 18 {
+        required.extend([SectionKind::ImageEntities, SectionKind::ImageClipVertices]);
+    }
     for kind in required {
         let count = entries
             .iter()
@@ -901,7 +969,7 @@ fn validate_section_layout<R: Read + Seek>(
     let Some(kind) = SectionKind::from_code(entry.kind) else {
         return Ok(());
     };
-    if entry.record_size != kind.expected_record_size() {
+    if entry.record_size != kind.expected_record_size(minor_version) {
         anyhow::bail!("{} has an unexpected record size", kind.name());
     }
 
@@ -1035,6 +1103,55 @@ fn validate_string_references<R: Read + Seek>(
                         slice_u32(&record, reference_offset + 4),
                     )?;
                 }
+            }
+            SectionKind::Linetypes => {
+                for reference_offset in [36, 44] {
+                    validate_utf8_reference(
+                        reader,
+                        entry,
+                        string_offset,
+                        slice_u32(&record, reference_offset),
+                        slice_u32(&record, reference_offset + 4),
+                    )?;
+                }
+            }
+            SectionKind::LinetypeDashes => {
+                validate_utf8_reference(
+                    reader,
+                    entry,
+                    string_offset,
+                    slice_u32(&record, 56),
+                    slice_u32(&record, 60),
+                )?;
+            }
+            SectionKind::Layouts => {
+                for reference_offset in [224, 232, 240, 248] {
+                    validate_utf8_reference(
+                        reader,
+                        entry,
+                        string_offset,
+                        slice_u32(&record, reference_offset),
+                        slice_u32(&record, reference_offset + 4),
+                    )?;
+                }
+            }
+            SectionKind::Viewports => {
+                validate_utf8_reference(
+                    reader,
+                    entry,
+                    string_offset,
+                    slice_u32(&record, 240),
+                    slice_u32(&record, 244),
+                )?;
+            }
+            SectionKind::ImageEntities => {
+                validate_utf8_reference(
+                    reader,
+                    entry,
+                    string_offset,
+                    slice_u32(&record, 32),
+                    slice_u32(&record, 36),
+                )?;
             }
             _ => unreachable!("only string-table sections are validated here"),
         }
@@ -1419,7 +1536,7 @@ fn validate_cross_section_references<R: Read + Seek>(
         for index in 0..points.record_count {
             let mut record = [0_u8; POINT_ENTITY_RECORD_SIZE as usize];
             read_record(reader, points, index, &mut record)?;
-            validate_primitive_common(&record, layers.record_count, "POINT")?;
+            validate_primitive_common(&record, layers.record_count, "POINT", minor_version)?;
             if slice_u16(&record, 106) != 0 || slice_u32(&record, 108) != 0 {
                 anyhow::bail!("POINT entity has nonzero reserved metadata");
             }
@@ -1445,7 +1562,7 @@ fn validate_cross_section_references<R: Read + Seek>(
         for index in 0..solids.record_count {
             let mut record = [0_u8; SOLID_ENTITY_RECORD_SIZE as usize];
             read_record(reader, solids, index, &mut record)?;
-            validate_primitive_common(&record, layers.record_count, "SOLID")?;
+            validate_primitive_common(&record, layers.record_count, "SOLID", minor_version)?;
             if slice_u32(&record, 32) & !1 != 0 || slice_u32(&record, 36) != 0 {
                 anyhow::bail!("SOLID entity has invalid flags or reserved metadata");
             }
@@ -1471,7 +1588,7 @@ fn validate_cross_section_references<R: Read + Seek>(
         for index in 0..faces.record_count {
             let mut record = [0_u8; FACE_ENTITY_RECORD_SIZE as usize];
             read_record(reader, faces, index, &mut record)?;
-            validate_primitive_common(&record, layers.record_count, "3DFACE")?;
+            validate_primitive_common(&record, layers.record_count, "3DFACE", minor_version)?;
             if slice_u32(&record, 32) & !0xf != 0 || slice_u32(&record, 36) != 0 {
                 anyhow::bail!("3DFACE entity has invalid flags or reserved metadata");
             }
@@ -1498,7 +1615,7 @@ fn validate_cross_section_references<R: Read + Seek>(
         for index in 0..wipeouts.record_count {
             let mut record = [0_u8; WIPEOUT_ENTITY_RECORD_SIZE as usize];
             read_record(reader, wipeouts, index, &mut record)?;
-            validate_primitive_common(&record, layers.record_count, "WIPEOUT")?;
+            validate_primitive_common(&record, layers.record_count, "WIPEOUT", minor_version)?;
             let display_properties = slice_u16(&record, 36);
             let clip_type = record[38];
             let clipping_enabled = record[39];
@@ -1695,12 +1812,21 @@ fn validate_cross_section_references<R: Read + Seek>(
     Ok(())
 }
 
-fn validate_primitive_common(record: &[u8], layer_count: u64, entity_name: &str) -> Result<()> {
+fn validate_primitive_common(
+    record: &[u8],
+    layer_count: u64,
+    entity_name: &str,
+    minor_version: u16,
+) -> Result<()> {
     let layer_index = slice_u32(record, 16);
     if layer_index != u32::MAX && u64::from(layer_index) >= layer_count {
         anyhow::bail!("{entity_name} entity references an invalid layer");
     }
-    if slice_u16(record, 26) & !1 != 0 || slice_u32(record, 28) != 0 {
+    let linetype_or_reserved = slice_u32(record, 28);
+    if slice_u16(record, 26) & !1 != 0
+        || (minor_version >= 15 && linetype_or_reserved > 2047)
+        || (minor_version < 15 && linetype_or_reserved != 0)
+    {
         anyhow::bail!("{entity_name} entity has invalid common metadata");
     }
     Ok(())
@@ -6235,6 +6361,115 @@ mod tests {
         let insert_clip_vertices = directory_entry(&bytes, SectionKind::InsertClipVertices);
         assert_eq!(insert_clip_vertices.1, INSERT_CLIP_VERTEX_RECORD_SIZE);
         assert_eq!(insert_clip_vertices.3, 0);
+    }
+
+    #[test]
+    fn shared_validator_accepts_the_current_native_cache_contract() {
+        let kinds = [
+            SectionKind::Drawing,
+            SectionKind::Layers,
+            SectionKind::Blocks,
+            SectionKind::TextStyles,
+            SectionKind::Lines,
+            SectionKind::Arcs,
+            SectionKind::Circles,
+            SectionKind::Inserts,
+            SectionKind::PolylineHeaders,
+            SectionKind::PolylineVertices,
+            SectionKind::Ellipses,
+            SectionKind::SplineHeaders,
+            SectionKind::SplineKnots,
+            SectionKind::SplineWeights,
+            SectionKind::SplineControlPoints,
+            SectionKind::SplineFitPoints,
+            SectionKind::TextEntities,
+            SectionKind::TextColumnHeights,
+            SectionKind::GpuLineBatches,
+            SectionKind::GpuLineVertices,
+            SectionKind::HatchEntities,
+            SectionKind::HatchLoops,
+            SectionKind::HatchVertices,
+            SectionKind::HatchGradientColors,
+            SectionKind::HatchSeedPoints,
+            SectionKind::HatchPatternLines,
+            SectionKind::HatchPatternDashes,
+            SectionKind::PointEntities,
+            SectionKind::SolidEntities,
+            SectionKind::FaceEntities,
+            SectionKind::WipeoutEntities,
+            SectionKind::WipeoutClipVertices,
+            SectionKind::DrawOrderTables,
+            SectionKind::DrawOrderEntries,
+            SectionKind::InsertClips,
+            SectionKind::InsertClipVertices,
+            SectionKind::Linetypes,
+            SectionKind::LinetypeDashes,
+            SectionKind::Layouts,
+            SectionKind::Viewports,
+            SectionKind::ViewportFrozenLayers,
+            SectionKind::ViewportClipVertices,
+            SectionKind::ImageEntities,
+            SectionKind::ImageClipVertices,
+        ];
+        assert_eq!(kinds.len(), 44);
+
+        let directory_offset = u64::from(HEADER_SIZE);
+        let directory_end = directory_offset + kinds.len() as u64 * u64::from(DIRECTORY_ENTRY_SIZE);
+        let mut body_offset = align_up(directory_end, 8);
+        let mut sections = Vec::new();
+        for kind in kinds {
+            let record_size = kind.expected_record_size(MAX_CACHE_VERSION_MINOR);
+            let (record_count, flags, body) = if kind == SectionKind::Drawing {
+                (
+                    1_u64,
+                    0_u32,
+                    vec![0_u8; CURRENT_DRAWING_RECORD_SIZE as usize],
+                )
+            } else if kind.uses_string_table() {
+                let mut bytes = vec![0_u8; STRING_TABLE_HEADER_SIZE as usize];
+                bytes[4..8].copy_from_slice(&record_size.to_le_bytes());
+                bytes[8..16].copy_from_slice(&STRING_TABLE_HEADER_SIZE.to_le_bytes());
+                (0, SECTION_FLAG_STRING_TABLE, bytes)
+            } else {
+                (0, 0, Vec::new())
+            };
+            sections.push((kind, record_size, body_offset, record_count, flags, body));
+            body_offset = align_up(body_offset + sections.last().unwrap().5.len() as u64, 8);
+        }
+        let file_size = body_offset;
+        let mut bytes = vec![0_u8; file_size as usize];
+        bytes[0..8].copy_from_slice(&CACHE_MAGIC);
+        bytes[8..10].copy_from_slice(&CACHE_VERSION_MAJOR.to_le_bytes());
+        bytes[10..12].copy_from_slice(&MAX_CACHE_VERSION_MINOR.to_le_bytes());
+        bytes[12..16].copy_from_slice(&HEADER_SIZE.to_le_bytes());
+        bytes[16..20].copy_from_slice(&(sections.len() as u32).to_le_bytes());
+        bytes[20..24].copy_from_slice(&DIRECTORY_ENTRY_SIZE.to_le_bytes());
+        bytes[32..40].copy_from_slice(&directory_offset.to_le_bytes());
+        bytes[40..48].copy_from_slice(&file_size.to_le_bytes());
+        bytes[48..56].copy_from_slice(&1234_u64.to_le_bytes());
+
+        for (index, (kind, record_size, offset, record_count, flags, body)) in
+            sections.iter().enumerate()
+        {
+            let directory = HEADER_SIZE as usize + index * DIRECTORY_ENTRY_SIZE as usize;
+            bytes[directory..directory + 4].copy_from_slice(&(*kind as u32).to_le_bytes());
+            bytes[directory + 4..directory + 8].copy_from_slice(&record_size.to_le_bytes());
+            bytes[directory + 8..directory + 16].copy_from_slice(&offset.to_le_bytes());
+            bytes[directory + 16..directory + 24]
+                .copy_from_slice(&(body.len() as u64).to_le_bytes());
+            bytes[directory + 24..directory + 32].copy_from_slice(&record_count.to_le_bytes());
+            bytes[directory + 32..directory + 36].copy_from_slice(&flags.to_le_bytes());
+            let start = *offset as usize;
+            bytes[start..start + body.len()].copy_from_slice(body);
+        }
+
+        let validation = validate_scene_cache_reader(Cursor::new(bytes), file_size).unwrap();
+        assert_eq!(validation.format_minor, MAX_CACHE_VERSION_MINOR);
+        assert_eq!(validation.sections.len(), 44);
+        assert_eq!(
+            validation.sections.last().unwrap().name,
+            "image_clip_vertices",
+        );
     }
 
     #[test]

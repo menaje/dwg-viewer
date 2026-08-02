@@ -87,6 +87,28 @@ pnpm corpus:korean -- \
   --output /absolute/path/to/benchmarks/results/korean-corpus.json
 ```
 
+Build a conservative private manifest directly from a drawing directory when
+the pinned adapter includes anonymous text-environment inspection:
+
+```bash
+node benchmarks/korean-corpus-inventory.mjs \
+  --root /absolute/private/drawings \
+  --adapter /absolute/path/to/libredwg-adapter \
+  --output /absolute/private/korean-corpus.json \
+  --discipline architecture \
+  --limit 30
+```
+
+The inventory reads candidates sequentially, excludes directories named
+`xref` by default and interleaves observed DWG-version/size groups. It selects
+only drawings with Hangul text plus an automatically observed Unicode or
+Korean legacy codepage and at least one SHX, BigFont or outline-font
+reference. Current text counts become the loss baseline. It never infers
+EUC-KR, Extended BigFont or a drawing discipline from a filename, so those
+coverage cells remain incomplete until independently verified assets are
+provided. The exclusive manifest is owner-only and contains private paths;
+only its path-free summary may be shared.
+
 The manifest has this shape:
 
 ```json

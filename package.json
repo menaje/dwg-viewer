@@ -9,7 +9,7 @@
     "check": "pnpm run check:adapter-package && pnpm run check:wasm-probe && pnpm run check:korean-corpus && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @dwg-viewer/webview check && pnpm --filter dwg-viewer-vscode check",
     "check:adapter-package": "node --test adapters/libredwg/package.test.mjs",
     "check:wasm-probe": "node --test adapters/libredwg/wasm/probe.test.mjs",
-    "check:korean-corpus": "node --check benchmarks/korean-corpus.mjs && node --test benchmarks/korean-corpus.test.mjs",
+    "check:korean-corpus": "node --check benchmarks/korean-corpus.mjs && node --check benchmarks/korean-corpus-inventory.mjs && node --test benchmarks/korean-corpus.test.mjs benchmarks/korean-corpus-inventory.test.mjs",
     "corpus:korean": "node benchmarks/korean-corpus.mjs",
     "format": "cargo fmt --all",
     "test": "pnpm run check:adapter-package && pnpm run check:wasm-probe && pnpm run check:korean-corpus && cargo test --workspace && pnpm --filter @dwg-viewer/webview test && pnpm --filter dwg-viewer-vscode test",

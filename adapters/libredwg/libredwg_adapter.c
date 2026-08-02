@@ -24,6 +24,7 @@
 
 #include "libredwg_scene_cache.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -78,6 +79,14 @@ typedef struct
 
 typedef struct
 {
+  uint64_t primary_shx_references;
+  uint64_t outline_font_references;
+  uint64_t other_font_references;
+  uint64_t bigfont_references;
+} FontReferenceSummary;
+
+typedef struct
+{
   double min[3];
   double max[3];
   int present;
@@ -89,6 +98,16 @@ typedef struct
   uint64_t references;
   int present;
 } LargestBlock;
+
+/*
+ * LibreDWG 0.14 exports this helper but does not install its private
+ * codepages.h header. Keep the adapter on the public Dwg_Data codepage field
+ * while emitting only the stable DXF codepage name.
+ */
+extern const char *dwg_codepage_dxfstr (int codepage);
+extern char *bit_TV_to_utf8 (const char *restrict src,
+                             const BITCODE_RS codepage);
+extern char *bit_convert_TU (const BITCODE_TU restrict src);
 
 static int
 read_version_code (const char *path, char version_code[7])
@@ -108,6 +127,62 @@ read_version_code (const char *path, char version_code[7])
         return 0;
     }
   return 1;
+}
+
+static char *
+copy_versioned_text (const Dwg_Data *dwg, const BITCODE_T value)
+{
+  if (!value)
+    return strdup ("");
+  if (dwg->header.version >= R_2007)
+    return bit_convert_TU ((const BITCODE_TU)value);
+  return bit_TV_to_utf8 ((const char *)value, dwg->header.codepage);
+}
+
+static int
+ascii_ends_with (const char *value, const char *suffix)
+{
+  size_t value_length;
+  size_t suffix_length;
+  size_t i;
+  if (!value || !suffix)
+    return 0;
+  value_length = strlen (value);
+  suffix_length = strlen (suffix);
+  if (value_length < suffix_length)
+    return 0;
+  for (i = 0; i < suffix_length; i++)
+    {
+      unsigned char left
+          = (unsigned char)value[value_length - suffix_length + i];
+      unsigned char right = (unsigned char)suffix[i];
+      if (tolower (left) != tolower (right))
+        return 0;
+    }
+  return 1;
+}
+
+static void
+inspect_style_fonts (const Dwg_Data *dwg, const Dwg_Object_STYLE *style,
+                     FontReferenceSummary *summary)
+{
+  char *font_file = copy_versioned_text (dwg, style->font_file);
+  char *bigfont_file = copy_versioned_text (dwg, style->bigfont_file);
+  if (font_file && font_file[0] != '\0')
+    {
+      if (ascii_ends_with (font_file, ".shx"))
+        summary->primary_shx_references++;
+      else if (ascii_ends_with (font_file, ".ttf")
+               || ascii_ends_with (font_file, ".ttc")
+               || ascii_ends_with (font_file, ".otf"))
+        summary->outline_font_references++;
+      else
+        summary->other_font_references++;
+    }
+  if (bigfont_file && bigfont_file[0] != '\0')
+    summary->bigfont_references++;
+  free (font_file);
+  free (bigfont_file);
 }
 
 static void
@@ -683,6 +758,7 @@ inspect_dwg (const char *path)
   CounterMap unknown_types = { 0 };
   TextSummary text = { 0 };
   TextSummary embedded_text = { 0 };
+  FontReferenceSummary font_references = { 0 };
   LargestBlock largest_block = { 0, 0, 0 };
   Bounds bounds;
   char version_code[7];
@@ -749,7 +825,12 @@ inspect_dwg (const char *path)
       if (object->fixedtype == DWG_TYPE_LAYER)
         layers++;
       else if (object->fixedtype == DWG_TYPE_STYLE)
-        text_styles++;
+        {
+          text_styles++;
+          if (object->tio.object && object->tio.object->tio.STYLE)
+            inspect_style_fonts (&dwg, object->tio.object->tio.STYLE,
+                                 &font_references);
+        }
       else if (object->fixedtype == DWG_TYPE_BLOCK_HEADER)
         {
           Dwg_Object_BLOCK_HEADER *block = NULL;
@@ -859,7 +940,25 @@ inspect_dwg (const char *path)
     {
       fputs (",\"largest_block\":null", stdout);
     }
-  fputs ("},", stdout);
+  fputs ("},\"text_environment\":{", stdout);
+  fputs ("\"storage\":", stdout);
+  json_string (dwg.header.version >= R_2007 ? "unicode" : "legacy");
+  fputs (",\"codepage\":", stdout);
+  {
+    const char *codepage
+        = dwg_codepage_dxfstr ((int)dwg.header.codepage);
+    json_string (codepage ? codepage : "unknown");
+  }
+  fputs (",\"font_references\":{", stdout);
+  printf ("\"primary_shx\":%" PRIu64,
+          font_references.primary_shx_references);
+  printf (",\"outline\":%" PRIu64,
+          font_references.outline_font_references);
+  printf (",\"other\":%" PRIu64,
+          font_references.other_font_references);
+  printf (",\"bigfont\":%" PRIu64,
+          font_references.bigfont_references);
+  fputs ("}},", stdout);
 
   printf ("\"performance\":{\"parse_ms\":%" PRIu64
           ",\"analysis_ms\":%" PRIu64 ",\"total_ms\":%" PRIu64,
