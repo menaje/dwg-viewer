@@ -31,11 +31,13 @@ function fakeCanvas() {
     restores: 0,
     fillStyles: [],
     strokeStyles: [],
+    fonts: [],
     fills: 0,
     events: [],
   };
   let fillStyle;
   let strokeStyle;
+  let font;
   const context = {
     beginPath() {},
     clip(rule) {
@@ -87,6 +89,15 @@ function fakeCanvas() {
       set(value) {
         strokeStyle = value;
         calls.strokeStyles.push(value);
+      },
+    },
+    font: {
+      get() {
+        return font;
+      },
+      set(value) {
+        font = value;
+        calls.fonts.push(value);
       },
     },
   });
@@ -190,6 +201,15 @@ test("maps common CAD TrueType files to platform-safe Korean fallbacks", () => {
     '700 1px "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif',
   );
   assert.equal(
+    systemFallbackFont({
+      fontFile: "HCR Batang",
+      trueTypeFont: "HCR Batang",
+      inlineFontFamily: "HCR Batang",
+      inlineBold: true,
+    }),
+    '700 1px "HCR Batang", "Batang", "AppleMyungjo", "Noto Serif KR", serif',
+  );
+  assert.equal(
     systemFallbackFont({ fontFile: "arial.ttf" }),
     '1px "Arial", "Helvetica Neue", Helvetica, sans-serif',
   );
@@ -204,6 +224,14 @@ test("maps common CAD TrueType files to platform-safe Korean fallbacks", () => {
   assert.equal(
     systemFallbackFont({ fontFile: "C:\\Fonts\\굵은돋움체.ttf" }),
     '1px "DwgLocalFont_1_7", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif',
+  );
+  assert.equal(
+    systemFallbackFont({
+      fontFile: "굵은돋움체.ttf",
+      inlineBold: true,
+      inlineItalic: true,
+    }),
+    'italic 700 1px "DwgLocalFont_1_7", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif',
   );
   assert.equal(unregisterLocalOutlineFont("굵은돋움체.ttf"), true);
 });
@@ -538,6 +566,129 @@ test("flows MTEXT into stored columns and paints its background first", () => {
   assert.equal(canvas.calls.fillTextArguments.length, 4);
   assert.equal(canvas.calls.fillTextArguments[2][1], 3);
   assert.equal(canvas.calls.fillTextArguments[3][1], 3);
+});
+
+test("renders bounded inline MTEXT font, color, height, width and slant", () => {
+  const canvas = fakeCanvas();
+  const requestedStyles = [];
+  const inlineFontRequests = [];
+  const record = {
+    handle: 9n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 1,
+    flags: 0,
+    insertionPoint: [105, 201, 0],
+    alignmentPoint: [0, 0, 0],
+    normal: [0, 0, 1],
+    xAxisDirection: [1, 0, 0],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    rectangleWidth: 0,
+    rectangleHeight: 0,
+    extentsWidth: 0,
+    extentsHeight: 0,
+    lineSpacingFactor: 1,
+    backgroundFlags: 0,
+    sourceFlags: 0,
+    horizontalAlignment: 0,
+    verticalAlignment: 0,
+    generationFlags: 0,
+    attachment: 1,
+    mtextType: 0,
+    columnType: 0,
+    columnCount: 0,
+    columnFlags: 0,
+    valueByteLength: 80,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: 1,
+      readDisplayRecord(_index, target) {
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        target.xAxisDirection = [...record.xAxisDirection];
+        return target;
+      },
+      readValue() {
+        return String.raw`{\fHCR Batang|b1|i0|c129|p18;\H0.5x;\W0.5;\T2;\Q20;\C2;\LA\l}B`;
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: {
+      getGlyph(style) {
+        requestedStyles.push(style);
+        return undefined;
+      },
+    },
+    minimumPixelHeight: 0.1,
+    onInlineFonts(names) {
+      inlineFontRequests.push(names);
+    },
+  });
+
+  overlay.redraw(camera, [true]);
+
+  assert.deepEqual(
+    canvas.calls.fillTextArguments.map(([character]) => character),
+    ["A", "B"],
+  );
+  assert.ok(
+    requestedStyles.some(
+      (style) =>
+        style.fontFile === "HCR Batang" &&
+        style.inlineBold === true &&
+        style.inlineItalic === false,
+    ),
+  );
+  assert.ok(
+    canvas.calls.fonts.some((font) =>
+      font.includes('"HCR Batang", "Batang"'),
+    ),
+  );
+  assert.ok(
+    canvas.calls.fillStyles.includes("rgba(255, 255, 0, 1)"),
+  );
+  assert.ok(
+    canvas.calls.fillStyles.includes("rgba(255, 255, 255, 1)"),
+  );
+  assert.ok(
+    canvas.calls.transforms.some(
+      ([a, _b, c, d]) =>
+        Math.abs(a - 10) < 1e-9 &&
+        Math.abs(c) > 1 &&
+        Math.abs(d - 20) < 1e-9,
+    ),
+  );
+  assert.ok(
+    canvas.calls.transforms.some(
+      ([a, b, c, d]) => a === 40 && b === 0 && c === 0 && d === 40,
+    ),
+  );
+  assert.ok(canvas.calls.lineTo >= 1);
+  assert.ok(canvas.calls.stroke >= 1);
+  assert.deepEqual(inlineFontRequests, [["HCR Batang"]]);
+  overlay.redraw(camera, [true]);
+  assert.equal(inlineFontRequests.length, 1);
 });
 
 test("resolves text ByLayer and ByBlock colors at the occurrence", () => {

@@ -460,7 +460,12 @@ WIPEOUT clip points use separate packed `f64` pools. The Webview reads MTEXT
 WCS X-axis, attachment, background, column count, width, gutter and the shared
 height pool only after the first geometry frame. It limits a record to 64
 columns and paints its background inside the existing XCLIP/WIPEOUT Canvas
-clip before drawing glyphs.
+clip before drawing glyphs. The same delayed pass parses at most 4,096 code
+points and 32 nested inline-format levels. Font, ACI color, height, width,
+tracking, oblique and text-decoration changes stay as compact runs instead of
+per-character objects. A previously unseen visible `\f` family triggers one
+deduplicated host request; off-screen strings remain undecoded and cannot
+start font scans.
 HATCH adds source records plus bounded closed `f64` ring, gradient-color and
 seed-point pools. Pattern-definition lines preserve parser-resolved angles,
 bases, offsets and dash/gap/dot sequences in separate typed pools. Original

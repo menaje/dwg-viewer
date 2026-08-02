@@ -768,6 +768,43 @@ function requestHostFonts(styles = activeTextStyles, revision = openRevision) {
   renderFontDiagnostics();
 }
 
+function requestInlineTextFonts(names, revision = openRevision) {
+  if (
+    revision !== openRevision ||
+    !activeScene ||
+    !Array.isArray(names) ||
+    names.length === 0
+  ) {
+    return;
+  }
+  const inlineStyles = [];
+  for (const source of names.slice(0, 128)) {
+    if (typeof source !== "string") {
+      continue;
+    }
+    const name = source.trim().slice(0, 128);
+    if (!name) {
+      continue;
+    }
+    const reference = /\.(?:shx|ttf|otf|ttc)$/iu.test(name)
+      ? name
+      : `${name}.ttf`;
+    inlineStyles.push(
+      Object.freeze({
+        fontFile: reference,
+        bigFontFile: "",
+        trueTypeFont: reference,
+      }),
+    );
+  }
+  if (inlineStyles.length === 0) {
+    return;
+  }
+  const combined = mergeTextStyles(activeTextStyles, inlineStyles);
+  syncFontDiagnostics(combined);
+  requestHostFonts(combined, revision);
+}
+
 function refreshTextAfterFontChange(revision) {
   if (revision !== openRevision || !activeScene) {
     return;
@@ -799,7 +836,9 @@ function unregisterHostFont(key) {
   const outline = localOutlineFaces.get(key);
   if (outline) {
     document.fonts.delete(outline.face);
-    unregisterLocalOutlineFont(outline.name);
+    for (const name of outline.names ?? [outline.name]) {
+      unregisterLocalOutlineFont(name);
+    }
     localOutlineFaces.delete(key);
   } else {
     glyphCache.unregisterFont(key);
@@ -832,11 +871,19 @@ async function registerHostOutlineFont(pending, message) {
     return undefined;
   }
   document.fonts.add(face);
-  registerLocalOutlineFont(pending.name, family);
+  const names = [pending.name];
+  const stem = pending.name.replace(/\.(?:ttf|otf|ttc)$/iu, "");
+  if (stem && stem !== pending.name) {
+    names.push(stem);
+  }
+  for (const name of names) {
+    registerLocalOutlineFont(name, family);
+  }
   const entry = Object.freeze({
     face,
     family,
     name: pending.name,
+    names: Object.freeze(names),
     size: Number.isSafeInteger(message.size) ? message.size : 0,
   });
   localOutlineFaces.set(pending.key, entry);
@@ -1465,6 +1512,8 @@ async function initializeTextOverlay(
     instanceGraph,
     glyphCache,
     maskOrder,
+    onInlineFonts: (names) =>
+      requestInlineTextFonts(names, revision),
   });
   if (!activeTextComposite) {
     activeTextComposite = new CompositeTextOverlay(textCanvas);
@@ -1492,9 +1541,9 @@ async function initializeTextOverlay(
     sourceTexts: textEntities.length,
     missingFonts: missing,
   });
-  activeInteraction?.refresh();
   syncFontDiagnostics(styles);
   requestHostFonts(styles, revision);
+  activeInteraction?.refresh();
   status.textContent =
     missing.length === 0
       ? `문자 ${textEntities.length.toLocaleString()}개 표시 준비 완료`
@@ -2495,6 +2544,8 @@ async function addExternalText(
     layers: rootScene.metadata.layers,
     instanceGraph: composedInstanceGraph,
     glyphCache,
+    onInlineFonts: (names) =>
+      requestInlineTextFonts(names, revision),
   });
   textComposite.add(overlay);
   if (needsComplexOverlay) {

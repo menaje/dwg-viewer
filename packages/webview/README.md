@@ -111,6 +111,11 @@ layout tabs on hover, focus or an explicit click.
   most 64 stored columns, and paints bounded background fills. Stored WCS
   X-axis direction, attachment, column width, gutter and height are preserved
   while explicit `\P` paragraph breaks remain bounded.
+- Applies nested MTEXT font, ACI color, height, width, tracking, oblique,
+  vertical-run alignment, underline, overline and strike-through controls
+  within 4,096 code points and 32 formatting levels. Visible inline font
+  families are requested lazily from the host instead of scanning off-screen
+  strings.
 - Separates strict EUC-KR from CP949/UHC, encodes all 11,172 modern Hangul
   syllables plus the KS X 1001 symbol and Hanja rows as Johab/CP1361, and
   probes actual glyph presence instead of guessing from BigFont filenames.
@@ -120,10 +125,10 @@ layout tabs on hover, focus or an explicit click.
 The current page is an engine verification harness, not the final VS Code
 extension UI. At a stable 4× or higher zoom, a dedicated worker now refines
 ARC, CIRCLE, ELLIPSE, polyline-bulge and valid NURBS geometry to a 0.5 px
-screen-error contract without changing the bounded first frame. Per-run MTEXT
-formatting, top-to-bottom flow, complete TEXT OCS alignment, lossless analytic
-HATCH boundary topology and further real-world Korean SHX corpus expansion
-remain follow-up work.
+screen-error contract without changing the bounded first frame. Exact stacked
+fractions, paragraph indents/tabs, vertical MTEXT flow, complete TEXT OCS
+alignment, lossless analytic HATCH boundary topology and further real-world
+Korean SHX corpus expansion remain follow-up work.
 
 ## Run
 

@@ -1,0 +1,80 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  DEFAULT_MTEXT_FORMAT,
+  measureCadMTextLine,
+  parseCadMTextRuns,
+  plainCadMTextLines,
+  wrapCadMTextRuns,
+} from "../src/mtext-format.mjs";
+
+test("preserves bounded inline MTEXT formatting and restores nested blocks", () => {
+  const lines = parseCadMTextRuns(
+    String.raw`\A1;{\fHCR Batang|b1|i0|c129|p18;\H0.83333x;\C2;➀}23F \W0.5;\T1.5;\Q20;\L폭\l`,
+    { baseHeight: 2 },
+  );
+
+  assert.equal(plainCadMTextLines(
+    String.raw`\A1;{\fHCR Batang|b1|i0|c129|p18;\H0.83333x;\C2;➀}23F \W0.5;\T1.5;\Q20;\L폭\l`,
+  )[0], "➀23F 폭");
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0][0].text, "➀");
+  assert.equal(lines[0][0].format.fontFile, "HCR Batang");
+  assert.equal(lines[0][0].format.bold, true);
+  assert.equal(lines[0][0].format.italic, false);
+  assert.equal(lines[0][0].format.heightScale, 0.83333);
+  assert.equal(lines[0][0].format.color, ((2 << 30) | 2) >>> 0);
+  assert.equal(lines[0][1].text, "23F ");
+  assert.deepEqual(lines[0][1].format, DEFAULT_MTEXT_FORMAT);
+  assert.equal(lines[0][2].text, "폭");
+  assert.equal(lines[0][2].format.widthScale, 0.5);
+  assert.equal(lines[0][2].format.tracking, 1.5);
+  assert.ok(
+    Math.abs(lines[0][2].format.obliqueAngle - Math.PI / 9) < 1e-12,
+  );
+  assert.equal(lines[0][2].format.underline, true);
+});
+
+test("handles absolute heights, paragraphs, percent codes and stacked text", () => {
+  const value = String.raw`\H4;큰%%d\P\S위^아래;\U+00B1`;
+  const lines = parseCadMTextRuns(value, { baseHeight: 2 });
+
+  assert.deepEqual(plainCadMTextLines(value), ["큰°", "위/아래±"]);
+  assert.equal(lines[0][0].format.heightScale, 2);
+  assert.equal(lines[1][0].format.heightScale, 2);
+});
+
+test("does not expose unsupported paragraph properties as drawing text", () => {
+  assert.deepEqual(
+    plainCadMTextLines(String.raw`\pi2,l4,t6;들여쓰기\P다음`),
+    ["들여쓰기", "다음"],
+  );
+  assert.deepEqual(plainCadMTextLines(String.raw`첫째\p둘째`), [
+    "첫째",
+    "둘째",
+  ]);
+});
+
+test("wraps rich MTEXT without losing run formatting", () => {
+  const source = parseCadMTextRuns(
+    String.raw`AB {\H2x;CD} EF`,
+  );
+  const wrapped = wrapCadMTextRuns(
+    source,
+    4,
+    (_character, format) => format.heightScale,
+  );
+
+  assert.deepEqual(
+    wrapped.map((line) => line.map((run) => run.text).join("")),
+    ["AB", "CD", "EF"],
+  );
+  assert.equal(wrapped[1][0].format.heightScale, 2);
+  assert.equal(measureCadMTextLine(wrapped[1],
+    (_character, format) => format.heightScale), 4);
+  assert.deepEqual(
+    wrapCadMTextRuns(parseCadMTextRuns("   "), 4),
+    [Object.freeze([])],
+  );
+});

@@ -147,6 +147,13 @@ Hangul syllables, 892 KS X 1001 symbols, 4,888 Hanja, and the CP1361 `®` and
 `€` additions. Compatibility and archaic Jamo without an explicit CP1361
 slot still use a direct Unicode glyph or the system-font fallback.
 
+Visible MTEXT inline `\f` font runs are discovered after the first geometry
+frame. A filename is resolved directly; a family name tries the matching TTF
+in the drawing, bounded project and configured font folders. The request is
+deduplicated and shares the same 128-request, 32 MiB-per-file and 64 MiB
+per-drawing limits as text-style fonts. An installed system family remains the
+fallback when no local file exists.
+
 ## External references
 
 Scene Cache v1.12 and later retain each DWG XREF's original path. The extension tries,

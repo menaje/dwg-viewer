@@ -16,6 +16,13 @@ import {
   translationMat4,
 } from "./math.mjs";
 import { maskBucketFor } from "./mask-order.mjs";
+import {
+  DEFAULT_MTEXT_FORMAT,
+  measureCadMTextLine,
+  parseCadMTextRuns,
+  plainCadMTextLines,
+  wrapCadMTextRuns,
+} from "./mtext-format.mjs";
 
 const DEFAULT_MAXIMUM_SOURCE_TEXTS = 50_000;
 const DEFAULT_MAXIMUM_OCCURRENCES = 10_000;
@@ -87,23 +94,78 @@ export function unregisterLocalOutlineFont(name) {
 export function systemFallbackFont(style) {
   const name = normalizedFontFile(style);
   const localFamily = LOCAL_OUTLINE_FONTS.get(name);
-  if (localFamily) {
-    return `1px "${localFamily}", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif`;
-  }
+  const italic = style?.inlineItalic === true ? "italic " : "";
   const bold =
+    style?.inlineBold === true ||
     /(?:bold|black|heavy|semibold|demi)/.test(name) ||
     /bd(?:\.[^.]+)?$/.test(name);
   const weight = bold ? "700 " : "";
+  if (localFamily) {
+    return `${italic}${weight}1px "${localFamily}", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif`;
+  }
+  const requestedFamily =
+    typeof style?.inlineFontFamily === "string" &&
+    style.inlineFontFamily.length > 0 &&
+    style.inlineFontFamily.length <= 128
+      ? `"${style.inlineFontFamily.replaceAll("\\", "\\\\").replaceAll('"', '\\"')}", `
+      : "";
   if (/^(?:arial|helvetica)/.test(name)) {
-    return `${weight}1px "Arial", "Helvetica Neue", Helvetica, sans-serif`;
+    return `${italic}${weight}1px ${requestedFamily}"Arial", "Helvetica Neue", Helvetica, sans-serif`;
   }
-  if (/^(?:batang|gungsuh|궁서|바탕)/.test(name)) {
-    return `${weight}1px "Batang", "AppleMyungjo", "Noto Serif KR", serif`;
+  if (/(?:^|[ _-])(?:batang|gungsuh|궁서|바탕)/.test(name)) {
+    return `${italic}${weight}1px ${requestedFamily}"Batang", "AppleMyungjo", "Noto Serif KR", serif`;
   }
-  if (/^(?:malgun|dotum|gulim|돋움|굴림|맑은)/.test(name)) {
-    return `${weight}1px "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif`;
+  if (/(?:^|[ _-])(?:malgun|dotum|gulim|돋움|굴림|맑은)/.test(name)) {
+    return `${italic}${weight}1px ${requestedFamily}"Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif`;
   }
-  return `${weight}1px "Noto Sans KR", "Apple SD Gothic Neo", sans-serif`;
+  return `${italic}${weight}1px ${requestedFamily}"Noto Sans KR", "Apple SD Gothic Neo", sans-serif`;
+}
+
+function baseTextHeight(record) {
+  return Number.isFinite(record.height) && record.height > 0
+    ? record.height
+    : record.style?.height > 0
+      ? record.style.height
+      : record.style?.lastHeight > 0
+        ? record.style.lastHeight
+        : 1;
+}
+
+function unformattedRichLines(lines) {
+  return Object.freeze(
+    lines.map((line) =>
+      Object.freeze(
+        line.length === 0
+          ? []
+          : [
+              Object.freeze({
+                text: line,
+                format: DEFAULT_MTEXT_FORMAT,
+              }),
+            ],
+      ),
+    ),
+  );
+}
+
+function plainLinesFromRich(lines) {
+  return Object.freeze(
+    lines.map((line) => line.map((run) => run.text).join("")),
+  );
+}
+
+function styleForMTextFormat(style, format) {
+  if (!format.fontFile && format.bold === null && format.italic === null) {
+    return style;
+  }
+  return Object.freeze({
+    ...style,
+    fontFile: format.fontFile || style?.fontFile || "",
+    trueTypeFont: format.fontFile || style?.trueTypeFont || "",
+    inlineFontFamily: format.fontFile,
+    inlineBold: format.bold,
+    inlineItalic: format.italic,
+  });
 }
 
 export function plainCadTextLines(value, isMText = false) {
@@ -117,76 +179,9 @@ export function plainCadTextLines(value, isMText = false) {
         .join(""),
     ]);
   }
-  const output = [""];
-  let codePoints = 0;
-  const append = (text) => {
-    if (codePoints >= MAXIMUM_CODE_POINTS_PER_ENTITY) {
-      return;
-    }
-    const limited = [...text].slice(
-      0,
-      MAXIMUM_CODE_POINTS_PER_ENTITY - codePoints,
-    );
-    output[output.length - 1] += limited.join("");
-    codePoints += limited.length;
-  };
-  for (let index = 0; index < value.length && codePoints < MAXIMUM_CODE_POINTS_PER_ENTITY; ) {
-    const character = value[index];
-    if (character === "{" || character === "}") {
-      index += 1;
-      continue;
-    }
-    if (character !== "\\") {
-      append(character);
-      index += 1;
-      continue;
-    }
-    const command = value[index + 1] ?? "";
-    if (command === "P" || command === "p") {
-      output.push("");
-      index += 2;
-      continue;
-    }
-    if (command === "~") {
-      append(" ");
-      index += 2;
-      continue;
-    }
-    if (command === "\\" || command === "{" || command === "}") {
-      append(command);
-      index += 2;
-      continue;
-    }
-    if (
-      (command === "U" || command === "u") &&
-      value[index + 2] === "+" &&
-      /^[0-9a-f]{4}$/i.test(value.slice(index + 3, index + 7))
-    ) {
-      append(String.fromCodePoint(Number.parseInt(value.slice(index + 3, index + 7), 16)));
-      index += 7;
-      continue;
-    }
-    if ("LlOoKk".includes(command)) {
-      index += 2;
-      continue;
-    }
-    const semicolon = value.indexOf(";", index + 2);
-    if (semicolon !== -1) {
-      if (command === "S" || command === "s") {
-        append(
-          value
-            .slice(index + 2, semicolon)
-            .replaceAll("^", "/")
-            .replaceAll("#", "/"),
-        );
-      }
-      index = semicolon + 1;
-      continue;
-    }
-    append(command || "\\");
-    index += command ? 2 : 1;
-  }
-  return Object.freeze(output.map(replacePercentCodes));
+  return plainCadMTextLines(value, {
+    maximumCodePoints: MAXIMUM_CODE_POINTS_PER_ENTITY,
+  });
 }
 
 export function wrapCadTextLines(
@@ -667,6 +662,7 @@ export class CanvasTextOverlay {
       maskOrder = null,
       palette = DEFAULT_ACI_PALETTE,
       drawingBackground = DEFAULT_DRAWING_BACKGROUND,
+      onInlineFonts = null,
     },
   ) {
     const context = canvas.getContext("2d", { alpha: true });
@@ -696,6 +692,9 @@ export class CanvasTextOverlay {
       drawingBackground.length <= 128
         ? drawingBackground
         : DEFAULT_DRAWING_BACKGROUND;
+    this.onInlineFonts =
+      typeof onInlineFonts === "function" ? onInlineFonts : null;
+    this.reportedInlineFontKeys = new Set();
     this.configuredMaskOrder = maskOrder?.enabled ? maskOrder : null;
     this.maskOrder = this.configuredMaskOrder;
     this.blockIndexByHandle = new Map(
@@ -895,9 +894,17 @@ export class CanvasTextOverlay {
           typeof this.textEntities.readValue === "function"
             ? this.textEntities.readValue(textIndex)
             : record.value;
-        const isMText =
-          record.kind === TextEntityKind.MText || record.mtextType !== 0;
-        const lines = plainCadTextLines(value, isMText);
+        const isMText = isMTextRecord(record);
+        const richLines = isMText
+          ? parseCadMTextRuns(value, {
+              baseHeight: baseTextHeight(record),
+              maximumCodePoints: MAXIMUM_CODE_POINTS_PER_ENTITY,
+            })
+          : unformattedRichLines(plainCadTextLines(value, false));
+        if (isMText) {
+          this.#reportInlineFonts(richLines);
+        }
+        const lines = plainLinesFromRich(richLines);
         if (lines.every((line) => line.length === 0)) {
           continue;
         }
@@ -937,7 +944,7 @@ export class CanvasTextOverlay {
         );
         this.#drawOccurrence(
           record,
-          lines,
+          richLines,
           worldMatrix,
           screen,
           camera,
@@ -970,6 +977,38 @@ export class CanvasTextOverlay {
     context.setTransform(1, 0, 0, 1, 0, 0);
     this.lastMetrics = Object.freeze(metrics);
     return this.lastMetrics;
+  }
+
+  #reportInlineFonts(lines) {
+    if (!this.onInlineFonts) {
+      return;
+    }
+    const names = [];
+    for (const line of lines) {
+      for (const run of line) {
+        const name = run.format.fontFile;
+        const key =
+          typeof name === "string"
+            ? name
+                .trim()
+                .normalize("NFC")
+                .toLocaleLowerCase("en-US")
+            : "";
+        if (!key || this.reportedInlineFontKeys.has(key)) {
+          continue;
+        }
+        this.reportedInlineFontKeys.add(key);
+        names.push(name.trim());
+      }
+    }
+    if (names.length === 0) {
+      return;
+    }
+    try {
+      this.onInlineFonts(Object.freeze(names));
+    } catch {
+      // Font discovery is optional; text keeps its bounded fallback path.
+    }
   }
 
   #screenMasks(camera, width, height, layerVisibility, metrics) {
@@ -1241,17 +1280,27 @@ export class CanvasTextOverlay {
     byBlockOpacity,
   ) {
     const context = this.context;
-    const [red, green, blue] = decodeColor(
-      record.color,
-      this.layers[layerIndex],
-      byBlockColor,
-      this.palette,
-    );
     const opacity = decodeCadOpacity(record.color, {
       layer: decodeCadOpacity(this.layers[layerIndex]?.color ?? 0),
       byBlock: byBlockOpacity,
     });
-    const color = `rgba(${red}, ${green}, ${blue}, ${opacity})`;
+    const colorCache = new Map();
+    const colorForFormat = (format) => {
+      const encoded =
+        Number.isInteger(format.color) ? format.color : record.color;
+      if (colorCache.has(encoded)) {
+        return colorCache.get(encoded);
+      }
+      const [red, green, blue] = decodeColor(
+        encoded,
+        this.layers[layerIndex],
+        byBlockColor,
+        this.palette,
+      );
+      const color = `rgba(${red}, ${green}, ${blue}, ${opacity})`;
+      colorCache.set(encoded, color);
+      return color;
+    };
     const lineStep = Math.max(
       Number.isFinite(record.lineSpacingFactor) && record.lineSpacingFactor > 0
         ? record.lineSpacingFactor * 1.667
@@ -1263,14 +1312,7 @@ export class CanvasTextOverlay {
     const verticalGroup =
       attachment >= 1 ? Math.floor((attachment - 1) / 3) : 0;
     const horizontalScale = textHorizontalScale(record, record.style);
-    const verticalScale =
-      Number.isFinite(record.height) && record.height > 0
-        ? record.height
-        : record.style?.height > 0
-          ? record.style.height
-          : record.style?.lastHeight > 0
-            ? record.style.lastHeight
-            : 1;
+    const verticalScale = baseTextHeight(record);
     const storedWrapWidth = isMText
       ? normalizedStoredExtent(
           record.rectangleWidth,
@@ -1290,30 +1332,71 @@ export class CanvasTextOverlay {
           verticalScale,
         )
       : 0;
-    const fallbackFont = systemFallbackFont(record.style);
-    context.font = fallbackFont;
-    const advanceCache = new Map();
-    const characterAdvance = (character) => {
-      const cached = advanceCache.get(character);
-      if (cached !== undefined) {
-        return cached;
+    const formatRecords = new Map();
+    const formatRecord = (format) => {
+      if (formatRecords.has(format)) {
+        return formatRecords.get(format);
       }
-      const glyph =
-        character === " " || character === "\t"
-          ? null
-          : this.glyphCache.getGlyph(
-              record.style,
-              character.codePointAt(0),
-            );
-      const advance =
+      const style = styleForMTextFormat(record.style, format);
+      const baselineOffset =
+        format.verticalAlignment === 2
+          ? 1 - format.heightScale
+          : format.verticalAlignment === 1
+            ? (1 - format.heightScale) * 0.5
+            : 0;
+      const recordForFormat = Object.freeze({
+        style,
+        font: systemFallbackFont(style),
+        heightScale: format.heightScale,
+        widthScale: format.heightScale * format.widthScale,
+        tracking: format.tracking,
+        shear: Math.tan(format.obliqueAngle),
+        baselineOffset,
+        color: colorForFormat(format),
+        underline: format.underline,
+        overline: format.overline,
+        strikeThrough: format.strikeThrough,
+      });
+      formatRecords.set(format, recordForFormat);
+      return recordForFormat;
+    };
+    const characterCache = new Map();
+    const formattedCharacter = (character, format) => {
+      let perFormat = characterCache.get(format);
+      if (!perFormat) {
+        perFormat = new Map();
+        characterCache.set(format, perFormat);
+      }
+      if (perFormat.has(character)) {
+        return perFormat.get(character);
+      }
+      const formatted = formatRecord(format);
+      context.font = formatted.font;
+      const whitespace = character === " " || character === "\t";
+      const glyph = whitespace
+        ? null
+        : this.glyphCache.getGlyph(
+            formatted.style,
+            character.codePointAt(0),
+          );
+      const baseAdvance =
         character === "\t"
           ? measuredFallbackAdvance(context, " ") * 4
           : glyph?.advance > 0
             ? glyph.advance
             : measuredFallbackAdvance(context, character);
-      advanceCache.set(character, advance);
-      return advance;
+      const entry = Object.freeze({
+        glyph,
+        formatted,
+        whitespace,
+        advance:
+          baseAdvance * formatted.widthScale * formatted.tracking,
+      });
+      perFormat.set(character, entry);
+      return entry;
     };
+    const characterAdvance = (character, format) =>
+      formattedCharacter(character, format).advance;
     const requestedColumnCount =
       isMText &&
       Number.isInteger(record.columnType) &&
@@ -1353,7 +1436,7 @@ export class CanvasTextOverlay {
     const wrapWidth = columnWidth || storedWrapWidth;
     const lines =
       isMText && wrapWidth > 0
-        ? wrapCadTextLines(
+        ? wrapCadMTextRuns(
             parsedLines,
             wrapWidth,
             characterAdvance,
@@ -1373,10 +1456,7 @@ export class CanvasTextOverlay {
     });
     const maximumMeasuredLineWidth = Math.max(
       ...lines.map((line) =>
-        [...line].reduce(
-          (total, character) => total + characterAdvance(character),
-          0,
-        ),
+        measureCadMTextLine(line, characterAdvance),
       ),
       0,
     );
@@ -1437,33 +1517,19 @@ export class CanvasTextOverlay {
         const line = column.lines[lineIndex];
         const glyphs = [];
         let lineAdvance = 0;
-        for (const character of line) {
-          if (character === " " || character === "\t") {
+        for (const run of line) {
+          for (const character of run.text) {
+            const formatted = formattedCharacter(
+              character,
+              run.format,
+            );
             glyphs.push({
               character,
-              glyph: null,
+              ...formatted,
               x: lineAdvance,
-              whitespace: true,
             });
-            const spaceAdvance = measuredFallbackAdvance(context, " ");
-            lineAdvance +=
-              character === "\t" ? spaceAdvance * 4 : spaceAdvance;
-            continue;
+            lineAdvance += formatted.advance;
           }
-          const glyph = this.glyphCache.getGlyph(
-            record.style,
-            character.codePointAt(0),
-          );
-          glyphs.push({
-            character,
-            glyph,
-            x: lineAdvance,
-            whitespace: false,
-          });
-          lineAdvance +=
-            glyph?.advance > 0
-              ? glyph.advance
-              : measuredFallbackAdvance(context, character);
         }
         const storedLineWidth =
           isMText && columnCount === 1 && lines.length === 1
@@ -1486,15 +1552,31 @@ export class CanvasTextOverlay {
                 ? -scaledLineAdvance
                 : 0;
         const baseline = verticalOffset - lineIndex * lineStep;
-        context.strokeStyle = color;
-        context.fillStyle = color;
         context.beginPath();
         let hasVectorPath = false;
+        let activeVectorColor = "";
+        const flushVectorPath = () => {
+          if (hasVectorPath) {
+            context.stroke();
+            context.beginPath();
+            hasVectorPath = false;
+          }
+        };
         for (const entry of glyphs) {
           if (entry.whitespace) {
             continue;
           }
           const x = entry.x * lineScale + horizontalOffset;
+          const glyphXScale = entry.formatted.widthScale * lineScale;
+          const glyphYScale = entry.formatted.heightScale;
+          const entryBaseline =
+            baseline + entry.formatted.baselineOffset;
+          if (activeVectorColor !== entry.formatted.color) {
+            flushVectorPath();
+            activeVectorColor = entry.formatted.color;
+            context.strokeStyle = activeVectorColor;
+            context.fillStyle = activeVectorColor;
+          }
           if (entry.glyph) {
             const remaining = this.maximumSegments - metrics.segments;
             const count = Math.min(
@@ -1505,16 +1587,26 @@ export class CanvasTextOverlay {
               const offset = segment * 4;
               const start = pointToScreen(
                 matrix,
-                entry.glyph.vertices[offset] * lineScale + x,
-                entry.glyph.vertices[offset + 1] + baseline,
+                entry.glyph.vertices[offset] * glyphXScale +
+                  entry.glyph.vertices[offset + 1] *
+                    glyphYScale *
+                    entry.formatted.shear +
+                  x,
+                entry.glyph.vertices[offset + 1] * glyphYScale +
+                  entryBaseline,
                 camera,
                 width,
                 height,
               );
               const end = pointToScreen(
                 matrix,
-                entry.glyph.vertices[offset + 2] * lineScale + x,
-                entry.glyph.vertices[offset + 3] + baseline,
+                entry.glyph.vertices[offset + 2] * glyphXScale +
+                  entry.glyph.vertices[offset + 3] *
+                    glyphYScale *
+                    entry.formatted.shear +
+                  x,
+                entry.glyph.vertices[offset + 3] * glyphYScale +
+                  entryBaseline,
                 camera,
                 width,
                 height,
@@ -1528,32 +1620,90 @@ export class CanvasTextOverlay {
           } else if (
             metrics.fallbackGlyphs < this.maximumFallbackGlyphs
           ) {
-            if (hasVectorPath) {
-              context.stroke();
-              context.beginPath();
-              hasVectorPath = false;
-            }
+            flushVectorPath();
             context.setTransform(
-              screen.a * lineScale,
-              screen.b * lineScale,
-              -screen.c,
-              -screen.d,
-              screen.e,
-              screen.f,
+              screen.a * glyphXScale,
+              screen.b * glyphXScale,
+              -(
+                screen.c * glyphYScale +
+                screen.a * entry.formatted.shear * glyphYScale
+              ),
+              -(
+                screen.d * glyphYScale +
+                screen.b * entry.formatted.shear * glyphYScale
+              ),
+              screen.e -
+                screen.a * entry.formatted.shear * entryBaseline,
+              screen.f -
+                screen.b * entry.formatted.shear * entryBaseline,
             );
-            context.font = fallbackFont;
+            context.font = entry.formatted.font;
             context.textBaseline = "alphabetic";
             context.fillText(
               entry.character,
-              entry.x + horizontalOffset / lineScale,
-              -baseline,
+              x / glyphXScale,
+              -entryBaseline / glyphYScale,
             );
             context.setTransform(1, 0, 0, 1, 0, 0);
             metrics.fallbackGlyphs += 1;
           }
         }
-        if (hasVectorPath) {
-          context.stroke();
+        flushVectorPath();
+        for (let first = 0; first < glyphs.length; ) {
+          let end = first + 1;
+          while (
+            end < glyphs.length &&
+            glyphs[end].formatted === glyphs[first].formatted
+          ) {
+            end += 1;
+          }
+          const formatted = glyphs[first].formatted;
+          const startX =
+            glyphs[first].x * lineScale + horizontalOffset;
+          const endX =
+            (glyphs[end - 1].x + glyphs[end - 1].advance) *
+              lineScale +
+            horizontalOffset;
+          for (const [enabled, offset] of [
+            [formatted.underline, -0.12],
+            [formatted.strikeThrough, 0.45],
+            [formatted.overline, 1.05],
+          ]) {
+            if (
+              !enabled ||
+              metrics.segments >= this.maximumSegments ||
+              !(endX > startX)
+            ) {
+              continue;
+            }
+            const y =
+              baseline +
+              formatted.baselineOffset +
+              offset * formatted.heightScale;
+            const start = pointToScreen(
+              matrix,
+              startX,
+              y,
+              camera,
+              width,
+              height,
+            );
+            const finish = pointToScreen(
+              matrix,
+              endX,
+              y,
+              camera,
+              width,
+              height,
+            );
+            context.strokeStyle = formatted.color;
+            context.beginPath();
+            context.moveTo(start[0], start[1]);
+            context.lineTo(finish[0], finish[1]);
+            context.stroke();
+            metrics.segments += 1;
+          }
+          first = end;
         }
       }
     }
