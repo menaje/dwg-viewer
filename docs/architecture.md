@@ -456,7 +456,11 @@ records. Resolved DIMENSION picture blocks share the kind-13 block-instance
 stream. The records retain owner handles so block definitions remain shared
 instead of being expanded per insertion. Text values, tags, prompts, font
 filenames and BigFont filenames remain UTF-8, while MTEXT column heights and
-WIPEOUT clip points use separate packed `f64` pools.
+WIPEOUT clip points use separate packed `f64` pools. The Webview reads MTEXT
+WCS X-axis, attachment, background, column count, width, gutter and the shared
+height pool only after the first geometry frame. It limits a record to 64
+columns and paints its background inside the existing XCLIP/WIPEOUT Canvas
+clip before drawing glyphs.
 HATCH adds source records plus bounded closed `f64` ring, gradient-color and
 seed-point pools. Pattern-definition lines preserve parser-resolved angles,
 bases, offsets and dash/gap/dot sequences in separate typed pools. Original
@@ -637,9 +641,11 @@ all 11,172 modern syllables in Unicode's
 [CP949 mapping](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WINDOWS/CP949.TXT).
 Johab uses its initial/medial/final five-bit composition and matches the
 11,172-row [Unicode Technical Note #60 data](https://www.unicode.org/notes/tn60/tn60-2.html).
-Current Johab support is deliberately limited to modern precomposed Hangul;
-non-Hangul CP1361 symbols and Hanja fall through to a direct Unicode SHX glyph
-or the local system-font fallback.
+The KS X 1001 row transform is checked against Unicode's authoritative
+[Windows CP1361 best-fit mapping](https://www.unicode.org/Public/MAPPINGS/VENDORS/MICSFT/WindowsBestFit/bestfit1361.txt)
+and adds 892 symbols, 4,888 Hanja, `®` and `€`. Compatibility and archaic
+Jamo without an explicit CP1361 slot fall through to a direct Unicode SHX
+glyph or the local system-font fallback.
 
 Glyphs are parsed lazily into compact `Float32Array` line pairs and retained
 in a byte-bounded LRU. Switching an encoding map clears compiled glyph

@@ -338,6 +338,7 @@ export class TextEntityTable {
     target.insertionPoint ??= [0, 0, 0];
     target.alignmentPoint ??= [0, 0, 0];
     target.normal ??= [0, 0, 1];
+    target.xAxisDirection ??= [1, 0, 0];
     for (let axis = 0; axis < 3; axis += 1) {
       target.insertionPoint[axis] = this.view.getFloat64(
         offset + 72 + axis * 8,
@@ -351,6 +352,10 @@ export class TextEntityTable {
         offset + 120 + axis * 8,
         true,
       );
+      target.xAxisDirection[axis] = this.view.getFloat64(
+        offset + 144 + axis * 8,
+        true,
+      );
     }
     target.height = this.view.getFloat64(offset + 168, true);
     target.widthFactor = this.view.getFloat64(offset + 176, true);
@@ -361,12 +366,34 @@ export class TextEntityTable {
     target.extentsWidth = this.view.getFloat64(offset + 224, true);
     target.extentsHeight = this.view.getFloat64(offset + 232, true);
     target.lineSpacingFactor = this.view.getFloat64(offset + 240, true);
+    target.backgroundScale = this.view.getFloat64(offset + 248, true);
+    target.backgroundColor = this.view.getUint32(offset + 256, true);
+    target.backgroundTransparency = this.view.getInt32(offset + 260, true);
+    target.backgroundFlags = this.view.getInt32(offset + 264, true);
     target.sourceFlags = this.view.getInt32(offset + 268, true);
     target.horizontalAlignment = this.view.getInt16(offset + 272, true);
     target.verticalAlignment = this.view.getInt16(offset + 274, true);
     target.attachment = this.view.getInt16(offset + 276, true);
+    target.flowDirection = this.view.getInt16(offset + 278, true);
+    target.lineSpacingStyle = this.view.getInt16(offset + 280, true);
     target.generationFlags = this.view.getInt16(offset + 282, true);
     target.mtextType = this.view.getInt16(offset + 286, true);
+    target.columnType = this.view.getInt32(offset + 292, true);
+    target.columnCount = this.view.getInt32(offset + 296, true);
+    target.columnFlags = this.view.getUint32(offset + 300, true);
+    target.columnWidth = this.view.getFloat64(offset + 304, true);
+    target.columnGutter = this.view.getFloat64(offset + 312, true);
+    target.firstColumnHeight = readSafeU64(
+      this.view,
+      offset + 320,
+      "text display column-height offset",
+    );
+    target.columnHeightCount = readSafeU64(
+      this.view,
+      offset + 328,
+      "text display column-height count",
+    );
+    target.columnHeightPool = this.columnHeights;
     return target;
   }
 

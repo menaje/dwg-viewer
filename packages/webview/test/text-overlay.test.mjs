@@ -10,6 +10,7 @@ import { MemoryRangeSource } from "../src/range-source.mjs";
 import { SceneCacheReader } from "../src/scene-cache.mjs";
 import {
   CanvasTextOverlay,
+  layoutCadTextColumns,
   plainCadTextLines,
   registerLocalOutlineFont,
   systemFallbackFont,
@@ -28,7 +29,13 @@ function fakeCanvas() {
     clips: [],
     saves: 0,
     restores: 0,
+    fillStyles: [],
+    strokeStyles: [],
+    fills: 0,
+    events: [],
   };
+  let fillStyle;
+  let strokeStyle;
   const context = {
     beginPath() {},
     clip(rule) {
@@ -39,6 +46,11 @@ function fakeCanvas() {
     fillText(...arguments_) {
       calls.fillText += 1;
       calls.fillTextArguments.push(arguments_);
+      calls.events.push("text");
+    },
+    fill() {
+      calls.fills += 1;
+      calls.events.push("fill");
     },
     lineTo() {
       calls.lineTo += 1;
@@ -58,6 +70,26 @@ function fakeCanvas() {
       calls.stroke += 1;
     },
   };
+  Object.defineProperties(context, {
+    fillStyle: {
+      get() {
+        return fillStyle;
+      },
+      set(value) {
+        fillStyle = value;
+        calls.fillStyles.push(value);
+      },
+    },
+    strokeStyle: {
+      get() {
+        return strokeStyle;
+      },
+      set(value) {
+        strokeStyle = value;
+        calls.strokeStyles.push(value);
+      },
+    },
+  });
   return {
     calls,
     clientWidth: 800,
@@ -119,6 +151,32 @@ test("wraps MTEXT to its stored paragraph width", () => {
   assert.deepEqual(
     wrapCadTextLines(["폭 정보 없음"], 0, () => 1),
     ["폭 정보 없음"],
+  );
+});
+
+test("splits bounded MTEXT columns and reverses only their visual order", () => {
+  const columns = layoutCadTextColumns(
+    ["A", "B", "C", "D"],
+    {
+      count: 2,
+      width: 5,
+      gutter: 1,
+      heights: [3.334, 3.334],
+      lineStep: 1.667,
+      flowReversed: true,
+    },
+  );
+
+  assert.deepEqual(
+    columns.map(({ x, lines }) => ({ x, lines })),
+    [
+      { x: 6, lines: ["A", "B"] },
+      { x: 0, lines: ["C", "D"] },
+    ],
+  );
+  assert.equal(
+    layoutCadTextColumns(["A"], { count: 10_000 }).length,
+    64,
   );
 });
 
@@ -317,6 +375,277 @@ test("uses MTEXT extents for middle-center attachment", () => {
       a === 200 && b === 0 && c === 0 && d === 40,
     ),
   );
+});
+
+test("uses the stored MTEXT WCS X-axis direction", () => {
+  const canvas = fakeCanvas();
+  const record = {
+    handle: 7n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 1,
+    flags: 0,
+    insertionPoint: [105, 201, 0],
+    alignmentPoint: [0, 0, 0],
+    normal: [0, 0, 1],
+    xAxisDirection: [0, 1, 0],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    rectangleWidth: 0,
+    rectangleHeight: 0,
+    extentsWidth: 0,
+    extentsHeight: 0,
+    lineSpacingFactor: 1,
+    sourceFlags: 0,
+    horizontalAlignment: 0,
+    verticalAlignment: 0,
+    generationFlags: 0,
+    attachment: 1,
+    mtextType: 0,
+    columnType: 0,
+    valueByteLength: 1,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: 1,
+      readDisplayRecord(_index, target) {
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        target.xAxisDirection = [...record.xAxisDirection];
+        return target;
+      },
+      readValue() {
+        return "A";
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  overlay.redraw(camera, [true]);
+
+  assert.ok(
+    canvas.calls.transforms.some(
+      ([a, b, c, d]) =>
+        Math.abs(a) < 1e-9 &&
+        Math.abs(b + 40) < 1e-9 &&
+        Math.abs(c - 40) < 1e-9 &&
+        Math.abs(d) < 1e-9,
+    ),
+  );
+});
+
+test("flows MTEXT into stored columns and paints its background first", () => {
+  const canvas = fakeCanvas();
+  const record = {
+    handle: 8n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 1,
+    flags: 0,
+    insertionPoint: [105, 201, 0],
+    alignmentPoint: [0, 0, 0],
+    normal: [0, 0, 1],
+    xAxisDirection: [1, 0, 0],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    rectangleWidth: 0,
+    rectangleHeight: 0,
+    extentsWidth: 0,
+    extentsHeight: 0,
+    lineSpacingFactor: 1,
+    backgroundScale: 1.5,
+    backgroundColor: (2 << 30) | 2,
+    backgroundTransparency: 0,
+    backgroundFlags: 1,
+    sourceFlags: 0,
+    horizontalAlignment: 0,
+    verticalAlignment: 0,
+    generationFlags: 0,
+    attachment: 1,
+    mtextType: 0,
+    columnType: 2,
+    columnCount: 2,
+    columnFlags: 0,
+    columnWidth: 2,
+    columnGutter: 1,
+    columnHeights: new Float64Array([3.334, 3.334]),
+    valueByteLength: 10,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: 1,
+      readDisplayRecord(_index, target) {
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        target.xAxisDirection = [...record.xAxisDirection];
+        return target;
+      },
+      readValue() {
+        return String.raw`A\PB\PC\PD`;
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  const metrics = overlay.redraw(camera, [true]);
+
+  assert.equal(metrics.backgroundFills, 1);
+  assert.equal(canvas.calls.fills, 1);
+  assert.equal(canvas.calls.fillStyles[0], "rgba(255, 255, 0, 1)");
+  assert.equal(canvas.calls.events[0], "fill");
+  assert.equal(canvas.calls.fillTextArguments.length, 4);
+  assert.equal(canvas.calls.fillTextArguments[2][1], 3);
+  assert.equal(canvas.calls.fillTextArguments[3][1], 3);
+});
+
+test("resolves text ByLayer and ByBlock colors at the occurrence", () => {
+  const canvas = fakeCanvas();
+  const records = [
+    {
+      handle: 5n,
+      ownerHandle: 100n,
+      layerIndex: 0,
+      color: 0,
+      commonFlags: 0,
+      kind: 0,
+      insertionPoint: [105, 201, 0],
+      alignmentPoint: [0, 0, 0],
+      normal: [0, 0, 1],
+      height: 1,
+      widthFactor: 1,
+      rotation: 0,
+      obliqueAngle: 0,
+      lineSpacingFactor: 1,
+      sourceFlags: 0,
+      horizontalAlignment: 0,
+      verticalAlignment: 0,
+      generationFlags: 0,
+      attachment: 0,
+      mtextType: 0,
+      valueByteLength: 1,
+      style: null,
+    },
+    {
+      handle: 6n,
+      ownerHandle: 200n,
+      layerIndex: 0,
+      color: 1 << 30,
+      commonFlags: 0,
+      kind: 0,
+      insertionPoint: [0, 0, 0],
+      alignmentPoint: [0, 0, 0],
+      normal: [0, 0, 1],
+      height: 1,
+      widthFactor: 1,
+      rotation: 0,
+      obliqueAngle: 0,
+      lineSpacingFactor: 1,
+      sourceFlags: 0,
+      horizontalAlignment: 0,
+      verticalAlignment: 0,
+      generationFlags: 0,
+      attachment: 0,
+      mtextType: 0,
+      valueByteLength: 1,
+      style: null,
+    },
+  ];
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: records.length,
+      readDisplayRecord(index, target) {
+        Object.assign(target, records[index]);
+        target.insertionPoint = [...records[index].insertionPoint];
+        target.alignmentPoint = [...records[index].alignmentPoint];
+        target.normal = [...records[index].normal];
+        return target;
+      },
+      readValue() {
+        return "A";
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+      {
+        index: 1,
+        handle: 200n,
+        name: "ColoredBlock",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 1 }],
+    instanceGraph: {
+      instancesByBlock: new Map([
+        [
+          1,
+          {
+            data: translationMat4(105, 201, 0),
+            colors: new Uint32Array([(2 << 30) | 3]),
+            opacities: new Float32Array([1]),
+            count: 1,
+          },
+        ],
+      ]),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  overlay.redraw(camera, [true]);
+
+  assert.deepEqual(canvas.calls.fillStyles, [
+    "rgba(255, 0, 0, 1)",
+    "rgba(0, 255, 0, 1)",
+  ]);
+  assert.deepEqual(canvas.calls.strokeStyles, canvas.calls.fillStyles);
 });
 
 test("draws cached SHX segments and obeys the frame segment cap", async () => {

@@ -24,6 +24,8 @@ const DEFAULT_MAXIMUM_FALLBACK_GLYPHS = 50_000;
 const DEFAULT_MINIMUM_PIXEL_HEIGHT = 0.5;
 const DEFAULT_MAXIMUM_MASK_OCCURRENCES = 10_000;
 const MAXIMUM_CODE_POINTS_PER_ENTITY = 4_096;
+const MAXIMUM_MTEXT_COLUMNS = 64;
+const DEFAULT_DRAWING_BACKGROUND = "rgb(14, 16, 19)";
 const LOCAL_OUTLINE_FONTS = new Map();
 const IDENTITY_INSTANCES = Object.freeze({
   data: identityMat4(),
@@ -282,11 +284,146 @@ export function wrapCadTextLines(
   return Object.freeze(wrapped);
 }
 
+export function layoutCadTextColumns(
+  lines,
+  {
+    count = 1,
+    width = 0,
+    gutter = 0,
+    heights = [],
+    lineStep = 1.667,
+    flowReversed = false,
+  } = {},
+) {
+  if (!Array.isArray(lines)) {
+    throw new TypeError("CAD text column lines must be an array");
+  }
+  const columnCount = Math.min(
+    Math.max(Number.isInteger(count) ? count : 1, 1),
+    MAXIMUM_MTEXT_COLUMNS,
+  );
+  const safeWidth = Number.isFinite(width) && width > 0 ? width : 0;
+  const safeGutter =
+    Number.isFinite(gutter) && gutter > 0 ? gutter : 0;
+  const safeLineStep =
+    Number.isFinite(lineStep) && lineStep > 0 ? lineStep : 1.667;
+  const sourceHeights =
+    Array.isArray(heights) || ArrayBuffer.isView(heights)
+      ? heights
+      : [];
+  const columns = [];
+  let lineOffset = 0;
+  for (let index = 0; index < columnCount; index += 1) {
+    const remaining = lines.length - lineOffset;
+    const storedHeight = sourceHeights[index];
+    const capacity =
+      Number.isFinite(storedHeight) && storedHeight > 0
+        ? Math.max(1, Math.floor(storedHeight / safeLineStep))
+        : Math.max(
+            1,
+            Math.ceil(Math.max(remaining, 0) / (columnCount - index)),
+          );
+    const lineCount =
+      index === columnCount - 1
+        ? Math.max(remaining, 0)
+        : Math.min(Math.max(remaining, 0), capacity);
+    const visualIndex = flowReversed
+      ? columnCount - index - 1
+      : index;
+    columns.push(
+      Object.freeze({
+        index,
+        visualIndex,
+        x: visualIndex * (safeWidth + safeGutter),
+        width: safeWidth,
+        height:
+          Number.isFinite(storedHeight) && storedHeight > 0
+            ? storedHeight
+            : Math.max(lineCount, 1) * safeLineStep,
+        lines: Object.freeze(
+          lines.slice(lineOffset, lineOffset + lineCount),
+        ),
+      }),
+    );
+    lineOffset += lineCount;
+  }
+  return Object.freeze(columns);
+}
+
 function shearXMat4(angle) {
   const matrix = identityMat4();
   const shear = Math.tan(angle);
   matrix[4] = Number.isFinite(shear) ? shear : 0;
   return matrix;
+}
+
+function normalizeVector3(vector, fallback = [0, 0, 1]) {
+  const values =
+    Array.isArray(vector) || ArrayBuffer.isView(vector)
+      ? vector
+      : fallback;
+  const length = Math.hypot(
+    Number(values[0]),
+    Number(values[1]),
+    Number(values[2]),
+  );
+  if (!Number.isFinite(length) || length < 1e-12) {
+    return [...fallback];
+  }
+  return [
+    Number(values[0]) / length,
+    Number(values[1]) / length,
+    Number(values[2]) / length,
+  ];
+}
+
+function crossVector3(left, right) {
+  return [
+    left[1] * right[2] - left[2] * right[1],
+    left[2] * right[0] - left[0] * right[2],
+    left[0] * right[1] - left[1] * right[0],
+  ];
+}
+
+function mtextWorldBasisMat4(record, normal) {
+  const direction = record.xAxisDirection;
+  if (
+    !direction ||
+    ![direction[0], direction[1], direction[2]].every(Number.isFinite)
+  ) {
+    return multiplyMat4(
+      arbitraryAxisMat4(normal),
+      rotationZMat4(Number.isFinite(record.rotation) ? record.rotation : 0),
+    );
+  }
+  const unitNormal = normalizeVector3(normal);
+  const normalProjection =
+    direction[0] * unitNormal[0] +
+    direction[1] * unitNormal[1] +
+    direction[2] * unitNormal[2];
+  const projected = [
+    direction[0] - normalProjection * unitNormal[0],
+    direction[1] - normalProjection * unitNormal[1],
+    direction[2] - normalProjection * unitNormal[2],
+  ];
+  const projectedLength = Math.hypot(...projected);
+  if (!Number.isFinite(projectedLength) || projectedLength < 1e-12) {
+    return multiplyMat4(
+      arbitraryAxisMat4(normal),
+      rotationZMat4(Number.isFinite(record.rotation) ? record.rotation : 0),
+    );
+  }
+  const xAxis = projected.map((value) => value / projectedLength);
+  const yAxis = normalizeVector3(
+    crossVector3(unitNormal, xAxis),
+    [0, 1, 0],
+  );
+  return new Float64Array([
+    xAxis[0], xAxis[1], xAxis[2], 0,
+    yAxis[0], yAxis[1], yAxis[2], 0,
+    unitNormal[0], unitNormal[1], unitNormal[2], 0,
+    0, 0, 0, 1,
+  ]);
 }
 
 function effectiveTextMatrix(record, style) {
@@ -316,10 +453,21 @@ function effectiveTextMatrix(record, style) {
     ((style?.flags & 2) !== 0 ? 4 : 0);
   const horizontalDirection = (generationFlags & 2) !== 0 ? -1 : 1;
   const verticalDirection = (generationFlags & 4) !== 0 ? -1 : 1;
+  const placement =
+    record.kind === TextEntityKind.MText
+      ? [
+          translationMat4(...record.insertionPoint),
+          mtextWorldBasisMat4(record, normal),
+        ]
+      : [
+          arbitraryAxisMat4(normal),
+          translationMat4(...record.insertionPoint),
+          rotationZMat4(
+            Number.isFinite(record.rotation) ? record.rotation : 0,
+          ),
+        ];
   return [
-    arbitraryAxisMat4(normal),
-    translationMat4(...record.insertionPoint),
-    rotationZMat4(Number.isFinite(record.rotation) ? record.rotation : 0),
+    ...placement,
     shearXMat4(oblique),
     scalingMat4(
       height * entityWidth * styleWidth * horizontalDirection,
@@ -358,6 +506,38 @@ function normalizedStoredExtent(value, scale) {
   return Number.isFinite(value) && value > 0 && scale > 0
     ? value / scale
     : 0;
+}
+
+function normalizedColumnHeights(record, scale) {
+  if (!(Number.isFinite(scale) && scale > 0)) {
+    return Object.freeze([]);
+  }
+  const direct = record.columnHeights;
+  const pool = record.columnHeightPool;
+  const first = Number.isInteger(record.firstColumnHeight)
+    ? record.firstColumnHeight
+    : 0;
+  const count = Math.min(
+    Math.max(
+      Number.isInteger(record.columnHeightCount)
+        ? record.columnHeightCount
+        : direct?.length ?? 0,
+      0,
+    ),
+    MAXIMUM_MTEXT_COLUMNS,
+  );
+  const values = direct ?? pool;
+  if (!values || count === 0) {
+    return Object.freeze([]);
+  }
+  const output = [];
+  for (let index = 0; index < count; index += 1) {
+    const value = values[direct ? index : first + index];
+    output.push(
+      Number.isFinite(value) && value > 0 ? value / scale : 0,
+    );
+  }
+  return Object.freeze(output);
 }
 
 function normalizedTextAlignmentWidth(record) {
@@ -486,6 +666,7 @@ export class CanvasTextOverlay {
       maximumMaskOccurrences = DEFAULT_MAXIMUM_MASK_OCCURRENCES,
       maskOrder = null,
       palette = DEFAULT_ACI_PALETTE,
+      drawingBackground = DEFAULT_DRAWING_BACKGROUND,
     },
   ) {
     const context = canvas.getContext("2d", { alpha: true });
@@ -509,6 +690,12 @@ export class CanvasTextOverlay {
       palette instanceof Uint8Array && palette.length === 256 * 4
         ? new Uint8Array(palette)
         : new Uint8Array(DEFAULT_ACI_PALETTE);
+    this.drawingBackground =
+      typeof drawingBackground === "string" &&
+      drawingBackground.length > 0 &&
+      drawingBackground.length <= 128
+        ? drawingBackground
+        : DEFAULT_DRAWING_BACKGROUND;
     this.configuredMaskOrder = maskOrder?.enabled ? maskOrder : null;
     this.maskOrder = this.configuredMaskOrder;
     this.blockIndexByHandle = new Map(
@@ -534,6 +721,7 @@ export class CanvasTextOverlay {
       vectorGlyphs: 0,
       fallbackGlyphs: 0,
       segments: 0,
+      backgroundFills: 0,
       maskOccurrences: 0,
       clippedTextOccurrences: 0,
       maskClipOperations: 0,
@@ -584,6 +772,7 @@ export class CanvasTextOverlay {
       vectorGlyphs: 0,
       fallbackGlyphs: 0,
       segments: 0,
+      backgroundFills: 0,
       maskOccurrences: 0,
       clippedTextOccurrences: 0,
       maskClipOperations: 0,
@@ -745,9 +934,6 @@ export class CanvasTextOverlay {
           width,
           height,
           metrics,
-          layerIndex,
-          byBlockColor,
-          byBlockOpacity,
         );
         this.#drawOccurrence(
           record,
@@ -758,6 +944,9 @@ export class CanvasTextOverlay {
           width,
           height,
           metrics,
+          layerIndex,
+          byBlockColor,
+          byBlockOpacity,
         );
         if (maskClipped) {
           context.restore();
@@ -929,6 +1118,115 @@ export class CanvasTextOverlay {
     return true;
   }
 
+  #currentDrawingBackground() {
+    try {
+      const target = this.canvas.parentElement ?? this.canvas;
+      const color = globalThis.getComputedStyle?.(target)?.backgroundColor;
+      if (
+        typeof color === "string" &&
+        color.length > 0 &&
+        color.length <= 128 &&
+        color !== "transparent" &&
+        !/^rgba\([^)]*,\s*0(?:\.0+)?\)$/u.test(color)
+      ) {
+        return color;
+      }
+    } catch {
+      // Use the bounded constructor fallback outside a browser DOM.
+    }
+    return this.drawingBackground;
+  }
+
+  #drawMTextBackground(
+    record,
+    matrix,
+    camera,
+    width,
+    height,
+    metrics,
+    layerIndex,
+    byBlockColor,
+    left,
+    right,
+    top,
+    bottom,
+  ) {
+    const flags = Number.isInteger(record.backgroundFlags)
+      ? record.backgroundFlags
+      : 0;
+    if (
+      (flags & 3) === 0 ||
+      ![left, right, top, bottom].every(Number.isFinite) ||
+      right <= left ||
+      top <= bottom
+    ) {
+      return;
+    }
+    const scale =
+      Number.isFinite(record.backgroundScale) &&
+      record.backgroundScale >= 1
+        ? Math.min(record.backgroundScale, 10)
+        : 1;
+    const padding = (scale - 1) * 0.5;
+    const points = [
+      pointToScreen(
+        matrix,
+        left - padding,
+        top + padding,
+        camera,
+        width,
+        height,
+      ),
+      pointToScreen(
+        matrix,
+        right + padding,
+        top + padding,
+        camera,
+        width,
+        height,
+      ),
+      pointToScreen(
+        matrix,
+        right + padding,
+        bottom - padding,
+        camera,
+        width,
+        height,
+      ),
+      pointToScreen(
+        matrix,
+        left - padding,
+        bottom - padding,
+        camera,
+        width,
+        height,
+      ),
+    ];
+    if (!points.flat().every(Number.isFinite)) {
+      return;
+    }
+    let color = this.#currentDrawingBackground();
+    if ((flags & 2) === 0) {
+      const [red, green, blue] = decodeColor(
+        record.backgroundColor,
+        this.layers[layerIndex],
+        byBlockColor,
+        this.palette,
+      );
+      color = `rgba(${red}, ${green}, ${blue}, 1)`;
+    }
+    const context = this.context;
+    context.fillStyle = color;
+    context.beginPath();
+    context.moveTo(points[0][0], points[0][1]);
+    for (let index = 1; index < points.length; index += 1) {
+      context.lineTo(points[index][0], points[index][1]);
+    }
+    context.closePath();
+    context.fill();
+    metrics.backgroundFills += 1;
+  }
+
   #drawOccurrence(
     record,
     parsedLines,
@@ -965,6 +1263,14 @@ export class CanvasTextOverlay {
     const verticalGroup =
       attachment >= 1 ? Math.floor((attachment - 1) / 3) : 0;
     const horizontalScale = textHorizontalScale(record, record.style);
+    const verticalScale =
+      Number.isFinite(record.height) && record.height > 0
+        ? record.height
+        : record.style?.height > 0
+          ? record.style.height
+          : record.style?.lastHeight > 0
+            ? record.style.lastHeight
+            : 1;
     const storedWrapWidth = isMText
       ? normalizedStoredExtent(
           record.rectangleWidth,
@@ -981,13 +1287,7 @@ export class CanvasTextOverlay {
           record.rectangleHeight > 0
             ? record.rectangleHeight
             : record.extentsHeight,
-          Number.isFinite(record.height) && record.height > 0
-            ? record.height
-            : record.style?.height > 0
-              ? record.style.height
-              : record.style?.lastHeight > 0
-                ? record.style.lastHeight
-                : 1,
+          verticalScale,
         )
       : 0;
     const fallbackFont = systemFallbackFont(record.style);
@@ -1014,16 +1314,84 @@ export class CanvasTextOverlay {
       advanceCache.set(character, advance);
       return advance;
     };
+    const requestedColumnCount =
+      isMText &&
+      Number.isInteger(record.columnType) &&
+      record.columnType > 0
+        ? Math.max(
+            Number.isInteger(record.columnCount)
+              ? record.columnCount
+              : 0,
+            Number.isInteger(record.columnHeightCount)
+              ? record.columnHeightCount
+              : record.columnHeights?.length ?? 0,
+            1,
+          )
+        : 1;
+    const columnCount = Math.min(
+      requestedColumnCount,
+      MAXIMUM_MTEXT_COLUMNS,
+    );
+    const storedColumnWidth =
+      columnCount > 1
+        ? normalizedStoredExtent(record.columnWidth, horizontalScale)
+        : 0;
+    const storedColumnGutter =
+      columnCount > 1
+        ? normalizedStoredExtent(record.columnGutter, horizontalScale)
+        : 0;
+    const columnWidth =
+      storedColumnWidth ||
+      (columnCount > 1 && storedBlockWidth > 0
+        ? Math.max(
+            (storedBlockWidth -
+              storedColumnGutter * (columnCount - 1)) /
+              columnCount,
+            0,
+          )
+        : 0);
+    const wrapWidth = columnWidth || storedWrapWidth;
     const lines =
-      isMText && storedWrapWidth > 0
+      isMText && wrapWidth > 0
         ? wrapCadTextLines(
             parsedLines,
-            storedWrapWidth,
+            wrapWidth,
             characterAdvance,
           )
         : parsedLines;
+    const columnHeights = normalizedColumnHeights(
+      record,
+      verticalScale,
+    );
+    const columns = layoutCadTextColumns(lines, {
+      count: columnCount,
+      width: columnWidth,
+      gutter: storedColumnGutter,
+      heights: columnHeights,
+      lineStep,
+      flowReversed: (record.columnFlags & (1 << 1)) !== 0,
+    });
+    const maximumMeasuredLineWidth = Math.max(
+      ...lines.map((line) =>
+        [...line].reduce(
+          (total, character) => total + characterAdvance(character),
+          0,
+        ),
+      ),
+      0,
+    );
+    const measuredBlockWidth =
+      columnCount > 1
+        ? (columnWidth || maximumMeasuredLineWidth) * columnCount +
+          storedColumnGutter * (columnCount - 1)
+        : maximumMeasuredLineWidth;
+    const blockWidth =
+      columnCount > 1
+        ? measuredBlockWidth || storedBlockWidth
+        : storedBlockWidth || measuredBlockWidth;
     const blockHeight =
-      storedBlockHeight || Math.max(lines.length, 1) * lineStep;
+      storedBlockHeight ||
+      Math.max(...columns.map((column) => column.height), lineStep);
     const verticalOffset =
       !isMText
         ? 0
@@ -1033,112 +1401,160 @@ export class CanvasTextOverlay {
           ? blockHeight * 0.5 - 1
           : blockHeight - 1;
     const textAlignmentWidth = normalizedTextAlignmentWidth(record);
-
-    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-      const glyphs = [];
-      let lineAdvance = 0;
-      for (const character of lines[lineIndex]) {
-        if (character === " " || character === "\t") {
-          glyphs.push({ character, glyph: null, x: lineAdvance, whitespace: true });
-          const spaceAdvance = measuredFallbackAdvance(context, " ");
-          lineAdvance += character === "\t" ? spaceAdvance * 4 : spaceAdvance;
-          continue;
-        }
-        const glyph = this.glyphCache.getGlyph(
-          record.style,
-          character.codePointAt(0),
-        );
-        glyphs.push({ character, glyph, x: lineAdvance, whitespace: false });
-        lineAdvance +=
-          glyph?.advance > 0
-            ? glyph.advance
-            : measuredFallbackAdvance(context, character);
-      }
-      const storedLineWidth =
-        isMText && lines.length === 1
-          ? normalizedStoredExtent(record.extentsWidth, horizontalScale)
-          : textAlignmentWidth;
-      const lineScale =
-        storedLineWidth > 0 && lineAdvance > 0
-          ? storedLineWidth / lineAdvance
-          : 1;
-      const scaledLineAdvance = lineAdvance * lineScale;
-      const horizontalGroup =
-        isMText && attachment >= 1
-          ? (attachment - 1) % 3
+    const horizontalGroup =
+      isMText && attachment >= 1
+        ? (attachment - 1) % 3
+        : 0;
+    const blockLeft =
+      horizontalGroup === 1
+        ? -blockWidth * 0.5
+        : horizontalGroup === 2
+          ? -blockWidth
           : 0;
-      const alignmentWidth =
-        storedBlockWidth > 0 ? storedBlockWidth : scaledLineAdvance;
-      const horizontalOffset =
-        horizontalGroup === 1
-          ? -alignmentWidth * 0.5
-          : horizontalGroup === 2
-            ? -alignmentWidth
-            : 0;
-      const baseline = verticalOffset - lineIndex * lineStep;
-      context.strokeStyle = color;
-      context.fillStyle = color;
-      context.beginPath();
-      let hasVectorPath = false;
-      for (const entry of glyphs) {
-        if (entry.whitespace) {
-          continue;
-        }
-        const x = entry.x * lineScale + horizontalOffset;
-        if (entry.glyph) {
-          const remaining = this.maximumSegments - metrics.segments;
-          const count = Math.min(entry.glyph.segmentCount, remaining);
-          for (let segment = 0; segment < count; segment += 1) {
-            const offset = segment * 4;
-            const start = pointToScreen(
-              matrix,
-              entry.glyph.vertices[offset] * lineScale + x,
-              entry.glyph.vertices[offset + 1] + baseline,
-              camera,
-              width,
-              height,
-            );
-            const end = pointToScreen(
-              matrix,
-              entry.glyph.vertices[offset + 2] * lineScale + x,
-              entry.glyph.vertices[offset + 3] + baseline,
-              camera,
-              width,
-              height,
-            );
-            context.moveTo(start[0], start[1]);
-            context.lineTo(end[0], end[1]);
+    if (isMText) {
+      this.#drawMTextBackground(
+        record,
+        matrix,
+        camera,
+        width,
+        height,
+        metrics,
+        layerIndex,
+        byBlockColor,
+        blockLeft,
+        blockLeft + blockWidth,
+        verticalOffset + 1,
+        verticalOffset + 1 - blockHeight,
+      );
+    }
+
+    for (const column of columns) {
+      for (
+        let lineIndex = 0;
+        lineIndex < column.lines.length;
+        lineIndex += 1
+      ) {
+        const line = column.lines[lineIndex];
+        const glyphs = [];
+        let lineAdvance = 0;
+        for (const character of line) {
+          if (character === " " || character === "\t") {
+            glyphs.push({
+              character,
+              glyph: null,
+              x: lineAdvance,
+              whitespace: true,
+            });
+            const spaceAdvance = measuredFallbackAdvance(context, " ");
+            lineAdvance +=
+              character === "\t" ? spaceAdvance * 4 : spaceAdvance;
+            continue;
           }
-          metrics.segments += count;
-          metrics.vectorGlyphs += 1;
-          hasVectorPath ||= count > 0;
-        } else if (metrics.fallbackGlyphs < this.maximumFallbackGlyphs) {
-          if (hasVectorPath) {
-            context.stroke();
-            context.beginPath();
-            hasVectorPath = false;
-          }
-          context.setTransform(
-            screen.a * lineScale,
-            screen.b * lineScale,
-            -screen.c,
-            -screen.d,
-            screen.e,
-            screen.f,
+          const glyph = this.glyphCache.getGlyph(
+            record.style,
+            character.codePointAt(0),
           );
-          context.font = fallbackFont;
-          context.textBaseline = "alphabetic";
-          context.fillText(
-            entry.character,
-            entry.x + horizontalOffset / lineScale,
-            -baseline,
-          );
-          context.setTransform(1, 0, 0, 1, 0, 0);
-          metrics.fallbackGlyphs += 1;
+          glyphs.push({
+            character,
+            glyph,
+            x: lineAdvance,
+            whitespace: false,
+          });
+          lineAdvance +=
+            glyph?.advance > 0
+              ? glyph.advance
+              : measuredFallbackAdvance(context, character);
         }
-      }
-      if (hasVectorPath) {
-        context.stroke();
+        const storedLineWidth =
+          isMText && columnCount === 1 && lines.length === 1
+            ? normalizedStoredExtent(
+                record.extentsWidth,
+                horizontalScale,
+              )
+            : textAlignmentWidth;
+        const lineScale =
+          storedLineWidth > 0 && lineAdvance > 0
+            ? storedLineWidth / lineAdvance
+            : 1;
+        const scaledLineAdvance = lineAdvance * lineScale;
+        const horizontalOffset =
+          isMText
+            ? blockLeft + column.x
+            : horizontalGroup === 1
+              ? -scaledLineAdvance * 0.5
+              : horizontalGroup === 2
+                ? -scaledLineAdvance
+                : 0;
+        const baseline = verticalOffset - lineIndex * lineStep;
+        context.strokeStyle = color;
+        context.fillStyle = color;
+        context.beginPath();
+        let hasVectorPath = false;
+        for (const entry of glyphs) {
+          if (entry.whitespace) {
+            continue;
+          }
+          const x = entry.x * lineScale + horizontalOffset;
+          if (entry.glyph) {
+            const remaining = this.maximumSegments - metrics.segments;
+            const count = Math.min(
+              entry.glyph.segmentCount,
+              remaining,
+            );
+            for (let segment = 0; segment < count; segment += 1) {
+              const offset = segment * 4;
+              const start = pointToScreen(
+                matrix,
+                entry.glyph.vertices[offset] * lineScale + x,
+                entry.glyph.vertices[offset + 1] + baseline,
+                camera,
+                width,
+                height,
+              );
+              const end = pointToScreen(
+                matrix,
+                entry.glyph.vertices[offset + 2] * lineScale + x,
+                entry.glyph.vertices[offset + 3] + baseline,
+                camera,
+                width,
+                height,
+              );
+              context.moveTo(start[0], start[1]);
+              context.lineTo(end[0], end[1]);
+            }
+            metrics.segments += count;
+            metrics.vectorGlyphs += 1;
+            hasVectorPath ||= count > 0;
+          } else if (
+            metrics.fallbackGlyphs < this.maximumFallbackGlyphs
+          ) {
+            if (hasVectorPath) {
+              context.stroke();
+              context.beginPath();
+              hasVectorPath = false;
+            }
+            context.setTransform(
+              screen.a * lineScale,
+              screen.b * lineScale,
+              -screen.c,
+              -screen.d,
+              screen.e,
+              screen.f,
+            );
+            context.font = fallbackFont;
+            context.textBaseline = "alphabetic";
+            context.fillText(
+              entry.character,
+              entry.x + horizontalOffset / lineScale,
+              -baseline,
+            );
+            context.setTransform(1, 0, 0, 1, 0, 0);
+            metrics.fallbackGlyphs += 1;
+          }
+        }
+        if (hasVectorPath) {
+          context.stroke();
+        }
       }
     }
   }
@@ -1198,6 +1614,7 @@ export class CompositeTextOverlay {
       vectorGlyphs: 0,
       fallbackGlyphs: 0,
       segments: 0,
+      backgroundFills: 0,
       maskOccurrences: 0,
       clippedTextOccurrences: 0,
       maskClipOperations: 0,
@@ -1222,6 +1639,7 @@ export class CompositeTextOverlay {
         "vectorGlyphs",
         "fallbackGlyphs",
         "segments",
+        "backgroundFills",
         "maskOccurrences",
         "clippedTextOccurrences",
         "maskClipOperations",

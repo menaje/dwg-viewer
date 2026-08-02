@@ -13,6 +13,10 @@ const JOHAB_FINAL_CODES = Object.freeze([
   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14,
   15, 16, 17, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
 ]);
+const JOHAB_NON_KS_SYMBOL_CODES = new Map([
+  [0x00ae, 0xd9e7],
+  [0x20ac, 0xd9e6],
+]);
 
 const ENCODING_ALIASES = new Map([
   ["auto", "auto"],
@@ -158,29 +162,71 @@ export function encodeCp949Code(codePoint) {
   return cp949ReverseCodeMap().get(codePoint);
 }
 
-export function encodeJohabCode(codePoint) {
-  if (
-    !validCodePoint(codePoint) ||
-    codePoint < HANGUL_SYLLABLE_START ||
-    codePoint > HANGUL_SYLLABLE_END
-  ) {
+function encodeJohabKsX1001Code(codePoint) {
+  const nonKsSymbol = JOHAB_NON_KS_SYMBOL_CODES.get(codePoint);
+  if (nonKsSymbol !== undefined) {
+    return nonKsSymbol;
+  }
+  const eucKrCode = encodeEucKrCode(codePoint);
+  if (eucKrCode === undefined) {
     return undefined;
   }
-  const ordinal = codePoint - HANGUL_SYLLABLE_START;
-  const initial = Math.floor(
-    ordinal / HANGUL_SYLLABLES_PER_INITIAL,
-  );
-  const medial = Math.floor(
-    (ordinal % HANGUL_SYLLABLES_PER_INITIAL) /
-      HANGUL_FINAL_COUNT,
-  );
-  const final = ordinal % HANGUL_FINAL_COUNT;
-  return (
-    0x8000 |
-    ((initial + 2) << 10) |
-    (JOHAB_MEDIAL_CODES[medial] << 5) |
-    JOHAB_FINAL_CODES[final]
-  );
+  const lead = eucKrCode >>> 8;
+  const trail = eucKrCode & 0xff;
+  let firstLead;
+  let johabLead;
+
+  // Windows CP1361 packs two KS X 1001 rows into one Johab lead byte.
+  // The first row uses 31-7E and 91-A0; the second keeps A1-FE.
+  // This is the transformation recorded by Unicode's authoritative
+  // bestfit1361 mapping. A4 is excluded because compatibility Jamo use
+  // Johab composition slots instead of this row transform.
+  if (lead >= 0xa1 && lead <= 0xac && lead !== 0xa4) {
+    firstLead = 0xa1;
+    johabLead = 0xd9 + Math.floor((lead - firstLead) / 2);
+  } else if (lead >= 0xca && lead <= 0xfd) {
+    firstLead = 0xca;
+    johabLead = 0xe0 + Math.floor((lead - firstLead) / 2);
+  } else {
+    return undefined;
+  }
+  if ((lead - firstLead) % 2 === 1) {
+    return (johabLead << 8) | trail;
+  }
+  const ordinal = trail - 0xa1;
+  if (ordinal < 0 || ordinal >= 94) {
+    return undefined;
+  }
+  const johabTrail =
+    ordinal < 78 ? 0x31 + ordinal : 0x91 + ordinal - 78;
+  return (johabLead << 8) | johabTrail;
+}
+
+export function encodeJohabCode(codePoint) {
+  if (!validCodePoint(codePoint)) {
+    return undefined;
+  }
+  if (
+    codePoint >= HANGUL_SYLLABLE_START &&
+    codePoint <= HANGUL_SYLLABLE_END
+  ) {
+    const ordinal = codePoint - HANGUL_SYLLABLE_START;
+    const initial = Math.floor(
+      ordinal / HANGUL_SYLLABLES_PER_INITIAL,
+    );
+    const medial = Math.floor(
+      (ordinal % HANGUL_SYLLABLES_PER_INITIAL) /
+        HANGUL_FINAL_COUNT,
+    );
+    const final = ordinal % HANGUL_FINAL_COUNT;
+    return (
+      0x8000 |
+      ((initial + 2) << 10) |
+      (JOHAB_MEDIAL_CODES[medial] << 5) |
+      JOHAB_FINAL_CODES[final]
+    );
+  }
+  return encodeJohabKsX1001Code(codePoint);
 }
 
 function candidateFor(codePoint, encoding) {

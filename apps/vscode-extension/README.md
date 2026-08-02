@@ -143,8 +143,9 @@ slots, configure the requested DWG BigFont name explicitly:
 The accepted values are `auto`, `euc-kr`, `cp949`, and `johab`, with at most
 128 mappings per window. The font panel displays the effective choice. Strict
 EUC-KR and CP949 are separate, and the Johab path covers all 11,172 modern
-Hangul syllables. Non-Hangul Johab symbols and Hanja still require a direct
-Unicode glyph or the system-font fallback.
+Hangul syllables, 892 KS X 1001 symbols, 4,888 Hanja, and the CP1361 `®` and
+`€` additions. Compatibility and archaic Jamo without an explicit CP1361
+slot still use a direct Unicode glyph or the system-font fallback.
 
 ## External references
 

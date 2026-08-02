@@ -55,6 +55,42 @@ test("encodes all modern Hangul syllables into unique Johab codes", () => {
   assert.equal(encodeJohabCode("A".codePointAt(0)), undefined);
 });
 
+test("maps the complete CP1361 KS X 1001 symbol and Hanja rows", () => {
+  assert.equal(encodeJohabCode("°".codePointAt(0)), 0xd956);
+  assert.equal(encodeJohabCode("±".codePointAt(0)), 0xd94e);
+  assert.equal(encodeJohabCode("®".codePointAt(0)), 0xd9e7);
+  assert.equal(encodeJohabCode("€".codePointAt(0)), 0xd9e6);
+  assert.equal(encodeJohabCode("一".codePointAt(0)), 0xf179);
+  assert.equal(encodeJohabCode("中".codePointAt(0)), 0xf3e9);
+  assert.equal(encodeJohabCode("韓".codePointAt(0)), 0xf7db);
+
+  const codes = new Set();
+  let symbols = 0;
+  let hanja = 0;
+  for (let codePoint = 0; codePoint <= 0xffff; codePoint += 1) {
+    const eucKrCode = encodeEucKrCode(codePoint);
+    if (eucKrCode === undefined) {
+      continue;
+    }
+    const lead = eucKrCode >>> 8;
+    const isSymbol =
+      lead >= 0xa1 && lead <= 0xac && lead !== 0xa4;
+    const isHanja = lead >= 0xca && lead <= 0xfd;
+    if (!isSymbol && !isHanja) {
+      continue;
+    }
+    const johabCode = encodeJohabCode(codePoint);
+    assert.ok(Number.isInteger(johabCode));
+    codes.add(johabCode);
+    symbols += isSymbol ? 1 : 0;
+    hanja += isHanja ? 1 : 0;
+  }
+  assert.equal(symbols, 892);
+  assert.equal(hanja, 4_888);
+  assert.equal(codes.size, symbols + hanja);
+  assert.equal(encodeJohabCode("ㄱ".codePointAt(0)), undefined);
+});
+
 test("returns deterministic auto candidates without duplicate codes", () => {
   assert.deepEqual(
     legacyKoreanCodeCandidates("한".codePointAt(0)),
@@ -77,5 +113,12 @@ test("returns deterministic auto candidates without duplicate codes", () => {
   assert.equal(
     encodeLegacyBigFontCode("갂".codePointAt(0), "euc-kr"),
     undefined,
+  );
+  assert.deepEqual(
+    legacyKoreanCodeCandidates("中".codePointAt(0)),
+    [
+      { encoding: "euc-kr", code: 0xf1e9 },
+      { encoding: "johab", code: 0xf3e9 },
+    ],
   );
 });

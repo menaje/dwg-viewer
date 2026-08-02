@@ -80,7 +80,9 @@ This is a deliberately partial conversion milestone:
 - every unsupported logical entity is counted under
   `coverage.deferred_entities`;
 - bounded SHX/BigFont and system-font fallback display is implemented in the
-  Webview; exact MTEXT/OCS fidelity remains open in GitHub issues #5 and #7.
+  Webview, including stored MTEXT WCS X-axis, attachment, columns and
+  background fill; per-run formatting, top-to-bottom flow and complete TEXT
+  OCS alignment remain open in GitHub issues #5 and #7.
 
 This writer is the selected primary engine path, but its remaining source
 families and exact text layout are not yet release-ready. Its large-drawing

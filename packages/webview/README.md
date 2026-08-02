@@ -107,19 +107,23 @@ layout tabs on hover, focus or an explicit click.
 - Loads source text after the first geometry frame and renders selected local
   SHX/BigFont glyphs through byte-bounded caches, with a Korean system-font
   fallback when a CAD font is unavailable.
-- Wraps MTEXT paragraphs to their stored drawing width while preserving
-  explicit `\P` paragraph breaks and bounded glyph processing.
+- Wraps MTEXT paragraphs to their stored drawing or column width, flows at
+  most 64 stored columns, and paints bounded background fills. Stored WCS
+  X-axis direction, attachment, column width, gutter and height are preserved
+  while explicit `\P` paragraph breaks remain bounded.
 - Separates strict EUC-KR from CP949/UHC, encodes all 11,172 modern Hangul
-  syllables as Johab/CP1361, and probes actual glyph presence instead of
-  guessing from BigFont filenames. A per-font override resolves ambiguous
-  fonts without duplicating compiled glyph geometry.
+  syllables plus the KS X 1001 symbol and Hanja rows as Johab/CP1361, and
+  probes actual glyph presence instead of guessing from BigFont filenames.
+  A per-font override resolves ambiguous fonts without duplicating compiled
+  glyph geometry.
 
 The current page is an engine verification harness, not the final VS Code
 extension UI. At a stable 4× or higher zoom, a dedicated worker now refines
 ARC, CIRCLE, ELLIPSE, polyline-bulge and valid NURBS geometry to a 0.5 px
-screen-error contract without changing the bounded first frame. Exact
-MTEXT/OCS layout, lossless analytic HATCH boundary topology and further
-real-world Korean SHX corpus expansion remain follow-up work.
+screen-error contract without changing the bounded first frame. Per-run MTEXT
+formatting, top-to-bottom flow, complete TEXT OCS alignment, lossless analytic
+HATCH boundary topology and further real-world Korean SHX corpus expansion
+remain follow-up work.
 
 ## Run
 

@@ -722,6 +722,24 @@ test("preserves v1.4 Korean source text, style fonts and MTEXT columns", async (
   assert.equal(displayRecord.valueByteLength, 6);
   assert.equal(displayRecord.style, styles[0]);
   assert.equal(texts.readValue(0), "한글");
+  assert.equal(texts.readDisplayRecord(1, displayRecord), displayRecord);
+  assert.deepEqual(displayRecord.xAxisDirection, [1, 0, 0]);
+  assert.equal(displayRecord.flowDirection, 1);
+  assert.equal(displayRecord.lineSpacingStyle, 1);
+  assert.equal(displayRecord.columnType, 2);
+  assert.equal(displayRecord.columnCount, 2);
+  assert.equal(displayRecord.columnWidth, 20);
+  assert.equal(displayRecord.columnGutter, 2);
+  assert.deepEqual(
+    [
+      ...displayRecord.columnHeightPool.subarray(
+        displayRecord.firstColumnHeight,
+        displayRecord.firstColumnHeight +
+          displayRecord.columnHeightCount,
+      ),
+    ],
+    [10, 11],
+  );
 });
 
 test("parses render metadata and reads one contiguous overview prefix", async () => {
