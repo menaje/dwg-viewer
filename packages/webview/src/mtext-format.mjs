@@ -129,17 +129,23 @@ function frozenLine(line) {
   return Object.freeze(frozen);
 }
 
-function boundedParagraphOffset(value) {
+function boundedParagraphOffset(value, baseHeight = 1) {
   const parsed = parseBoundedNumber(value);
   return parsed === undefined
     ? undefined
     : Math.max(
         -MAXIMUM_PARAGRAPH_OFFSET,
-        Math.min(MAXIMUM_PARAGRAPH_OFFSET, parsed),
+        Math.min(
+          MAXIMUM_PARAGRAPH_OFFSET,
+          parsed /
+            (Number.isFinite(baseHeight) && baseHeight > 0
+              ? baseHeight
+              : 1),
+        ),
       );
 }
 
-function parsedParagraph(payload, current) {
+function parsedParagraph(payload, current, baseHeight) {
   const next = {
     indent: current.indent,
     left: current.left,
@@ -149,6 +155,7 @@ function parsedParagraph(payload, current) {
   };
   const tabs = [];
   let parsingTabs = false;
+  let replaceTabs = false;
   let changed = false;
   for (const rawPart of payload.split(",")) {
     let part = rawPart.trim();
@@ -166,12 +173,14 @@ function parsedParagraph(payload, current) {
     const tabContinuation =
       parsingTabs &&
       (((key === "c" || key === "r") &&
-        boundedParagraphOffset(value) !== undefined) ||
-        boundedParagraphOffset(part) !== undefined);
+        boundedParagraphOffset(value, baseHeight) !== undefined) ||
+        boundedParagraphOffset(part, baseHeight) !== undefined);
     if (["i", "l", "r"].includes(key) && !tabContinuation) {
       parsingTabs = false;
       const parsed =
-        value === "*" ? 0 : boundedParagraphOffset(value);
+        value === "*"
+          ? 0
+          : boundedParagraphOffset(value, baseHeight);
       if (parsed !== undefined) {
         next[
           key === "i" ? "indent" : key === "l" ? "left" : "right"
@@ -199,6 +208,7 @@ function parsedParagraph(payload, current) {
     let tabValue = value;
     if (key === "t") {
       parsingTabs = true;
+      replaceTabs = true;
       tabValue = value;
       tabs.length = 0;
       changed = true;
@@ -207,7 +217,11 @@ function parsedParagraph(payload, current) {
     } else {
       tabValue = part;
     }
-    if (!tabValue || tabValue === "*") {
+    if (
+      !tabValue ||
+      tabValue === "*" ||
+      tabValue.toLocaleLowerCase("en-US") === "z"
+    ) {
       continue;
     }
     let alignment = "left";
@@ -216,7 +230,10 @@ function parsedParagraph(payload, current) {
       alignment = prefix === "c" ? "center" : "right";
       tabValue = tabValue.slice(1);
     }
-    const position = boundedParagraphOffset(tabValue);
+    const position = boundedParagraphOffset(
+      tabValue,
+      baseHeight,
+    );
     if (
       position !== undefined &&
       position >= 0 &&
@@ -228,7 +245,7 @@ function parsedParagraph(payload, current) {
   if (!changed) {
     return current;
   }
-  if (tabs.length > 0 || /\bt(?:\*|(?:[cr]?[+-]?\d))/iu.test(payload)) {
+  if (replaceTabs) {
     tabs.sort((left, right) => left.position - right.position);
     next.tabStops = Object.freeze(tabs);
   }
@@ -533,6 +550,7 @@ export function parseCadMTextRuns(
         paragraphFormat = parsedParagraph(
           value.slice(index + 2, semicolon),
           paragraphFormat,
+          safeBaseHeight,
         );
         lines.at(-1).paragraph = paragraphFormat;
         index = semicolon + 1;

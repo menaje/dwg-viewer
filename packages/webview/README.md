@@ -118,8 +118,10 @@ layout tabs on hover, focus or an explicit click.
   strings. `\S` horizontal fractions, diagonal fractions and tolerances retain
   their upper/lower glyph layout and remain indivisible during word wrapping.
 - Preserves `\p` first-line, left and right paragraph indents plus left,
-  center and right custom tab stops. `^I` advances to the same bounded stop
-  during wrapping, measurement and final placement.
+  center and right custom tab stops. Stored drawing-unit distances are
+  normalized by the initial character height, `tz` clears custom stops, and
+  `^I` advances to the same bounded stop during wrapping, measurement and
+  final placement.
 - Renders explicit top-to-bottom MTEXT and by-style vertical flow as upright
   glyphs descending within right-to-left logical columns. A by-style record
   remains horizontal unless its referenced text style is actually vertical.

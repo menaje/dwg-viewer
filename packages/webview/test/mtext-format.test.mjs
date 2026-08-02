@@ -116,6 +116,28 @@ test("preserves paragraph indents, alignment, tab stops and caret tabs", () => {
   assert.equal(measureCadMTextLine(lines[0], () => 1), 5);
 });
 
+test("normalizes stored paragraph distances and clears tab stops", () => {
+  const lines = parseCadMTextRuns(
+    String.raw`\pxi-600,l600,t600;항목^I값\P\pi0,l0,tz;초기화`,
+    { baseHeight: 600 },
+  );
+
+  assert.deepEqual(lines[0].paragraph, {
+    indent: -1,
+    left: 1,
+    right: 0,
+    alignment: "default",
+    tabStops: [{ position: 1, alignment: "left" }],
+  });
+  assert.deepEqual(lines[1].paragraph, {
+    indent: 0,
+    left: 0,
+    right: 0,
+    alignment: "default",
+    tabStops: [],
+  });
+});
+
 test("wraps rich MTEXT without losing run formatting", () => {
   const source = parseCadMTextRuns(
     String.raw`AB {\H2x;CD} EF`,
