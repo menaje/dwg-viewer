@@ -10,6 +10,9 @@ export const LEGACY_GPU_LINE_VERTEX_RECORD_SIZE = 32;
 export const TEXT_STYLE_RECORD_SIZE = 96;
 export const TEXT_ENTITY_RECORD_SIZE = 336;
 export const TEXT_COLUMN_HEIGHT_RECORD_SIZE = 8;
+export const ARC_RECORD_SIZE = 112;
+export const CIRCLE_RECORD_SIZE = 96;
+export const ELLIPSE_RECORD_SIZE = 128;
 export const HATCH_ENTITY_RECORD_SIZE = 192;
 export const HATCH_LOOP_RECORD_SIZE = 48;
 export const HATCH_VERTEX_RECORD_SIZE = 24;
@@ -89,6 +92,9 @@ export const GpuLineBatchKind = Object.freeze({
 });
 
 const FIXED_RECORD_SIZES = new Map([
+  [SectionKind.Arcs, ARC_RECORD_SIZE],
+  [SectionKind.Circles, CIRCLE_RECORD_SIZE],
+  [SectionKind.Ellipses, ELLIPSE_RECORD_SIZE],
   [SectionKind.Inserts, 136],
   [SectionKind.TextColumnHeights, TEXT_COLUMN_HEIGHT_RECORD_SIZE],
   [SectionKind.GpuLineBatches, GPU_LINE_BATCH_RECORD_SIZE],
@@ -121,6 +127,7 @@ const MAX_METADATA_SECTION_BYTES = 64 * 1024 * 1024;
 const MAX_CACHE_STRING_BYTES = 1024 * 1024;
 const MAX_OVERVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_DETAIL_BATCH_BYTES = 512 * 1024;
+const MAX_REVIEW_CURVE_BYTES = 8 * 1024 * 1024;
 const MAX_HATCH_SOURCE_RECORDS = 1_048_576;
 const MAX_HATCH_PATTERN_LINES = 262_144;
 const MAX_HATCH_PATTERN_LINES_PER_ENTITY = 4_096;
@@ -3527,6 +3534,166 @@ export class SceneCacheReader {
         });
       }
       return Object.freeze(inserts);
+    });
+  }
+
+  async readReviewCurves({
+    maximumBytes = MAX_REVIEW_CURVE_BYTES,
+  } = {}) {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
+      throw new RangeError("review curve byte budget must be positive");
+    }
+    const curves = new Map();
+    let bytesRead = 0;
+    let records = 0;
+    let truncated = false;
+    const specifications = [
+      {
+        kind: SectionKind.Arcs,
+        name: "ARC",
+        parse(view, offset) {
+          return {
+            kind: "arc",
+            center: ensureFiniteVector(
+              readVec3F64(view, offset + 32),
+              "ARC center",
+            ),
+            radius: view.getFloat64(offset + 56, true),
+            startParameter: view.getFloat64(offset + 64, true),
+            endParameter: view.getFloat64(offset + 72, true),
+            normal: ensureFiniteVector(
+              readVec3F64(view, offset + 88),
+              "ARC normal",
+            ),
+          };
+        },
+      },
+      {
+        kind: SectionKind.Circles,
+        name: "CIRCLE",
+        parse(view, offset) {
+          return {
+            kind: "circle",
+            center: ensureFiniteVector(
+              readVec3F64(view, offset + 32),
+              "CIRCLE center",
+            ),
+            radius: view.getFloat64(offset + 56, true),
+            startParameter: 0,
+            endParameter: Math.PI * 2,
+            normal: ensureFiniteVector(
+              readVec3F64(view, offset + 72),
+              "CIRCLE normal",
+            ),
+          };
+        },
+      },
+      {
+        kind: SectionKind.Ellipses,
+        name: "ELLIPSE",
+        parse(view, offset) {
+          return {
+            kind: "ellipse",
+            center: ensureFiniteVector(
+              readVec3F64(view, offset + 32),
+              "ELLIPSE center",
+            ),
+            majorAxis: ensureFiniteVector(
+              readVec3F64(view, offset + 56),
+              "ELLIPSE major axis",
+            ),
+            normal: ensureFiniteVector(
+              readVec3F64(view, offset + 80),
+              "ELLIPSE normal",
+            ),
+            minorAxisRatio: view.getFloat64(offset + 104, true),
+            startParameter: view.getFloat64(offset + 112, true),
+            endParameter: view.getFloat64(offset + 120, true),
+          };
+        },
+      },
+    ];
+    for (const specification of specifications) {
+      const section = this.sections.get(specification.kind);
+      if (!section || section.recordCount === 0) {
+        continue;
+      }
+      const remaining = maximumBytes - bytesRead;
+      const recordCount = Math.min(
+        section.recordCount,
+        Math.floor(remaining / section.recordSize),
+      );
+      if (recordCount < section.recordCount) {
+        truncated = true;
+      }
+      if (recordCount === 0) {
+        continue;
+      }
+      const byteLength = checkedMultiply(
+        recordCount,
+        section.recordSize,
+        `${specification.name} review bytes`,
+      );
+      const buffer = requireArrayBuffer(
+        await this.source.read(section.offset, byteLength),
+        byteLength,
+        `${specification.name} review records`,
+      );
+      const view = new DataView(buffer);
+      for (let index = 0; index < recordCount; index += 1) {
+        const offset = index * section.recordSize;
+        const handle = view.getBigUint64(offset, true);
+        const layerIndex = view.getUint32(offset + 16, true);
+        const flags = view.getUint16(offset + 26, true);
+        const curve = specification.parse(view, offset);
+        const normalLength = Math.hypot(...curve.normal);
+        const validCircular =
+          curve.kind === "ellipse" ||
+          (Number.isFinite(curve.radius) && curve.radius > 0);
+        const validEllipse =
+          curve.kind !== "ellipse" ||
+          (curve.majorAxis.every(Number.isFinite) &&
+            Math.hypot(...curve.majorAxis) > 1e-12 &&
+            Number.isFinite(curve.minorAxisRatio) &&
+            Math.abs(curve.minorAxisRatio) > 1e-12);
+        if (
+          handle === 0n ||
+          layerIndex === 0xffffffff ||
+          (flags & ~1) !== 0 ||
+          !validCircular ||
+          !validEllipse ||
+          !Number.isFinite(curve.startParameter) ||
+          !Number.isFinite(curve.endParameter) ||
+          !Number.isFinite(normalLength) ||
+          normalLength <= 1e-12
+        ) {
+          throw new Error(
+            `${specification.name} ${index} has invalid review geometry`,
+          );
+        }
+        if (curves.has(handle)) {
+          throw new Error(
+            `${specification.name} ${index} duplicates an entity handle`,
+          );
+        }
+        curves.set(
+          handle,
+          Object.freeze({
+            ...curve,
+            handle,
+            layerIndex,
+            invisible: (flags & 1) !== 0,
+          }),
+        );
+      }
+      bytesRead += byteLength;
+      records += recordCount;
+    }
+    return Object.freeze({
+      curves,
+      byteLength: bytesRead,
+      records,
+      truncated,
     });
   }
 

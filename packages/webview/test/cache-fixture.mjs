@@ -1,8 +1,11 @@
 import {
+  ARC_RECORD_SIZE,
   CACHE_HEADER_FLAG_PREVIEW,
+  CIRCLE_RECORD_SIZE,
   DIRECTORY_ENTRY_SIZE,
   DRAW_ORDER_ENTRY_RECORD_SIZE,
   DRAW_ORDER_TABLE_RECORD_SIZE,
+  ELLIPSE_RECORD_SIZE,
   FACE_ENTITY_RECORD_SIZE,
   GPU_LINE_BATCH_RECORD_SIZE,
   GPU_LINE_VERTEX_RECORD_SIZE,
@@ -47,6 +50,67 @@ function writeU64(view, offset, value) {
 
 function writeVec3(view, offset, values) {
   values.forEach((value, axis) => view.setFloat64(offset + axis * 8, value, true));
+}
+
+function writeCommonEntity(view, offset, handle) {
+  writeU64(view, offset, handle);
+  writeU64(view, offset + 8, 100);
+  view.setUint32(offset + 16, 0, true);
+  view.setUint32(offset + 20, 0, true);
+  view.setInt16(offset + 24, -1, true);
+}
+
+function makeArcSection() {
+  const buffer = new ArrayBuffer(ARC_RECORD_SIZE);
+  const view = new DataView(buffer);
+  writeCommonEntity(view, 0, 0x501);
+  writeVec3(view, 32, [0, 0, 0]);
+  view.setFloat64(56, 10, true);
+  view.setFloat64(64, 0, true);
+  view.setFloat64(72, Math.PI / 2, true);
+  writeVec3(view, 88, [0, 0, 1]);
+  return {
+    kind: SectionKind.Arcs,
+    recordSize: ARC_RECORD_SIZE,
+    recordCount: 1,
+    flags: 0,
+    buffer,
+  };
+}
+
+function makeCircleSection() {
+  const buffer = new ArrayBuffer(CIRCLE_RECORD_SIZE);
+  const view = new DataView(buffer);
+  writeCommonEntity(view, 0, 0x502);
+  writeVec3(view, 32, [20, 0, 0]);
+  view.setFloat64(56, 5, true);
+  writeVec3(view, 72, [0, 0, 1]);
+  return {
+    kind: SectionKind.Circles,
+    recordSize: CIRCLE_RECORD_SIZE,
+    recordCount: 1,
+    flags: 0,
+    buffer,
+  };
+}
+
+function makeEllipseSection() {
+  const buffer = new ArrayBuffer(ELLIPSE_RECORD_SIZE);
+  const view = new DataView(buffer);
+  writeCommonEntity(view, 0, 0x503);
+  writeVec3(view, 32, [40, 0, 0]);
+  writeVec3(view, 56, [8, 0, 0]);
+  writeVec3(view, 80, [0, 0, 1]);
+  view.setFloat64(104, 0.5, true);
+  view.setFloat64(112, 0, true);
+  view.setFloat64(120, Math.PI * 2, true);
+  return {
+    kind: SectionKind.Ellipses,
+    recordSize: ELLIPSE_RECORD_SIZE,
+    recordCount: 1,
+    flags: 0,
+    buffer,
+  };
 }
 
 function makeDrawingSection(
@@ -1407,6 +1471,7 @@ export function makeFixtureCache({
   globalLinetypeScale = 1,
   savedModelView = null,
   wipeoutRecordCount = WIPEOUT_ROWS.length,
+  includeReviewCurves = false,
 } = {}) {
   const sections = [
     makeDrawingSection(
@@ -1424,6 +1489,9 @@ export function makeFixtureCache({
     ),
     makeLayerSection(),
     makeBlockSection(minorVersion),
+    ...(includeReviewCurves
+      ? [makeArcSection(), makeCircleSection(), makeEllipseSection()]
+      : []),
     ...(includeText ? [makeTextStyleSection()] : []),
     makeInsertSection(),
     ...(includeText

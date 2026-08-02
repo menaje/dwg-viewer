@@ -65,6 +65,8 @@ function composeCollections(
 ) {
   const count = outer.count * inner.count;
   const data = new Float64Array(count * MATRIX_VALUES);
+  const measurementData = new Float64Array(count * MATRIX_VALUES);
+  const coordinateSpaceIds = new Uint8Array(count);
   const maskBases = new Uint32Array(count);
   const clipIds = new Uint32Array(count);
   const colors = new Uint32Array(count);
@@ -94,6 +96,24 @@ function composeCollections(
         multiplyMat4(outerMatrix, innerMatrix),
         cursor * MATRIX_VALUES,
       );
+      const outerMeasurement = (
+        outer.measurementData ?? outer.data
+      ).subarray(
+        outerIndex * MATRIX_VALUES,
+        (outerIndex + 1) * MATRIX_VALUES,
+      );
+      const innerMeasurement = (
+        inner.measurementData ?? inner.data
+      ).subarray(
+        innerIndex * MATRIX_VALUES,
+        (innerIndex + 1) * MATRIX_VALUES,
+      );
+      measurementData.set(
+        multiplyMat4(outerMeasurement, innerMeasurement),
+        cursor * MATRIX_VALUES,
+      );
+      coordinateSpaceIds[cursor] =
+        outer.coordinateSpaceIds?.[outerIndex] ?? 1;
       maskBases[cursor] =
         (outer.maskBases?.[outerIndex] ?? 0) +
         (inner.maskBases?.[innerIndex] ?? 0);
@@ -186,6 +206,8 @@ function composeCollections(
   }
   return Object.freeze({
     data,
+    measurementData,
+    coordinateSpaceIds,
     maskBases,
     clipIds,
     colors,
@@ -220,6 +242,8 @@ export function composeExternalInstanceGraph(
         instancesByBlock: new Map(),
         rootInstances: Object.freeze({
           data: new Float64Array(0),
+          measurementData: new Float64Array(0),
+          coordinateSpaceIds: new Uint8Array(0),
           maskBases: new Uint32Array(0),
           clipIds: new Uint32Array(0),
           colors: new Uint32Array(0),
@@ -245,6 +269,9 @@ export function composeExternalInstanceGraph(
   const clipNodes = [...(parentInstanceGraph.clipNodes ?? [])];
   const modelInstances = Object.freeze({
     data: outer.data,
+    measurementData: outer.measurementData ?? outer.data,
+    coordinateSpaceIds:
+      outer.coordinateSpaceIds ?? new Uint8Array(outer.count).fill(1),
     maskBases: outer.maskBases ?? new Uint32Array(outer.count),
     clipIds: outer.clipIds ?? new Uint32Array(outer.count),
     colors:

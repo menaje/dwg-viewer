@@ -52,6 +52,8 @@ test("composes child model and block instances with the parent XREF insert", () 
   assert.equal(model.data[13], 20);
   assert.equal(block.data[12], 105);
   assert.equal(block.data[13], 26);
+  assert.equal(model.measurementData[12], 100);
+  assert.equal(block.measurementData[12], 105);
 });
 
 test("resolves child root ByBlock and Layer 0 inheritance through an XREF", () => {

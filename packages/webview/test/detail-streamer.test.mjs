@@ -269,3 +269,81 @@ test("redraws a completed detail batch with the latest interaction camera", asyn
   assert.deepEqual(redraws.at(-1).options, { interactive: true });
   streamer.dispose();
 });
+
+test("retains CPU detail geometry only while review mode requests it", async () => {
+  let reads = 0;
+  const reviewed = [];
+  const selections = [];
+  const evicted = [];
+  const renderer = {
+    addDetailBatch(batch) {
+      return { id: batch.id };
+    },
+    deleteDetailBatch() {},
+    setDetailSelections() {},
+    redraw(camera) {
+      return { camera };
+    },
+  };
+  const reader = {
+    async readBatchVertices(batch) {
+      reads += 1;
+      const byteLength =
+        batch.vertexCount * GPU_LINE_VERTEX_RECORD_SIZE;
+      return {
+        buffer: new ArrayBuffer(byteLength),
+        byteLength,
+        vertexCount: batch.vertexCount,
+        recordSize: GPU_LINE_VERTEX_RECORD_SIZE,
+      };
+    },
+  };
+  const batch = detailBatch({ id: 10 });
+  const streamer = new DetailStreamer(
+    reader,
+    renderer,
+    [batch],
+    { instancesByBlock: new Map() },
+    {
+      onReviewBatch(loadedBatch, vertices, candidate) {
+        reviewed.push({
+          id: loadedBatch.id,
+          bytes: vertices.byteLength,
+          instances: candidate.instanceIndices,
+        });
+        return true;
+      },
+      onReviewBatchEvicted(batchId) {
+        evicted.push(batchId);
+      },
+      onReviewSelection(candidates) {
+        selections.push(candidates.map((candidate) => candidate.batch.id));
+      },
+    },
+  );
+  const camera = {
+    origin: [0, 0, 0],
+    worldWidth: 10,
+    worldHeight: 10,
+  };
+
+  streamer.update(camera);
+  await streamer.whenIdle();
+  assert.equal(reads, 1);
+  assert.deepEqual(reviewed, []);
+
+  streamer.setReviewEnabled(true);
+  await streamer.whenIdle();
+  assert.equal(reads, 2);
+  assert.deepEqual(reviewed.map((value) => value.id), [10]);
+  assert.deepEqual(selections.at(-1), [10]);
+
+  streamer.setReviewEnabled(true);
+  await streamer.whenIdle();
+  assert.equal(reads, 2);
+
+  streamer.setReviewEnabled(false);
+  assert.deepEqual(selections.at(-1), []);
+  streamer.dispose();
+  assert.deepEqual(evicted, [10]);
+});

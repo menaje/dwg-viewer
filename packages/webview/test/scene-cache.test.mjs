@@ -58,6 +58,35 @@ test("accepts the Scene Cache v1.3 header", async () => {
   assert.equal(reader.header.minor, 3);
 });
 
+test("reads bounded exact ARC, CIRCLE, and ELLIPSE review geometry", async () => {
+  const source = new TrackedRangeSource(
+    new MemoryRangeSource(
+      makeFixtureCache({ includeReviewCurves: true }),
+    ),
+  );
+  const reader = await SceneCacheReader.open(source);
+  const requestsAfterOpen = source.requests.length;
+  const result = await reader.readReviewCurves();
+
+  assert.equal(result.records, 3);
+  assert.equal(result.truncated, false);
+  assert.equal(result.curves.get(0x501n).kind, "arc");
+  assert.deepEqual(result.curves.get(0x501n).center, [0, 0, 0]);
+  assert.equal(result.curves.get(0x501n).radius, 10);
+  assert.equal(result.curves.get(0x502n).kind, "circle");
+  assert.deepEqual(result.curves.get(0x502n).center, [20, 0, 0]);
+  assert.equal(result.curves.get(0x503n).kind, "ellipse");
+  assert.deepEqual(result.curves.get(0x503n).majorAxis, [8, 0, 0]);
+  assert.equal(result.curves.get(0x503n).minorAxisRatio, 0.5);
+  assert.equal(source.requests.length - requestsAfterOpen, 3);
+
+  const bounded = await reader.readReviewCurves({
+    maximumBytes: 112,
+  });
+  assert.equal(bounded.records, 1);
+  assert.equal(bounded.truncated, true);
+});
+
 test("rejects a newer unsupported Scene Cache minor version", async () => {
   await assert.rejects(
     SceneCacheReader.open(

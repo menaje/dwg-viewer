@@ -1,4 +1,7 @@
-import { buildInstanceGraph } from "./instance-graph.mjs";
+import {
+  buildInstanceGraph,
+  CoordinateSpaceKind,
+} from "./instance-graph.mjs";
 import {
   arbitraryAxisMat4,
   identityMat4,
@@ -106,6 +109,8 @@ export function buildLayoutRootPlan(blocks, layers, layout) {
     Object.freeze({
       blockIndex: layout.blockIndex,
       matrix: identityMat4(),
+      measurementMatrix: identityMat4(),
+      coordinateSpace: CoordinateSpaceKind.Paper,
       includeRootBatch: true,
       modelSpace: false,
       visibilityRow: 0,
@@ -148,6 +153,8 @@ export function buildLayoutRootPlan(blocks, layers, layout) {
         Object.freeze({
           blockIndex,
           matrix,
+          measurementMatrix: identityMat4(),
+          coordinateSpace: CoordinateSpaceKind.Model,
           clipPoints,
           modelSpace: true,
           includeRootBatch: false,

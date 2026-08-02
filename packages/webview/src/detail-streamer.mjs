@@ -15,6 +15,21 @@ const DEFAULT_CACHE_BYTES = 96 * 1024 * 1024;
 const DEFAULT_VISIBLE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_CONCURRENCY = 2;
 
+function sameInstanceSelection(left, right) {
+  if (left === right) {
+    return true;
+  }
+  if (!left || !right || left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function squaredDistance(x, y, centerX, centerY) {
   const deltaX = x - centerX;
   const deltaY = y - centerY;
@@ -195,6 +210,9 @@ export class DetailStreamer {
       concurrency = DEFAULT_CONCURRENCY,
       onUpdate = () => {},
       onError = () => {},
+      onReviewBatch = () => false,
+      onReviewBatchEvicted = () => {},
+      onReviewSelection = () => {},
     } = {},
   ) {
     if (!Number.isSafeInteger(concurrency) || concurrency <= 0) {
@@ -208,6 +226,9 @@ export class DetailStreamer {
     this.concurrency = concurrency;
     this.onUpdate = onUpdate;
     this.onError = onError;
+    this.onReviewBatch = onReviewBatch;
+    this.onReviewBatchEvicted = onReviewBatchEvicted;
+    this.onReviewSelection = onReviewSelection;
     this.revision = 0;
     this.candidates = Object.freeze([]);
     this.loading = 0;
@@ -220,6 +241,10 @@ export class DetailStreamer {
     this.renderRequest = null;
     this.renderPromise = Promise.resolve();
     this.pendingRender = null;
+    this.reviewEnabled = false;
+    this.reviewRevision = 0;
+    this.reviewActive = Promise.resolve();
+    this.reviewedSelections = new Map();
     this.cache = new GpuBatchCache(
       async (batch) => {
         const vertices = await this.reader.readBatchVertices(batch);
@@ -231,6 +256,12 @@ export class DetailStreamer {
           });
         }
         const resource = this.renderer.addDetailBatch(batch, vertices);
+        const candidate = this.candidates.find(
+          (value) => value.batch.id === batch.id,
+        );
+        if (this.reviewEnabled && candidate) {
+          this.publishReviewBatch(batch, vertices, candidate);
+        }
         return Object.freeze({
           batchId: batch.id,
           byteLength: vertices.byteLength,
@@ -243,6 +274,8 @@ export class DetailStreamer {
           if (value.resource) {
             this.renderer.deleteDetailBatch(value.batchId);
           }
+          this.reviewedSelections.delete(value.batchId);
+          this.onReviewBatchEvicted(value.batchId);
         },
       },
     );
@@ -267,6 +300,7 @@ export class DetailStreamer {
         )
       : Object.freeze([]);
     this.renderer.setDetailSelections(this.candidates);
+    this.syncReviewSelection();
     this.lastRender = redraw ? this.renderer.redraw(camera) : null;
 
     const queue = [];
@@ -312,6 +346,7 @@ export class DetailStreamer {
       await this.renderPromise;
       if (revision === this.revision) {
         this.loading = 0;
+        this.requestReviewBatches();
         this.emit();
       }
     });
@@ -320,7 +355,122 @@ export class DetailStreamer {
 
   async whenIdle() {
     await this.active;
+    await this.reviewActive;
     return this.snapshot();
+  }
+
+  publishReviewBatch(batch, vertices, candidate) {
+    if (!this.reviewEnabled || this.disposed) {
+      return false;
+    }
+    const accepted = this.onReviewBatch(batch, vertices, candidate) !== false;
+    if (accepted) {
+      this.reviewedSelections.set(
+        batch.id,
+        candidate.instanceIndices
+          ? Uint32Array.from(candidate.instanceIndices)
+          : null,
+      );
+    }
+    return accepted;
+  }
+
+  reviewSelectionIsCurrent(candidate) {
+    return (
+      this.reviewedSelections.has(candidate.batch.id) &&
+      sameInstanceSelection(
+        this.reviewedSelections.get(candidate.batch.id),
+        candidate.instanceIndices,
+      )
+    );
+  }
+
+  syncReviewSelection() {
+    if (!this.reviewEnabled) {
+      return;
+    }
+    const selectedIds = new Set(
+      this.candidates.map((candidate) => candidate.batch.id),
+    );
+    for (const batchId of this.reviewedSelections.keys()) {
+      if (!selectedIds.has(batchId)) {
+        this.reviewedSelections.delete(batchId);
+      }
+    }
+    this.onReviewSelection(this.candidates);
+  }
+
+  requestReviewBatches() {
+    if (!this.reviewEnabled || this.disposed) {
+      return this.reviewActive;
+    }
+    const revision = ++this.reviewRevision;
+    const candidates = [...this.candidates];
+    this.reviewActive = this.reviewActive
+      .catch(() => undefined)
+      .then(async () => {
+        for (const candidate of candidates) {
+          if (
+            revision !== this.reviewRevision ||
+            !this.reviewEnabled ||
+            this.disposed
+          ) {
+            return;
+          }
+          if (
+            !this.cache.has(candidate.batch.id) ||
+            this.reviewSelectionIsCurrent(candidate)
+          ) {
+            continue;
+          }
+          try {
+            const vertices = await this.reader.readBatchVertices(
+              candidate.batch,
+            );
+            const current = this.candidates.find(
+              (value) => value.batch.id === candidate.batch.id,
+            );
+            if (
+              revision === this.reviewRevision &&
+              current &&
+              this.reviewEnabled &&
+              !this.disposed
+            ) {
+              this.publishReviewBatch(candidate.batch, vertices, current);
+            }
+          } catch (error) {
+            if (
+              revision === this.reviewRevision &&
+              this.reviewEnabled &&
+              !this.disposed
+            ) {
+              this.onError(error);
+            }
+          }
+        }
+      });
+    return this.reviewActive;
+  }
+
+  setReviewEnabled(enabled) {
+    const next = Boolean(enabled);
+    if (next === this.reviewEnabled) {
+      if (next) {
+        this.syncReviewSelection();
+        this.requestReviewBatches();
+      }
+      return next;
+    }
+    this.reviewEnabled = next;
+    this.reviewRevision += 1;
+    this.reviewedSelections.clear();
+    if (next) {
+      this.syncReviewSelection();
+      this.requestReviewBatches();
+    } else {
+      this.onReviewSelection(Object.freeze([]));
+    }
+    return next;
   }
 
   snapshot() {
@@ -391,11 +541,14 @@ export class DetailStreamer {
   dispose() {
     this.disposed = true;
     this.revision += 1;
+    this.reviewRevision += 1;
     this.loading = 0;
     this.candidates = Object.freeze([]);
     this.renderCamera = null;
     this.renderOptions = Object.freeze({});
     this.renderer.setDetailSelections(this.candidates);
+    this.reviewedSelections.clear();
+    this.onReviewSelection(Object.freeze([]));
     this.cache.clear();
   }
 }

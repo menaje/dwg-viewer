@@ -30,6 +30,7 @@ import {
 } from "./cad-plot-style.mjs";
 import { ComplexLinetypeOverlay } from "./complex-linetype-overlay.mjs";
 import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.0";
+import { ReviewTools } from "./review-tools.mjs";
 import {
   isOutlineFontReference,
   isShxFontReference,
@@ -63,6 +64,9 @@ const metrics = document.querySelector("#metrics");
 const canvas = document.querySelector("#drawing");
 const imageCanvas = document.querySelector("#image-overlay");
 const textCanvas = document.querySelector("#text-overlay");
+const reviewCanvas = document.querySelector("#review-overlay");
+const reviewToolbar = document.querySelector("#review-toolbar");
+const reviewResult = document.querySelector("#review-result");
 const layoutTabs = document.querySelector("#layout-tabs");
 const viewControls = [...document.querySelectorAll("[data-view-action]")];
 const layersToggle = document.querySelector("#layers-toggle");
@@ -87,6 +91,7 @@ const viewerToolsTrigger = document.querySelector(
 );
 let activeScene;
 let activeInteraction;
+let activeReviewTools;
 let activeTextStatus;
 let activeTextComposite;
 let activeImageComposite;
@@ -1056,6 +1061,11 @@ function setControlsEnabled(enabled) {
   }
   layersToggle.disabled = !enabled;
   wipeoutToggle.disabled = !enabled || !activeMaskStatus?.enabled;
+  if (activeReviewTools) {
+    activeReviewTools.setEnabled(enabled);
+  } else {
+    reviewToolbar.hidden = true;
+  }
 }
 
 function updateWipeoutToggle() {
@@ -1109,6 +1119,7 @@ function populateLayerPanel(scene) {
       }
       scene.renderer.setLayerVisibility(index, checkbox.checked);
       activeInteraction?.refresh();
+      activeReviewTools?.redraw();
       updateLayerSummary();
     });
     label.append(checkbox, name);
@@ -1128,6 +1139,7 @@ function setAllLayersVisible(visible) {
     checkbox.checked = visible;
   }
   activeInteraction?.refresh();
+  activeReviewTools?.redraw();
   updateLayerSummary();
 }
 
@@ -2383,6 +2395,15 @@ async function handleExternalCacheReady(message) {
           recordSize: loaded.scene.overview.recordSize,
         }),
       });
+      activeReviewTools?.addSource(sceneId, {
+        id: sceneId,
+        label: prefix,
+        batches: mountedOverview.batches,
+        vertices: mountedOverview.vertices,
+        instanceGraph: composed.instanceGraph,
+        layers: activeScene.metadata.layers,
+        reader: loaded.scene.reader,
+      });
     }
     await addExternalText(
       loaded.scene,
@@ -2402,6 +2423,7 @@ async function handleExternalCacheReady(message) {
       id: sceneId,
       prefix,
       instanceGraph: composed.instanceGraph,
+      overview: mountedOverview,
     });
   }
   externalAttachmentsByCache.set(message.cacheId, childContexts);
@@ -2478,6 +2500,8 @@ function installInteraction(
   source,
   revision,
 ) {
+  activeReviewTools?.dispose();
+  activeReviewTools = undefined;
   const interactionScene = Object.freeze({
     ...scene,
     instanceGraph,
@@ -2504,12 +2528,47 @@ function installInteraction(
         status.textContent += " · 빠른 미리보기";
       }
       status.textContent += missingFontSuffix();
+      activeReviewTools?.setCamera(viewport.render.camera);
     },
     onError(error) {
       status.textContent = `상세 표시 실패: ${error.message}`;
       console.error(error);
     },
+    onReviewBatch(sourceId, batch, vertices, candidate) {
+      return (
+        activeReviewTools?.addDetailBatch(
+          sourceId,
+          batch,
+          vertices,
+          candidate,
+        ) ?? false
+      );
+    },
+    onReviewBatchEvicted(sourceId, batchId) {
+      activeReviewTools?.removeDetailBatch(sourceId, batchId);
+    },
+    onReviewSelection(sourceId, candidates) {
+      activeReviewTools?.setDetailSelection(sourceId, candidates);
+    },
   });
+  activeReviewTools = new ReviewTools({
+    canvas,
+    overlay: reviewCanvas,
+    toolbar: reviewToolbar,
+    result: reviewResult,
+    scene,
+    instanceGraph,
+    getCamera: () =>
+      activeInteraction?.snapshot().render.camera ?? render.camera,
+    getLayerVisibility: () => scene.renderer.getLayerVisibility(),
+    onFit: () => activeInteraction?.reset(),
+    onReviewModeChange: (enabled) =>
+      activeInteraction?.setReviewEnabled(enabled),
+    onStatus(message) {
+      status.textContent = message;
+    },
+  });
+  activeReviewTools.setCamera(render.camera);
   return interactionScene;
 }
 
@@ -2535,6 +2594,8 @@ async function activateView(scene, view, source, revision) {
     button.disabled = true;
   }
   status.textContent = `${view.label} 화면 구성 중`;
+  activeReviewTools?.dispose();
+  activeReviewTools = undefined;
   activeInteraction?.dispose();
   activeInteraction = undefined;
   try {
@@ -2746,6 +2807,8 @@ async function openCache(source, workerSource) {
   activePrimitiveWorker = undefined;
   activeInteraction?.dispose();
   activeInteraction = undefined;
+  activeReviewTools?.dispose();
+  activeReviewTools = undefined;
   activeScene?.renderer.dispose();
   activeScene = undefined;
   activeHostRangeSource?.dispose();
@@ -2857,6 +2920,8 @@ async function openCache(source, workerSource) {
       return;
     }
     activeInteraction = undefined;
+    activeReviewTools?.dispose();
+    activeReviewTools = undefined;
     activeScene = undefined;
     if (
       workerSource.kind === "host" &&

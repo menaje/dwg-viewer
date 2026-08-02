@@ -126,7 +126,13 @@ test("builds paper and clipped model roots with frozen layer rows", () => {
   assert.equal(graph.modelInstances.count, 1);
   assert.equal(graph.modelInstances.clipIds[0], 1);
   assert.equal(graph.modelInstances.visibilityRows[0], 1);
+  assert.deepEqual(
+    transformPoint(graph.modelInstances.measurementData, [1_050, 1_975, 0]),
+    [1_050, 1_975, 0],
+  );
+  assert.equal(graph.modelInstances.coordinateSpaceIds[0], 1);
   assert.equal(graph.instancesByBlock.get(1).count, 1);
+  assert.equal(graph.instancesByBlock.get(1).coordinateSpaceIds[0], 0);
 });
 
 test("treats an inactive layout's active id-zero viewport as paper space", () => {

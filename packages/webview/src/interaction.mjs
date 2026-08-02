@@ -13,6 +13,9 @@ export class ViewportInteraction {
       detailZoomThreshold = DETAIL_ZOOM_THRESHOLD,
       onUpdate = () => {},
       onError = () => {},
+      onReviewBatch = () => false,
+      onReviewBatchEvicted = () => {},
+      onReviewSelection = () => {},
     } = {},
   ) {
     this.scene = scene;
@@ -21,6 +24,10 @@ export class ViewportInteraction {
     this.detailZoomThreshold = detailZoomThreshold;
     this.onUpdate = onUpdate;
     this.onError = onError;
+    this.onReviewBatch = onReviewBatch;
+    this.onReviewBatchEvicted = onReviewBatchEvicted;
+    this.onReviewSelection = onReviewSelection;
+    this.reviewEnabled = false;
     this.lastRender = scene.render;
     this.frameRequest = null;
     this.frameInteractive = false;
@@ -42,6 +49,12 @@ export class ViewportInteraction {
         onError: (error) => {
           this.onError(error);
         },
+        onReviewBatch: (batch, vertices, candidate) =>
+          this.onReviewBatch("root", batch, vertices, candidate),
+        onReviewBatchEvicted: (batchId) =>
+          this.onReviewBatchEvicted("root", batchId),
+        onReviewSelection: (candidates) =>
+          this.onReviewSelection("root", candidates),
       },
     );
     this.externalDetailStreamers = new Map();
@@ -214,12 +227,28 @@ export class ViewportInteraction {
           this.emit(this.detailSnapshot());
         },
         onError: (error) => this.onError(error),
+        onReviewBatch: (batch, vertices, candidate) =>
+          this.onReviewBatch(id, batch, vertices, candidate),
+        onReviewBatchEvicted: (batchId) =>
+          this.onReviewBatchEvicted(id, batchId),
+        onReviewSelection: (candidates) =>
+          this.onReviewSelection(id, candidates),
       },
     );
     this.externalDetailStreamers.set(id, streamer);
     streamer.setRenderCamera(this.camera.view());
+    streamer.setReviewEnabled(this.reviewEnabled);
     this.scheduleDetail(0);
     return streamer;
+  }
+
+  setReviewEnabled(enabled) {
+    this.reviewEnabled = Boolean(enabled);
+    this.detailStreamer.setReviewEnabled(this.reviewEnabled);
+    for (const streamer of this.externalDetailStreamers.values()) {
+      streamer.setReviewEnabled(this.reviewEnabled);
+    }
+    return this.reviewEnabled;
   }
 
   syncDetailRenderCamera(camera, renderOptions = {}) {
@@ -366,6 +395,7 @@ export class ViewportInteraction {
       streamer.dispose();
     }
     this.externalDetailStreamers.clear();
+    this.reviewEnabled = false;
     this.canvas.classList.remove("panning");
   }
 }

@@ -20,8 +20,14 @@ const MATRIX_VALUES = 16;
 const MATRICES_PER_CHUNK = 256;
 const NO_LAYER_OVERRIDE = 0xffffffff;
 const DEFAULT_BYBLOCK_COLOR = (2 << 30) | 7;
+export const CoordinateSpaceKind = Object.freeze({
+  Paper: 0,
+  Model: 1,
+});
 const ROOT_INSTANCES = Object.freeze({
   data: identityMat4(),
+  measurementData: identityMat4(),
+  coordinateSpaceIds: new Uint8Array([CoordinateSpaceKind.Model]),
   maskBases: new Uint32Array([0]),
   clipIds: new Uint32Array([0]),
   colors: new Uint32Array([DEFAULT_BYBLOCK_COLOR]),
@@ -43,6 +49,8 @@ class MatrixCollectionBuilder {
   constructor(includeMaskBases) {
     this.includeMaskBases = includeMaskBases;
     this.chunks = [];
+    this.measurementChunks = [];
+    this.coordinateSpaceChunks = [];
     this.maskBaseChunks = [];
     this.clipIdChunks = [];
     this.colorChunks = [];
@@ -74,12 +82,20 @@ class MatrixCollectionBuilder {
     linetypeCode,
     linetypeInherited,
     visibilityRow = 0,
+    measurementMatrix = matrix,
+    coordinateSpace = CoordinateSpaceKind.Model,
   ) {
     const chunkIndex = Math.floor(this.count / MATRICES_PER_CHUNK);
     const indexInChunk = this.count % MATRICES_PER_CHUNK;
     if (!this.chunks[chunkIndex]) {
       this.chunks[chunkIndex] = new Float64Array(
         MATRICES_PER_CHUNK * MATRIX_VALUES,
+      );
+      this.measurementChunks[chunkIndex] = new Float64Array(
+        MATRICES_PER_CHUNK * MATRIX_VALUES,
+      );
+      this.coordinateSpaceChunks[chunkIndex] = new Uint8Array(
+        MATRICES_PER_CHUNK,
       );
       if (this.includeMaskBases) {
         this.maskBaseChunks[chunkIndex] = new Uint32Array(
@@ -122,6 +138,11 @@ class MatrixCollectionBuilder {
       );
     }
     this.chunks[chunkIndex].set(matrix, indexInChunk * MATRIX_VALUES);
+    this.measurementChunks[chunkIndex].set(
+      measurementMatrix,
+      indexInChunk * MATRIX_VALUES,
+    );
+    this.coordinateSpaceChunks[chunkIndex][indexInChunk] = coordinateSpace;
     if (this.includeMaskBases) {
       this.maskBaseChunks[chunkIndex][indexInChunk] = maskBase;
     }
@@ -147,6 +168,8 @@ class MatrixCollectionBuilder {
 
   finish() {
     const data = new Float64Array(this.count * MATRIX_VALUES);
+    const measurementData = new Float64Array(this.count * MATRIX_VALUES);
+    const coordinateSpaceIds = new Uint8Array(this.count);
     const maskBases = this.includeMaskBases
       ? new Uint32Array(this.count)
       : null;
@@ -169,6 +192,20 @@ class MatrixCollectionBuilder {
       const remaining = data.length - destination;
       const length = Math.min(chunk.length, remaining);
       data.set(chunk.subarray(0, length), destination);
+      measurementData.set(
+        this.measurementChunks[index].subarray(0, length),
+        destination,
+      );
+      coordinateSpaceIds.set(
+        this.coordinateSpaceChunks[index].subarray(
+          0,
+          Math.min(
+            this.coordinateSpaceChunks[index].length,
+            coordinateSpaceIds.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
       destination += length;
       if (this.includeMaskBases) {
         const maskChunk = this.maskBaseChunks[index];
@@ -302,6 +339,8 @@ class MatrixCollectionBuilder {
     }
     const result = {
       data,
+      measurementData,
+      coordinateSpaceIds,
       count: this.count,
       length: this.count,
       clipIds,
@@ -486,6 +525,8 @@ export function buildInstanceGraph(
     linetypeCode,
     linetypeInherited,
     visibilityRow,
+    measurementMatrix,
+    coordinateSpace,
   ) => {
     let builder = instanceBuilders.get(blockIndex);
     if (!builder) {
@@ -507,6 +548,8 @@ export function buildInstanceGraph(
       linetypeCode,
       linetypeInherited,
       visibilityRow,
+      measurementMatrix,
+      coordinateSpace,
     );
     instanceCount += 1;
     if (instanceCount >= maximumInstances) {
@@ -518,6 +561,8 @@ export function buildInstanceGraph(
   const visitInsert = (
     insert,
     parentMatrix,
+    parentMeasurementMatrix,
+    parentCoordinateSpace,
     parentMaskBase,
     parentClipId,
     parentColor,
@@ -637,6 +682,7 @@ export function buildInstanceGraph(
       for (let column = 0; column < columns && !stopped; column += 1) {
         const local = insertCellMatrix(insert, target.basePoint, column, row);
         const world = multiplyMat4(parentMatrix, local);
+        const measurement = multiplyMat4(parentMeasurementMatrix, local);
         const cellIndex = row * columns + column;
         const maskBase =
           parentMaskBase + prefix + cellIndex * targetSpan;
@@ -693,6 +739,8 @@ export function buildInstanceGraph(
           linetypeCode,
           linetypeInherited,
           parentVisibilityRow,
+          measurement,
+          parentCoordinateSpace,
         );
 
         const nested = insertsByOwner.get(target.index);
@@ -705,6 +753,8 @@ export function buildInstanceGraph(
           visitInsert(
             child,
             world,
+            measurement,
+            parentCoordinateSpace,
             maskBase,
             clipId,
             color,
@@ -746,11 +796,22 @@ export function buildInstanceGraph(
   for (const [contextIndex, context] of contexts.entries()) {
     const block = blocks[context?.blockIndex];
     const matrix = context?.matrix;
+    const measurementMatrix =
+      context?.measurementMatrix ??
+      (context?.modelSpace ? identityMat4() : matrix);
+    const coordinateSpace =
+      context?.coordinateSpace ??
+      (context?.modelSpace
+        ? CoordinateSpaceKind.Model
+        : CoordinateSpaceKind.Paper);
     const visibilityRow = context?.visibilityRow ?? 0;
     if (
       !block ||
       !(matrix instanceof Float64Array) ||
       matrix.length !== MATRIX_VALUES ||
+      !(measurementMatrix instanceof Float64Array) ||
+      measurementMatrix.length !== MATRIX_VALUES ||
+      !Object.values(CoordinateSpaceKind).includes(coordinateSpace) ||
       !Number.isInteger(visibilityRow) ||
       visibilityRow < 0 ||
       visibilityRow >= visibilityRows.length
@@ -800,6 +861,8 @@ export function buildInstanceGraph(
       2,
       true,
       visibilityRow,
+      measurementMatrix,
+      coordinateSpace,
     ];
     if (context.modelSpace) {
       modelInstanceBuilder.add(...rootValues);
@@ -812,6 +875,8 @@ export function buildInstanceGraph(
       visitInsert(
         insert,
         matrix,
+        measurementMatrix,
+        coordinateSpace,
         0,
         clipId,
         DEFAULT_BYBLOCK_COLOR,

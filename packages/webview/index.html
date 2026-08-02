@@ -99,6 +99,41 @@
         <canvas id="image-overlay" aria-hidden="true"></canvas>
         <canvas id="drawing"></canvas>
         <canvas id="text-overlay" aria-hidden="true"></canvas>
+        <canvas id="review-overlay" aria-hidden="true"></canvas>
+        <nav
+          id="review-toolbar"
+          class="review-toolbar"
+          aria-label="도면 검토 도구"
+          hidden
+        >
+          <button type="button" data-review-tool="select" aria-pressed="false" title="객체 선택 및 기본 속성">
+            <span class="review-tool-icon" aria-hidden="true">⌁</span>
+            <span class="review-tool-label">객체 선택</span>
+          </button>
+          <button type="button" data-review-tool="distance" aria-pressed="false" title="두 점 사이 거리">
+            <span class="review-tool-icon" aria-hidden="true">↔</span>
+            <span class="review-tool-label">거리 측정</span>
+          </button>
+          <button type="button" data-review-tool="coordinate" aria-pressed="false" title="선택한 점의 좌표">
+            <span class="review-tool-icon" aria-hidden="true">＋</span>
+            <span class="review-tool-label">점 좌표</span>
+          </button>
+          <button type="button" data-review-action="fit" title="도면 전체 보기">
+            <span class="review-tool-icon" aria-hidden="true">□</span>
+            <span class="review-tool-label">전체 보기</span>
+          </button>
+          <button type="button" data-review-action="clear" title="선택과 측정 결과 지우기">
+            <span class="review-tool-icon" aria-hidden="true">×</span>
+            <span class="review-tool-label">결과 지우기</span>
+          </button>
+        </nav>
+        <aside id="review-result" class="review-result" aria-live="polite" hidden>
+          <div class="review-result-heading">
+            <strong data-review-title>검토 결과</strong>
+            <button type="button" data-review-action="close" aria-label="검토 결과 닫기">×</button>
+          </div>
+          <div class="review-result-content" data-review-content></div>
+        </aside>
         <nav
           id="layout-tabs"
           class="layout-tabs"
