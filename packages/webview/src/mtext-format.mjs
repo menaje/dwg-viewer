@@ -41,11 +41,39 @@ function appendRun(line, text, format) {
     return;
   }
   const previous = line.at(-1);
-  if (previous?.format === format) {
+  if (previous?.format === format && !previous.stack) {
     previous.text += normalized;
     return;
   }
   line.push({ text: normalized, format });
+}
+
+function parsedStack(payload) {
+  const normalized = replacePercentCodes(payload);
+  let separatorIndex = -1;
+  let separator = "";
+  for (const candidate of ["/", "#", "^"]) {
+    const index = normalized.indexOf(candidate);
+    if (index >= 0 && (separatorIndex < 0 || index < separatorIndex)) {
+      separatorIndex = index;
+      separator = candidate;
+    }
+  }
+  if (separatorIndex < 0) {
+    return null;
+  }
+  const upper = normalized.slice(0, separatorIndex);
+  const lower = normalized.slice(separatorIndex + 1);
+  return Object.freeze({
+    upper,
+    lower,
+    separator:
+      separator === "/"
+        ? "horizontal"
+        : separator === "#"
+          ? "diagonal"
+          : "tolerance",
+  });
 }
 
 function frozenLine(line) {
@@ -56,6 +84,7 @@ function frozenLine(line) {
         Object.freeze({
           text: run.text,
           format: run.format,
+          ...(run.stack ? { stack: run.stack } : {}),
         }),
       ),
   );
@@ -219,6 +248,21 @@ export function parseCadMTextRuns(
     appendRun(lines.at(-1), characters.join(""), format);
     codePoints += characters.length;
   };
+  const appendStack = (payload) => {
+    const stack = parsedStack(payload);
+    if (!stack) {
+      append(payload);
+      return;
+    }
+    const text = `${stack.upper}/${stack.lower}`;
+    const characters = [...text];
+    if (characters.length > limit - codePoints) {
+      append(characters.slice(0, limit - codePoints).join(""));
+      return;
+    }
+    lines.at(-1).push({ text, format, stack });
+    codePoints += characters.length;
+  };
   const paragraph = () => {
     if (lines.length < limit) {
       lines.push([]);
@@ -325,7 +369,7 @@ export function parseCadMTextRuns(
     if (semicolon !== -1) {
       const payload = value.slice(index + 2, semicolon);
       if (command === "S" || command === "s") {
-        append(payload.replaceAll("^", "/").replaceAll("#", "/"));
+        appendStack(payload);
       } else {
         format = applySemicolonCommand(
           command,
@@ -358,11 +402,23 @@ function isWhitespace(character) {
 
 function appendRichCharacter(line, character, format) {
   const previous = line.at(-1);
-  if (previous?.format === format) {
+  if (previous?.format === format && !previous.stack) {
     previous.text += character;
   } else {
     line.push({ text: character, format });
   }
+}
+
+function appendRichAtom(line, atom) {
+  if (atom.stack) {
+    line.push({
+      text: atom.text,
+      format: atom.format,
+      stack: atom.stack,
+    });
+    return;
+  }
+  appendRichCharacter(line, atom.text, atom.format);
 }
 
 function freezeRichLines(lines) {
@@ -384,23 +440,33 @@ export function wrapCadMTextRuns(
   ) {
     return Object.freeze([...lines]);
   }
-  const measured = (character, format) => {
-    const advance = measureAdvance(character, format);
+  const measured = (atom) => {
+    const advance = measureAdvance(
+      atom.text,
+      atom.format,
+      atom.stack,
+    );
     return Number.isFinite(advance) && advance > 0 ? advance : 1;
   };
   const wrapped = [];
 
   for (const source of lines) {
     const firstWrappedLine = wrapped.length;
-    const characters = [];
-    const formats = [];
+    const atoms = [];
     for (const run of source) {
+      if (run.stack) {
+        atoms.push({
+          text: run.text,
+          format: run.format,
+          stack: run.stack,
+        });
+        continue;
+      }
       for (const character of run.text) {
-        characters.push(character);
-        formats.push(run.format);
+        atoms.push({ text: character, format: run.format });
       }
     }
-    if (characters.length === 0) {
+    if (atoms.length === 0) {
       wrapped.push([]);
       continue;
     }
@@ -419,29 +485,24 @@ export function wrapCadMTextRuns(
       pendingWhitespaceAdvance = 0;
     };
     const appendPendingWhitespace = () => {
-      for (const entry of pendingWhitespace) {
-        appendRichCharacter(current, entry.character, entry.format);
+      for (const atom of pendingWhitespace) {
+        appendRichAtom(current, atom);
       }
       currentAdvance += pendingWhitespaceAdvance;
       pendingWhitespace = [];
       pendingWhitespaceAdvance = 0;
     };
 
-    for (let index = 0; index < characters.length; ) {
-      if (isWhitespace(characters[index])) {
+    for (let index = 0; index < atoms.length; ) {
+      if (!atoms[index].stack && isWhitespace(atoms[index].text)) {
         if (current.length > 0) {
           while (
-            index < characters.length &&
-            isWhitespace(characters[index])
+            index < atoms.length &&
+            !atoms[index].stack &&
+            isWhitespace(atoms[index].text)
           ) {
-            pendingWhitespace.push({
-              character: characters[index],
-              format: formats[index],
-            });
-            pendingWhitespaceAdvance += measured(
-              characters[index],
-              formats[index],
-            );
+            pendingWhitespace.push(atoms[index]);
+            pendingWhitespaceAdvance += measured(atoms[index]);
             index += 1;
           }
         } else {
@@ -453,10 +514,10 @@ export function wrapCadMTextRuns(
       const tokenStart = index;
       let tokenAdvance = 0;
       while (
-        index < characters.length &&
-        !isWhitespace(characters[index])
+        index < atoms.length &&
+        (atoms[index].stack || !isWhitespace(atoms[index].text))
       ) {
-        tokenAdvance += measured(characters[index], formats[index]);
+        tokenAdvance += measured(atoms[index]);
         index += 1;
       }
       if (
@@ -470,39 +531,28 @@ export function wrapCadMTextRuns(
       }
       if (tokenAdvance <= maximumAdvance) {
         for (
-          let characterIndex = tokenStart;
-          characterIndex < index;
-          characterIndex += 1
+          let atomIndex = tokenStart;
+          atomIndex < index;
+          atomIndex += 1
         ) {
-          appendRichCharacter(
-            current,
-            characters[characterIndex],
-            formats[characterIndex],
-          );
+          appendRichAtom(current, atoms[atomIndex]);
         }
         currentAdvance += tokenAdvance;
         continue;
       }
       for (
-        let characterIndex = tokenStart;
-        characterIndex < index;
-        characterIndex += 1
+        let atomIndex = tokenStart;
+        atomIndex < index;
+        atomIndex += 1
       ) {
-        const advance = measured(
-          characters[characterIndex],
-          formats[characterIndex],
-        );
+        const advance = measured(atoms[atomIndex]);
         if (
           current.length > 0 &&
           currentAdvance + advance > maximumAdvance
         ) {
           flush();
         }
-        appendRichCharacter(
-          current,
-          characters[characterIndex],
-          formats[characterIndex],
-        );
+        appendRichAtom(current, atoms[atomIndex]);
         currentAdvance += advance;
       }
     }
@@ -520,6 +570,15 @@ export function measureCadMTextLine(
 ) {
   let total = 0;
   for (const run of line) {
+    if (run.stack) {
+      const advance = measureAdvance(
+        run.text,
+        run.format,
+        run.stack,
+      );
+      total += Number.isFinite(advance) && advance > 0 ? advance : 1;
+      continue;
+    }
     for (const character of run.text) {
       const advance = measureAdvance(character, run.format);
       total += Number.isFinite(advance) && advance > 0 ? advance : 1;

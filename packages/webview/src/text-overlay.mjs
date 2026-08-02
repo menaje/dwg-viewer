@@ -32,6 +32,7 @@ const DEFAULT_MINIMUM_PIXEL_HEIGHT = 0.5;
 const DEFAULT_MAXIMUM_MASK_OCCURRENCES = 10_000;
 const MAXIMUM_CODE_POINTS_PER_ENTITY = 4_096;
 const MAXIMUM_MTEXT_COLUMNS = 64;
+const STACK_TEXT_SCALE = 0.7;
 const DEFAULT_DRAWING_BACKGROUND = "rgb(14, 16, 19)";
 const LOCAL_OUTLINE_FONTS = new Map();
 const IDENTITY_INSTANCES = Object.freeze({
@@ -1395,8 +1396,114 @@ export class CanvasTextOverlay {
       perFormat.set(character, entry);
       return entry;
     };
-    const characterAdvance = (character, format) =>
-      formattedCharacter(character, format).advance;
+    const stackCache = new WeakMap();
+    const stackLayout = (stack, format) => {
+      let layout = stackCache.get(stack);
+      if (layout) {
+        return layout;
+      }
+      const stackFormat = Object.freeze({
+        ...format,
+        heightScale: format.heightScale * STACK_TEXT_SCALE,
+        underline: false,
+        overline: false,
+        strikeThrough: false,
+        verticalAlignment: 1,
+      });
+      const sequence = (value) => {
+        const entries = [];
+        let advance = 0;
+        for (const character of value) {
+          const formatted = formattedCharacter(
+            character,
+            stackFormat,
+          );
+          entries.push({
+            character,
+            ...formatted,
+            x: advance,
+          });
+          advance += formatted.advance;
+        }
+        return { entries, advance };
+      };
+      const upper = sequence(stack.upper);
+      const lower = sequence(stack.lower);
+      const height = Math.max(format.heightScale, 0.01);
+      const unit = Math.max(
+        format.heightScale * format.widthScale,
+        0.01,
+      );
+      const glyphs = [];
+      let advance;
+      let rule = null;
+      if (stack.separator === "diagonal") {
+        const lowerX =
+          Math.max(upper.advance * 0.65, unit * 0.35) +
+          unit * 0.15;
+        advance =
+          Math.max(upper.advance, lowerX + lower.advance) +
+          unit * 0.05;
+        for (const entry of upper.entries) {
+          glyphs.push({
+            ...entry,
+            yOffset: height * 0.32,
+          });
+        }
+        for (const entry of lower.entries) {
+          glyphs.push({
+            ...entry,
+            x: entry.x + lowerX,
+            yOffset: -height * 0.18,
+          });
+        }
+        rule = Object.freeze({
+          x1: Math.max(upper.advance * 0.72, unit * 0.25),
+          y1: height * 0.3,
+          x2: lowerX + unit * 0.05,
+          y2: -height * 0.08,
+        });
+      } else {
+        advance =
+          Math.max(upper.advance, lower.advance) + unit * 0.12;
+        const upperX = (advance - upper.advance) * 0.5;
+        const lowerX = (advance - lower.advance) * 0.5;
+        for (const entry of upper.entries) {
+          glyphs.push({
+            ...entry,
+            x: entry.x + upperX,
+            yOffset: height * 0.43,
+          });
+        }
+        for (const entry of lower.entries) {
+          glyphs.push({
+            ...entry,
+            x: entry.x + lowerX,
+            yOffset: -height * 0.27,
+          });
+        }
+        if (stack.separator === "horizontal") {
+          rule = Object.freeze({
+            x1: 0,
+            y1: height * 0.34,
+            x2: advance,
+            y2: height * 0.34,
+          });
+        }
+      }
+      layout = Object.freeze({
+        advance: Math.max(advance, unit * 0.35),
+        glyphs: Object.freeze(glyphs),
+        rule,
+        color: formatRecord(format).color,
+      });
+      stackCache.set(stack, layout);
+      return layout;
+    };
+    const characterAdvance = (character, format, stack) =>
+      stack
+        ? stackLayout(stack, format).advance
+        : formattedCharacter(character, format).advance;
     const requestedColumnCount =
       isMText &&
       Number.isInteger(record.columnType) &&
@@ -1516,8 +1623,28 @@ export class CanvasTextOverlay {
       ) {
         const line = column.lines[lineIndex];
         const glyphs = [];
+        const stackRules = [];
         let lineAdvance = 0;
         for (const run of line) {
+          if (run.stack) {
+            const stack = stackLayout(run.stack, run.format);
+            for (const entry of stack.glyphs) {
+              glyphs.push({
+                ...entry,
+                x: lineAdvance + entry.x,
+              });
+            }
+            if (stack.rule) {
+              stackRules.push({
+                ...stack.rule,
+                x1: lineAdvance + stack.rule.x1,
+                x2: lineAdvance + stack.rule.x2,
+                color: stack.color,
+              });
+            }
+            lineAdvance += stack.advance;
+            continue;
+          }
           for (const character of run.text) {
             const formatted = formattedCharacter(
               character,
@@ -1570,7 +1697,9 @@ export class CanvasTextOverlay {
           const glyphXScale = entry.formatted.widthScale * lineScale;
           const glyphYScale = entry.formatted.heightScale;
           const entryBaseline =
-            baseline + entry.formatted.baselineOffset;
+            baseline +
+            entry.formatted.baselineOffset +
+            (entry.yOffset ?? 0);
           if (activeVectorColor !== entry.formatted.color) {
             flushVectorPath();
             activeVectorColor = entry.formatted.color;
@@ -1649,6 +1778,33 @@ export class CanvasTextOverlay {
           }
         }
         flushVectorPath();
+        for (const rule of stackRules) {
+          if (metrics.segments >= this.maximumSegments) {
+            break;
+          }
+          const start = pointToScreen(
+            matrix,
+            rule.x1 * lineScale + horizontalOffset,
+            baseline + rule.y1,
+            camera,
+            width,
+            height,
+          );
+          const end = pointToScreen(
+            matrix,
+            rule.x2 * lineScale + horizontalOffset,
+            baseline + rule.y2,
+            camera,
+            width,
+            height,
+          );
+          context.strokeStyle = rule.color;
+          context.beginPath();
+          context.moveTo(start[0], start[1]);
+          context.lineTo(end[0], end[1]);
+          context.stroke();
+          metrics.segments += 1;
+        }
         for (let first = 0; first < glyphs.length; ) {
           let end = first + 1;
           while (

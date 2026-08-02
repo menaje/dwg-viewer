@@ -85,9 +85,10 @@ This is a deliberately partial conversion milestone:
   `coverage.deferred_entities`;
 - bounded SHX/BigFont and system-font fallback display is implemented in the
   Webview, including stored MTEXT WCS X-axis, attachment, columns and
-  background fill plus bounded inline font/color/scale/slant/decorations;
-  exact stacked text, paragraph indents/tabs, vertical flow and complete TEXT
-  OCS alignment remain open in GitHub issues #5 and #7.
+  background fill plus bounded inline font/color/scale/slant/decorations and
+  stacked horizontal/diagonal fractions and tolerances; paragraph
+  indents/tabs, vertical flow and complete TEXT OCS alignment remain open in
+  GitHub issues #5 and #7.
 
 This writer is the selected primary engine path, but its remaining source
 families and exact text layout are not yet release-ready. Its large-drawing

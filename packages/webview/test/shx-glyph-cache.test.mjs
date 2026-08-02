@@ -63,6 +63,51 @@ function textFontBuffer(codes = [65]) {
   ]);
 }
 
+function buildMinimalBigFontShx(
+  codes,
+  { extended = false } = {},
+) {
+  const headerBytes = new TextEncoder().encode(
+    "AutoCAD-86 bigfont V1.0\r\n\x1a",
+  );
+  const info = new Uint8Array([
+    ...new TextEncoder().encode("test"),
+    0,
+    ...(extended ? [8, 0, 0, 10] : [7, 1, 0, 8]),
+  ]);
+  const glyph = new Uint8Array([0x01, 0x80, 0x02, 0x00]);
+  const entries = [
+    { code: 0, raw: info },
+    ...codes.map((code) => ({ code, raw: glyph })),
+  ];
+  const tableSize = 6 + entries.length * 8;
+  const dataBytes = entries.reduce(
+    (sum, entry) => sum + entry.raw.length,
+    0,
+  );
+  const buffer = new ArrayBuffer(
+    headerBytes.length + tableSize + dataBytes,
+  );
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+  bytes.set(headerBytes);
+  let offset = headerBytes.length;
+  view.setInt16(offset, 0, true);
+  view.setInt16(offset + 2, entries.length, true);
+  view.setInt16(offset + 4, 0, true);
+  offset += 6;
+  let dataOffset = headerBytes.length + tableSize;
+  for (const entry of entries) {
+    view.setUint16(offset, entry.code, true);
+    view.setUint16(offset + 2, entry.raw.length, true);
+    view.setUint32(offset + 4, dataOffset, true);
+    offset += 8;
+    bytes.set(entry.raw, dataOffset);
+    dataOffset += entry.raw.length;
+  }
+  return buffer;
+}
+
 function bigFontFactory(code) {
   const fontData = {
     header: {
@@ -148,6 +193,64 @@ test("maps Unicode Hangul to a paired EUC-KR BigFont code", () => {
   assert.ok(glyph);
   assert.equal(glyph.encodedCode, legacyCode);
   assert.equal(glyph.fontType, ShxFontType.BIGFONT);
+  assert.equal(glyph.segmentCount, 1);
+});
+
+test("parses real binary Korean BigFont encodings without a test factory", () => {
+  const cases = [
+    {
+      font: "euc-kr.shx",
+      character: "한",
+      encodedCode: 0xc7d1,
+    },
+    {
+      font: "cp949.shx",
+      character: "갂",
+      encodedCode: 0x8141,
+    },
+    {
+      font: "johab.shx",
+      character: "한",
+      encodedCode: 0xd065,
+    },
+  ];
+
+  for (const { font, character, encodedCode } of cases) {
+    const cache = new ShxGlyphCache();
+    cache.registerFont(
+      font,
+      buildMinimalBigFontShx([encodedCode]),
+    );
+    const glyph = cache.getGlyph(
+      { fontFile: "", bigFontFile: font },
+      character.codePointAt(0),
+    );
+
+    assert.ok(glyph);
+    assert.equal(glyph.encodedCode, encodedCode);
+    assert.equal(glyph.fontType, ShxFontType.BIGFONT);
+    assert.equal(glyph.segmentCount, 1);
+    cache.dispose();
+  }
+});
+
+test("parses a real binary Extended BigFont", () => {
+  const buffer = buildMinimalBigFontShx([0xc7d1], {
+    extended: true,
+  });
+  const parsed = new ShxFont(buffer);
+  assert.equal(parsed.fontData.header.fontType, ShxFontType.BIGFONT);
+  assert.equal(parsed.fontData.content.isExtended, true);
+  assert.equal(parsed.fontData.content.width, 10);
+
+  const cache = new ShxGlyphCache();
+  cache.registerFont("extended.shx", buffer);
+  const glyph = cache.getGlyph(
+    { fontFile: "", bigFontFile: "extended.shx" },
+    "한".codePointAt(0),
+  );
+  assert.ok(glyph);
+  assert.equal(glyph.encodedCode, 0xc7d1);
   assert.equal(glyph.segmentCount, 1);
 });
 

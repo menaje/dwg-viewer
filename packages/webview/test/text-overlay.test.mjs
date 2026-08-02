@@ -691,6 +691,92 @@ test("renders bounded inline MTEXT font, color, height, width and slant", () => 
   assert.equal(inlineFontRequests.length, 1);
 });
 
+test("renders MTEXT fractions and tolerances as stacked glyphs", () => {
+  const canvas = fakeCanvas();
+  const record = {
+    handle: 10n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 1,
+    flags: 0,
+    insertionPoint: [105, 201, 0],
+    alignmentPoint: [0, 0, 0],
+    normal: [0, 0, 1],
+    xAxisDirection: [1, 0, 0],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    rectangleWidth: 0,
+    rectangleHeight: 0,
+    extentsWidth: 0,
+    extentsHeight: 0,
+    lineSpacingFactor: 1,
+    backgroundFlags: 0,
+    sourceFlags: 0,
+    horizontalAlignment: 0,
+    verticalAlignment: 0,
+    generationFlags: 0,
+    attachment: 1,
+    flowDirection: 1,
+    mtextType: 0,
+    columnType: 0,
+    columnCount: 0,
+    columnFlags: 0,
+    valueByteLength: 40,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: 1,
+      readDisplayRecord(_index, target) {
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        target.xAxisDirection = [...record.xAxisDirection];
+        return target;
+      },
+      readValue() {
+        return String.raw`\S1/2; \S3#4; \S+0.1^-0.2;`;
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  const metrics = overlay.redraw(camera, [true]);
+  assert.deepEqual(
+    canvas.calls.fillTextArguments.map(([character]) => character),
+    ["1", "2", "3", "4", "+", "0", ".", "1", "-", "0", ".", "2"],
+  );
+  const verticalPositions = canvas.calls.fillTextArguments.map(
+    ([_character, _x, y]) => y,
+  );
+  assert.ok(
+    Math.max(...verticalPositions) - Math.min(...verticalPositions) >
+      0.5,
+  );
+  assert.equal(canvas.calls.lineTo, 2);
+  assert.equal(canvas.calls.stroke, 2);
+  assert.equal(metrics.segments, 2);
+});
+
 test("resolves text ByLayer and ByBlock colors at the occurrence", () => {
   const canvas = fakeCanvas();
   const records = [

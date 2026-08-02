@@ -43,6 +43,36 @@ test("handles absolute heights, paragraphs, percent codes and stacked text", () 
   assert.deepEqual(plainCadMTextLines(value), ["큰°", "위/아래±"]);
   assert.equal(lines[0][0].format.heightScale, 2);
   assert.equal(lines[1][0].format.heightScale, 2);
+  assert.deepEqual(lines[1][0].stack, {
+    upper: "위",
+    lower: "아래",
+    separator: "tolerance",
+  });
+  assert.equal(lines[1][1].text, "±");
+});
+
+test("preserves horizontal, diagonal, tolerance and one-sided stacks", () => {
+  const lines = parseCadMTextRuns(
+    String.raw`\S1/2; \S3#4; \S+0.1^-0.2; \S^2; \S3^;`,
+  );
+
+  assert.deepEqual(
+    lines[0].filter((run) => run.stack).map((run) => run.stack),
+    [
+      { upper: "1", lower: "2", separator: "horizontal" },
+      { upper: "3", lower: "4", separator: "diagonal" },
+      {
+        upper: "+0.1",
+        lower: "-0.2",
+        separator: "tolerance",
+      },
+      { upper: "", lower: "2", separator: "tolerance" },
+      { upper: "3", lower: "", separator: "tolerance" },
+    ],
+  );
+  assert.deepEqual(plainCadMTextLines(
+    String.raw`\S1/2; \S3#4; \S+0.1^-0.2;`,
+  ), ["1/2 3/4 +0.1/-0.2"]);
 });
 
 test("does not expose unsupported paragraph properties as drawing text", () => {
@@ -76,5 +106,27 @@ test("wraps rich MTEXT without losing run formatting", () => {
   assert.deepEqual(
     wrapCadMTextRuns(parseCadMTextRuns("   "), 4),
     [Object.freeze([])],
+  );
+});
+
+test("wraps a stacked fraction as one measured unit", () => {
+  const source = parseCadMTextRuns(String.raw`ABC \S1/2; CD`);
+  const wrapped = wrapCadMTextRuns(
+    source,
+    5,
+    (text, _format, stack) => stack ? 2 : [...text].length,
+  );
+
+  assert.deepEqual(
+    wrapped.map((line) => line.map((run) => run.text).join("")),
+    ["ABC", "1/2 CD"],
+  );
+  assert.equal(wrapped[1][0].stack.separator, "horizontal");
+  assert.equal(
+    measureCadMTextLine(
+      wrapped[1],
+      (text, _format, stack) => stack ? 2 : [...text].length,
+    ),
+    5,
   );
 });
