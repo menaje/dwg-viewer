@@ -22,6 +22,10 @@ This is a deliberately partial conversion milestone:
 
 - layer, linetype, block, style and entity strings are converted from the
   DWG code page to valid UTF-8 before serialization, including `ANSI_949`;
+- the anonymous `inspect` contract applies the same legacy code-page
+  conversion before Hangul and corruption metrics, so private corpus
+  inventory does not reject valid pre-R2007 Korean drawings as malformed
+  UTF-8;
 - XREF block records retain the original relative, drive, UNC or POSIX path
   for host-side resolution without changing the source drawing;
 - LINE, ARC, CIRCLE, INSERT/MINSERT, LWPOLYLINE, 2D/3D POLYLINE and

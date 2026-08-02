@@ -536,15 +536,17 @@ text_include (TextSummary *summary, const char *value)
 }
 
 static void
-inspect_text_entity (Dwg_Object *object, TextSummary *summary)
+inspect_text_entity (const Dwg_Data *dwg, Dwg_Object *object,
+                     TextSummary *summary)
 {
   void *entity = NULL;
   const char *name = NULL;
   const char *field = NULL;
   char *text = NULL;
+  char *converted = NULL;
   int is_new = 0;
 
-  if (!object->tio.entity)
+  if (!dwg || !object->tio.entity)
     return;
 
   switch (object->fixedtype)
@@ -576,10 +578,21 @@ inspect_text_entity (Dwg_Object *object, TextSummary *summary)
   if (!entity)
     return;
 
-  if (dwg_dynapi_entity_utf8text (entity, name, field, &text, &is_new, NULL))
-    text_include (summary, text);
+  if (dwg_dynapi_entity_utf8text (entity, name, field, &text, &is_new, NULL)
+      && text)
+    {
+      const char *source = text;
+      if (!is_new)
+        {
+          converted = bit_TV_to_utf8 (text, dwg->header.codepage);
+          source = converted;
+        }
+      text_include (summary, source);
+    }
   else
     text_include (summary, NULL);
+  if (converted && converted != text)
+    free (converted);
   if (is_new)
     free (text);
 }
@@ -864,7 +877,7 @@ inspect_dwg (const char *path)
       if (object->fixedtype == DWG_TYPE_ATTRIB)
         {
           embedded_attributes++;
-          inspect_text_entity (object, &embedded_text);
+          inspect_text_entity (&dwg, object, &embedded_text);
           continue;
         }
 
@@ -891,7 +904,7 @@ inspect_dwg (const char *path)
             }
         }
 
-      inspect_text_entity (object, &text);
+      inspect_text_entity (&dwg, object, &text);
     }
 
   qsort (entity_types.items, entity_types.len, sizeof (CounterEntry),

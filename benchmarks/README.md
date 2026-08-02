@@ -103,7 +103,9 @@ The inventory reads candidates sequentially, excludes directories named
 `xref` by default and interleaves observed DWG-version/size groups. It selects
 only drawings with Hangul text plus an automatically observed Unicode or
 Korean legacy codepage and at least one SHX, BigFont or outline-font
-reference. Current text counts become the loss baseline. It never infers
+reference. The adapter converts legacy TV strings with the declared DWG
+codepage before those anonymous counts are made; current text counts then
+become the loss baseline. It never infers
 EUC-KR, Extended BigFont or a drawing discipline from a filename, so those
 coverage cells remain incomplete until independently verified assets are
 provided. The exclusive manifest is owner-only and contains private paths;

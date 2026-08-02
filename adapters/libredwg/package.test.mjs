@@ -128,3 +128,22 @@ test("keeps package and source preparation pins synchronized", async () => {
     ),
   );
 });
+
+test("normalizes legacy inspection text before corpus metrics", async () => {
+  const adapterSource = await readFile(
+    path.join(import.meta.dirname, "libredwg_adapter.c"),
+    "utf8",
+  );
+  assert.match(
+    adapterSource,
+    /inspect_text_entity \(const Dwg_Data \*dwg,/u,
+  );
+  assert.match(
+    adapterSource,
+    /converted = bit_TV_to_utf8 \(text, dwg->header\.codepage\);/u,
+  );
+  assert.match(
+    adapterSource,
+    /text_include \(summary, source\);/u,
+  );
+});
