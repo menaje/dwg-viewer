@@ -17,8 +17,11 @@ import {
 } from "./math.mjs";
 import { maskBucketFor } from "./mask-order.mjs";
 import {
+  cadMTextParagraphStart,
+  DEFAULT_MTEXT_PARAGRAPH,
   DEFAULT_MTEXT_FORMAT,
   measureCadMTextLine,
+  nextCadMTextTabAdvance,
   parseCadMTextRuns,
   plainCadMTextLines,
   wrapCadMTextRuns,
@@ -422,7 +425,7 @@ function mtextWorldBasisMat4(record, normal) {
   ]);
 }
 
-function effectiveTextMatrix(record, style) {
+export function cadTextEntityMatrix(record, style) {
   const styleHeight =
     style?.height > 0 ? style.height : style?.lastHeight > 0 ? style.lastHeight : 1;
   const height =
@@ -477,6 +480,15 @@ function isMTextRecord(record) {
   return (
     record.kind === TextEntityKind.MText ||
     (Number.isInteger(record.mtextType) && record.mtextType !== 0)
+  );
+}
+
+export function cadMTextFlowsVertically(record) {
+  return (
+    isMTextRecord(record) &&
+    (record.flowDirection === 2 ||
+      (record.flowDirection === 3 &&
+        (record.style?.flags & (1 << 4)) !== 0))
   );
 }
 
@@ -536,10 +548,11 @@ function normalizedColumnHeights(record, scale) {
   return Object.freeze(output);
 }
 
-function normalizedTextAlignmentWidth(record) {
+export function cadTextAlignmentWidth(record) {
   if (
     isMTextRecord(record) ||
-    ![1, 2, 3, 4, 5].includes(record.horizontalAlignment) ||
+    ![3, 5].includes(record.horizontalAlignment) ||
+    record.verticalAlignment !== 0 ||
     !record.alignmentPoint?.every(Number.isFinite) ||
     !record.insertionPoint?.every(Number.isFinite)
   ) {
@@ -547,19 +560,8 @@ function normalizedTextAlignmentWidth(record) {
   }
   const deltaX = record.alignmentPoint[0] - record.insertionPoint[0];
   const deltaY = record.alignmentPoint[1] - record.insertionPoint[1];
-  const rotation = Number.isFinite(record.rotation) ? record.rotation : 0;
-  const projected = Math.abs(
-    deltaX * Math.cos(rotation) + deltaY * Math.sin(rotation),
-  );
-  const worldWidth =
-    record.horizontalAlignment === 1 || record.horizontalAlignment === 4
-      ? projected * 2
-      : record.horizontalAlignment === 3 ||
-          record.horizontalAlignment === 5
-        ? Math.hypot(deltaX, deltaY)
-        : projected;
   return normalizedStoredExtent(
-    worldWidth,
+    Math.hypot(deltaX, deltaY),
     textHorizontalScale(record, record.style),
   );
 }
@@ -820,7 +822,7 @@ export class CanvasTextOverlay {
       if (!record.insertionPoint.every(Number.isFinite)) {
         continue;
       }
-      const localMatrix = effectiveTextMatrix(record, record.style);
+      const localMatrix = cadTextEntityMatrix(record, record.style);
       const ownerBlockIndex = this.blockIndexByHandle.get(record.ownerHandle);
       const instances = instancesForText(
         record,
@@ -1309,6 +1311,7 @@ export class CanvasTextOverlay {
       0.5,
     );
     const isMText = isMTextRecord(record);
+    const verticalFlow = cadMTextFlowsVertically(record);
     const attachment = isMText ? record.attachment : 0;
     const verticalGroup =
       attachment >= 1 ? Math.floor((attachment - 1) / 3) : 0;
@@ -1500,12 +1503,26 @@ export class CanvasTextOverlay {
       stackCache.set(stack, layout);
       return layout;
     };
-    const characterAdvance = (character, format, stack) =>
+    const characterAdvance = (
+      character,
+      format,
+      stack,
+      position = 0,
+      paragraph = DEFAULT_MTEXT_PARAGRAPH,
+      paragraphLine = 0,
+    ) =>
       stack
         ? stackLayout(stack, format).advance
-        : formattedCharacter(character, format).advance;
+        : character === "\t"
+          ? nextCadMTextTabAdvance(
+              position,
+              paragraph,
+              paragraphLine,
+            )
+          : formattedCharacter(character, format).advance;
     const requestedColumnCount =
       isMText &&
+      !verticalFlow &&
       Number.isInteger(record.columnType) &&
       record.columnType > 0
         ? Math.max(
@@ -1542,7 +1559,7 @@ export class CanvasTextOverlay {
         : 0);
     const wrapWidth = columnWidth || storedWrapWidth;
     const lines =
-      isMText && wrapWidth > 0
+      isMText && !verticalFlow && wrapWidth > 0
         ? wrapCadMTextRuns(
             parsedLines,
             wrapWidth,
@@ -1563,12 +1580,51 @@ export class CanvasTextOverlay {
     });
     const maximumMeasuredLineWidth = Math.max(
       ...lines.map((line) =>
-        measureCadMTextLine(line, characterAdvance),
+        cadMTextParagraphStart(
+          line.paragraph,
+          line.paragraphLine,
+        ) +
+        measureCadMTextLine(line, characterAdvance) +
+        (Number.isFinite(line.paragraph?.right)
+          ? line.paragraph.right
+          : 0),
       ),
       0,
     );
+    const maximumVerticalLineAdvance = verticalFlow
+      ? Math.max(
+          ...lines.map((line) =>
+            line.reduce((total, run) => {
+              if (run.stack) {
+                return (
+                  total +
+                  Math.max(run.format.heightScale, 0.1)
+                );
+              }
+              return (
+                total +
+                [...run.text].reduce(
+                  (advance, character) =>
+                    advance +
+                    (character === "\t"
+                      ? nextCadMTextTabAdvance(
+                          advance,
+                          line.paragraph,
+                          line.paragraphLine,
+                        )
+                      : Math.max(run.format.heightScale, 0.1)),
+                  0,
+                )
+              );
+            }, 0),
+          ),
+          0,
+        )
+      : 0;
     const measuredBlockWidth =
-      columnCount > 1
+      verticalFlow
+        ? Math.max(lines.length, 1) * lineStep
+        : columnCount > 1
         ? (columnWidth || maximumMeasuredLineWidth) * columnCount +
           storedColumnGutter * (columnCount - 1)
         : maximumMeasuredLineWidth;
@@ -1578,7 +1634,9 @@ export class CanvasTextOverlay {
         : storedBlockWidth || measuredBlockWidth;
     const blockHeight =
       storedBlockHeight ||
-      Math.max(...columns.map((column) => column.height), lineStep);
+      (verticalFlow
+        ? Math.max(maximumVerticalLineAdvance, 1)
+        : Math.max(...columns.map((column) => column.height), lineStep));
     const verticalOffset =
       !isMText
         ? 0
@@ -1587,7 +1645,7 @@ export class CanvasTextOverlay {
           : verticalGroup === 1
           ? blockHeight * 0.5 - 1
           : blockHeight - 1;
-    const textAlignmentWidth = normalizedTextAlignmentWidth(record);
+    const textAlignmentWidth = cadTextAlignmentWidth(record);
     const horizontalGroup =
       isMText && attachment >= 1
         ? (attachment - 1) % 3
@@ -1622,44 +1680,151 @@ export class CanvasTextOverlay {
         lineIndex += 1
       ) {
         const line = column.lines[lineIndex];
+        const paragraph =
+          line.paragraph ?? DEFAULT_MTEXT_PARAGRAPH;
+        const paragraphLine = Number.isInteger(line.paragraphLine)
+          ? line.paragraphLine
+          : 0;
         const glyphs = [];
         const stackRules = [];
         let lineAdvance = 0;
+        const lineAtoms = [];
         for (const run of line) {
           if (run.stack) {
-            const stack = stackLayout(run.stack, run.format);
+            lineAtoms.push({
+              format: run.format,
+              stack: run.stack,
+            });
+            continue;
+          }
+          for (const character of run.text) {
+            lineAtoms.push({ character, format: run.format });
+          }
+        }
+        const alignedTabAdvance = (position, upcomingAdvance) => {
+          const absolute =
+            cadMTextParagraphStart(paragraph, paragraphLine) +
+            position;
+          const stop = paragraph.tabStops?.find(
+            (candidate) =>
+              Number.isFinite(candidate?.position) &&
+              candidate.position > absolute + 1e-9,
+          );
+          const defaultAdvance = nextCadMTextTabAdvance(
+            position,
+            paragraph,
+            paragraphLine,
+          );
+          if (!stop || stop.alignment === "left") {
+            return defaultAdvance;
+          }
+          const adjustment =
+            stop.alignment === "right"
+              ? upcomingAdvance
+              : upcomingAdvance * 0.5;
+          return Math.max(defaultAdvance - adjustment, 0.01);
+        };
+        for (
+          let atomIndex = 0;
+          atomIndex < lineAtoms.length;
+          atomIndex += 1
+        ) {
+          const atom = lineAtoms[atomIndex];
+          if (atom.stack) {
+            const stack = stackLayout(atom.stack, atom.format);
+            const stackX = verticalFlow
+              ? -stack.advance * 0.5
+              : lineAdvance;
+            const stackY = verticalFlow ? -lineAdvance : 0;
             for (const entry of stack.glyphs) {
               glyphs.push({
                 ...entry,
-                x: lineAdvance + entry.x,
+                x: stackX + entry.x,
+                yOffset: stackY + (entry.yOffset ?? 0),
               });
             }
             if (stack.rule) {
               stackRules.push({
                 ...stack.rule,
-                x1: lineAdvance + stack.rule.x1,
-                x2: lineAdvance + stack.rule.x2,
+                x1: stackX + stack.rule.x1,
+                x2: stackX + stack.rule.x2,
+                y1: stackY + stack.rule.y1,
+                y2: stackY + stack.rule.y2,
                 color: stack.color,
               });
             }
-            lineAdvance += stack.advance;
+            lineAdvance += verticalFlow
+              ? Math.max(atom.format.heightScale, 0.1)
+              : stack.advance;
             continue;
           }
-          for (const character of run.text) {
-            const formatted = formattedCharacter(
-              character,
-              run.format,
+          const formatted = formattedCharacter(
+            atom.character,
+            atom.format,
+          );
+          let advance;
+          if (verticalFlow) {
+            advance =
+              atom.character === "\t"
+                ? nextCadMTextTabAdvance(
+                    lineAdvance,
+                    paragraph,
+                    paragraphLine,
+                  )
+                : Math.max(
+                    atom.format.heightScale,
+                    0.1,
+                  );
+          } else if (atom.character === "\t") {
+            let upcomingAdvance = 0;
+            for (
+              let nextIndex = atomIndex + 1;
+              nextIndex < lineAtoms.length;
+              nextIndex += 1
+            ) {
+              const next = lineAtoms[nextIndex];
+              if (next.character === "\t") {
+                break;
+              }
+              upcomingAdvance += next.stack
+                ? stackLayout(next.stack, next.format).advance
+                : formattedCharacter(
+                    next.character,
+                    next.format,
+                  ).advance;
+            }
+            advance = alignedTabAdvance(
+              lineAdvance,
+              upcomingAdvance,
             );
-            glyphs.push({
-              character,
-              ...formatted,
-              x: lineAdvance,
-            });
-            lineAdvance += formatted.advance;
+          } else {
+            advance = characterAdvance(
+              atom.character,
+              atom.format,
+              undefined,
+              lineAdvance,
+              paragraph,
+              paragraphLine,
+            );
           }
+          glyphs.push({
+            character: atom.character,
+            ...formatted,
+            advance,
+            x: verticalFlow
+              ? -formatted.formatted.widthScale * 0.5
+              : lineAdvance,
+            ...(verticalFlow
+              ? { yOffset: -lineAdvance }
+              : {}),
+          });
+          lineAdvance += advance;
         }
         const storedLineWidth =
-          isMText && columnCount === 1 && lines.length === 1
+          !verticalFlow &&
+          isMText &&
+          columnCount === 1 &&
+          lines.length === 1
             ? normalizedStoredExtent(
                 record.extentsWidth,
                 horizontalScale,
@@ -1670,15 +1835,49 @@ export class CanvasTextOverlay {
             ? storedLineWidth / lineAdvance
             : 1;
         const scaledLineAdvance = lineAdvance * lineScale;
+        const paragraphStart = cadMTextParagraphStart(
+          paragraph,
+          paragraphLine,
+        );
+        const paragraphRight = Number.isFinite(paragraph.right)
+          ? paragraph.right
+          : 0;
+        const paragraphBoxWidth =
+          columnWidth || storedBlockWidth;
+        const remainingParagraphWidth =
+          paragraphBoxWidth > 0
+            ? Math.max(
+                paragraphBoxWidth -
+                  paragraphStart -
+                  paragraphRight -
+                  scaledLineAdvance,
+                0,
+              )
+            : 0;
+        const paragraphAlignmentOffset =
+          paragraph.alignment === "right"
+            ? remainingParagraphWidth
+            : paragraph.alignment === "center"
+              ? remainingParagraphWidth * 0.5
+              : 0;
         const horizontalOffset =
-          isMText
-            ? blockLeft + column.x
+          verticalFlow
+            ? blockLeft +
+              blockWidth -
+              (lineIndex + 0.5) * lineStep
+            : isMText
+            ? blockLeft +
+              column.x +
+              paragraphStart +
+              paragraphAlignmentOffset
             : horizontalGroup === 1
               ? -scaledLineAdvance * 0.5
               : horizontalGroup === 2
                 ? -scaledLineAdvance
                 : 0;
-        const baseline = verticalOffset - lineIndex * lineStep;
+        const baseline = verticalFlow
+          ? verticalOffset
+          : verticalOffset - lineIndex * lineStep;
         context.beginPath();
         let hasVectorPath = false;
         let activeVectorColor = "";
@@ -1805,61 +2004,63 @@ export class CanvasTextOverlay {
           context.stroke();
           metrics.segments += 1;
         }
-        for (let first = 0; first < glyphs.length; ) {
-          let end = first + 1;
-          while (
-            end < glyphs.length &&
-            glyphs[end].formatted === glyphs[first].formatted
-          ) {
-            end += 1;
-          }
-          const formatted = glyphs[first].formatted;
-          const startX =
-            glyphs[first].x * lineScale + horizontalOffset;
-          const endX =
-            (glyphs[end - 1].x + glyphs[end - 1].advance) *
-              lineScale +
-            horizontalOffset;
-          for (const [enabled, offset] of [
-            [formatted.underline, -0.12],
-            [formatted.strikeThrough, 0.45],
-            [formatted.overline, 1.05],
-          ]) {
-            if (
-              !enabled ||
-              metrics.segments >= this.maximumSegments ||
-              !(endX > startX)
+        if (!verticalFlow) {
+          for (let first = 0; first < glyphs.length; ) {
+            let end = first + 1;
+            while (
+              end < glyphs.length &&
+              glyphs[end].formatted === glyphs[first].formatted
             ) {
-              continue;
+              end += 1;
             }
-            const y =
-              baseline +
-              formatted.baselineOffset +
-              offset * formatted.heightScale;
-            const start = pointToScreen(
-              matrix,
-              startX,
-              y,
-              camera,
-              width,
-              height,
-            );
-            const finish = pointToScreen(
-              matrix,
-              endX,
-              y,
-              camera,
-              width,
-              height,
-            );
-            context.strokeStyle = formatted.color;
-            context.beginPath();
-            context.moveTo(start[0], start[1]);
-            context.lineTo(finish[0], finish[1]);
-            context.stroke();
-            metrics.segments += 1;
+            const formatted = glyphs[first].formatted;
+            const startX =
+              glyphs[first].x * lineScale + horizontalOffset;
+            const endX =
+              (glyphs[end - 1].x + glyphs[end - 1].advance) *
+                lineScale +
+              horizontalOffset;
+            for (const [enabled, offset] of [
+              [formatted.underline, -0.12],
+              [formatted.strikeThrough, 0.45],
+              [formatted.overline, 1.05],
+            ]) {
+              if (
+                !enabled ||
+                metrics.segments >= this.maximumSegments ||
+                !(endX > startX)
+              ) {
+                continue;
+              }
+              const y =
+                baseline +
+                formatted.baselineOffset +
+                offset * formatted.heightScale;
+              const start = pointToScreen(
+                matrix,
+                startX,
+                y,
+                camera,
+                width,
+                height,
+              );
+              const finish = pointToScreen(
+                matrix,
+                endX,
+                y,
+                camera,
+                width,
+                height,
+              );
+              context.strokeStyle = formatted.color;
+              context.beginPath();
+              context.moveTo(start[0], start[1]);
+              context.lineTo(finish[0], finish[1]);
+              context.stroke();
+              metrics.segments += 1;
+            }
+            first = end;
           }
-          first = end;
         }
       }
     }

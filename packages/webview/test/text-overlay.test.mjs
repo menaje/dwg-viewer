@@ -5,10 +5,16 @@ import {
   buildInstanceGraph,
   createClipNode,
 } from "../src/instance-graph.mjs";
-import { translationMat4 } from "../src/math.mjs";
+import {
+  transformPoint,
+  translationMat4,
+} from "../src/math.mjs";
 import { MemoryRangeSource } from "../src/range-source.mjs";
 import { SceneCacheReader } from "../src/scene-cache.mjs";
 import {
+  cadMTextFlowsVertically,
+  cadTextAlignmentWidth,
+  cadTextEntityMatrix,
   CanvasTextOverlay,
   layoutCadTextColumns,
   plainCadTextLines,
@@ -129,6 +135,41 @@ const camera = Object.freeze({
   origin: [105, 201, 0],
   worldWidth: 20,
   worldHeight: 15,
+});
+
+test("uses explicit or text-style top-to-bottom MTEXT flow only", () => {
+  assert.equal(
+    cadMTextFlowsVertically({
+      kind: 1,
+      flowDirection: 2,
+      style: { flags: 0 },
+    }),
+    true,
+  );
+  assert.equal(
+    cadMTextFlowsVertically({
+      kind: 1,
+      flowDirection: 3,
+      style: { flags: 1 << 4 },
+    }),
+    true,
+  );
+  assert.equal(
+    cadMTextFlowsVertically({
+      kind: 1,
+      flowDirection: 3,
+      style: { flags: 0 },
+    }),
+    false,
+  );
+  assert.equal(
+    cadMTextFlowsVertically({
+      kind: 1,
+      flowDirection: 1,
+      style: { flags: 1 << 4 },
+    }),
+    false,
+  );
 });
 
 test("removes MTEXT controls without losing Korean or line breaks", () => {
@@ -328,9 +369,197 @@ test("uses the DWG-adjusted TEXT insertion point without applying justification 
   assert.equal(Math.abs(canvas.calls.fillTextArguments[1][2]), 0);
   assert.ok(
     canvas.calls.transforms.some(([a, b, c, d]) =>
-      a === 80 && b === 0 && c === 0 && d === 40,
+      a === 40 && b === 0 && c === 0 && d === 40,
     ),
   );
+});
+
+test("applies only the stored TEXT fit width between alignment points", () => {
+  const canvas = fakeCanvas();
+  const record = {
+    handle: 13n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 0,
+    flags: 1,
+    insertionPoint: [105, 201, 0],
+    alignmentPoint: [109, 201, 0],
+    normal: [0, 0, 1],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    lineSpacingFactor: 1,
+    sourceFlags: 0,
+    horizontalAlignment: 5,
+    verticalAlignment: 0,
+    generationFlags: 0,
+    attachment: 0,
+    mtextType: 0,
+    valueByteLength: 2,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: 1,
+      readDisplayRecord(_index, target) {
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        return target;
+      },
+      readValue() {
+        return "AB";
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  overlay.redraw(camera, [true]);
+
+  assert.deepEqual(canvas.calls.fillTextArguments, [
+    ["A", 0, -0],
+    ["B", 1, -0],
+  ]);
+  assert.ok(
+    canvas.calls.transforms.some(
+      ([a, b, c, d]) => a === 80 && b === 0 && c === 0 && d === 40,
+    ),
+  );
+});
+
+test("uses the stored proportional height for aligned TEXT", () => {
+  const canvas = fakeCanvas();
+  const record = {
+    handle: 14n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 0,
+    flags: 1,
+    insertionPoint: [105, 201, 0],
+    alignmentPoint: [109, 201, 0],
+    normal: [0, 0, 1],
+    height: 2,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    lineSpacingFactor: 1,
+    sourceFlags: 0,
+    horizontalAlignment: 3,
+    verticalAlignment: 0,
+    generationFlags: 0,
+    attachment: 0,
+    mtextType: 0,
+    valueByteLength: 2,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: 1,
+      readDisplayRecord(_index, target) {
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        return target;
+      },
+      readValue() {
+        return "AB";
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  overlay.redraw(camera, [true]);
+
+  assert.deepEqual(canvas.calls.fillTextArguments, [
+    ["A", 0, -0],
+    ["B", 1, -0],
+  ]);
+  assert.ok(
+    canvas.calls.transforms.some(
+      ([a, b, c, d]) => a === 80 && b === 0 && c === 0 && d === 80,
+    ),
+  );
+});
+
+test("maps TEXT insertion points from their stored OCS plane", () => {
+  const matrix = cadTextEntityMatrix(
+    {
+      kind: 0,
+      insertionPoint: [2, 3, 4],
+      normal: [1, 0, 0],
+      height: 1,
+      widthFactor: 1,
+      rotation: 0,
+      obliqueAngle: 0,
+      generationFlags: 0,
+    },
+    { flags: 0, widthFactor: 1 },
+  );
+
+  assert.deepEqual(transformPoint(matrix, [0, 0, 0]), [4, 2, 3]);
+});
+
+test("uses endpoint width only for baseline Align and Fit TEXT", () => {
+  const record = {
+    kind: 0,
+    insertionPoint: [0, 0, 0],
+    alignmentPoint: [3, 4, 0],
+    height: 1,
+    widthFactor: 1,
+    mtextType: 0,
+    style: { widthFactor: 1 },
+  };
+
+  for (let vertical = 0; vertical <= 3; vertical += 1) {
+    for (let horizontal = 0; horizontal <= 5; horizontal += 1) {
+      assert.equal(
+        cadTextAlignmentWidth({
+          ...record,
+          horizontalAlignment: horizontal,
+          verticalAlignment: vertical,
+        }),
+        vertical === 0 && (horizontal === 3 || horizontal === 5)
+          ? 5
+          : 0,
+        `${horizontal}/${vertical}`,
+      );
+    }
+  }
 });
 
 test("uses MTEXT extents for middle-center attachment", () => {
@@ -775,6 +1004,183 @@ test("renders MTEXT fractions and tolerances as stacked glyphs", () => {
   assert.equal(canvas.calls.lineTo, 2);
   assert.equal(canvas.calls.stroke, 2);
   assert.equal(metrics.segments, 2);
+});
+
+test("renders MTEXT paragraph indents and custom tab stops", () => {
+  const canvas = fakeCanvas();
+  const record = {
+    handle: 11n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 1,
+    flags: 0,
+    insertionPoint: [105, 201, 0],
+    alignmentPoint: [0, 0, 0],
+    normal: [0, 0, 1],
+    xAxisDirection: [1, 0, 0],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    rectangleWidth: 20,
+    rectangleHeight: 0,
+    extentsWidth: 0,
+    extentsHeight: 0,
+    lineSpacingFactor: 1,
+    backgroundFlags: 0,
+    sourceFlags: 0,
+    horizontalAlignment: 0,
+    verticalAlignment: 0,
+    generationFlags: 0,
+    attachment: 1,
+    flowDirection: 1,
+    mtextType: 0,
+    columnType: 0,
+    columnCount: 0,
+    columnFlags: 0,
+    valueByteLength: 24,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: 1,
+      readDisplayRecord(_index, target) {
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        target.xAxisDirection = [...record.xAxisDirection];
+        return target;
+      },
+      readValue() {
+        return String.raw`\pxt5,c10,r16;A^IBB^ICCCC^IDDD`;
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  overlay.redraw(camera, [true]);
+  assert.deepEqual(
+    canvas.calls.fillTextArguments.map(([character, x]) => [
+      character,
+      x,
+    ]),
+    [
+      ["A", 0],
+      ["B", 5],
+      ["B", 6],
+      ["C", 8],
+      ["C", 9],
+      ["C", 10],
+      ["C", 11],
+      ["D", 13],
+      ["D", 14],
+      ["D", 15],
+    ],
+  );
+});
+
+test("renders top-to-bottom MTEXT as upright right-to-left columns", () => {
+  const canvas = fakeCanvas();
+  const record = {
+    handle: 12n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 1,
+    flags: 0,
+    insertionPoint: [105, 201, 0],
+    alignmentPoint: [0, 0, 0],
+    normal: [0, 0, 1],
+    xAxisDirection: [1, 0, 0],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    rectangleWidth: 0,
+    rectangleHeight: 0,
+    extentsWidth: 0,
+    extentsHeight: 0,
+    lineSpacingFactor: 1,
+    backgroundFlags: 0,
+    sourceFlags: 0,
+    horizontalAlignment: 0,
+    verticalAlignment: 0,
+    generationFlags: 0,
+    attachment: 1,
+    flowDirection: 2,
+    mtextType: 0,
+    columnType: 0,
+    columnCount: 0,
+    columnFlags: 0,
+    valueByteLength: 8,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: 1,
+      readDisplayRecord(_index, target) {
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        target.xAxisDirection = [...record.xAxisDirection];
+        return target;
+      },
+      readValue() {
+        return String.raw`한글\P세로`;
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  overlay.redraw(camera, [true]);
+  const positions = canvas.calls.fillTextArguments.map(
+    ([character, x, y]) => ({ character, x, y }),
+  );
+  assert.deepEqual(
+    positions.map(({ character }) => character),
+    ["한", "글", "세", "로"],
+  );
+  assert.equal(positions[0].x, positions[1].x);
+  assert.equal(positions[2].x, positions[3].x);
+  assert.ok(
+    positions[0].x > positions[2].x,
+    JSON.stringify(positions),
+  );
+  assert.ok(positions[1].y > positions[0].y);
+  assert.ok(positions[3].y > positions[2].y);
 });
 
 test("resolves text ByLayer and ByBlock colors at the occurrence", () => {

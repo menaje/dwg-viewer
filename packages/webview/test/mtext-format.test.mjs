@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  cadMTextParagraphStart,
   DEFAULT_MTEXT_FORMAT,
   measureCadMTextLine,
+  nextCadMTextTabAdvance,
   parseCadMTextRuns,
   plainCadMTextLines,
   wrapCadMTextRuns,
@@ -86,6 +88,34 @@ test("does not expose unsupported paragraph properties as drawing text", () => {
   ]);
 });
 
+test("preserves paragraph indents, alignment, tab stops and caret tabs", () => {
+  const lines = parseCadMTextRuns(
+    String.raw`\pxi-2,l2,r1,qc,t4,c8,r12;항목^I값\P다음`,
+  );
+  const paragraph = lines[0].paragraph;
+
+  assert.deepEqual(paragraph, {
+    indent: -2,
+    left: 2,
+    right: 1,
+    alignment: "center",
+    tabStops: [
+      { position: 4, alignment: "left" },
+      { position: 8, alignment: "center" },
+      { position: 12, alignment: "right" },
+    ],
+  });
+  assert.equal(lines[1].paragraph, paragraph);
+  assert.deepEqual(
+    lines.map((line) => line.map((run) => run.text).join("")),
+    ["항목\t값", "다음"],
+  );
+  assert.equal(cadMTextParagraphStart(paragraph, 0), 0);
+  assert.equal(cadMTextParagraphStart(paragraph, 1), 2);
+  assert.equal(nextCadMTextTabAdvance(2, paragraph, 0), 2);
+  assert.equal(measureCadMTextLine(lines[0], () => 1), 5);
+});
+
 test("wraps rich MTEXT without losing run formatting", () => {
   const source = parseCadMTextRuns(
     String.raw`AB {\H2x;CD} EF`,
@@ -128,5 +158,27 @@ test("wraps a stacked fraction as one measured unit", () => {
       (text, _format, stack) => stack ? 2 : [...text].length,
     ),
     5,
+  );
+});
+
+test("uses first-line and continuation indents while wrapping", () => {
+  const source = parseCadMTextRuns(
+    String.raw`\pxi2,l1,r1;ABCD EFGH`,
+  );
+  const wrapped = wrapCadMTextRuns(source, 8, () => 1);
+
+  assert.deepEqual(
+    wrapped.map((line) => line.map((run) => run.text).join("")),
+    ["ABCD", "EFGH"],
+  );
+  assert.deepEqual(
+    wrapped.map((line) => line.paragraphLine),
+    [0, 1],
+  );
+  assert.deepEqual(
+    wrapped.map((line) =>
+      cadMTextParagraphStart(line.paragraph, line.paragraphLine),
+    ),
+    [3, 1],
   );
 });

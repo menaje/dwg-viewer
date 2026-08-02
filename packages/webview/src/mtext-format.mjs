@@ -3,8 +3,18 @@ const MAXIMUM_INPUT_UNITS = 65_536;
 const MAXIMUM_FORMAT_DEPTH = 32;
 const MAXIMUM_FONT_NAME_LENGTH = 128;
 const MAXIMUM_COMMAND_PAYLOAD_UNITS = 512;
+const MAXIMUM_PARAGRAPH_TABS = 32;
+const MAXIMUM_PARAGRAPH_OFFSET = 1_000;
 const MINIMUM_SCALE = 0.01;
 const MAXIMUM_SCALE = 100;
+
+export const DEFAULT_MTEXT_PARAGRAPH = Object.freeze({
+  indent: 0,
+  left: 0,
+  right: 0,
+  alignment: "default",
+  tabStops: Object.freeze([]),
+});
 
 export const DEFAULT_MTEXT_FORMAT = Object.freeze({
   heightScale: 1,
@@ -20,6 +30,26 @@ export const DEFAULT_MTEXT_FORMAT = Object.freeze({
   strikeThrough: false,
   verticalAlignment: 1,
 });
+
+function mutableLine(
+  paragraph = DEFAULT_MTEXT_PARAGRAPH,
+  paragraphLine = 0,
+) {
+  const line = [];
+  Object.defineProperties(line, {
+    paragraph: {
+      configurable: true,
+      value: paragraph,
+      writable: true,
+    },
+    paragraphLine: {
+      configurable: true,
+      value: paragraphLine,
+      writable: true,
+    },
+  });
+  return line;
+}
 
 function replacePercentCodes(value) {
   return value
@@ -77,17 +107,132 @@ function parsedStack(payload) {
 }
 
 function frozenLine(line) {
-  return Object.freeze(
-    line
-      .filter((run) => run.text.length > 0)
-      .map((run) =>
-        Object.freeze({
-          text: run.text,
-          format: run.format,
-          ...(run.stack ? { stack: run.stack } : {}),
-        }),
-      ),
-  );
+  const frozen = line
+    .filter((run) => run.text.length > 0)
+    .map((run) =>
+      Object.freeze({
+        text: run.text,
+        format: run.format,
+        ...(run.stack ? { stack: run.stack } : {}),
+      }),
+    );
+  Object.defineProperties(frozen, {
+    paragraph: {
+      value: line.paragraph ?? DEFAULT_MTEXT_PARAGRAPH,
+    },
+    paragraphLine: {
+      value: Number.isInteger(line.paragraphLine)
+        ? line.paragraphLine
+        : 0,
+    },
+  });
+  return Object.freeze(frozen);
+}
+
+function boundedParagraphOffset(value) {
+  const parsed = parseBoundedNumber(value);
+  return parsed === undefined
+    ? undefined
+    : Math.max(
+        -MAXIMUM_PARAGRAPH_OFFSET,
+        Math.min(MAXIMUM_PARAGRAPH_OFFSET, parsed),
+      );
+}
+
+function parsedParagraph(payload, current) {
+  const next = {
+    indent: current.indent,
+    left: current.left,
+    right: current.right,
+    alignment: current.alignment,
+    tabStops: current.tabStops,
+  };
+  const tabs = [];
+  let parsingTabs = false;
+  let changed = false;
+  for (const rawPart of payload.split(",")) {
+    let part = rawPart.trim();
+    if (!part) {
+      continue;
+    }
+    if (part[0] === "x") {
+      part = part.slice(1);
+      if (!part) {
+        continue;
+      }
+    }
+    const key = part[0].toLocaleLowerCase("en-US");
+    const value = part.slice(1).trim();
+    const tabContinuation =
+      parsingTabs &&
+      (((key === "c" || key === "r") &&
+        boundedParagraphOffset(value) !== undefined) ||
+        boundedParagraphOffset(part) !== undefined);
+    if (["i", "l", "r"].includes(key) && !tabContinuation) {
+      parsingTabs = false;
+      const parsed =
+        value === "*" ? 0 : boundedParagraphOffset(value);
+      if (parsed !== undefined) {
+        next[
+          key === "i" ? "indent" : key === "l" ? "left" : "right"
+        ] = parsed;
+        changed = true;
+      }
+      continue;
+    }
+    if (key === "q") {
+      parsingTabs = false;
+      const alignment = {
+        "*": "default",
+        l: "left",
+        c: "center",
+        r: "right",
+        j: "justified",
+        d: "distributed",
+      }[value.toLocaleLowerCase("en-US")];
+      if (alignment) {
+        next.alignment = alignment;
+        changed = true;
+      }
+      continue;
+    }
+    let tabValue = value;
+    if (key === "t") {
+      parsingTabs = true;
+      tabValue = value;
+      tabs.length = 0;
+      changed = true;
+    } else if (!parsingTabs) {
+      continue;
+    } else {
+      tabValue = part;
+    }
+    if (!tabValue || tabValue === "*") {
+      continue;
+    }
+    let alignment = "left";
+    const prefix = tabValue[0].toLocaleLowerCase("en-US");
+    if (prefix === "c" || prefix === "r") {
+      alignment = prefix === "c" ? "center" : "right";
+      tabValue = tabValue.slice(1);
+    }
+    const position = boundedParagraphOffset(tabValue);
+    if (
+      position !== undefined &&
+      position >= 0 &&
+      tabs.length < MAXIMUM_PARAGRAPH_TABS
+    ) {
+      tabs.push(Object.freeze({ position, alignment }));
+    }
+  }
+  if (!changed) {
+    return current;
+  }
+  if (tabs.length > 0 || /\bt(?:\*|(?:[cr]?[+-]?\d))/iu.test(payload)) {
+    tabs.sort((left, right) => left.position - right.position);
+    next.tabStops = Object.freeze(tabs);
+  }
+  return Object.freeze(next);
 }
 
 function parseBoundedNumber(value) {
@@ -234,7 +379,8 @@ export function parseCadMTextRuns(
     return Object.freeze([Object.freeze([])]);
   }
 
-  const lines = [[]];
+  let paragraphFormat = DEFAULT_MTEXT_PARAGRAPH;
+  const lines = [mutableLine(paragraphFormat)];
   let format = DEFAULT_MTEXT_FORMAT;
   const formatStack = [];
   let ignoredFormatDepth = 0;
@@ -265,7 +411,7 @@ export function parseCadMTextRuns(
   };
   const paragraph = () => {
     if (lines.length < limit) {
-      lines.push([]);
+      lines.push(mutableLine(paragraphFormat));
     }
   };
 
@@ -301,6 +447,28 @@ export function parseCadMTextRuns(
       continue;
     }
     if (character !== "\\") {
+      if (character === "^") {
+        const caret = value[index + 1] ?? "";
+        if (caret === "I") {
+          append("\t");
+          index += 2;
+          continue;
+        }
+        if (caret === "J") {
+          paragraph();
+          index += 2;
+          continue;
+        }
+        if (caret === "M") {
+          index += 2;
+          continue;
+        }
+        if (caret === " ") {
+          append("^");
+          index += 2;
+          continue;
+        }
+      }
       const percentCode = value.slice(index, index + 3);
       if (/^%%[dpc]$/iu.test(percentCode)) {
         append(replacePercentCodes(percentCode));
@@ -362,6 +530,11 @@ export function parseCadMTextRuns(
         paragraph();
         index += 2;
       } else {
+        paragraphFormat = parsedParagraph(
+          value.slice(index + 2, semicolon),
+          paragraphFormat,
+        );
+        lines.at(-1).paragraph = paragraphFormat;
         index = semicolon + 1;
       }
       continue;
@@ -398,6 +571,61 @@ export function plainCadMTextLines(value, options) {
 
 function isWhitespace(character) {
   return /^\s$/u.test(character);
+}
+
+export function cadMTextParagraphStart(
+  paragraph = DEFAULT_MTEXT_PARAGRAPH,
+  paragraphLine = 0,
+) {
+  const left = Number.isFinite(paragraph?.left)
+    ? paragraph.left
+    : 0;
+  const indent =
+    paragraphLine === 0 && Number.isFinite(paragraph?.indent)
+      ? paragraph.indent
+      : 0;
+  return left + indent;
+}
+
+export function nextCadMTextTabAdvance(
+  position,
+  paragraph = DEFAULT_MTEXT_PARAGRAPH,
+  paragraphLine = 0,
+) {
+  const safePosition =
+    Number.isFinite(position) && position >= 0 ? position : 0;
+  const absolute =
+    cadMTextParagraphStart(paragraph, paragraphLine) + safePosition;
+  const tabStops =
+    Array.isArray(paragraph?.tabStops) ||
+    ArrayBuffer.isView(paragraph?.tabStops)
+      ? paragraph.tabStops
+      : [];
+  for (const stop of tabStops) {
+    if (
+      Number.isFinite(stop?.position) &&
+      stop.position > absolute + 1e-9
+    ) {
+      return Math.max(stop.position - absolute, 0.01);
+    }
+  }
+  const nextDefault = (Math.floor(absolute / 4) + 1) * 4;
+  return Math.max(nextDefault - absolute, 0.01);
+}
+
+function paragraphMaximumAdvance(
+  maximumAdvance,
+  paragraph,
+  paragraphLine,
+) {
+  const start = cadMTextParagraphStart(
+    paragraph,
+    paragraphLine,
+  );
+  const right = Number.isFinite(paragraph?.right)
+    ? paragraph.right
+    : 0;
+  return Math.max(maximumAdvance - start - right, 0.01);
 }
 
 function appendRichCharacter(line, character, format) {
@@ -440,11 +668,26 @@ export function wrapCadMTextRuns(
   ) {
     return Object.freeze([...lines]);
   }
-  const measured = (atom) => {
+  const measured = (
+    atom,
+    position = 0,
+    paragraph = DEFAULT_MTEXT_PARAGRAPH,
+    paragraphLine = 0,
+  ) => {
+    if (!atom.stack && atom.text === "\t") {
+      return nextCadMTextTabAdvance(
+        position,
+        paragraph,
+        paragraphLine,
+      );
+    }
     const advance = measureAdvance(
       atom.text,
       atom.format,
       atom.stack,
+      position,
+      paragraph,
+      paragraphLine,
     );
     return Number.isFinite(advance) && advance > 0 ? advance : 1;
   };
@@ -452,6 +695,11 @@ export function wrapCadMTextRuns(
 
   for (const source of lines) {
     const firstWrappedLine = wrapped.length;
+    const paragraph =
+      source.paragraph ?? DEFAULT_MTEXT_PARAGRAPH;
+    let paragraphLine = Number.isInteger(source.paragraphLine)
+      ? source.paragraphLine
+      : 0;
     const atoms = [];
     for (const run of source) {
       if (run.stack) {
@@ -467,11 +715,11 @@ export function wrapCadMTextRuns(
       }
     }
     if (atoms.length === 0) {
-      wrapped.push([]);
+      wrapped.push(mutableLine(paragraph, paragraphLine));
       continue;
     }
 
-    let current = [];
+    let current = mutableLine(paragraph, paragraphLine);
     let currentAdvance = 0;
     let pendingWhitespace = [];
     let pendingWhitespaceAdvance = 0;
@@ -479,7 +727,8 @@ export function wrapCadMTextRuns(
       if (current.length > 0) {
         wrapped.push(current);
       }
-      current = [];
+      paragraphLine += 1;
+      current = mutableLine(paragraph, paragraphLine);
       currentAdvance = 0;
       pendingWhitespace = [];
       pendingWhitespaceAdvance = 0;
@@ -502,7 +751,12 @@ export function wrapCadMTextRuns(
             isWhitespace(atoms[index].text)
           ) {
             pendingWhitespace.push(atoms[index]);
-            pendingWhitespaceAdvance += measured(atoms[index]);
+            pendingWhitespaceAdvance += measured(
+              atoms[index],
+              currentAdvance + pendingWhitespaceAdvance,
+              paragraph,
+              paragraphLine,
+            );
             index += 1;
           }
         } else {
@@ -512,24 +766,52 @@ export function wrapCadMTextRuns(
       }
 
       const tokenStart = index;
-      let tokenAdvance = 0;
       while (
         index < atoms.length &&
         (atoms[index].stack || !isWhitespace(atoms[index].text))
       ) {
-        tokenAdvance += measured(atoms[index]);
         index += 1;
       }
+      const tokenAdvanceAt = (position) => {
+        let advance = 0;
+        for (
+          let atomIndex = tokenStart;
+          atomIndex < index;
+          atomIndex += 1
+        ) {
+          advance += measured(
+            atoms[atomIndex],
+            position + advance,
+            paragraph,
+            paragraphLine,
+          );
+        }
+        return advance;
+      };
+      let tokenAdvance = tokenAdvanceAt(
+        currentAdvance + pendingWhitespaceAdvance,
+      );
+      let maximum = paragraphMaximumAdvance(
+        maximumAdvance,
+        paragraph,
+        paragraphLine,
+      );
       if (
         current.length > 0 &&
         currentAdvance + pendingWhitespaceAdvance + tokenAdvance <=
-          maximumAdvance
+          maximum
       ) {
         appendPendingWhitespace();
       } else if (current.length > 0) {
         flush();
+        maximum = paragraphMaximumAdvance(
+          maximumAdvance,
+          paragraph,
+          paragraphLine,
+        );
+        tokenAdvance = tokenAdvanceAt(0);
       }
-      if (tokenAdvance <= maximumAdvance) {
+      if (tokenAdvance <= maximum) {
         for (
           let atomIndex = tokenStart;
           atomIndex < index;
@@ -545,10 +827,20 @@ export function wrapCadMTextRuns(
         atomIndex < index;
         atomIndex += 1
       ) {
-        const advance = measured(atoms[atomIndex]);
+        const advance = measured(
+          atoms[atomIndex],
+          currentAdvance,
+          paragraph,
+          paragraphLine,
+        );
+        maximum = paragraphMaximumAdvance(
+          maximumAdvance,
+          paragraph,
+          paragraphLine,
+        );
         if (
           current.length > 0 &&
-          currentAdvance + advance > maximumAdvance
+          currentAdvance + advance > maximum
         ) {
           flush();
         }
@@ -558,7 +850,7 @@ export function wrapCadMTextRuns(
     }
     flush();
     if (wrapped.length === firstWrappedLine) {
-      wrapped.push([]);
+      wrapped.push(mutableLine(paragraph, paragraphLine));
     }
   }
   return freezeRichLines(wrapped);
@@ -569,18 +861,40 @@ export function measureCadMTextLine(
   measureAdvance = () => 1,
 ) {
   let total = 0;
+  const paragraph =
+    line.paragraph ?? DEFAULT_MTEXT_PARAGRAPH;
+  const paragraphLine = Number.isInteger(line.paragraphLine)
+    ? line.paragraphLine
+    : 0;
   for (const run of line) {
     if (run.stack) {
       const advance = measureAdvance(
         run.text,
         run.format,
         run.stack,
+        total,
+        paragraph,
+        paragraphLine,
       );
       total += Number.isFinite(advance) && advance > 0 ? advance : 1;
       continue;
     }
     for (const character of run.text) {
-      const advance = measureAdvance(character, run.format);
+      const advance =
+        character === "\t"
+          ? nextCadMTextTabAdvance(
+              total,
+              paragraph,
+              paragraphLine,
+            )
+          : measureAdvance(
+              character,
+              run.format,
+              undefined,
+              total,
+              paragraph,
+              paragraphLine,
+            );
       total += Number.isFinite(advance) && advance > 0 ? advance : 1;
     }
   }

@@ -117,6 +117,15 @@ layout tabs on hover, focus or an explicit click.
   families are requested lazily from the host instead of scanning off-screen
   strings. `\S` horizontal fractions, diagonal fractions and tolerances retain
   their upper/lower glyph layout and remain indivisible during word wrapping.
+- Preserves `\p` first-line, left and right paragraph indents plus left,
+  center and right custom tab stops. `^I` advances to the same bounded stop
+  during wrapping, measurement and final placement.
+- Renders explicit top-to-bottom MTEXT and by-style vertical flow as upright
+  glyphs descending within right-to-left logical columns. A by-style record
+  remains horizontal unless its referenced text style is actually vertical.
+- Maps single-line TEXT from its stored OCS plane, retains the decoder-adjusted
+  insertion point for left/center/right/middle and vertical justifications,
+  and uses the two endpoint span only for Align/Fit.
 - Separates strict EUC-KR from CP949/UHC, encodes all 11,172 modern Hangul
   syllables plus the KS X 1001 symbol and Hanja rows as Johab/CP1361, and
   probes actual glyph presence instead of guessing from BigFont filenames.
@@ -126,8 +135,8 @@ layout tabs on hover, focus or an explicit click.
 The current page is an engine verification harness, not the final VS Code
 extension UI. At a stable 4× or higher zoom, a dedicated worker now refines
 ARC, CIRCLE, ELLIPSE, polyline-bulge and valid NURBS geometry to a 0.5 px
-screen-error contract without changing the bounded first frame. Paragraph
-indents/tabs, vertical MTEXT flow, complete TEXT OCS alignment, lossless
+screen-error contract without changing the bounded first frame. External
+image baselines for every TEXT OCS/justification combination, lossless
 analytic HATCH boundary topology and further real-world Korean SHX corpus
 expansion remain follow-up work.
 

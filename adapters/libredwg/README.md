@@ -86,9 +86,12 @@ This is a deliberately partial conversion milestone:
 - bounded SHX/BigFont and system-font fallback display is implemented in the
   Webview, including stored MTEXT WCS X-axis, attachment, columns and
   background fill plus bounded inline font/color/scale/slant/decorations and
-  stacked horizontal/diagonal fractions and tolerances; paragraph
-  indents/tabs, vertical flow and complete TEXT OCS alignment remain open in
-  GitHub issues #5 and #7.
+  stacked horizontal/diagonal fractions and tolerances. The Webview also
+  applies bounded paragraph indents, left/center/right tab stops and upright
+  top-to-bottom MTEXT flow. Single-line TEXT uses its OCS plane and
+  DWG-adjusted insertion point, applying endpoint width only to Align/Fit;
+  external image baselines for every OCS/justification combination remain
+  open in GitHub issues #5 and #7.
 
 This writer is the selected primary engine path, but its remaining source
 families and exact text layout are not yet release-ready. Its large-drawing
