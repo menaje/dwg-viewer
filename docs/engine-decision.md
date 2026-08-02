@@ -271,15 +271,18 @@ also warning that the communication semantics can affect the legal analysis.
 The project therefore does not treat process isolation alone as a legal
 conclusion.
 
-The repository now has a deterministic GPL package builder and a separate
-Linux x64/macOS arm64 qualification workflow. It requires a stripped,
-statically linked adapter, validates the adapter's bounded doctor report,
-rejects dynamic LibreDWG dependencies and local build paths, and includes the
-exact LibreDWG archive, adapter source, build scripts, license texts, manifest
-and checksums. Corresponding source is therefore shipped in the same archive
-rather than delegated to an unpinned external URL.
+The repository now has a deterministic GPL package builder and a public
+Linux x64/macOS arm64 release workflow. It requires a stripped, statically
+linked adapter, validates the adapter's bounded doctor report, rejects dynamic
+LibreDWG dependencies and local build paths, and includes the exact LibreDWG
+archive, adapter source, build scripts, license texts, manifest and checksums.
+Corresponding source is therefore shipped in the same archive rather than
+delegated to an unpinned external URL. The workflow reproduces both adapter
+archives and the VSIX, rejects a GPL adapter inside the VSIX, emits combined
+checksums, and creates free GitHub build-provenance attestations. A matching
+`v<version>` tag is the only path that publishes a GitHub release.
 
-Until public-release signing and the final distribution review are completed:
+The reviewed publication rules are:
 
 1. an MPL-only VSIX must not bundle a prebuilt LibreDWG-linked adapter;
 2. local development may build the adapter from checksum-pinned source with
@@ -287,7 +290,10 @@ Until public-release signing and the final distribution review are completed:
 3. the adapter may only be published as the separately identified
    GPL-3.0-or-later package produced by `adapters/libredwg/package.mjs`;
 4. Windows packages remain blocked until the POSIX adapter paths are ported,
-   measured and added to the qualification workflow.
+   measured and added to the qualification workflow in issue #25;
+5. every supported release must pass the procedure in
+   [`docs/distribution.md`](distribution.md), including provenance and
+   checksum verification.
 
 ACadSharp 3.6.51 is MIT-licensed, and the optional adapter uses a
 checksum-pinned .NET SDK plus a content-hash-locked package. Its permissive
@@ -304,8 +310,9 @@ engineering distribution policy, not legal advice.
 - Keep the ACadSharp inspection adapter, package lock and parser preflight test;
   do not build an ACadSharp Scene Cache converter unless a future release
   materially changes the measured memory architecture.
-- Keep the source-complete GPL package and two-platform qualification workflow
-  as the issue #6 release boundary; complete signing/review before publication.
+- Keep the source-complete GPL package and two-platform release workflow as the
+  issue #6 release boundary; use the reviewed checksum and free provenance
+  gates before publication.
 - Keep LibreDWG Native as the product default behind
   [`dwg-scene-engine/1`](../specs/scene-engine.md). Do not expose the rejected
   LibreDWG 0.14 MEMFS Worker in settings, fallback or the VSIX. Reconsider WASM

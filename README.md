@@ -314,6 +314,9 @@ LibreDWG 실행 파일은 정적으로 연결하고 정확한 LibreDWG 소스·G
 바이너리와 소스로 두 번 만들면 바이트 단위로 같은 패키지가 생성됩니다.
 현재 자동 검증 대상은 Linux x64와 macOS arm64이며, POSIX 임시 파일
 경로가 남아 있는 Windows는 아직 배포 대상이 아닙니다.
+VSIX와 두 어댑터를 각각 두 번 만들어 비교하고, GPL 혼입을 검사하며,
+체크섬과 무료 GitHub 빌드 증명을 생성하는 최종 절차는
+[`docs/distribution.md`](docs/distribution.md)에 정리했습니다.
 
 확장 내부에서는 Native 변환기도
 [`dwg-scene-engine/1`](specs/scene-engine.md) 공통 계약 뒤에서

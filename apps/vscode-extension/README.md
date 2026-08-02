@@ -202,6 +202,24 @@ eagerly decoding every source at full resolution.
 The initial integration milestone is recorded in GitHub issue #19; product
 qualification and release completion continue in issue #6.
 
+## License, source, and release artifacts
+
+The VSIX is distributed under MPL-2.0. Its complete source form, build scripts,
+license notice, and third-party notices are available in the
+[menaje/dwg-viewer repository](https://github.com/menaje/dwg-viewer). A
+versioned release is built from the Git tag with the same `v<version>` as the
+VSIX manifest. The packaged VSIX includes `LICENSE.txt` and
+`THIRD_PARTY_NOTICES.md`.
+
+The GPL-3.0-or-later LibreDWG adapter is never included in the VSIX, even if a
+developer has placed one under the extension's local `native/` directory. It
+is published only as a separate Linux x64 or macOS arm64 archive containing
+the exact LibreDWG source, adapter source, build scripts, license texts,
+manifest, and checksums. Release installation and provenance verification are
+documented in the
+[distribution guide](https://github.com/menaje/dwg-viewer/blob/main/docs/distribution.md).
+Windows packaging and qualification are tracked separately in issue #25.
+
 ## Product qualification
 
 Build the VSIX first, then run the isolated VS Code qualification with an

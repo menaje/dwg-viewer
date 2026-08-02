@@ -184,14 +184,17 @@ packaging from the same target binary byte-identical. The included repository
 license and package metadata also let the packaged `package.mjs` run from the
 extracted source tree instead of depending on files outside the archive.
 
-GitHub's separate adapter workflow qualifies Linux x64 and macOS arm64
-packages. Windows is not yet a qualified target because the cache writer still
-uses POSIX temporary-file and process-isolation APIs; a Windows artifact must
-not be published until those paths are ported and measured.
+GitHub's release workflow qualifies Linux x64 and macOS arm64 packages,
+reproduces the archives, verifies their extracted contents, and creates free
+build-provenance attestations. Windows is not yet a qualified target because
+the cache writer still uses POSIX temporary-file and process-isolation APIs; a
+Windows artifact must not be published until those paths are ported and
+measured in issue #25.
 
-The MPL-only VSIX never bundles this executable. Public release signing and the
-final distribution review remain separate publication gates; this packaging
-policy is engineering guidance, not legal advice.
+The MPL-only VSIX never bundles this executable. The complete reviewed
+publication and verification procedure is in
+[`docs/distribution.md`](../../docs/distribution.md). This packaging policy is
+engineering guidance, not legal advice.
 
 The clean macOS arm64 static-package qualification converted the 24,680,147-byte
 reference drawing in 3,564 ms with 524,468,224-byte peak RSS. It produced the
