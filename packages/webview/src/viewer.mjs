@@ -3,11 +3,11 @@ import { layerLinetypeCodes } from "./cad-linetype.mjs";
 import {
   buildLayoutInstanceGraph,
   paperViewportForLayout,
-} from "./layout-scene.mjs?v=1.18.0";
+} from "./layout-scene.mjs?v=1.18.1";
 import { readJsHeapSnapshot } from "./memory-telemetry.mjs";
 import { calculateRasterImageBounds } from "./raster-image-overlay.mjs";
-import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.0";
-import { SceneCacheReader } from "./scene-cache.mjs?v=1.18.0";
+import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.1";
+import { SceneCacheReader } from "./scene-cache.mjs?v=1.18.1";
 
 function now() {
   return globalThis.performance?.now?.() ?? Date.now();

@@ -73,6 +73,22 @@ test("collects bounded overview segments that use complex linetypes", () => {
   assert.equal(result.truncated, false);
 });
 
+test("decodes curve replacement markers without shifting linetype phase", () => {
+  const source = vertices();
+  const view = new DataView(source.buffer);
+  view.setFloat32(32, -1, true);
+  view.setFloat32(68, -11, true);
+  const result = collectComplexLinetypeSegments({
+    vertices: source,
+    batches: [batch],
+    linetypes: [complex],
+    layers: [{ linetype: "Continuous" }],
+  });
+
+  assert.equal(result.groups[0].segments[0].patternStart, 0);
+  assert.equal(result.groups[0].segments[0].patternEnd, 10);
+});
+
 test("resolves ByLayer complex patterns and enforces the source cap", () => {
   const result = collectComplexLinetypeSegments({
     vertices: vertices(0),

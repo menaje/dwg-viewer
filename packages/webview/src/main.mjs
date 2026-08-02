@@ -1,4 +1,4 @@
-import { ViewportInteraction } from "./interaction.mjs?v=1.18.0";
+import { ViewportInteraction } from "./interaction.mjs?v=1.18.1";
 import {
   buildExternalLayerMap,
   buildExternalLinetypeMap,
@@ -29,7 +29,8 @@ import {
   plotStyleShownInLayout,
 } from "./cad-plot-style.mjs";
 import { ComplexLinetypeOverlay } from "./complex-linetype-overlay.mjs";
-import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.0";
+import { curveRefinementCameraKey } from "./curve-contract.mjs";
+import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.1";
 import { ReviewTools } from "./review-tools.mjs";
 import {
   isOutlineFontReference,
@@ -46,7 +47,7 @@ import {
 import {
   loadExternalFirstFrame,
   loadFirstFrame,
-} from "./viewer.mjs?v=1.18.0";
+} from "./viewer.mjs?v=1.18.1";
 
 const fileInput = document.querySelector("#cache-file");
 const cachePicker = document.querySelector("#cache-picker");
@@ -100,6 +101,14 @@ let activeHatchStatus;
 let activeHatchWorker;
 let activePrimitiveStatus;
 let activePrimitiveWorker;
+let activeCurveStatus;
+let activeCurveWorker;
+let activeCurveWorkerSource;
+let curveWorkerReady = false;
+let curveRequestInFlight = false;
+let pendingCurveRequest;
+let curveRefinementTimer;
+let curveRequestRevision = 0;
 let activeMaskOrder;
 let activeRenderInstanceGraph;
 let activeMaskStatus;
@@ -125,6 +134,8 @@ let activeTextStyles = Object.freeze([]);
 let activeHostCacheId;
 let nextHostFontRequestId = 1;
 const HATCH_PATTERN_DEBOUNCE_MS = 160;
+const CURVE_REFINEMENT_DEBOUNCE_MS = 80;
+const CURVE_REFINEMENT_ZOOM_THRESHOLD = 4;
 const vscodeApi =
   typeof globalThis.acquireVsCodeApi === "function"
     ? globalThis.acquireVsCodeApi()
@@ -1006,6 +1017,18 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>후처리 원본 읽기</dt><dd>${formatBytes(activePrimitiveStatus?.reads?.bytesRead ?? 0)}</dd></div>
     `
     : "";
+  const curves =
+    render?.curveRefinement ?? activeCurveStatus?.metrics;
+  const curveRows = curves
+    ? `
+      <div><dt>화면 곡선 정밀화</dt><dd>${curves.refined.toLocaleString()} / ${curves.visible.toLocaleString()}개</dd></div>
+      <div><dt>정밀 곡선 선분</dt><dd>${curves.segments.toLocaleString()}개</dd></div>
+      <div><dt>정밀 곡선 GPU</dt><dd>${formatBytes(curves.gpuBytes)}</dd></div>
+      <div><dt>곡선 화면 오차</dt><dd>${curves.pixelError.toFixed(2)} px 이하</dd></div>
+      <div><dt>곡선 원본 읽기</dt><dd>${formatBytes(activeCurveStatus?.source?.byteLength ?? 0)}</dd></div>
+      <div><dt>곡선 최대 범위 읽기</dt><dd>${formatBytes(activeCurveStatus?.source?.maximumReadBytes ?? 0)}</dd></div>
+    `
+    : "";
   const maskRows = activeMaskStatus
     ? `
       <div><dt>가림 순서</dt><dd>${activeMaskStatus.enabled ? (activeWipeoutMasksVisible ? "표시" : "숨김") : "비활성"}</dd></div>
@@ -1048,6 +1071,7 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       ${hatchRows}
       ${patternRows}
       ${primitiveRows}
+      ${curveRows}
       ${maskRows}
       ${imageRows}
       ${textRows}
@@ -1650,6 +1674,78 @@ async function createHatchWorker(workerSource) {
   };
 }
 
+async function createCurveWorker(workerSource) {
+  const workerHandle = await createViewerWorker("./curve-worker.mjs");
+  const { worker } = workerHandle;
+  const removeRangeProxy =
+    workerSource.kind === "host"
+      ? installWorkerRangeProxy(worker, workerSource.source)
+      : () => {};
+  const pending = new Map();
+  let nextRequestId = 1;
+  let closed = false;
+  const terminate = () => {
+    removeRangeProxy();
+    workerHandle.terminate();
+  };
+  const rejectPending = (error) => {
+    for (const request of pending.values()) {
+      request.reject(error);
+    }
+    pending.clear();
+  };
+  worker.addEventListener("message", (event) => {
+    if (event.data?.type === WORKER_RANGE_REQUEST) {
+      return;
+    }
+    const request = pending.get(event.data.requestId);
+    if (!request) {
+      return;
+    }
+    pending.delete(event.data.requestId);
+    if (event.data.ok) {
+      request.resolve(event.data);
+    } else {
+      request.reject(new Error(event.data.error));
+    }
+  });
+  worker.addEventListener("error", (event) => {
+    if (closed) {
+      return;
+    }
+    closed = true;
+    terminate();
+    rejectPending(
+      new Error(event.message || "곡선 정밀화 worker failed"),
+    );
+  });
+  return {
+    request(type, payload = {}) {
+      if (closed) {
+        return Promise.reject(
+          new DOMException("곡선 정밀화 작업 취소됨", "AbortError"),
+        );
+      }
+      const requestId = nextRequestId;
+      nextRequestId += 1;
+      return new Promise((resolve, reject) => {
+        pending.set(requestId, { resolve, reject });
+        worker.postMessage({ requestId, type, ...payload });
+      });
+    },
+    cancel() {
+      if (closed) {
+        return;
+      }
+      closed = true;
+      terminate();
+      rejectPending(
+        new DOMException("곡선 정밀화 작업 취소됨", "AbortError"),
+      );
+    },
+  };
+}
+
 async function createPrimitiveWorker(workerSource) {
   const workerHandle = await createViewerWorker("./primitive-worker.mjs");
   const { worker } = workerHandle;
@@ -1912,6 +2008,168 @@ function invalidatePendingHatchPatterns() {
     clearTimeout(hatchPatternTimer);
     hatchPatternTimer = undefined;
   }
+}
+
+function invalidatePendingCurveRefinement({ clear = false } = {}) {
+  curveRequestRevision += 1;
+  pendingCurveRequest = undefined;
+  if (curveRefinementTimer !== undefined) {
+    clearTimeout(curveRefinementTimer);
+    curveRefinementTimer = undefined;
+  }
+  if (clear && activeScene) {
+    activeScene.renderer.clearCurveRefinement();
+    activeCurveStatus = undefined;
+  }
+}
+
+async function drainCurveRefinementRequest() {
+  if (curveRequestInFlight || !pendingCurveRequest) {
+    return;
+  }
+  const request = pendingCurveRequest;
+  pendingCurveRequest = undefined;
+  curveRequestInFlight = true;
+  let worker = activeCurveWorker;
+  try {
+    if (
+      request.revision !== openRevision ||
+      request.scene !== activeScene ||
+      !activeCurveWorkerSource
+    ) {
+      return;
+    }
+    if (!worker) {
+      worker = await createCurveWorker(activeCurveWorkerSource);
+      if (
+        request.revision !== openRevision ||
+        request.scene !== activeScene
+      ) {
+        worker.cancel();
+        return;
+      }
+      activeCurveWorker = worker;
+    }
+    activeCurveStatus = Object.freeze({
+      state: curveWorkerReady ? "refining" : "loading",
+      cameraKey: request.cameraKey,
+      metrics: activeCurveStatus?.metrics,
+      reads: activeCurveStatus?.reads,
+      source: activeCurveStatus?.source,
+    });
+    const result = curveWorkerReady
+      ? await worker.request("render", {
+          camera: request.camera,
+          cameraKey: request.cameraKey,
+          view: request.view,
+        })
+      : await worker.request("initialize", {
+          ...workerSourcePayload(activeCurveWorkerSource),
+          camera: request.camera,
+          cameraKey: request.cameraKey,
+          view: request.view,
+          maskOrder: activeMaskOrder,
+          metadata: {
+            layers: request.scene.metadata.layers,
+            linetypes: request.scene.metadata.linetypes,
+            blocks: request.scene.metadata.blocks,
+            inserts: request.scene.metadata.inserts,
+            insertClips: request.scene.metadata.insertClips,
+            layouts: request.scene.metadata.layouts,
+          },
+        });
+    curveWorkerReady = true;
+    const currentCamera =
+      activeInteraction?.snapshot().render.camera;
+    if (
+      request.token !== curveRequestRevision ||
+      request.revision !== openRevision ||
+      request.scene !== activeScene ||
+      request.cameraKey !== curveRefinementCameraKey(currentCamera)
+    ) {
+      return;
+    }
+    request.scene.renderer.setCurveRefinement({
+      ...result.refinement,
+      cameraKey: request.cameraKey,
+    });
+    activeCurveStatus = Object.freeze({
+      state: "ready",
+      cameraKey: request.cameraKey,
+      metrics: result.refinement.metrics,
+      reads: result.reads ?? activeCurveStatus?.reads,
+      source: result.source ?? activeCurveStatus?.source,
+    });
+    activeInteraction?.refresh();
+  } catch (error) {
+    if (
+      error?.name !== "AbortError" &&
+      request.revision === openRevision &&
+      request.scene === activeScene
+    ) {
+      activeCurveStatus = Object.freeze({
+        state: "error",
+        cameraKey: request.cameraKey,
+        error: error.message,
+      });
+      status.textContent = `곡선 정밀화 실패: ${error.message}`;
+      console.error(error);
+    }
+    if (!curveWorkerReady && activeCurveWorker === worker) {
+      worker?.cancel();
+      activeCurveWorker = undefined;
+    }
+  } finally {
+    curveRequestInFlight = false;
+    if (pendingCurveRequest) {
+      curveRefinementTimer = setTimeout(() => {
+        curveRefinementTimer = undefined;
+        drainCurveRefinementRequest();
+      }, 0);
+    }
+  }
+}
+
+function scheduleCurveRefinement(scene, viewport, revision) {
+  if (
+    revision !== openRevision ||
+    scene !== activeScene ||
+    !activeCurveWorkerSource
+  ) {
+    return;
+  }
+  if (viewport.render.interactive) {
+    invalidatePendingCurveRefinement();
+    return;
+  }
+  if (viewport.zoom < CURVE_REFINEMENT_ZOOM_THRESHOLD) {
+    invalidatePendingCurveRefinement({ clear: true });
+    return;
+  }
+  const camera = workerCamera(viewport.render.camera);
+  const cameraKey = curveRefinementCameraKey(camera);
+  if (
+    activeCurveStatus?.state === "ready" &&
+    activeCurveStatus.cameraKey === cameraKey
+  ) {
+    return;
+  }
+  const token = ++curveRequestRevision;
+  pendingCurveRequest = Object.freeze({
+    token,
+    revision,
+    scene,
+    camera,
+    cameraKey,
+    view: hatchWorkerView(scene),
+  });
+  if (curveRefinementTimer !== undefined) {
+    clearTimeout(curveRefinementTimer);
+  }
+  curveRefinementTimer = setTimeout(() => {
+    curveRefinementTimer = undefined;
+    drainCurveRefinementRequest();
+  }, CURVE_REFINEMENT_DEBOUNCE_MS);
 }
 
 async function initializeDeferredGeometry(
@@ -2519,6 +2777,7 @@ function installInteraction(
           revision,
         );
       }
+      scheduleCurveRefinement(scene, viewport, revision);
       status.textContent = viewport.render.interactive
         ? `${viewport.zoom.toFixed(2)}× · 빠른 이동 화면`
         : viewport.detail.loading > 0
@@ -2526,6 +2785,19 @@ function installInteraction(
           : `${viewport.zoom.toFixed(2)}× · 화면 상세 ${viewport.detail.selectedBatches.toLocaleString()}개`;
       if (scene.metrics.preview) {
         status.textContent += " · 빠른 미리보기";
+      }
+      if (
+        activeCurveStatus?.state === "loading" ||
+        activeCurveStatus?.state === "refining"
+      ) {
+        status.textContent += " · 곡선 정밀화 중";
+      } else if (
+        activeCurveStatus?.state === "ready" &&
+        activeCurveStatus.cameraKey ===
+          curveRefinementCameraKey(viewport.render.camera)
+      ) {
+        status.textContent +=
+          ` · 정밀 곡선 ${activeCurveStatus.metrics.refined.toLocaleString()}개`;
       }
       status.textContent += missingFontSuffix();
       activeReviewTools?.setCamera(viewport.render.camera);
@@ -2598,6 +2870,8 @@ async function activateView(scene, view, source, revision) {
   activeReviewTools = undefined;
   activeInteraction?.dispose();
   activeInteraction = undefined;
+  invalidatePendingCurveRefinement();
+  activeCurveStatus = undefined;
   try {
     const instanceGraph = scene.buildViewInstanceGraph(
       view,
@@ -2785,6 +3059,7 @@ async function openCache(source, workerSource) {
   renderFontDiagnostics();
   activeHatchStatus = undefined;
   activePrimitiveStatus = undefined;
+  activeCurveStatus = undefined;
   activeMaskOrder = undefined;
   activeRenderInstanceGraph = undefined;
   activeMaskStatus = undefined;
@@ -2805,6 +3080,13 @@ async function openCache(source, workerSource) {
   activeHatchWorker = undefined;
   activePrimitiveWorker?.cancel();
   activePrimitiveWorker = undefined;
+  invalidatePendingCurveRefinement();
+  activeCurveWorker?.cancel();
+  activeCurveWorker = undefined;
+  activeCurveWorkerSource = workerSource;
+  curveWorkerReady = false;
+  curveRequestInFlight = false;
+  pendingCurveRequest = undefined;
   activeInteraction?.dispose();
   activeInteraction = undefined;
   activeReviewTools?.dispose();
@@ -3330,6 +3612,10 @@ window.addEventListener("beforeunload", () => {
   activeHatchWorker = undefined;
   activePrimitiveWorker?.cancel();
   activePrimitiveWorker = undefined;
+  invalidatePendingCurveRefinement();
+  activeCurveWorker?.cancel();
+  activeCurveWorker = undefined;
+  activeCurveWorkerSource = undefined;
   activeInteraction?.dispose();
   activeScene?.renderer.dispose();
   resetExternalReferences();

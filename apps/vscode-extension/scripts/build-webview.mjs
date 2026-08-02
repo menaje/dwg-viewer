@@ -41,6 +41,11 @@ await Promise.all([
     entryPoints: [path.join(webviewRoot, "src", "primitive-worker.mjs")],
     outfile: path.join(sourceOutput, "primitive-worker.mjs"),
   }),
+  build({
+    ...shared,
+    entryPoints: [path.join(webviewRoot, "src", "curve-worker.mjs")],
+    outfile: path.join(sourceOutput, "curve-worker.mjs"),
+  }),
   copyFile(
     path.join(webviewRoot, "styles.css"),
     path.join(mediaRoot, "styles.css"),
@@ -50,7 +55,11 @@ await Promise.all([
 const template = await readFile(path.join(webviewRoot, "index.html"), "utf8");
 await writeFile(path.join(mediaRoot, "index.html"), template, "utf8");
 
-for (const workerName of ["hatch-worker.mjs", "primitive-worker.mjs"]) {
+for (const workerName of [
+  "hatch-worker.mjs",
+  "primitive-worker.mjs",
+  "curve-worker.mjs",
+]) {
   const bundledWorker = await readFile(
     path.join(sourceOutput, workerName),
     "utf8",

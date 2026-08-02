@@ -1,0 +1,463 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  buildCurveRefinementMesh,
+  circularSegmentCount,
+  CURVE_PIXEL_ERROR,
+} from "../src/curve-refinement.mjs";
+import { identityMat4 } from "../src/math.mjs";
+
+function entityTable(rows) {
+  return {
+    length: rows.length,
+    readEntity(index, target) {
+      Object.assign(target, rows[index]);
+      return target;
+    },
+  };
+}
+
+function vertexTable(rows) {
+  return {
+    length: rows.length,
+    readVertex(index, target) {
+      Object.assign(target, rows[index]);
+      return target;
+    },
+  };
+}
+
+function scalarTable(values) {
+  return {
+    length: values.length,
+    readValue(index) {
+      return values[index];
+    },
+  };
+}
+
+function pointTable(points) {
+  return {
+    length: points.length,
+    readPoint(index, target) {
+      target.set?.(points[index]);
+      if (!target.set) {
+        target.splice(0, 3, ...points[index]);
+      }
+      return target;
+    },
+  };
+}
+
+function common(handle, ownerHandle = 100n) {
+  return {
+    handle,
+    ownerHandle,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    lineWeight: 25,
+    commonFlags: 0,
+    linetypeCode: 2,
+  };
+}
+
+function modelScene() {
+  return {
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*MODEL_SPACE",
+      },
+    ],
+    instanceGraph: {
+      modelBlockIndices: new Set([0]),
+      modelInstances: {
+        data: identityMat4(),
+        clipIds: new Uint32Array([0]),
+        count: 1,
+        length: 1,
+      },
+      instancesByBlock: new Map(),
+      clipNodes: [],
+    },
+    camera: {
+      origin: [0, 0, 0],
+      worldWidth: 40,
+      worldHeight: 40,
+      width: 1_000,
+      height: 1_000,
+    },
+  };
+}
+
+function sourceWithAllCurveKinds() {
+  return {
+    arcs: entityTable([
+      {
+        ...common(1n),
+        center: [0, 0, 0],
+        radius: 10,
+        startParameter: 0,
+        endParameter: Math.PI,
+        normal: [0, 0, 1],
+      },
+    ]),
+    circles: entityTable([
+      {
+        ...common(2n),
+        center: [0, 0, 0],
+        radius: 8,
+        startParameter: 0,
+        endParameter: Math.PI * 2,
+        normal: [0, 0, 1],
+      },
+    ]),
+    ellipses: entityTable([
+      {
+        ...common(3n),
+        center: [0, 0, 0],
+        majorAxis: [12, 0, 0],
+        minorAxisRatio: 0.25,
+        startParameter: 0,
+        endParameter: Math.PI * 2,
+        normal: [0, 0, 1],
+      },
+    ]),
+    polylines: entityTable([
+      {
+        ...common(4n),
+        firstVertex: 0,
+        vertexCount: 3,
+        polylineKind: 1,
+        polylineFlags: 0,
+        elevation: 0,
+        normal: [0, 0, 1],
+      },
+    ]),
+    polylineVertices: vertexTable([
+      { position: [-5, 0, 0], bulge: 1 },
+      { position: [5, 0, 0], bulge: 0 },
+      { position: [7, 0, 0], bulge: 0 },
+    ]),
+    splines: entityTable([
+      {
+        ...common(5n),
+        degree: 3,
+        splineFlags: 0,
+        firstKnot: 0,
+        knotCount: 8,
+        firstControlPoint: 0,
+        controlPointCount: 4,
+        firstWeight: 0,
+        weightCount: 0,
+      },
+    ]),
+    splineKnots: scalarTable([0, 0, 0, 0, 1, 1, 1, 1]),
+    splineWeights: scalarTable([]),
+    splineControlPoints: pointTable([
+      [-10, -5, 0],
+      [-5, 12, 0],
+      [5, -12, 0],
+      [10, 5, 0],
+    ]),
+  };
+}
+
+function decodedSegments(refinement, handle) {
+  const output = [];
+  for (const entry of refinement.entries) {
+    const view = new DataView(entry.vertices.buffer);
+    for (
+      let vertex = 0;
+      vertex < entry.vertices.vertexCount;
+      vertex += 2
+    ) {
+      const offset = vertex * 36;
+      const vertexHandle =
+        BigInt(view.getUint32(offset + 20, true)) |
+        (BigInt(view.getUint32(offset + 24, true)) << 32n);
+      if (vertexHandle !== handle) {
+        continue;
+      }
+      output.push([
+        [0, 1, 2].map(
+          (axis) =>
+            entry.batch.origin[axis] +
+            view.getFloat32(offset + axis * 4, true),
+        ),
+        [0, 1, 2].map(
+          (axis) =>
+            entry.batch.origin[axis] +
+            view.getFloat32(offset + 36 + axis * 4, true),
+        ),
+      ]);
+    }
+  }
+  return output;
+}
+
+function distanceToSegments(point, segments) {
+  let minimum = Infinity;
+  for (const [start, end] of segments) {
+    const deltaX = end[0] - start[0];
+    const deltaY = end[1] - start[1];
+    const lengthSquared = deltaX * deltaX + deltaY * deltaY;
+    const parameter =
+      lengthSquared <= 1e-20
+        ? 0
+        : Math.max(
+            0,
+            Math.min(
+              1,
+              ((point[0] - start[0]) * deltaX +
+                (point[1] - start[1]) * deltaY) /
+                lengthSquared,
+            ),
+          );
+    minimum = Math.min(
+      minimum,
+      Math.hypot(
+        point[0] - (start[0] + deltaX * parameter),
+        point[1] - (start[1] + deltaY * parameter),
+      ),
+    );
+  }
+  return minimum;
+}
+
+test("refines ARC, CIRCLE, ELLIPSE, bulge and NURBS within the GPU budget", () => {
+  const { blocks, instanceGraph, camera } = modelScene();
+  const refinement = buildCurveRefinementMesh(
+    sourceWithAllCurveKinds(),
+    blocks,
+    instanceGraph,
+    camera,
+  );
+
+  assert.equal(refinement.metrics.refined, 5);
+  assert.equal(refinement.metrics.refinedHandles, 5);
+  assert.equal(refinement.metrics.gpuLimitReached, false);
+  assert.ok(refinement.byteLength > 0);
+  assert.ok(refinement.byteLength <= 32 * 1024 * 1024);
+  assert.ok(
+    refinement.entries.every(
+      (entry) => entry.vertices.byteLength <= 512 * 1024,
+    ),
+  );
+  const polylineEnd = decodedSegments(refinement, 4n).at(-1)[1];
+  assert.ok(Math.hypot(polylineEnd[0] - 7, polylineEnd[1]) <= 1e-6);
+  assert.equal(polylineEnd[2], 0);
+});
+
+test("circular sagitta plus f32 position error stays within 0.5 pixels", () => {
+  const { blocks, instanceGraph, camera } = modelScene();
+  const refinement = buildCurveRefinementMesh(
+    sourceWithAllCurveKinds(),
+    blocks,
+    instanceGraph,
+    camera,
+  );
+  const segments = decodedSegments(refinement, 2n);
+  const pixelsPerWorld = camera.width / camera.worldWidth;
+  let maximumError = 0;
+  for (const [start, end] of segments) {
+    const midpoint = [
+      (start[0] + end[0]) * 0.5,
+      (start[1] + end[1]) * 0.5,
+    ];
+    maximumError = Math.max(
+      maximumError,
+      (8 - Math.hypot(...midpoint)) * pixelsPerWorld,
+    );
+  }
+  assert.ok(maximumError <= CURVE_PIXEL_ERROR);
+  assert.ok(
+    circularSegmentCount(8 * pixelsPerWorld, Math.PI * 2) > 16,
+  );
+});
+
+test("keeps ellipse, bulge and cubic NURBS samples within 0.5 pixels", () => {
+  const { blocks, instanceGraph, camera } = modelScene();
+  const refinement = buildCurveRefinementMesh(
+    sourceWithAllCurveKinds(),
+    blocks,
+    instanceGraph,
+    camera,
+  );
+  const pixelsPerWorld = camera.width / camera.worldWidth;
+  const ellipse = decodedSegments(refinement, 3n);
+  const bulge = decodedSegments(refinement, 4n);
+  const spline = decodedSegments(refinement, 5n);
+  let maximumError = 0;
+  for (let index = 0; index <= 2_000; index += 1) {
+    const parameter = (Math.PI * 2 * index) / 2_000;
+    maximumError = Math.max(
+      maximumError,
+      distanceToSegments(
+        [12 * Math.cos(parameter), 3 * Math.sin(parameter)],
+        ellipse,
+      ) * pixelsPerWorld,
+    );
+  }
+  for (let index = 0; index <= 1_000; index += 1) {
+    const parameter = Math.PI + (Math.PI * index) / 1_000;
+    maximumError = Math.max(
+      maximumError,
+      distanceToSegments(
+        [5 * Math.cos(parameter), 5 * Math.sin(parameter)],
+        bulge,
+      ) * pixelsPerWorld,
+    );
+  }
+  const controls = [
+    [-10, -5],
+    [-5, 12],
+    [5, -12],
+    [10, 5],
+  ];
+  for (let index = 0; index <= 2_000; index += 1) {
+    const parameter = index / 2_000;
+    const inverse = 1 - parameter;
+    const point = [0, 1].map(
+      (axis) =>
+        controls[0][axis] * inverse ** 3 +
+        controls[1][axis] * 3 * inverse ** 2 * parameter +
+        controls[2][axis] * 3 * inverse * parameter ** 2 +
+        controls[3][axis] * parameter ** 3,
+    );
+    maximumError = Math.max(
+      maximumError,
+      distanceToSegments(point, spline) * pixelsPerWorld,
+    );
+  }
+  assert.ok(
+    maximumError <= CURVE_PIXEL_ERROR,
+    `maximum sampled deviation was ${maximumError} px`,
+  );
+});
+
+test("shares one block curve mesh across repeated INSERT instances", () => {
+  const source = sourceWithAllCurveKinds();
+  source.arcs = entityTable([
+    {
+      ...common(11n, 200n),
+      center: [0, 0, 0],
+      radius: 2,
+      startParameter: 0,
+      endParameter: Math.PI,
+      normal: [0, 0, 1],
+    },
+  ]);
+  source.circles = entityTable([]);
+  source.ellipses = entityTable([]);
+  source.polylines = entityTable([]);
+  source.splines = entityTable([]);
+  const blocks = [
+    { index: 0, handle: 100n, name: "*MODEL_SPACE" },
+    { index: 1, handle: 200n, name: "반복블록" },
+  ];
+  const matrices = new Float64Array(100 * 16);
+  for (let index = 0; index < 100; index += 1) {
+    matrices.set(identityMat4(), index * 16);
+  }
+  const baseGraph = {
+    modelBlockIndices: new Set([0]),
+    modelInstances: {
+      data: identityMat4(),
+      count: 1,
+      length: 1,
+    },
+    clipNodes: [],
+  };
+  const camera = {
+    origin: [0, 0, 0],
+    worldWidth: 20,
+    worldHeight: 20,
+    width: 1_000,
+    height: 1_000,
+  };
+  const one = buildCurveRefinementMesh(
+    source,
+    blocks,
+    {
+      ...baseGraph,
+      instancesByBlock: new Map([
+        [
+          1,
+          {
+            data: matrices.subarray(0, 16),
+            count: 1,
+            length: 1,
+          },
+        ],
+      ]),
+    },
+    camera,
+  );
+  const repeated = buildCurveRefinementMesh(
+    source,
+    blocks,
+    {
+      ...baseGraph,
+      instancesByBlock: new Map([
+        [
+          1,
+          {
+            data: matrices,
+            count: 100,
+            length: 100,
+          },
+        ],
+      ]),
+    },
+    camera,
+  );
+
+  assert.equal(repeated.vertexCount, one.vertexCount);
+  assert.equal(repeated.byteLength, one.byteLength);
+  assert.equal(repeated.entries[0].batch.instanceIndices, null);
+});
+
+test("keeps coarse fallback when an entity cannot fit or a NURBS is invalid", () => {
+  const { blocks, instanceGraph, camera } = modelScene();
+  const source = sourceWithAllCurveKinds();
+  source.arcs = entityTable([]);
+  source.ellipses = entityTable([]);
+  source.polylines = entityTable([]);
+  source.splines = entityTable([
+    {
+      ...common(9n),
+      degree: 3,
+      splineFlags: 0,
+      firstKnot: 0,
+      knotCount: 8,
+      firstControlPoint: 0,
+      controlPointCount: 4,
+      firstWeight: 0,
+      weightCount: 0,
+    },
+  ]);
+  source.splineKnots = scalarTable([0, 0, 1, 0, 1, 1, 1, 1]);
+  const invalid = buildCurveRefinementMesh(
+    source,
+    blocks,
+    instanceGraph,
+    camera,
+  );
+  assert.equal(invalid.metrics.refinedHandles, 1);
+  assert.equal(invalid.metrics.skippedInvalid, 1);
+
+  source.splines = entityTable([]);
+  const bounded = buildCurveRefinementMesh(
+    source,
+    blocks,
+    instanceGraph,
+    camera,
+    { maximumGpuBytes: 72 },
+  );
+  assert.equal(bounded.metrics.refinedHandles, 0);
+  assert.equal(bounded.metrics.gpuLimitReached, true);
+  assert.equal(bounded.byteLength, 0);
+});

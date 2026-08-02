@@ -6,10 +6,18 @@ import {
   TrackedRangeSource,
 } from "../src/range-source.mjs";
 import {
+  ARC_RECORD_SIZE,
   DIRECTORY_ENTRY_SIZE,
+  ELLIPSE_RECORD_SIZE,
   LEGACY_GPU_LINE_VERTEX_RECORD_SIZE,
+  MAX_CURVE_SOURCE_RANGE_BYTES,
+  POLYLINE_HEADER_RECORD_SIZE,
+  POLYLINE_VERTEX_RECORD_SIZE,
   SceneCacheReader,
   SectionKind,
+  SPLINE_HEADER_RECORD_SIZE,
+  SPLINE_POINT_RECORD_SIZE,
+  SPLINE_SCALAR_RECORD_SIZE,
 } from "../src/scene-cache.mjs";
 import { makeFixtureCache } from "./cache-fixture.mjs";
 
@@ -85,6 +93,99 @@ test("reads bounded exact ARC, CIRCLE, and ELLIPSE review geometry", async () =>
   });
   assert.equal(bounded.records, 1);
   assert.equal(bounded.truncated, true);
+});
+
+test("reads deferred curve source only in record-aligned 512 KiB chunks", async () => {
+  const arcCount = 5_000;
+  const arcBytes = arcCount * ARC_RECORD_SIZE;
+  const buffer = new ArrayBuffer(arcBytes);
+  const source = new TrackedRangeSource(new MemoryRangeSource(buffer));
+  let offset = 0;
+  const sections = new Map();
+  const addSection = (kind, recordSize, recordCount) => {
+    const byteLength = recordSize * recordCount;
+    sections.set(kind, {
+      kind,
+      recordSize,
+      recordCount,
+      offset,
+      byteLength,
+      flags: 0,
+    });
+    offset += byteLength;
+  };
+  addSection(SectionKind.Arcs, ARC_RECORD_SIZE, arcCount);
+  addSection(SectionKind.Circles, 96, 0);
+  addSection(
+    SectionKind.PolylineHeaders,
+    POLYLINE_HEADER_RECORD_SIZE,
+    0,
+  );
+  addSection(
+    SectionKind.PolylineVertices,
+    POLYLINE_VERTEX_RECORD_SIZE,
+    0,
+  );
+  addSection(SectionKind.Ellipses, ELLIPSE_RECORD_SIZE, 0);
+  addSection(
+    SectionKind.SplineHeaders,
+    SPLINE_HEADER_RECORD_SIZE,
+    0,
+  );
+  addSection(SectionKind.SplineKnots, SPLINE_SCALAR_RECORD_SIZE, 0);
+  addSection(SectionKind.SplineWeights, SPLINE_SCALAR_RECORD_SIZE, 0);
+  addSection(
+    SectionKind.SplineControlPoints,
+    SPLINE_POINT_RECORD_SIZE,
+    0,
+  );
+  const reader = new SceneCacheReader(
+    source,
+    { minor: 18 },
+    sections,
+  );
+  const curves = await reader.readCurveRefinementSource();
+
+  assert.equal(curves.arcs.length, arcCount);
+  assert.equal(curves.requestCount, 2);
+  assert.ok(curves.maximumReadBytes <= MAX_CURVE_SOURCE_RANGE_BYTES);
+  assert.ok(source.maximumRequestBytes <= MAX_CURVE_SOURCE_RANGE_BYTES);
+  assert.equal(source.bytesRead, arcBytes);
+  await assert.rejects(
+    reader.readCurveRefinementSource({
+      maximumSourceBytes: 64 * 1024 * 1024 + 1,
+    }),
+    /byte budget must be between/,
+  );
+});
+
+test("does not read curve source sections while loading first-frame data", async () => {
+  const source = new TrackedRangeSource(
+    new MemoryRangeSource(
+      makeFixtureCache({ includeReviewCurves: true }),
+    ),
+  );
+  const reader = await SceneCacheReader.open(source);
+  const curveRanges = [
+    reader.getSection(SectionKind.Arcs),
+    reader.getSection(SectionKind.Circles),
+    reader.getSection(SectionKind.Ellipses),
+  ].map((section) => [
+    section.offset,
+    section.offset + section.byteLength,
+  ]);
+
+  await reader.readRenderMetadata();
+  await reader.readOverviewVertices();
+
+  assert.equal(
+    source.requests.some(({ offset, length }) =>
+      curveRanges.some(
+        ([start, end]) => offset < end && offset + length > start,
+      ),
+    ),
+    false,
+  );
 });
 
 test("rejects a newer unsupported Scene Cache minor version", async () => {

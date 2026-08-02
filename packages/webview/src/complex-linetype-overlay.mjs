@@ -137,8 +137,16 @@ export function collectComplexLinetypeSegments({
         batch.origin[1] + view.getFloat32(endOffset + 4, true),
         batch.origin[2] + view.getFloat32(endOffset + 8, true),
       ];
-      const patternStart = view.getFloat32(offset + 32, true);
-      const patternEnd = view.getFloat32(endOffset + 32, true);
+      const storedPatternStart = view.getFloat32(offset + 32, true);
+      const storedPatternEnd = view.getFloat32(endOffset + 32, true);
+      const patternStart =
+        storedPatternStart < 0
+          ? -storedPatternStart - 1
+          : storedPatternStart;
+      const patternEnd =
+        storedPatternEnd < 0
+          ? -storedPatternEnd - 1
+          : storedPatternEnd;
       if (
         ![...start, ...end, patternStart, patternEnd].every(
           Number.isFinite,

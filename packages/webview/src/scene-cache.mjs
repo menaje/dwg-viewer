@@ -12,7 +12,12 @@ export const TEXT_ENTITY_RECORD_SIZE = 336;
 export const TEXT_COLUMN_HEIGHT_RECORD_SIZE = 8;
 export const ARC_RECORD_SIZE = 112;
 export const CIRCLE_RECORD_SIZE = 96;
+export const POLYLINE_HEADER_RECORD_SIZE = 112;
+export const POLYLINE_VERTEX_RECORD_SIZE = 64;
 export const ELLIPSE_RECORD_SIZE = 128;
+export const SPLINE_HEADER_RECORD_SIZE = 208;
+export const SPLINE_SCALAR_RECORD_SIZE = 8;
+export const SPLINE_POINT_RECORD_SIZE = 24;
 export const HATCH_ENTITY_RECORD_SIZE = 192;
 export const HATCH_LOOP_RECORD_SIZE = 48;
 export const HATCH_VERTEX_RECORD_SIZE = 24;
@@ -94,7 +99,14 @@ export const GpuLineBatchKind = Object.freeze({
 const FIXED_RECORD_SIZES = new Map([
   [SectionKind.Arcs, ARC_RECORD_SIZE],
   [SectionKind.Circles, CIRCLE_RECORD_SIZE],
+  [SectionKind.PolylineHeaders, POLYLINE_HEADER_RECORD_SIZE],
+  [SectionKind.PolylineVertices, POLYLINE_VERTEX_RECORD_SIZE],
   [SectionKind.Ellipses, ELLIPSE_RECORD_SIZE],
+  [SectionKind.SplineHeaders, SPLINE_HEADER_RECORD_SIZE],
+  [SectionKind.SplineKnots, SPLINE_SCALAR_RECORD_SIZE],
+  [SectionKind.SplineWeights, SPLINE_SCALAR_RECORD_SIZE],
+  [SectionKind.SplineControlPoints, SPLINE_POINT_RECORD_SIZE],
+  [SectionKind.SplineFitPoints, SPLINE_POINT_RECORD_SIZE],
   [SectionKind.Inserts, 136],
   [SectionKind.TextColumnHeights, TEXT_COLUMN_HEIGHT_RECORD_SIZE],
   [SectionKind.GpuLineBatches, GPU_LINE_BATCH_RECORD_SIZE],
@@ -128,6 +140,8 @@ const MAX_CACHE_STRING_BYTES = 1024 * 1024;
 const MAX_OVERVIEW_BYTES = 8 * 1024 * 1024;
 const MAX_DETAIL_BATCH_BYTES = 512 * 1024;
 const MAX_REVIEW_CURVE_BYTES = 8 * 1024 * 1024;
+const MAX_CURVE_SOURCE_RANGE_BYTES = 512 * 1024;
+const MAX_CURVE_SOURCE_BYTES = 64 * 1024 * 1024;
 const MAX_HATCH_SOURCE_RECORDS = 1_048_576;
 const MAX_HATCH_PATTERN_LINES = 262_144;
 const MAX_HATCH_PATTERN_LINES_PER_ENTITY = 4_096;
@@ -730,6 +744,252 @@ function readPrimitiveCommon(view, offset, target) {
   target.commonFlags = view.getUint16(offset + 26, true);
   target.linetypeCode = view.getUint32(offset + 28, true);
   return target;
+}
+
+class ChunkedFixedRecordTable {
+  constructor(chunks, recordSize, recordCount, recordsPerChunk, label) {
+    this.chunks = chunks;
+    this.recordSize = recordSize;
+    this.recordCount = recordCount;
+    this.recordsPerChunk = recordsPerChunk;
+    this.label = label;
+  }
+
+  get length() {
+    return this.recordCount;
+  }
+
+  locate(index) {
+    if (!Number.isSafeInteger(index) || index < 0 || index >= this.recordCount) {
+      throw new RangeError(`${this.label} record index is out of range: ${index}`);
+    }
+    const chunkIndex = Math.floor(index / this.recordsPerChunk);
+    const chunk = this.chunks[chunkIndex];
+    if (!chunk) {
+      throw new Error(`${this.label} record ${index} has no source chunk`);
+    }
+    return {
+      view: chunk.view,
+      offset: (index - chunk.firstRecord) * this.recordSize,
+    };
+  }
+}
+
+class CircularCurveSourceTable extends ChunkedFixedRecordTable {
+  constructor(chunks, recordSize, recordCount, recordsPerChunk, kind) {
+    super(chunks, recordSize, recordCount, recordsPerChunk, kind.toUpperCase());
+    this.kind = kind;
+  }
+
+  readEntity(index, target) {
+    if (!target || typeof target !== "object") {
+      throw new TypeError(`${this.label} target must be an object`);
+    }
+    const { view, offset } = this.locate(index);
+    target.index = index;
+    target.kind = this.kind;
+    readPrimitiveCommon(view, offset, target);
+    target.center ??= [0, 0, 0];
+    target.normal ??= [0, 0, 1];
+    for (let axis = 0; axis < 3; axis += 1) {
+      target.center[axis] = view.getFloat64(offset + 32 + axis * 8, true);
+    }
+    target.radius = view.getFloat64(offset + 56, true);
+    if (this.kind === "arc") {
+      target.startParameter = view.getFloat64(offset + 64, true);
+      target.endParameter = view.getFloat64(offset + 72, true);
+      target.thickness = view.getFloat64(offset + 80, true);
+      for (let axis = 0; axis < 3; axis += 1) {
+        target.normal[axis] = view.getFloat64(
+          offset + 88 + axis * 8,
+          true,
+        );
+      }
+    } else {
+      target.startParameter = 0;
+      target.endParameter = Math.PI * 2;
+      target.thickness = view.getFloat64(offset + 64, true);
+      for (let axis = 0; axis < 3; axis += 1) {
+        target.normal[axis] = view.getFloat64(
+          offset + 72 + axis * 8,
+          true,
+        );
+      }
+    }
+    return target;
+  }
+}
+
+class EllipseCurveSourceTable extends ChunkedFixedRecordTable {
+  readEntity(index, target) {
+    if (!target || typeof target !== "object") {
+      throw new TypeError("ELLIPSE target must be an object");
+    }
+    const { view, offset } = this.locate(index);
+    target.index = index;
+    target.kind = "ellipse";
+    readPrimitiveCommon(view, offset, target);
+    target.center ??= [0, 0, 0];
+    target.majorAxis ??= [0, 0, 0];
+    target.normal ??= [0, 0, 1];
+    for (let axis = 0; axis < 3; axis += 1) {
+      target.center[axis] = view.getFloat64(offset + 32 + axis * 8, true);
+      target.majorAxis[axis] = view.getFloat64(
+        offset + 56 + axis * 8,
+        true,
+      );
+      target.normal[axis] = view.getFloat64(offset + 80 + axis * 8, true);
+    }
+    target.minorAxisRatio = view.getFloat64(offset + 104, true);
+    target.startParameter = view.getFloat64(offset + 112, true);
+    target.endParameter = view.getFloat64(offset + 120, true);
+    return target;
+  }
+}
+
+class PolylineHeaderSourceTable extends ChunkedFixedRecordTable {
+  readEntity(index, target) {
+    if (!target || typeof target !== "object") {
+      throw new TypeError("polyline header target must be an object");
+    }
+    const { view, offset } = this.locate(index);
+    target.index = index;
+    target.kind = "polyline";
+    readPrimitiveCommon(view, offset, target);
+    target.firstVertex = readSafeU64(
+      view,
+      offset + 32,
+      `polyline ${index} first vertex`,
+    );
+    target.vertexCount = view.getUint32(offset + 40, true);
+    target.polylineKind = view.getUint16(offset + 44, true);
+    target.polylineFlags = view.getUint16(offset + 46, true);
+    target.elevation = view.getFloat64(offset + 48, true);
+    target.thickness = view.getFloat64(offset + 56, true);
+    target.normal ??= [0, 0, 1];
+    for (let axis = 0; axis < 3; axis += 1) {
+      target.normal[axis] = view.getFloat64(offset + 64 + axis * 8, true);
+    }
+    target.defaultStartWidth = view.getFloat64(offset + 88, true);
+    target.defaultEndWidth = view.getFloat64(offset + 96, true);
+    target.constantWidth = view.getFloat64(offset + 104, true);
+    return target;
+  }
+}
+
+class PolylineVertexSourceTable extends ChunkedFixedRecordTable {
+  readVertex(index, target) {
+    if (!target || typeof target !== "object") {
+      throw new TypeError("polyline vertex target must be an object");
+    }
+    const { view, offset } = this.locate(index);
+    target.index = index;
+    target.position ??= [0, 0, 0];
+    for (let axis = 0; axis < 3; axis += 1) {
+      target.position[axis] = view.getFloat64(offset + axis * 8, true);
+    }
+    target.bulge = view.getFloat64(offset + 24, true);
+    target.startWidth = view.getFloat64(offset + 32, true);
+    target.endWidth = view.getFloat64(offset + 40, true);
+    target.curveTangent = view.getFloat64(offset + 48, true);
+    target.flags = view.getUint32(offset + 56, true);
+    target.id = view.getInt32(offset + 60, true);
+    return target;
+  }
+}
+
+class SplineHeaderSourceTable extends ChunkedFixedRecordTable {
+  readEntity(index, target) {
+    if (!target || typeof target !== "object") {
+      throw new TypeError("SPLINE target must be an object");
+    }
+    const { view, offset } = this.locate(index);
+    target.index = index;
+    target.kind = "spline";
+    readPrimitiveCommon(view, offset, target);
+    target.degree = view.getInt32(offset + 32, true);
+    target.splineFlags = view.getUint32(offset + 36, true);
+    target.knotParameterization = view.getInt32(offset + 40, true);
+    target.reserved = view.getUint32(offset + 44, true);
+    target.firstKnot = readSafeU64(
+      view,
+      offset + 48,
+      `SPLINE ${index} first knot`,
+    );
+    target.knotCount = readSafeU64(
+      view,
+      offset + 56,
+      `SPLINE ${index} knot count`,
+    );
+    target.firstControlPoint = readSafeU64(
+      view,
+      offset + 64,
+      `SPLINE ${index} first control point`,
+    );
+    target.controlPointCount = readSafeU64(
+      view,
+      offset + 72,
+      `SPLINE ${index} control-point count`,
+    );
+    target.firstWeight = readSafeU64(
+      view,
+      offset + 80,
+      `SPLINE ${index} first weight`,
+    );
+    target.weightCount = readSafeU64(
+      view,
+      offset + 88,
+      `SPLINE ${index} weight count`,
+    );
+    target.firstFitPoint = readSafeU64(
+      view,
+      offset + 96,
+      `SPLINE ${index} first fit point`,
+    );
+    target.fitPointCount = readSafeU64(
+      view,
+      offset + 104,
+      `SPLINE ${index} fit-point count`,
+    );
+    target.normal ??= [0, 0, 1];
+    target.beginTangent ??= [0, 0, 0];
+    target.endTangent ??= [0, 0, 0];
+    for (let axis = 0; axis < 3; axis += 1) {
+      target.normal[axis] = view.getFloat64(offset + 112 + axis * 8, true);
+      target.beginTangent[axis] = view.getFloat64(
+        offset + 160 + axis * 8,
+        true,
+      );
+      target.endTangent[axis] = view.getFloat64(
+        offset + 184 + axis * 8,
+        true,
+      );
+    }
+    target.knotTolerance = view.getFloat64(offset + 136, true);
+    target.controlTolerance = view.getFloat64(offset + 144, true);
+    target.fitTolerance = view.getFloat64(offset + 152, true);
+    return target;
+  }
+}
+
+class SplineScalarSourceTable extends ChunkedFixedRecordTable {
+  readValue(index) {
+    const { view, offset } = this.locate(index);
+    return view.getFloat64(offset, true);
+  }
+}
+
+class SplinePointSourceTable extends ChunkedFixedRecordTable {
+  readPoint(index, target) {
+    if (!target || target.length < 3) {
+      throw new TypeError("SPLINE point target must contain three values");
+    }
+    const { view, offset } = this.locate(index);
+    for (let axis = 0; axis < 3; axis += 1) {
+      target[axis] = view.getFloat64(offset + axis * 8, true);
+    }
+    return target;
+  }
 }
 
 function validatePrimitiveCommon(
@@ -3537,6 +3797,167 @@ export class SceneCacheReader {
     });
   }
 
+  async readCurveRefinementSource({
+    maximumRangeBytes = MAX_CURVE_SOURCE_RANGE_BYTES,
+    maximumSourceBytes = MAX_CURVE_SOURCE_BYTES,
+  } = {}) {
+    if (
+      !Number.isSafeInteger(maximumRangeBytes) ||
+      maximumRangeBytes < SPLINE_HEADER_RECORD_SIZE ||
+      maximumRangeBytes > MAX_CURVE_SOURCE_RANGE_BYTES
+    ) {
+      throw new RangeError(
+        `curve source range limit must be between ${SPLINE_HEADER_RECORD_SIZE} and ${MAX_CURVE_SOURCE_RANGE_BYTES} bytes`,
+      );
+    }
+    if (
+      !Number.isSafeInteger(maximumSourceBytes) ||
+      maximumSourceBytes < SPLINE_HEADER_RECORD_SIZE ||
+      maximumSourceBytes > MAX_CURVE_SOURCE_BYTES
+    ) {
+      throw new RangeError(
+        `curve source byte budget must be between ${SPLINE_HEADER_RECORD_SIZE} and ${MAX_CURVE_SOURCE_BYTES} bytes`,
+      );
+    }
+    const specifications = [
+      [SectionKind.Arcs, "ARC"],
+      [SectionKind.Circles, "CIRCLE"],
+      [SectionKind.PolylineHeaders, "polyline headers"],
+      [SectionKind.PolylineVertices, "polyline vertices"],
+      [SectionKind.Ellipses, "ELLIPSE"],
+      [SectionKind.SplineHeaders, "SPLINE headers"],
+      [SectionKind.SplineKnots, "SPLINE knots"],
+      [SectionKind.SplineWeights, "SPLINE weights"],
+      [SectionKind.SplineControlPoints, "SPLINE control points"],
+    ].map(([kind, label]) => {
+      const section = this.sections.get(kind);
+      if (!section) {
+        throw new Error(`curve source section ${kind} is missing`);
+      }
+      return { kind, label, section };
+    });
+    const byteLength = specifications.reduce(
+      (total, { section }) =>
+        checkedAdd(total, section.byteLength, "curve source bytes"),
+      0,
+    );
+    if (byteLength > maximumSourceBytes) {
+      throw new Error(
+        `curve source is ${byteLength} bytes, above the ${maximumSourceBytes}-byte limit`,
+      );
+    }
+
+    let requestCount = 0;
+    let maximumReadBytes = 0;
+    const tables = new Map();
+    for (const { kind, label, section } of specifications) {
+      const recordsPerChunk = Math.max(
+        1,
+        Math.floor(maximumRangeBytes / section.recordSize),
+      );
+      const chunks = [];
+      for (
+        let firstRecord = 0;
+        firstRecord < section.recordCount;
+        firstRecord += recordsPerChunk
+      ) {
+        const recordCount = Math.min(
+          recordsPerChunk,
+          section.recordCount - firstRecord,
+        );
+        const chunkByteLength = checkedMultiply(
+          recordCount,
+          section.recordSize,
+          `${label} chunk bytes`,
+        );
+        const offset = checkedAdd(
+          section.offset,
+          checkedMultiply(
+            firstRecord,
+            section.recordSize,
+            `${label} chunk offset`,
+          ),
+          `${label} source offset`,
+        );
+        const buffer = requireArrayBuffer(
+          await this.source.read(offset, chunkByteLength),
+          chunkByteLength,
+          `${label} source chunk`,
+        );
+        chunks.push(
+          Object.freeze({
+            firstRecord,
+            recordCount,
+            buffer,
+            view: new DataView(buffer),
+          }),
+        );
+        requestCount += 1;
+        maximumReadBytes = Math.max(maximumReadBytes, chunkByteLength);
+      }
+      const arguments_ = [
+        Object.freeze(chunks),
+        section.recordSize,
+        section.recordCount,
+        recordsPerChunk,
+      ];
+      let table;
+      switch (kind) {
+        case SectionKind.Arcs:
+          table = new CircularCurveSourceTable(...arguments_, "arc");
+          break;
+        case SectionKind.Circles:
+          table = new CircularCurveSourceTable(...arguments_, "circle");
+          break;
+        case SectionKind.PolylineHeaders:
+          table = new PolylineHeaderSourceTable(
+            ...arguments_,
+            "polyline headers",
+          );
+          break;
+        case SectionKind.PolylineVertices:
+          table = new PolylineVertexSourceTable(
+            ...arguments_,
+            "polyline vertices",
+          );
+          break;
+        case SectionKind.Ellipses:
+          table = new EllipseCurveSourceTable(...arguments_, "ELLIPSE");
+          break;
+        case SectionKind.SplineHeaders:
+          table = new SplineHeaderSourceTable(
+            ...arguments_,
+            "SPLINE headers",
+          );
+          break;
+        case SectionKind.SplineKnots:
+        case SectionKind.SplineWeights:
+          table = new SplineScalarSourceTable(...arguments_, label);
+          break;
+        case SectionKind.SplineControlPoints:
+          table = new SplinePointSourceTable(...arguments_, label);
+          break;
+        default:
+          throw new Error(`unsupported curve source section ${kind}`);
+      }
+      tables.set(kind, table);
+    }
+    return Object.freeze({
+      arcs: tables.get(SectionKind.Arcs),
+      circles: tables.get(SectionKind.Circles),
+      polylines: tables.get(SectionKind.PolylineHeaders),
+      polylineVertices: tables.get(SectionKind.PolylineVertices),
+      ellipses: tables.get(SectionKind.Ellipses),
+      splines: tables.get(SectionKind.SplineHeaders),
+      splineKnots: tables.get(SectionKind.SplineKnots),
+      splineWeights: tables.get(SectionKind.SplineWeights),
+      splineControlPoints: tables.get(SectionKind.SplineControlPoints),
+      byteLength,
+      requestCount,
+      maximumReadBytes,
+    });
+  }
+
   async readReviewCurves({
     maximumBytes = MAX_REVIEW_CURVE_BYTES,
   } = {}) {
@@ -3976,6 +4397,8 @@ export class SceneCacheReader {
 }
 
 export {
+  MAX_CURVE_SOURCE_BYTES,
+  MAX_CURVE_SOURCE_RANGE_BYTES,
   MAX_DETAIL_BATCH_BYTES,
   MAX_METADATA_SECTION_BYTES,
   MAX_OVERVIEW_BYTES,

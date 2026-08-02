@@ -115,9 +115,11 @@ layout tabs on hover, focus or an explicit click.
   fonts without duplicating compiled glyph geometry.
 
 The current page is an engine verification harness, not the final VS Code
-extension UI. Exact MTEXT/OCS layout, lossless analytic HATCH boundary
-topology, real-world Korean SHX corpus expansion and view-adaptive high-zoom
-curve refinement remain follow-up work.
+extension UI. At a stable 4× or higher zoom, a dedicated worker now refines
+ARC, CIRCLE, ELLIPSE, polyline-bulge and valid NURBS geometry to a 0.5 px
+screen-error contract without changing the bounded first frame. Exact
+MTEXT/OCS layout, lossless analytic HATCH boundary topology and further
+real-world Korean SHX corpus expansion remain follow-up work.
 
 ## Run
 

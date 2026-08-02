@@ -4,10 +4,12 @@ import test from "node:test";
 import {
   calculateOverviewBounds,
   makeClipTexturePayload,
+  patchCurveReplacementMarkers,
   patchLineMaskBuckets,
   selectInteractiveInstanceIndices,
   WebGlLineRenderer,
 } from "../src/renderer.mjs";
+import { curveRefinementCameraKey } from "../src/curve-contract.mjs";
 import { decodeMaskBucket } from "../src/mask-order.mjs";
 import { GpuLineBatchKind } from "../src/scene-cache.mjs";
 import { createClipNode } from "../src/instance-graph.mjs";
@@ -21,6 +23,7 @@ function makeFakeGl() {
     drawArraysInstanced: [],
     deletedBuffers: [],
     shaderSources: [],
+    bufferSubData: [],
     depthFunc: [],
     pixelStorei: [],
     texImage2D: [],
@@ -108,6 +111,12 @@ function makeFakeGl() {
         buffer: ArrayBuffer.isView(value) ? value.buffer : value,
         byteLength: value.byteLength,
         usage,
+      });
+    },
+    bufferSubData(_target, offset, value) {
+      calls.bufferSubData.push({
+        offset,
+        byteLength: value.byteLength,
       });
     },
     enableVertexAttribArray() {},
@@ -610,6 +619,131 @@ test("redraws overview and independently uploaded detail vertex ranges", () => {
 
   assert.equal(renderer.deleteDetailBatch(detail.id), true);
   renderer.dispose();
+});
+
+test("replaces only marked coarse curves for the matching stable camera", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const overviewBuffer = new ArrayBuffer(72);
+  const overviewView = new DataView(overviewBuffer);
+  for (let vertex = 0; vertex < 2; vertex += 1) {
+    const offset = vertex * 36;
+    overviewView.setFloat32(offset, vertex, true);
+    overviewView.setUint32(offset + 12, 0, true);
+    overviewView.setUint32(offset + 16, (2 << 30) | 7, true);
+    overviewView.setUint32(offset + 20, 77, true);
+    overviewView.setUint32(offset + 28, (5 << 17) | (1 << 21), true);
+    overviewView.setFloat32(offset + 32, vertex, true);
+  }
+  const overview = batch({
+    id: 0,
+    kind: GpuLineBatchKind.ModelOverview,
+    lodLevel: 0,
+    firstVertex: 0,
+  });
+  const first = renderer.renderOverview({
+    batches: [overview],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: { instancesByBlock: new Map() },
+    vertices: {
+      buffer: overviewBuffer,
+      byteLength: 72,
+      vertexCount: 2,
+      recordSize: 36,
+    },
+  });
+  const refinedBuffer = overviewBuffer.slice(0);
+  renderer.setCurveRefinement({
+    entries: [
+      {
+        batch: {
+          ...overview,
+          id: 0,
+          kind: GpuLineBatchKind.ModelDetail,
+          firstVertex: 0,
+          instanceIndices: null,
+        },
+        vertices: {
+          buffer: refinedBuffer,
+          byteLength: 72,
+          vertexCount: 2,
+        },
+      },
+    ],
+    refinedHandleWords: new Uint32Array([77, 0]),
+    cameraKey: curveRefinementCameraKey(first.camera),
+    metrics: { refined: 1 },
+  });
+
+  assert.equal(overviewView.getFloat32(32, true), -1);
+  assert.equal(overviewView.getFloat32(68, true), -2);
+  assert.equal(calls.bufferSubData.at(-1).byteLength, 72);
+  const stable = renderer.redraw(first.camera);
+  assert.equal(stable.curveRefinementActive, true);
+  assert.equal(stable.curveRefinementDrawCalls, 1);
+  assert.equal(stable.curveRefinementGpuBytes, 72);
+  const interactive = renderer.redraw(first.camera, {
+    interactive: true,
+  });
+  assert.equal(interactive.curveRefinementActive, false);
+  assert.equal(interactive.curveRefinementDrawCalls, 0);
+  const moved = renderer.redraw({
+    ...first.camera,
+    origin: [first.camera.origin[0] + 1, first.camera.origin[1], 0],
+  });
+  assert.equal(moved.curveRefinementActive, false);
+
+  renderer.clearCurveRefinement();
+  assert.equal(overviewView.getFloat32(32, true), 0);
+  assert.equal(overviewView.getFloat32(68, true), 1);
+  assert.ok(
+    calls.shaderSources.some((source) =>
+      source.includes("u_curveReplacementEnabled"),
+    ),
+  );
+  renderer.dispose();
+});
+
+test("curve replacement markers preserve style bits and round-trip distances", () => {
+  const buffer = new ArrayBuffer(72);
+  const view = new DataView(buffer);
+  for (let vertex = 0; vertex < 2; vertex += 1) {
+    const offset = vertex * 36;
+    view.setUint32(offset + 20, 0x89abcdef, true);
+    view.setUint32(offset + 24, 0x01234567, true);
+    view.setUint32(offset + 28, 0xdeadbeef, true);
+    view.setFloat32(offset + 32, vertex * 2.5, true);
+  }
+  const handle =
+    0x89abcdefn | (0x01234567n << 32n);
+
+  assert.equal(
+    patchCurveReplacementMarkers(buffer, new Set([handle])),
+    true,
+  );
+  assert.deepEqual(
+    [view.getFloat32(32, true), view.getFloat32(68, true)],
+    [-1, -3.5],
+  );
+  assert.equal(view.getUint32(28, true), 0xdeadbeef);
+  assert.equal(
+    patchCurveReplacementMarkers(buffer, new Set()),
+    true,
+  );
+  assert.deepEqual(
+    [view.getFloat32(32, true), view.getFloat32(68, true)],
+    [0, 2.5],
+  );
+  assert.equal(view.getUint32(28, true), 0xdeadbeef);
 });
 
 test("draws independently cached XREF overview and detail geometry", () => {

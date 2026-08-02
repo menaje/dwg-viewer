@@ -1,5 +1,10 @@
 import { GpuLineBatchKind } from "./scene-cache.mjs";
 import {
+  curveRefinementCameraKey,
+  MAX_CURVE_REFINEMENT_BATCH_BYTES,
+  MAX_CURVE_REFINEMENT_GPU_BYTES,
+} from "./curve-contract.mjs";
+import {
   cadColorAci,
   decodeCadColor,
   decodeCadOpacity,
@@ -173,6 +178,7 @@ flat out float v_instanceOpacity;
 flat out float v_instanceLineWeight;
 flat out uint v_instanceLinetype;
 flat out int v_visibilityRow;
+flat out uint v_curveReplacement;
 out float v_patternDistance;
 out vec2 v_viewPosition;
 
@@ -194,7 +200,11 @@ void main() {
   v_instanceOpacity = a_instanceOpacity;
   v_instanceLineWeight = a_instanceLineWeight;
   v_instanceLinetype = a_instanceLinetype;
-  v_patternDistance = a_patternDistance;
+  v_curveReplacement = a_patternDistance < 0.0 ? 1u : 0u;
+  v_patternDistance =
+    v_curveReplacement != 0u
+      ? -a_patternDistance - 1.0
+      : a_patternDistance;
   v_viewPosition = viewPosition.xy;
 }
 `;
@@ -215,6 +225,7 @@ flat in float v_instanceOpacity;
 flat in float v_instanceLineWeight;
 flat in uint v_instanceLinetype;
 flat in int v_visibilityRow;
+flat in uint v_curveReplacement;
 in float v_patternDistance;
 in vec2 v_viewPosition;
 
@@ -231,6 +242,7 @@ uniform int u_layerCount;
 uniform int u_linetypeCount;
 uniform int u_layerZeroIndex;
 uniform bool u_plotStylesEnabled;
+uniform bool u_curveReplacementEnabled;
 uniform float u_lineWeightThreshold;
 uniform float u_globalLinetypeScale;
 uniform float u_worldPerPixel;
@@ -404,6 +416,7 @@ vec4 resolveColor() {
 
 void main() {
   if (outsideInsertClips(v_clipId, v_viewPosition)) discard;
+  if (u_curveReplacementEnabled && v_curveReplacement != 0u) discard;
   if ((v_style & (1u << 16u)) != 0u) discard;
   if (!layerVisibleInViewport(resolvedLayerIndex())) discard;
   if (!linetypeVisible()) discard;
@@ -1063,6 +1076,60 @@ function patchLineMaskBuckets(
   }
 }
 
+function curveHandleSet(handleWords) {
+  if (!(handleWords instanceof Uint32Array) || handleWords.length % 2 !== 0) {
+    throw new TypeError("curve refinement handles must be low/high u32 pairs");
+  }
+  const handles = new Set();
+  for (let index = 0; index < handleWords.length; index += 2) {
+    handles.add(
+      BigInt(handleWords[index]) |
+        (BigInt(handleWords[index + 1]) << 32n),
+    );
+  }
+  return handles;
+}
+
+function patchCurveReplacementMarkers(
+  buffer,
+  refinedHandles,
+  { recordSize = VERTEX_STRIDE } = {},
+) {
+  if (
+    !(buffer instanceof ArrayBuffer) ||
+    !(refinedHandles instanceof Set) ||
+    recordSize < VERTEX_STRIDE ||
+    buffer.byteLength % recordSize !== 0
+  ) {
+    throw new TypeError("curve replacement marker payload is invalid");
+  }
+  const view = new DataView(buffer);
+  const vertexCount = buffer.byteLength / recordSize;
+  let changed = false;
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    const offset = vertex * recordSize;
+    const handle =
+      BigInt(view.getUint32(offset + 20, true)) |
+      (BigInt(view.getUint32(offset + 24, true)) << 32n);
+    const distance = view.getFloat32(offset + 32, true);
+    if (!Number.isFinite(distance)) {
+      continue;
+    }
+    const marked = distance < 0;
+    const replacement = refinedHandles.has(handle);
+    if (marked === replacement) {
+      continue;
+    }
+    view.setFloat32(
+      offset + 32,
+      -distance - 1,
+      true,
+    );
+    changed = true;
+  }
+  return changed;
+}
+
 function makeClipTexturePayload(instanceGraph, camera) {
   const nodes = instanceGraph?.clipNodes ?? [];
   const vertexCount = nodes.reduce(
@@ -1329,6 +1396,8 @@ export class WebGlLineRenderer {
     this.vertexResources = new Set();
     this.detailResources = new Map();
     this.detailSelections = new Map();
+    this.curveRefinementScene = null;
+    this.curveReplacementHandles = new Set();
     this.externalScenes = new Map();
     this.supplementalBounds = new Map();
     this.maximumExternalOverviewBytes = maximumExternalOverviewBytes;
@@ -1392,6 +1461,10 @@ export class WebGlLineRenderer {
     this.plotStylesEnabledLocation = gl.getUniformLocation(
       this.program,
       "u_plotStylesEnabled",
+    );
+    this.curveReplacementEnabledLocation = gl.getUniformLocation(
+      this.program,
+      "u_curveReplacementEnabled",
     );
     this.lineOffsetLocation = gl.getUniformLocation(
       this.program,
@@ -2473,6 +2546,7 @@ export class WebGlLineRenderer {
       preferredView: fittedView,
       instanceGraph,
       resource,
+      vertices,
     });
     this.supplementalBounds.clear();
     if (supplementalBounds && boundsAreFinite(supplementalBounds)) {
@@ -2497,6 +2571,7 @@ export class WebGlLineRenderer {
     if (!this.overviewScene) {
       throw new Error("cannot switch a view before rendering an overview");
     }
+    this.clearCurveRefinement();
     let bounds = calculateOverviewBounds(
       this.overviewScene.batches,
       instanceGraph,
@@ -2794,6 +2869,7 @@ export class WebGlLineRenderer {
       ...this.overviewScene,
       instanceGraph,
       resource,
+      vertices: overviewVertices,
     });
     this.deleteVertices(previous);
     return enabled;
@@ -2963,10 +3039,18 @@ export class WebGlLineRenderer {
         batch.firstVertex,
       );
     }
+    if (this.curveReplacementHandles.size > 0) {
+      patchCurveReplacementMarkers(
+        vertices.buffer,
+        this.curveReplacementHandles,
+        { recordSize: vertices.recordSize ?? VERTEX_STRIDE },
+      );
+    }
     const entry = Object.freeze({
       batch,
       resource: this.uploadVertices(vertices.buffer),
       byteLength: vertices.byteLength,
+      vertices,
     });
     this.detailResources.set(batch.id, entry);
     return entry;
@@ -2988,6 +3072,123 @@ export class WebGlLineRenderer {
     );
   }
 
+  updateLineVertexResource(resource, vertices) {
+    if (
+      !resource ||
+      !vertices ||
+      !(vertices.buffer instanceof ArrayBuffer) ||
+      resource.byteLength !== vertices.buffer.byteLength
+    ) {
+      throw new Error("line vertex update payload is inconsistent");
+    }
+    const gl = this.gl;
+    gl.bindBuffer(gl.ARRAY_BUFFER, resource.vertexBuffer);
+    gl.bufferSubData(gl.ARRAY_BUFFER, 0, vertices.buffer);
+    gl.bindBuffer(gl.ARRAY_BUFFER, null);
+  }
+
+  applyCurveReplacementHandles(refinedHandles) {
+    const patch = (vertices, resource) => {
+      if (
+        !vertices ||
+        (vertices.recordSize ?? VERTEX_STRIDE) < VERTEX_STRIDE
+      ) {
+        return;
+      }
+      if (
+        patchCurveReplacementMarkers(
+          vertices.buffer,
+          refinedHandles,
+          { recordSize: vertices.recordSize ?? VERTEX_STRIDE },
+        )
+      ) {
+        this.updateLineVertexResource(resource, vertices);
+      }
+    };
+    patch(
+      this.overviewScene?.vertices,
+      this.overviewScene?.resource,
+    );
+    for (const entry of this.detailResources.values()) {
+      patch(entry.vertices, entry.resource);
+    }
+    this.curveReplacementHandles = refinedHandles;
+  }
+
+  setCurveRefinement({
+    entries,
+    refinedHandleWords,
+    cameraKey,
+    metrics = null,
+  }) {
+    if (!this.overviewScene) {
+      throw new Error("cannot set curve refinement before the overview");
+    }
+    if (!Array.isArray(entries) || typeof cameraKey !== "string") {
+      throw new TypeError("curve refinement scene is invalid");
+    }
+    const refinedHandles = curveHandleSet(refinedHandleWords);
+    let byteLength = 0;
+    for (const [index, entry] of entries.entries()) {
+      const { batch, vertices } = entry ?? {};
+      if (
+        !batch ||
+        !vertices ||
+        !(vertices.buffer instanceof ArrayBuffer) ||
+        batch.id !== index ||
+        batch.firstVertex !== 0 ||
+        batch.vertexCount <= 0 ||
+        batch.vertexCount % 2 !== 0 ||
+        vertices.vertexCount !== batch.vertexCount ||
+        vertices.byteLength !==
+          vertices.vertexCount * VERTEX_STRIDE ||
+        vertices.buffer.byteLength !== vertices.byteLength ||
+        vertices.byteLength > MAX_CURVE_REFINEMENT_BATCH_BYTES
+      ) {
+        throw new Error(`curve refinement batch ${index} is invalid`);
+      }
+      byteLength += vertices.byteLength;
+    }
+    if (
+      byteLength > MAX_CURVE_REFINEMENT_GPU_BYTES ||
+      (refinedHandles.size === 0 && byteLength !== 0)
+    ) {
+      throw new Error("curve refinement GPU payload exceeds its limit");
+    }
+    if (this.curveRefinementScene) {
+      for (const entry of this.curveRefinementScene.entries) {
+        this.deleteVertices(entry.resource);
+      }
+    }
+    this.applyCurveReplacementHandles(refinedHandles);
+    const uploaded = entries.map((entry) =>
+      Object.freeze({
+        batch: entry.batch,
+        resource: this.uploadVertices(entry.vertices.buffer),
+        byteLength: entry.vertices.byteLength,
+      }),
+    );
+    this.curveRefinementScene = Object.freeze({
+      entries: Object.freeze(uploaded),
+      cameraKey,
+      byteLength,
+      metrics,
+    });
+    return this.curveRefinementScene;
+  }
+
+  clearCurveRefinement() {
+    if (this.curveRefinementScene) {
+      for (const entry of this.curveRefinementScene.entries) {
+        this.deleteVertices(entry.resource);
+      }
+      this.curveRefinementScene = null;
+    }
+    if (this.curveReplacementHandles.size > 0) {
+      this.applyCurveReplacementHandles(new Set());
+    }
+  }
+
   drawBatch(
     batch,
     resource,
@@ -3002,6 +3203,7 @@ export class WebGlLineRenderer {
       solidFill = false,
       solidOutline = false,
       wipeoutMask = false,
+      curveRefinement = false,
       firstVertex = batch.firstVertex,
       instanceIndices = null,
       primitive = this.gl.LINES,
@@ -3127,6 +3329,11 @@ export class WebGlLineRenderer {
         metrics.wipeoutMaskSubmittedVertices +=
           batch.vertexCount * instanceCount;
       }
+      if (curveRefinement) {
+        metrics.curveRefinementDrawCalls += 1;
+        metrics.curveRefinementSubmittedVertices +=
+          batch.vertexCount * instanceCount;
+      }
     }
   }
 
@@ -3163,6 +3370,13 @@ export class WebGlLineRenderer {
       this.solidOutlineScene?.resource?.byteLength ?? 0;
     const wipeoutMaskGpuBytes =
       this.wipeoutMaskScene?.resource?.byteLength ?? 0;
+    const curveRefinementActive =
+      !interactive &&
+      Boolean(this.curveRefinementScene) &&
+      this.curveRefinementScene.cameraKey ===
+        curveRefinementCameraKey(camera);
+    const curveRefinementGpuBytes =
+      this.curveRefinementScene?.byteLength ?? 0;
     const metrics = {
       drawCalls: 0,
       detailDrawCalls: 0,
@@ -3187,6 +3401,12 @@ export class WebGlLineRenderer {
       wipeoutMaskDrawCalls: 0,
       wipeoutMaskSubmittedVertices: 0,
       wipeoutMaskGpuBytes,
+      curveRefinementActive,
+      curveRefinementDrawCalls: 0,
+      curveRefinementSubmittedVertices: 0,
+      curveRefinementGpuBytes,
+      curveRefinement:
+        this.curveRefinementScene?.metrics ?? null,
       primitives: this.primitiveMetrics,
       submittedInstances: 0,
       submittedVertices: 0,
@@ -3204,7 +3424,8 @@ export class WebGlLineRenderer {
         pointGpuBytes +
         solidFillGpuBytes +
         solidOutlineGpuBytes +
-        wipeoutMaskGpuBytes,
+        wipeoutMaskGpuBytes +
+        curveRefinementGpuBytes,
       cachedDetailGpuBytes,
       cachedDetailBatches: this.detailResources.size,
       externalScenes: this.externalScenes.size,
@@ -3342,6 +3563,10 @@ export class WebGlLineRenderer {
     gl.uniform1f(
       this.worldPerPixelLocation,
       camera.worldHeight / camera.height,
+    );
+    gl.uniform1i(
+      this.curveReplacementEnabledLocation,
+      curveRefinementActive ? 1 : 0,
     );
     const linePasses = this.lineWeightsVisible
       ? [
@@ -3531,6 +3756,22 @@ export class WebGlLineRenderer {
           }
         }
       }
+      if (curveRefinementActive) {
+        for (const entry of this.curveRefinementScene.entries) {
+          this.drawBatch(
+            entry.batch,
+            entry.resource,
+            this.overviewScene.instanceGraph,
+            camera,
+            metrics,
+            {
+              curveRefinement: true,
+              firstVertex: 0,
+              instanceIndices: entry.batch.instanceIndices,
+            },
+          );
+        }
+      }
     }
     if (!interactive && this.pointScene?.resource) {
       gl.useProgram(this.pointProgram);
@@ -3645,6 +3886,8 @@ export class WebGlLineRenderer {
     this.gl.deleteProgram(this.pointProgram);
     this.detailResources.clear();
     this.detailSelections.clear();
+    this.curveRefinementScene = null;
+    this.curveReplacementHandles.clear();
     this.externalScenes.clear();
     this.supplementalBounds.clear();
     this.imageOverlay?.dispose();
@@ -3685,6 +3928,7 @@ export {
   instancesForBatch,
   makeCamera,
   makeCameraFromView,
+  patchCurveReplacementMarkers,
   patchLineMaskBuckets,
   selectInteractiveInstanceIndices,
   makeClipTexturePayload,
