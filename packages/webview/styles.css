@@ -634,6 +634,7 @@ canvas.panning {
 }
 
 .font-state[data-state="missing"],
+.font-state[data-state="ambiguous"],
 .font-state[data-state="invalid"],
 .font-state[data-state="unreadable"],
 .font-state[data-state="too-large"],

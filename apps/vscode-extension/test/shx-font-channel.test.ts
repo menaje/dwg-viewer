@@ -211,8 +211,9 @@ test("finds an exact TTF in a sibling project resource folder", async (context) 
     mkdir(drawing),
     mkdir(fonts),
   ]);
+  const decomposedName = "굵은돋움체.TTF".normalize("NFD");
   await writeFile(
-    path.join(fonts, "굵은돋움체.TTF"),
+    path.join(fonts, decomposedName),
     Uint8Array.of(0, 1, 0, 0, 9),
   );
   const collector = responseCollector();
@@ -230,8 +231,64 @@ test("finds an exact TTF in a sibling project resource folder", async (context) 
   const response = await collector.next();
   assert.equal(response.status, "loaded");
   assert.equal(response.source, "project");
-  assert.equal(response.resolvedName, "굵은돋움체.TTF");
+  assert.equal(response.resolvedName, decomposedName);
   assert.deepEqual([...new Uint8Array(response.bytes!)], [0, 1, 0, 0, 9]);
+});
+
+test("uses a stored relative font path before basename search", async (context) => {
+  const root = await temporaryDirectory();
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const drawing = path.join(root, "DWG");
+  const nested = path.join(drawing, "fonts");
+  await mkdir(nested, { recursive: true });
+  await Promise.all([
+    writeFile(path.join(drawing, "same.ttf"), Uint8Array.of(1)),
+    writeFile(path.join(nested, "same.ttf"), Uint8Array.of(7)),
+  ]);
+  const collector = responseCollector();
+  const channel = new ShxFontChannel(
+    CACHE_ID,
+    { drawingDirectory: drawing },
+    collector.postMessage,
+  );
+  context.after(() => channel.dispose());
+
+  requestFont(channel, 1, String.raw`fonts\same.ttf`);
+  const response = await collector.next();
+  assert.equal(response.status, "loaded");
+  assert.equal(response.source, "stored");
+  assert.deepEqual([...new Uint8Array(response.bytes!)], [7]);
+});
+
+test("searches project resources before configured fallback folders", async (context) => {
+  const root = await temporaryDirectory();
+  const configured = await temporaryDirectory();
+  context.after(() => rm(root, { recursive: true, force: true }));
+  context.after(() => rm(configured, { recursive: true, force: true }));
+  const drawing = path.join(root, "DWG");
+  const project = path.join(root, "CTB,FONT");
+  await Promise.all([mkdir(drawing), mkdir(project)]);
+  await Promise.all([
+    writeFile(path.join(project, "same.ttf"), Uint8Array.of(2)),
+    writeFile(path.join(configured, "same.ttf"), Uint8Array.of(3)),
+  ]);
+  const collector = responseCollector();
+  const channel = new ShxFontChannel(
+    CACHE_ID,
+    {
+      drawingDirectory: drawing,
+      projectDirectories: [root],
+      fontDirectories: [configured],
+    },
+    collector.postMessage,
+  );
+  context.after(() => channel.dispose());
+
+  requestFont(channel, 1, "same.ttf");
+  const response = await collector.next();
+  assert.equal(response.status, "loaded");
+  assert.equal(response.source, "project");
+  assert.deepEqual([...new Uint8Array(response.bytes!)], [2]);
 });
 
 test("does not silently choose equally near project fonts", async (context) => {
@@ -260,6 +317,19 @@ test("does not silently choose equally near project fonts", async (context) => {
   const response = await collector.next();
   assert.equal(response.status, "ambiguous");
   assert.equal(response.bytes, undefined);
+
+  const selected = path.join(root, "selected.ttf");
+  await writeFile(selected, Uint8Array.of(9));
+  assert.equal(channel.setSessionMapping("same.ttf", selected), true);
+  requestFont(channel, 2, "same.ttf");
+  const mapped = await collector.next();
+  assert.equal(mapped.status, "loaded");
+  assert.equal(mapped.source, "mapping");
+  assert.deepEqual([...new Uint8Array(mapped.bytes!)], [9]);
+  assert.equal(
+    channel.setSessionMapping("same.ttf", path.join(root, "wrong.shx")),
+    false,
+  );
 });
 
 test("rejects fonts and aggregate transfers above configured byte limits", async (context) => {

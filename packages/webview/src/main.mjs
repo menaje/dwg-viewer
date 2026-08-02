@@ -1,4 +1,4 @@
-import { ViewportInteraction } from "./interaction.mjs?v=1.18.1";
+import { ViewportInteraction } from "./interaction.mjs?v=1.18.2";
 import {
   buildExternalLayerMap,
   buildExternalLinetypeMap,
@@ -30,7 +30,7 @@ import {
 } from "./cad-plot-style.mjs";
 import { ComplexLinetypeOverlay } from "./complex-linetype-overlay.mjs";
 import { curveRefinementCameraKey } from "./curve-contract.mjs";
-import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.1";
+import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.2";
 import { ReviewTools } from "./review-tools.mjs";
 import {
   isOutlineFontReference,
@@ -47,7 +47,7 @@ import {
 import {
   loadExternalFirstFrame,
   loadFirstFrame,
-} from "./viewer.mjs?v=1.18.1";
+} from "./viewer.mjs?v=1.18.2";
 
 const fileInput = document.querySelector("#cache-file");
 const cachePicker = document.querySelector("#cache-picker");
@@ -206,10 +206,17 @@ function setPlotStyleUnavailable(name, state) {
       missing: "같은 이름의 CTB 파일을 찾지 못했습니다.",
       unavailable: "VS Code에서 DWG를 열면 CTB를 자동으로 찾습니다.",
     }[state] ?? "CTB 출력 스타일을 사용할 수 없습니다.";
-  plotStyleToggle.disabled = true;
-  plotStyleToggle.textContent = "출력 없음";
+  const canSelect =
+    Boolean(vscodeApi) &&
+    Boolean(activeHostCacheId) &&
+    Boolean(activePlotStyleName) &&
+    ["ambiguous", "missing"].includes(state);
+  plotStyleToggle.disabled = !canSelect;
+  plotStyleToggle.textContent = canSelect ? "출력 선택" : "출력 없음";
   plotStyleToggle.setAttribute("aria-pressed", "false");
-  plotStyleToggle.title = `${name} · ${label}`;
+  plotStyleToggle.title = `${name} · ${label}${
+    canSelect ? " 클릭하여 CTB 파일을 직접 선택할 수 있습니다." : ""
+  }`;
 }
 
 function clearPlotStyleForView(scene) {
@@ -501,6 +508,29 @@ function renderFontDiagnostics() {
       detail.className = "font-resolution";
       detail.textContent = detailText;
       item.append(detail);
+    }
+    if (
+      vscodeApi &&
+      ["missing", "ambiguous", "invalid", "unreadable"].includes(
+        entry.state,
+      )
+    ) {
+      const select = document.createElement("button");
+      select.type = "button";
+      select.className = "xref-select";
+      select.textContent = "글꼴 파일 직접 선택";
+      select.addEventListener("click", () => {
+        select.disabled = true;
+        fontPanelHelp.textContent =
+          `${entry.displayName}에 적용할 글꼴 파일을 선택하세요.`;
+        vscodeApi.postMessage({
+          type: "dwg-font-file-select/1",
+          cacheId: activeHostCacheId,
+          name: entry.name,
+          kind: entry.kind,
+        });
+      });
+      item.append(select);
     }
     fragment.append(item);
   }
@@ -3332,6 +3362,63 @@ if (vscodeApi) {
       }
       return;
     }
+    if (message?.type === "dwg-font-file-select-result/1") {
+      const key = normalizeShxFontName(message.name);
+      if (
+        message.cacheId !== activeHostCacheId ||
+        !key ||
+        !fontDiagnostics.has(key)
+      ) {
+        return;
+      }
+      if (message.changed) {
+        attemptedHostFontKeys.delete(key);
+        fontDiagnostics.set(key, {
+          ...fontDiagnostics.get(key),
+          state: "loading",
+          error: undefined,
+        });
+        fontPanelHelp.textContent =
+          "선택한 글꼴을 현재 도면에 연결하고 있습니다.";
+        requestHostFonts(activeTextStyles, openRevision);
+      } else {
+        fontPanelHelp.textContent = message.failed
+          ? "선택한 파일을 이 글꼴에 적용할 수 없습니다."
+          : "글꼴 파일 선택이 취소되었습니다.";
+        renderFontDiagnostics();
+      }
+      return;
+    }
+    if (message?.type === "dwg-plot-style-file-select-result/1") {
+      const key = normalizePlotStyleName(message.name);
+      if (
+        message.cacheId !== activeHostCacheId ||
+        !activeScene ||
+        !key ||
+        key !== activePlotStyleName
+      ) {
+        return;
+      }
+      if (message.changed) {
+        plotStyleTables.delete(key);
+        const view =
+          activeScene.views.find(
+            (candidate) => candidate.id === activeViewId,
+          ) ?? activeScene.activeView;
+        configurePlotStyleForView(
+          activeScene,
+          view,
+          openRevision,
+        );
+      } else {
+        const entry = plotStyleTables.get(key);
+        setPlotStyleUnavailable(
+          entry?.requestedName ?? message.name,
+          entry?.status ?? (message.failed ? "invalid" : "missing"),
+        );
+      }
+      return;
+    }
     if (message?.type === "dwg-adapter-select-result/1") {
       hostAdapterSetup.disabled = false;
       return;
@@ -3537,6 +3624,19 @@ plotStyleToggle.addEventListener("click", () => {
   }
   const entry = plotStyleTables.get(activePlotStyleName);
   if (entry?.status !== "loaded") {
+    if (
+      vscodeApi &&
+      activeHostCacheId &&
+      ["missing", "ambiguous"].includes(entry?.status)
+    ) {
+      plotStyleToggle.disabled = true;
+      plotStyleToggle.textContent = "출력 선택 중";
+      vscodeApi.postMessage({
+        type: "dwg-plot-style-file-select/1",
+        cacheId: activeHostCacheId,
+        name: entry.requestedName,
+      });
+    }
     return;
   }
   applyPlotStyleEntry(

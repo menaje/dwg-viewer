@@ -237,6 +237,7 @@ interface HostMessage {
   code?: unknown;
   cacheId?: unknown;
   firstFrameMs?: unknown;
+  kind?: unknown;
   requestId?: unknown;
   name?: unknown;
 }
@@ -908,6 +909,132 @@ class DwgEditorProvider
                   failed: true,
                 });
               });
+            break;
+          }
+          case "dwg-font-file-select/1": {
+            const channel = fontChannel;
+            const cacheId =
+              typeof raw.cacheId === "string" ? raw.cacheId : "";
+            const name = typeof raw.name === "string" ? raw.name : "";
+            const kind =
+              raw.kind === "outline"
+                ? "outline"
+                : raw.kind === "shx"
+                  ? "shx"
+                  : "";
+            if (
+              !channel ||
+              cacheId !== activeCacheId ||
+              !name ||
+              !kind
+            ) {
+              void webviewPanel.webview.postMessage({
+                type: "dwg-font-file-select-result/1",
+                cacheId,
+                name,
+                changed: false,
+                failed: true,
+              });
+              break;
+            }
+            void Promise.resolve(
+              vscode.window.showOpenDialog({
+                canSelectFiles: true,
+                canSelectFolders: false,
+                canSelectMany: false,
+                title: `${path.basename(name).slice(0, 120)} 대체 글꼴 선택`,
+                openLabel: "이 도면에 적용",
+                filters:
+                  kind === "outline"
+                    ? { "TrueType/OpenType 글꼴": ["ttf", "otf", "ttc"] }
+                    : { "CAD SHX 글꼴": ["shx"] },
+              }),
+            )
+              .then((selected) => {
+                const selectedFile = selected?.find(
+                  (uri) => uri.scheme === "file",
+                );
+                const selectedPath = selectedFile?.fsPath;
+                const changed =
+                  typeof selectedPath === "string" &&
+                  channel === fontChannel &&
+                  cacheId === activeCacheId &&
+                  channel.setSessionMapping(name, selectedPath);
+                return webviewPanel.webview.postMessage({
+                  type: "dwg-font-file-select-result/1",
+                  cacheId,
+                  name,
+                  changed,
+                  failed: Boolean(selectedFile) && !changed,
+                });
+              })
+              .catch(() =>
+                webviewPanel.webview.postMessage({
+                  type: "dwg-font-file-select-result/1",
+                  cacheId,
+                  name,
+                  changed: false,
+                  failed: true,
+                }),
+              );
+            break;
+          }
+          case "dwg-plot-style-file-select/1": {
+            const channel = plotStyleChannel;
+            const cacheId =
+              typeof raw.cacheId === "string" ? raw.cacheId : "";
+            const name = typeof raw.name === "string" ? raw.name : "";
+            if (
+              !channel ||
+              cacheId !== activeCacheId ||
+              !name
+            ) {
+              void webviewPanel.webview.postMessage({
+                type: "dwg-plot-style-file-select-result/1",
+                cacheId,
+                name,
+                changed: false,
+                failed: true,
+              });
+              break;
+            }
+            void Promise.resolve(
+              vscode.window.showOpenDialog({
+                canSelectFiles: true,
+                canSelectFolders: false,
+                canSelectMany: false,
+                title: `${path.basename(name).slice(0, 120)} 출력 스타일 선택`,
+                openLabel: "이 도면에 적용",
+                filters: { "색상 종속 출력 스타일": ["ctb"] },
+              }),
+            )
+              .then((selected) => {
+                const selectedFile = selected?.find(
+                  (uri) => uri.scheme === "file",
+                );
+                const selectedPath = selectedFile?.fsPath;
+                const changed =
+                  typeof selectedPath === "string" &&
+                  channel === plotStyleChannel &&
+                  cacheId === activeCacheId &&
+                  channel.setSessionMapping(name, selectedPath);
+                return webviewPanel.webview.postMessage({
+                  type: "dwg-plot-style-file-select-result/1",
+                  cacheId,
+                  name,
+                  changed,
+                  failed: Boolean(selectedFile) && !changed,
+                });
+              })
+              .catch(() =>
+                webviewPanel.webview.postMessage({
+                  type: "dwg-plot-style-file-select-result/1",
+                  cacheId,
+                  name,
+                  changed: false,
+                  failed: true,
+                }),
+              );
             break;
           }
           case "dwg-first-frame-ready/1":

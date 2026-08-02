@@ -82,10 +82,12 @@ is added.
 ## SHX and Korean BigFont folders
 
 After the first geometry frame, the extension reads the drawing's text styles
-and resolves only the SHX and BigFont filenames those styles request. The
-drawing's own folder is searched first. Additional local folders can be added
-from the viewer's **글꼴 → 글꼴 폴더 추가** action, from the command palette
-command **DWG Viewer: SHX 글꼴 폴더 추가**, or in settings:
+and resolves only the SHX, BigFont, TTF and OTF filenames those styles request.
+An existing stored relative or native absolute path is tried first, followed
+by the drawing folder, bounded project/package roots and finally configured
+fallback folders. Additional local folders can be added from the viewer's
+**글꼴 → 글꼴 폴더 추가** action, from the command palette command
+**DWG Viewer: SHX 글꼴 폴더 추가**, or in settings:
 
 ```json
 {
@@ -109,11 +111,19 @@ configured absolute file:
 }
 ```
 
-The font panel reports connected, substituted, missing, unreadable, malformed
-and over-budget fonts without exposing absolute paths to the Webview. Font
-requests are isolated to the active cache, served serially, and capped at 128
-files, 32 MiB per file and 64 MiB transferred per drawing. Parsed fonts and
-compiled glyphs remain under the Webview's separate byte-bounded caches.
+The font panel reports connected, substituted, ambiguous, missing, unreadable,
+malformed and over-budget fonts without exposing resolved absolute paths to
+the Webview. An unresolved row offers a native file picker and keeps the
+selected mapping only for the current drawing session. Font requests are
+isolated to the active cache, served serially, and capped at 128 files, 32 MiB
+per file and 64 MiB transferred per drawing. Parsed fonts and compiled glyphs
+remain under the Webview's separate byte-bounded caches.
+
+Layout CTB files use the same stored-path, drawing, bounded project and
+configured-folder order. Equal-rank matches are never selected implicitly.
+The **출력 선택** action lets the user choose a CTB for the current drawing,
+and CTB colors and lineweights are applied only to a layout that references
+that output style.
 
 Legacy Korean BigFont codes default to glyph-based automatic probing: strict
 EUC-KR first, then the CP949/UHC extension, then Johab/CP1361. The viewer does

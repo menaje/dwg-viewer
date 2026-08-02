@@ -1,4 +1,9 @@
-import { open, opendir, type FileHandle } from "node:fs/promises";
+import {
+  open,
+  opendir,
+  stat,
+  type FileHandle,
+} from "node:fs/promises";
 import path from "node:path";
 
 export const MAX_SHX_FONT_FILE_BYTES = 32 * 1024 * 1024;
@@ -12,7 +17,12 @@ const MAX_INDEXED_FONT_FILES = 16_384;
 const MAX_FONT_NAME_BYTES = 512;
 const SUPPORTED_FONT_EXTENSIONS = new Set([".shx", ".ttf", ".otf", ".ttc"]);
 
-type FontSource = "drawing" | "project" | "configured" | "mapping";
+type FontSource =
+  | "stored"
+  | "drawing"
+  | "project"
+  | "configured"
+  | "mapping";
 type FontFailureStatus =
   | "missing"
   | "ambiguous"
@@ -37,7 +47,7 @@ interface FontCandidate {
 interface IndexedFont {
   filePath: string;
   resolvedName: string;
-  source: Exclude<FontSource, "mapping">;
+  source: "drawing" | "configured";
 }
 
 export interface ShxFontChannelOptions {
@@ -116,6 +126,38 @@ function normalizedPathKey(value: string): string {
     : resolved;
 }
 
+function storedResourcePath(
+  value: unknown,
+  drawingDirectory: string,
+): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const unquoted = value.trim().replace(/^["']|["']$/gu, "");
+  if (
+    !unquoted ||
+    unquoted.includes("\0") ||
+    Buffer.byteLength(unquoted, "utf8") > MAX_FONT_NAME_BYTES ||
+    !/[\\/]/u.test(unquoted)
+  ) {
+    return undefined;
+  }
+  if (path.isAbsolute(unquoted)) {
+    return path.resolve(unquoted);
+  }
+  if (
+    /^[a-z]:[\\/]/iu.test(unquoted) ||
+    /^\\\\/u.test(unquoted) ||
+    unquoted.startsWith("/")
+  ) {
+    return undefined;
+  }
+  return path.resolve(
+    drawingDirectory,
+    unquoted.replace(/[\\/]+/gu, path.sep),
+  );
+}
+
 function boundedPositiveInteger(
   value: number | undefined,
   fallback: number,
@@ -129,13 +171,14 @@ function boundedPositiveInteger(
 }
 
 class ShxFontResolver {
+  private readonly drawingDirectory: string;
   private readonly directories: readonly {
     directoryPath: string;
     source: "drawing" | "configured";
   }[];
   private readonly projectDirectories: readonly string[];
   private readonly mappings = new Map<string, string>();
-  private readonly index = new Map<string, IndexedFont>();
+  private readonly index = new Map<string, IndexedFont | "ambiguous">();
   private readonly projectResults = new Map<
     string,
     FontCandidate | "ambiguous" | "missing"
@@ -146,6 +189,7 @@ class ShxFontResolver {
   private indexedFiles = 0;
 
   constructor(options: ShxFontChannelOptions) {
+    this.drawingDirectory = path.resolve(options.drawingDirectory);
     const directories: {
       directoryPath: string;
       source: "drawing" | "configured";
@@ -171,7 +215,7 @@ class ShxFontResolver {
       directories.push({ directoryPath, source });
     };
 
-    addDirectory(options.drawingDirectory, "drawing");
+    addDirectory(this.drawingDirectory, "drawing");
     for (const directory of options.fontDirectories ?? []) {
       addDirectory(directory, "configured");
     }
@@ -256,6 +300,12 @@ class ShxFontResolver {
         source: "mapping",
       };
     }
+    if (!replacement) {
+      const stored = await this.resolveStoredPath(requestedName);
+      if (stored) {
+        return stored;
+      }
+    }
     const targetName = replacement
       ? normalizeDrawingFontName(replacement)
       : normalized;
@@ -263,6 +313,31 @@ class ShxFontResolver {
       return undefined;
     }
     let indexed = this.findIndexed(targetName);
+    while (
+      !indexed &&
+      this.nextDirectoryIndex < Math.min(1, this.directories.length) &&
+      this.indexedFiles < MAX_INDEXED_FONT_FILES
+    ) {
+      const directory = this.directories[this.nextDirectoryIndex];
+      this.nextDirectoryIndex += 1;
+      await this.scanDirectory(directory);
+      indexed = this.findIndexed(targetName);
+    }
+    if (indexed === "ambiguous") {
+      return indexed;
+    }
+    if (indexed) {
+      return replacement ? { ...indexed, source: "mapping" } : indexed;
+    }
+    const project = await this.findProjectFont(targetName);
+    if (project === "ambiguous") {
+      return project;
+    }
+    if (project !== "missing") {
+      return replacement && project
+        ? { ...project, source: "mapping" }
+        : project;
+    }
     while (
       !indexed &&
       this.nextDirectoryIndex < this.directories.length &&
@@ -273,19 +348,65 @@ class ShxFontResolver {
       await this.scanDirectory(directory);
       indexed = this.findIndexed(targetName);
     }
-    if (indexed) {
-      return replacement ? { ...indexed, source: "mapping" } : indexed;
+    if (indexed === "ambiguous") {
+      return indexed;
     }
-    const project = await this.findProjectFont(targetName);
-    if (project === "ambiguous" || project === "missing") {
-      return project === "ambiguous" ? project : undefined;
-    }
-    return replacement && project
-      ? { ...project, source: "mapping" }
-      : project;
+    return indexed
+      ? replacement
+        ? { ...indexed, source: "mapping" }
+        : indexed
+      : undefined;
   }
 
-  private findIndexed(name: string): IndexedFont | undefined {
+  setMapping(requestedName: string, replacement: string): boolean {
+    const normalized = normalizeDrawingFontName(requestedName);
+    const selected = normalizeDrawingFontName(path.basename(replacement));
+    if (
+      !normalized ||
+      !selected ||
+      !path.isAbsolute(replacement) ||
+      isOutlineFontName(normalized) !== isOutlineFontName(selected)
+    ) {
+      return false;
+    }
+    for (const alias of aliasesForCanonicalName(normalized)) {
+      this.mappings.set(alias, path.resolve(replacement));
+    }
+    this.projectResults.delete(normalized);
+    return true;
+  }
+
+  private async resolveStoredPath(
+    requestedName: string,
+  ): Promise<FontCandidate | undefined> {
+    const filePath = storedResourcePath(
+      requestedName,
+      this.drawingDirectory,
+    );
+    if (!filePath) {
+      return undefined;
+    }
+    try {
+      const metadata = await stat(filePath);
+      if (
+        !metadata.isFile() ||
+        !normalizeDrawingFontName(path.basename(filePath))
+      ) {
+        return undefined;
+      }
+      return {
+        filePath,
+        resolvedName: path.basename(filePath),
+        source: "stored",
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private findIndexed(
+    name: string,
+  ): IndexedFont | "ambiguous" | undefined {
     for (const alias of aliasesForCanonicalName(name)) {
       const indexed = this.index.get(alias);
       if (indexed) {
@@ -321,9 +442,16 @@ class ShxFontResolver {
         };
         let added = false;
         for (const alias of aliasesForCanonicalName(normalized)) {
-          if (!this.index.has(alias)) {
+          const previous = this.index.get(alias);
+          if (!previous) {
             this.index.set(alias, candidate);
             added = true;
+          } else if (
+            previous !== "ambiguous" &&
+            normalizedPathKey(previous.filePath) !==
+              normalizedPathKey(candidate.filePath)
+          ) {
+            this.index.set(alias, "ambiguous");
           }
         }
         if (added) {
@@ -524,6 +652,13 @@ export class ShxFontChannel {
     this.queue.push(candidate as FontReadRequest);
     this.pump();
     return true;
+  }
+
+  setSessionMapping(requestedName: string, filePath: string): boolean {
+    return (
+      !this.disposed &&
+      this.resolver.setMapping(requestedName, filePath)
+    );
   }
 
   dispose(): void {

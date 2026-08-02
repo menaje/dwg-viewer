@@ -1,4 +1,9 @@
-import { open, opendir, type FileHandle } from "node:fs/promises";
+import {
+  open,
+  opendir,
+  stat,
+  type FileHandle,
+} from "node:fs/promises";
 import path from "node:path";
 import { inflateSync } from "node:zlib";
 
@@ -63,7 +68,7 @@ interface PlotStyleReadRequest {
 interface CtbCandidate {
   filePath: string;
   resolvedName: string;
-  source: "drawing" | "project" | "configured";
+  source: "stored" | "drawing" | "project" | "configured" | "mapping";
 }
 
 function normalizedPathKey(value: string): string {
@@ -94,6 +99,38 @@ export function normalizeCtbName(value: unknown): string {
     return "";
   }
   return basename.normalize("NFC").toLocaleLowerCase("en-US");
+}
+
+function storedResourcePath(
+  value: unknown,
+  drawingDirectory: string,
+): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const unquoted = value.trim().replace(/^["']|["']$/gu, "");
+  if (
+    !unquoted ||
+    unquoted.includes("\0") ||
+    Buffer.byteLength(unquoted, "utf8") > 4096 ||
+    !/[\\/]/u.test(unquoted)
+  ) {
+    return undefined;
+  }
+  if (path.isAbsolute(unquoted)) {
+    return path.resolve(unquoted);
+  }
+  if (
+    /^[a-z]:[\\/]/iu.test(unquoted) ||
+    /^\\\\/u.test(unquoted) ||
+    unquoted.startsWith("/")
+  ) {
+    return undefined;
+  }
+  return path.resolve(
+    drawingDirectory,
+    unquoted.replace(/[\\/]+/gu, path.sep),
+  );
 }
 
 function parseMapping(text: string): CtbMapping {
@@ -347,17 +384,19 @@ class CtbResolver {
     if (cached) {
       return cached === "missing" ? undefined : cached;
     }
-    for (const [directory, source] of [
-      [this.drawingDirectory, "drawing"],
-      ...this.resourceDirectories.map(
-        (directory) => [directory, "configured"] as const,
-      ),
-    ] as const) {
-      const candidate = await this.findImmediate(directory, normalized, source);
-      if (candidate) {
-        this.cache.set(normalized, candidate);
-        return candidate;
-      }
+    const stored = await this.resolveStoredPath(name);
+    if (stored) {
+      this.cache.set(normalized, stored);
+      return stored;
+    }
+    const drawing = await this.findImmediate(
+      this.drawingDirectory,
+      normalized,
+      "drawing",
+    );
+    if (drawing) {
+      this.cache.set(normalized, drawing);
+      return drawing;
     }
     for (const root of this.projectDirectories) {
       const result = await this.findRecursive(root, normalized);
@@ -366,15 +405,65 @@ class CtbResolver {
         return result;
       }
     }
+    for (const directory of this.resourceDirectories) {
+      const candidate = await this.findImmediate(
+        directory,
+        normalized,
+        "configured",
+      );
+      if (candidate) {
+        this.cache.set(normalized, candidate);
+        return candidate;
+      }
+    }
     this.cache.set(normalized, "missing");
     return undefined;
+  }
+
+  setMapping(name: string, filePath: string): boolean {
+    const normalized = normalizeCtbName(name);
+    const resolvedName = path.basename(filePath);
+    if (
+      !normalized ||
+      !normalizeCtbName(resolvedName) ||
+      !path.isAbsolute(filePath)
+    ) {
+      return false;
+    }
+    this.cache.set(normalized, {
+      filePath: path.resolve(filePath),
+      resolvedName,
+      source: "mapping",
+    });
+    return true;
+  }
+
+  private async resolveStoredPath(
+    name: string,
+  ): Promise<CtbCandidate | undefined> {
+    const filePath = storedResourcePath(name, this.drawingDirectory);
+    if (!filePath || !normalizeCtbName(path.basename(filePath))) {
+      return undefined;
+    }
+    try {
+      const metadata = await stat(filePath);
+      return metadata.isFile()
+        ? {
+            filePath,
+            resolvedName: path.basename(filePath),
+            source: "stored",
+          }
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async findImmediate(
     directory: string,
     normalized: string,
     source: "drawing" | "configured",
-  ): Promise<CtbCandidate | undefined> {
+  ): Promise<CtbCandidate | "ambiguous" | undefined> {
     const matches: CtbCandidate[] = [];
     try {
       const handle = await opendir(directory);
@@ -390,7 +479,11 @@ class CtbResolver {
     } catch {
       return undefined;
     }
-    return matches.length === 1 ? matches[0] : undefined;
+    return matches.length === 1
+      ? matches[0]
+      : matches.length > 1
+        ? "ambiguous"
+        : undefined;
   }
 
   private async findRecursive(
@@ -493,6 +586,10 @@ export class CtbPlotStyleChannel {
     this.requests += 1;
     void this.execute(request as PlotStyleReadRequest);
     return true;
+  }
+
+  setSessionMapping(name: string, filePath: string): boolean {
+    return !this.disposed && this.resolver.setMapping(name, filePath);
   }
 
   dispose(): void {

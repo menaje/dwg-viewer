@@ -154,6 +154,11 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   assert.match(mainModule, /new ReviewTools/u);
   assert.match(mainModule, /code\.startsWith\("ADAPTER_"\)/u);
   assert.match(mainModule, /type: "dwg-adapter-select\/1"/u);
+  assert.match(mainModule, /type: "dwg-font-file-select\/1"/u);
+  assert.match(
+    mainModule,
+    /type: "dwg-plot-style-file-select\/1"/u,
+  );
 
   const manifest = JSON.parse(manifestText) as {
     contributes?: {

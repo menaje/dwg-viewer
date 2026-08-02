@@ -605,14 +605,21 @@ glyphs.
 
 The MIT-licensed `@mlightcad/shx-parser` is used only after the first geometry
 frame. The standalone browser harness accepts user-selected SHX files. In the
-VS Code Custom Editor, the extension host extracts the required names from the
-already-loaded style table, searches only the drawing directory and up to 31
-additional explicitly configured non-recursive directories, stopping directory
-indexing as soon as each requested name is found, and transfers matched files
-one at a time. User mappings can replace a requested basename with another
-indexed basename or an explicit absolute SHX path. The Webview
-receives no resolved host filesystem path beyond any original reference already
-embedded in the DWG style table.
+VS Code Custom Editor, the extension host extracts only referenced SHX,
+BigFont, TTF and OTF names from the loaded style table. It tries an existing
+stored relative or native absolute path, the drawing directory, bounded
+project/package roots, then up to 31 explicitly configured non-recursive
+fallback directories. Same-rank normalized matches are ambiguous rather than
+chosen by traversal order. User mappings or the font-panel picker can bind a
+requested name to an explicit local file for the current drawing. Files are
+transferred one at a time, and the Webview receives no resolved host filesystem
+path beyond any original reference already embedded in the DWG style table.
+
+Layout CTB discovery uses the same stored, drawing, bounded project and
+configured fallback order. Its manual picker installs a session mapping after
+an ambiguous or missing result. Parsed color and lineweight tables cross the
+host boundary instead of the CTB bytes or path, and only the referencing layout
+can enable that plot style.
 
 Host font reads are isolated by cache ID and capped at 128 requests, 32 MiB per
 file and 64 MiB transferred per drawing. Primary SHX and paired BigFont names
