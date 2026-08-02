@@ -4,6 +4,7 @@ import {
   maskBucketFor,
 } from "./mask-order.mjs";
 import { GpuLineBatchKind } from "./scene-cache.mjs";
+import { encodeCadLineStyle } from "./cad-line-style.mjs";
 
 export const PRIMITIVE_VERTEX_STRIDE = 32;
 export const MAX_POINT_GPU_BYTES = 8 * 1024 * 1024;
@@ -291,7 +292,11 @@ function solidFillAttributes(entity, maskOrder) {
 
 function solidOutlineAttributes(entity, maskOrder) {
   const style = encodeMaskBucket(
-    entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0,
+    encodeCadLineStyle({
+      lineWeight: entity.lineWeight,
+      linetypeCode: entity.linetypeCode ?? 0,
+      invisible: Boolean(entity.commonFlags & 1),
+    }),
     maskBucketFor(maskOrder, entity.ownerHandle, entity.handle),
   );
   return (view, offset) => {

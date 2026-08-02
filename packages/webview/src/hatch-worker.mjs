@@ -4,6 +4,7 @@ import {
   buildHatchPatternMesh,
 } from "./hatch-pattern.mjs";
 import { buildInstanceGraph } from "./instance-graph.mjs";
+import { buildLayoutInstanceGraph } from "./layout-scene.mjs";
 import {
   BlobRangeSource,
   TrackedRangeSource,
@@ -15,6 +16,47 @@ import {
 import { SceneCacheReader } from "./scene-cache.mjs";
 
 let patternState = null;
+
+function viewKey(view) {
+  return view?.kind === "layout" &&
+    Number.isSafeInteger(view.layoutIndex)
+    ? `layout:${view.layoutIndex}`
+    : "model";
+}
+
+function patternInstanceGraph(state, view) {
+  const key = viewKey(view);
+  if (state.instanceGraphKey === key) {
+    return state.instanceGraph;
+  }
+  let instanceGraph;
+  if (key === "model") {
+    instanceGraph = state.modelInstanceGraph;
+  } else {
+    const layout = state.layouts.find(
+      (candidate) => candidate.index === view.layoutIndex,
+    );
+    if (!layout) {
+      throw new Error(`HATCH layout ${view.layoutIndex} was not found`);
+    }
+    instanceGraph = buildLayoutInstanceGraph(
+      state.blocks,
+      state.inserts,
+      state.layers,
+      layout,
+      {
+        maskOrder: state.maskOrder,
+        insertClips: state.insertClips,
+      },
+    );
+  }
+  state.instanceGraphKey = key;
+  state.instanceGraph = Object.freeze({
+    ...instanceGraph,
+    blockBoundsByIndex: state.blockBoundsByIndex,
+  });
+  return state.instanceGraph;
+}
 
 self.addEventListener("message", async (event) => {
   const { requestId, type } = event.data;
@@ -30,7 +72,7 @@ self.addEventListener("message", async (event) => {
       const pattern = buildHatchPatternMesh(
         patternState.source,
         patternState.blocks,
-        patternState.instanceGraph,
+        patternInstanceGraph(patternState, event.data.view),
         event.data.camera,
         { maskOrder: patternState.maskOrder },
       );
@@ -49,6 +91,7 @@ self.addEventListener("message", async (event) => {
       hostSource,
       camera,
       maskOrder = null,
+      view = null,
     } = event.data;
     messageSource = hostSource
       ? createWorkerHostRangeSource(hostSource)
@@ -58,25 +101,53 @@ self.addEventListener("message", async (event) => {
     if (reader.header.minor < 6) {
       throw new Error("HATCH fills require Scene Cache v1.6");
     }
-    const [source, blocks, inserts, batches] = await Promise.all([
+    const [
+      source,
+      layers,
+      blocks,
+      inserts,
+      insertClips,
+      batches,
+      layouts,
+    ] = await Promise.all([
       reader.readHatchSource(),
+      reader.readLayers(),
       reader.readBlocks(),
       reader.readInserts(),
+      reader.readInsertClips(),
       reader.readGpuLineBatches(),
+      reader.readLayouts(),
     ]);
     const baseInstanceGraph = buildInstanceGraph(blocks, inserts, {
+      layers,
       maskOrder,
+      insertClips,
     });
-    const instanceGraph = Object.freeze({
+    const blockBoundsByIndex = buildHatchPatternBlockBounds(
+      batches,
+      blocks.length,
+    );
+    const modelInstanceGraph = Object.freeze({
       ...baseInstanceGraph,
-      blockBoundsByIndex: buildHatchPatternBlockBounds(
-        batches,
-        blocks.length,
-      ),
+      blockBoundsByIndex,
     });
-    const fill = buildHatchFillMesh(source, blocks, instanceGraph, {
+    const fill = buildHatchFillMesh(source, blocks, modelInstanceGraph, {
       maskOrder,
     });
+    patternState = {
+      source,
+      layers,
+      blocks,
+      inserts,
+      insertClips,
+      layouts,
+      blockBoundsByIndex,
+      modelInstanceGraph,
+      instanceGraphKey: "model",
+      instanceGraph: modelInstanceGraph,
+      maskOrder,
+    };
+    const instanceGraph = patternInstanceGraph(patternState, view);
     const pattern =
       reader.header.minor >= 7 && camera
         ? buildHatchPatternMesh(
@@ -87,7 +158,6 @@ self.addEventListener("message", async (event) => {
             { maskOrder },
           )
         : null;
-    patternState = { source, blocks, instanceGraph, maskOrder };
     const transfers = [fill.vertices.buffer];
     if (pattern) {
       transfers.push(pattern.vertices.buffer);

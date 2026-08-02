@@ -111,6 +111,28 @@
             ]
           },
           "description": "Map a DWG-requested BigFont name to auto glyph probing, strict EUC-KR, Windows CP949/UHC, or Johab CP1361 codes."
+        },
+        "dwgViewer.xrefSearchDirectories": {
+          "type": "array",
+          "default": [],
+          "scope": "machine",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 31,
+          "uniqueItems": true,
+          "description": "Absolute folders searched recursively and within fixed limits when a DWG external reference is not found at its stored path."
+        },
+        "dwgViewer.imageSearchDirectories": {
+          "type": "array",
+          "default": [],
+          "scope": "machine",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 31,
+          "uniqueItems": true,
+          "description": "Absolute folders searched recursively and within fixed limits when a JPG or PNG drawing image is not found at its stored path."
         }
       }
     }

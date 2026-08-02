@@ -1,0 +1,342 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import { identityMat4 } from "../src/math.mjs";
+import {
+  bitmapTargetSize,
+  calculateRasterImageBounds,
+  CanvasRasterImageOverlay,
+  RasterImageAssetStore,
+  requestedBitmapTargetSize,
+} from "../src/raster-image-overlay.mjs";
+
+function imageTable(record, path = String.raw`.\image\도면.png`) {
+  return {
+    length: 1,
+    readEntity(_index, target) {
+      Object.assign(target, record);
+      target.insertionPoint = [...record.insertionPoint];
+      target.uVector = [...record.uVector];
+      target.vVector = [...record.vVector];
+      target.size = [...record.size];
+      return target;
+    },
+    readPath() {
+      return path;
+    },
+    readClipVertex(index, target) {
+      target[0] = record.clipVertices[index][0];
+      target[1] = record.clipVertices[index][1];
+      return target;
+    },
+  };
+}
+
+function fakeCanvas() {
+  const calls = {
+    clips: [],
+    clearRect: 0,
+    drawImage: [],
+    transforms: [],
+  };
+  const context = {
+    filter: "none",
+    globalAlpha: 1,
+    beginPath() {},
+    clearRect() {
+      calls.clearRect += 1;
+    },
+    clip(rule) {
+      calls.clips.push(rule);
+    },
+    closePath() {},
+    drawImage(...values) {
+      calls.drawImage.push({
+        values,
+        alpha: this.globalAlpha,
+        filter: this.filter,
+        transform: calls.transforms.at(-1),
+      });
+    },
+    lineTo() {},
+    moveTo() {},
+    rect() {},
+    restore() {},
+    save() {},
+    setTransform(...values) {
+      calls.transforms.push(values);
+    },
+  };
+  return {
+    calls,
+    clientWidth: 800,
+    clientHeight: 600,
+    width: 0,
+    height: 0,
+    getContext(kind) {
+      return kind === "2d" ? context : null;
+    },
+  };
+}
+
+function modelGraph() {
+  return {
+    rootInstances: {
+      data: identityMat4(),
+      clipIds: new Uint32Array([0]),
+      layerIndices: new Uint32Array([0xffffffff]),
+      opacities: new Float32Array([1]),
+      visibilityRows: new Uint32Array([0]),
+      count: 1,
+    },
+    instancesByBlock: new Map(),
+    modelBlockIndices: new Set([0]),
+    clipNodes: [],
+  };
+}
+
+const visibleRecord = Object.freeze({
+  handle: 901n,
+  ownerHandle: 100n,
+  layerIndex: 0,
+  commonFlags: 0,
+  displayProperties: 7,
+  clipType: 1,
+  clippingEnabled: true,
+  brightness: 40,
+  contrast: 60,
+  fade: 10,
+  clipMode: 0,
+  firstClipVertex: 0,
+  clipVertexCount: 2,
+  insertionPoint: [0, 0, 0],
+  uVector: [1, 0, 0],
+  vVector: [0, 1, 0],
+  size: [4, 3],
+  clipVertices: [
+    [0.5, 0.5],
+    [2.5, 1.5],
+  ],
+});
+
+const camera = Object.freeze({
+  origin: [1.5, 1, 0],
+  worldWidth: 8,
+  worldHeight: 6,
+});
+
+test("bounds raster decode size for large referenced photographs", () => {
+  const target = bitmapTargetSize(9_999, 4_712, 8_388_608, 4_096);
+
+  assert.ok(target.width <= 4_096);
+  assert.ok(target.height <= 4_096);
+  assert.ok(target.width * target.height <= 8_388_608);
+  assert.ok(target.width / target.height > 2.11);
+  assert.ok(target.width / target.height < 2.13);
+});
+
+test("sizes raster decoding from the current on-screen footprint", () => {
+  assert.deepEqual(
+    requestedBitmapTargetSize(
+      10_000,
+      5_000,
+      200,
+      100,
+      8_388_608,
+      4_096,
+    ),
+    { width: 300, height: 150 },
+  );
+});
+
+test("upgrades a screen-sized bitmap only after a meaningful zoom", async () => {
+  const decoded = [];
+  const store = new RasterImageAssetStore({
+    maximumCompressedBytes: 64,
+    maximumImagePixels: 8_388_608,
+    maximumDecodedPixels: 16_777_216,
+    decode: async (_blob, options) => {
+      decoded.push([options.resizeWidth, options.resizeHeight]);
+      return {
+        width: options.resizeWidth,
+        height: options.resizeHeight,
+        close() {},
+      };
+    },
+  });
+  store.accept({
+    cacheId: "root",
+    imageIndex: 0,
+    resourceId: "c".repeat(64),
+    mimeType: "image/jpeg",
+    width: 4_000,
+    height: 2_000,
+    bytes: new Uint8Array([1, 2, 3]).buffer,
+  });
+
+  await store.prepare("root", 0, { width: 200, height: 100 });
+  assert.deepEqual(decoded, [[300, 150]]);
+  await store.prepare("root", 0, { width: 400, height: 200 });
+  assert.deepEqual(decoded, [
+    [300, 150],
+    [600, 300],
+  ]);
+  assert.equal(store.snapshot().decodedPixels, 180_000);
+  store.dispose();
+});
+
+test("deduplicates compressed images and evicts decoded bitmaps by budget", async () => {
+  const closed = [];
+  const store = new RasterImageAssetStore({
+    maximumCompressedBytes: 64,
+    maximumImagePixels: 4,
+    maximumDecodedPixels: 4,
+    maximumDecodeDimension: 2,
+    decode: async (_blob, options) => ({
+      width: options.resizeWidth,
+      height: options.resizeHeight,
+      close() {
+        closed.push(`${options.resizeWidth}x${options.resizeHeight}`);
+      },
+    }),
+  });
+  const firstId = "a".repeat(64);
+  const secondId = "b".repeat(64);
+  store.accept({
+    cacheId: "root",
+    imageIndex: 0,
+    resourceId: firstId,
+    mimeType: "image/png",
+    width: 2,
+    height: 2,
+    bytes: new Uint8Array([1, 2, 3]).buffer,
+  });
+  store.accept({
+    cacheId: "xref",
+    imageIndex: 0,
+    resourceId: firstId,
+    mimeType: "image/png",
+    width: 2,
+    height: 2,
+  });
+  await store.prepare("root", 0);
+  assert.equal(store.snapshot().resources, 1);
+  assert.equal(store.snapshot().references, 2);
+  assert.equal(store.snapshot().compressedBytes, 3);
+
+  store.accept({
+    cacheId: "root",
+    imageIndex: 1,
+    resourceId: secondId,
+    mimeType: "image/jpeg",
+    width: 2,
+    height: 2,
+    bytes: new Uint8Array([4, 5, 6]).buffer,
+  });
+  await store.prepare("root", 1);
+
+  assert.equal(store.snapshot().decodedResources, 1);
+  assert.equal(store.snapshot().decodedPixels, 4);
+  assert.deepEqual(closed, ["2x2"]);
+  store.dispose();
+});
+
+test("requests only raster images that intersect the current screen", () => {
+  const canvas = fakeCanvas();
+  const requests = [];
+  const overlay = new CanvasRasterImageOverlay(canvas, {
+    imageEntities: imageTable(visibleRecord),
+    blocks: [{ index: 0, handle: 100n }],
+    layers: [{ name: "0" }],
+    instanceGraph: modelGraph(),
+    cacheId: "root",
+    assetStore: {
+      lookup: () => ({ status: "missing" }),
+      snapshot: () => ({}),
+    },
+    requestAsset(request) {
+      requests.push(request);
+      return true;
+    },
+  });
+
+  const visible = overlay.redraw(camera, [true]);
+  assert.equal(visible.visibleOccurrences, 1);
+  assert.equal(visible.requestedImages, 1);
+  assert.equal(requests[0].path, String.raw`.\image\도면.png`);
+
+  const offscreen = overlay.redraw(
+    { ...camera, origin: [1_000, 1_000, 0] },
+    [true],
+  );
+  assert.equal(offscreen.visibleOccurrences, 0);
+  assert.equal(offscreen.requestedImages, 0);
+});
+
+test("uses the clipped IMAGE footprint as fitted drawing bounds", () => {
+  assert.deepEqual(
+    calculateRasterImageBounds({
+      imageEntities: imageTable(visibleRecord),
+      blocks: [{ index: 0, handle: 100n }],
+      instanceGraph: modelGraph(),
+    }),
+    {
+      min: [0.5, 0.5, 0],
+      max: [2.5, 1.5, 0],
+    },
+  );
+});
+
+test("converts top-origin IMAGE clip pixels to the placement basis", () => {
+  const asymmetricClip = {
+    ...visibleRecord,
+    size: [10, 10],
+    clipVertices: [
+      [2, 1],
+      [6, 3],
+    ],
+  };
+
+  assert.deepEqual(
+    calculateRasterImageBounds({
+      imageEntities: imageTable(asymmetricClip),
+      blocks: [{ index: 0, handle: 100n }],
+      instanceGraph: modelGraph(),
+    }),
+    {
+      min: [2, 6, 0],
+      max: [6, 8, 0],
+    },
+  );
+});
+
+test("draws IMAGE placement with clipping and CAD display adjustments", () => {
+  const canvas = fakeCanvas();
+  const bitmap = { width: 4, height: 3 };
+  const overlay = new CanvasRasterImageOverlay(canvas, {
+    imageEntities: imageTable(visibleRecord),
+    blocks: [{ index: 0, handle: 100n }],
+    layers: [{ name: "0" }],
+    instanceGraph: modelGraph(),
+    cacheId: "root",
+    assetStore: {
+      lookup: () => ({
+        status: "ready",
+        bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+      }),
+      snapshot: () => ({ decodedBytes: 48 }),
+    },
+  });
+
+  const metrics = overlay.redraw(camera, [true]);
+  const drawn = canvas.calls.drawImage[0];
+  assert.equal(metrics.loadedOccurrences, 1);
+  assert.equal(metrics.clipOperations, 1);
+  assert.deepEqual(canvas.calls.clips, ["nonzero"]);
+  assert.deepEqual(drawn.values, [bitmap, 0, 0]);
+  assert.deepEqual(drawn.transform, [100, 0, 0, 100, 200, 150]);
+  assert.equal(drawn.alpha, 0.9);
+  assert.equal(drawn.filter, "brightness(0.8) contrast(1.2)");
+});

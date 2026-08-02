@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  normalizeDrawingFontName,
   normalizeShxFontName,
   ShxFontChannel,
 } from "../src/shx-font-channel";
@@ -76,6 +77,11 @@ test("normalizes requested Windows, POSIX, extensionless, and invalid names", ()
   assert.equal(normalizeShxFontName("/fonts/KSC.SHX"), "ksc.shx");
   assert.equal(normalizeShxFontName("txt"), "txt.shx");
   assert.equal(normalizeShxFontName("../font.ttf"), "");
+  assert.equal(
+    normalizeDrawingFontName("C:\\CAD Fonts\\굵은돋움체.TTF"),
+    "굵은돋움체.ttf",
+  );
+  assert.equal(normalizeDrawingFontName("/fonts/type.OTF"), "type.otf");
   assert.equal(normalizeShxFontName("\0bad.shx"), "");
 });
 
@@ -196,6 +202,66 @@ test("does not recursively scan configured font folders", async (context) => {
   assert.equal(response.bytes, undefined);
 });
 
+test("finds an exact TTF in a sibling project resource folder", async (context) => {
+  const root = await temporaryDirectory();
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const drawing = path.join(root, "DWG");
+  const fonts = path.join(root, "CTB,FONT");
+  await Promise.all([
+    mkdir(drawing),
+    mkdir(fonts),
+  ]);
+  await writeFile(
+    path.join(fonts, "굵은돋움체.TTF"),
+    Uint8Array.of(0, 1, 0, 0, 9),
+  );
+  const collector = responseCollector();
+  const channel = new ShxFontChannel(
+    CACHE_ID,
+    {
+      drawingDirectory: drawing,
+      projectDirectories: [root],
+    },
+    collector.postMessage,
+  );
+  context.after(() => channel.dispose());
+
+  requestFont(channel, 1, "C:\\Windows\\Fonts\\굵은돋움체.ttf");
+  const response = await collector.next();
+  assert.equal(response.status, "loaded");
+  assert.equal(response.source, "project");
+  assert.equal(response.resolvedName, "굵은돋움체.TTF");
+  assert.deepEqual([...new Uint8Array(response.bytes!)], [0, 1, 0, 0, 9]);
+});
+
+test("does not silently choose equally near project fonts", async (context) => {
+  const root = await temporaryDirectory();
+  context.after(() => rm(root, { recursive: true, force: true }));
+  const drawing = path.join(root, "DWG");
+  const first = path.join(root, "FONT-A");
+  const second = path.join(root, "FONT-B");
+  await Promise.all([mkdir(drawing), mkdir(first), mkdir(second)]);
+  await Promise.all([
+    writeFile(path.join(first, "same.ttf"), Uint8Array.of(1)),
+    writeFile(path.join(second, "SAME.TTF"), Uint8Array.of(2)),
+  ]);
+  const collector = responseCollector();
+  const channel = new ShxFontChannel(
+    CACHE_ID,
+    {
+      drawingDirectory: drawing,
+      projectDirectories: [root],
+    },
+    collector.postMessage,
+  );
+  context.after(() => channel.dispose());
+
+  requestFont(channel, 1, "same.ttf");
+  const response = await collector.next();
+  assert.equal(response.status, "ambiguous");
+  assert.equal(response.bytes, undefined);
+});
+
 test("rejects fonts and aggregate transfers above configured byte limits", async (context) => {
   const root = await temporaryDirectory();
   context.after(() => rm(root, { recursive: true, force: true }));
@@ -242,6 +308,6 @@ test("isolates mismatched caches, invalid names, and unrelated messages", async 
   assert.equal(channel.handleMessage({ type: "other" }), false);
   assert.equal(requestFont(channel, 1, "txt.shx", "d".repeat(64)), true);
   assert.equal((await collector.next()).status, "invalid");
-  assert.equal(requestFont(channel, 2, "font.ttf"), true);
+  assert.equal(requestFont(channel, 2, "font.woff"), true);
   assert.equal((await collector.next()).status, "invalid");
 });

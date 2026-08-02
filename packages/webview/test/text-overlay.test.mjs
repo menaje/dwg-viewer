@@ -1,12 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildInstanceGraph } from "../src/instance-graph.mjs";
+import {
+  buildInstanceGraph,
+  createClipNode,
+} from "../src/instance-graph.mjs";
+import { translationMat4 } from "../src/math.mjs";
 import { MemoryRangeSource } from "../src/range-source.mjs";
 import { SceneCacheReader } from "../src/scene-cache.mjs";
 import {
   CanvasTextOverlay,
   plainCadTextLines,
+  registerLocalOutlineFont,
+  systemFallbackFont,
+  unregisterLocalOutlineFont,
+  wrapCadTextLines,
 } from "../src/text-overlay.mjs";
 import { makeFixtureCache } from "./cache-fixture.mjs";
 
@@ -86,10 +94,60 @@ test("removes MTEXT controls without losing Korean or line breaks", () => {
     ["배관", "점검°±"],
   );
   assert.deepEqual(plainCadTextLines("한글%%d", false), ["한글°"]);
+  assert.deepEqual(
+    plainCadTextLines(
+      String.raw`\U+B0B4\U+B824\U+AC10`,
+      false,
+    ),
+    ["내려감"],
+  );
   assert.equal(
     [...plainCadTextLines("한".repeat(5_000), false)[0]].length,
     4_096,
   );
+});
+
+test("wraps MTEXT to its stored paragraph width", () => {
+  assert.deepEqual(
+    wrapCadTextLines(
+      ["가나다 라마바사", "", "abcdef"],
+      5,
+      () => 1,
+    ),
+    ["가나다", "라마바사", "", "abcde", "f"],
+  );
+  assert.deepEqual(
+    wrapCadTextLines(["폭 정보 없음"], 0, () => 1),
+    ["폭 정보 없음"],
+  );
+});
+
+test("maps common CAD TrueType files to platform-safe Korean fallbacks", () => {
+  assert.equal(
+    systemFallbackFont({ fontFile: "C:\\Windows\\Fonts\\malgun.ttf" }),
+    '1px "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif',
+  );
+  assert.equal(
+    systemFallbackFont({ fontFile: "malgunbd.ttf" }),
+    '700 1px "Malgun Gothic", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif',
+  );
+  assert.equal(
+    systemFallbackFont({ fontFile: "arial.ttf" }),
+    '1px "Arial", "Helvetica Neue", Helvetica, sans-serif',
+  );
+  assert.equal(
+    systemFallbackFont({ fontFile: "batang.ttf" }),
+    '1px "Batang", "AppleMyungjo", "Noto Serif KR", serif',
+  );
+  assert.equal(
+    registerLocalOutlineFont("굵은돋움체.TTF", "DwgLocalFont_1_7"),
+    "굵은돋움체.ttf",
+  );
+  assert.equal(
+    systemFallbackFont({ fontFile: "C:\\Fonts\\굵은돋움체.ttf" }),
+    '1px "DwgLocalFont_1_7", "Noto Sans KR", "Apple SD Gothic Neo", sans-serif',
+  );
+  assert.equal(unregisterLocalOutlineFont("굵은돋움체.ttf"), true);
 });
 
 test("falls back to system Korean text within a hard glyph budget", async () => {
@@ -112,6 +170,151 @@ test("falls back to system Korean text within a hard glyph budget", async () => 
   assert.ok(
     canvas.calls.transforms.some(
       ([a, b, c, d]) => a > 0 && b === 0 && c === 0 && d > 0,
+    ),
+  );
+});
+
+test("uses the DWG-adjusted TEXT insertion point without applying justification twice", () => {
+  const canvas = fakeCanvas();
+  const record = {
+    handle: 5n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 0,
+    flags: 1,
+    insertionPoint: [105, 201, 0],
+    alignmentPoint: [107, 201.5, 0],
+    normal: [0, 0, 1],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    lineSpacingFactor: 1,
+    sourceFlags: 0,
+    horizontalAlignment: 1,
+    verticalAlignment: 2,
+    generationFlags: 0,
+    attachment: 0,
+    mtextType: 0,
+    valueByteLength: 2,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: 1,
+      readDisplayRecord(_index, target) {
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        return target;
+      },
+      readValue() {
+        return "AB";
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  overlay.redraw(camera, [true]);
+
+  assert.equal(canvas.calls.fillTextArguments[0][0], "A");
+  assert.equal(canvas.calls.fillTextArguments[0][1], 0);
+  assert.equal(Math.abs(canvas.calls.fillTextArguments[0][2]), 0);
+  assert.equal(canvas.calls.fillTextArguments[1][0], "B");
+  assert.equal(canvas.calls.fillTextArguments[1][1], 1);
+  assert.equal(Math.abs(canvas.calls.fillTextArguments[1][2]), 0);
+  assert.ok(
+    canvas.calls.transforms.some(([a, b, c, d]) =>
+      a === 80 && b === 0 && c === 0 && d === 40,
+    ),
+  );
+});
+
+test("uses MTEXT extents for middle-center attachment", () => {
+  const canvas = fakeCanvas();
+  const record = {
+    handle: 6n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 1,
+    flags: 0,
+    insertionPoint: [105, 201, 0],
+    alignmentPoint: [0, 0, 0],
+    normal: [0, 0, 1],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    rectangleWidth: 10,
+    rectangleHeight: 4,
+    extentsWidth: 10,
+    extentsHeight: 4,
+    lineSpacingFactor: 1,
+    sourceFlags: 0,
+    horizontalAlignment: 0,
+    verticalAlignment: 0,
+    generationFlags: 0,
+    attachment: 5,
+    mtextType: 0,
+    valueByteLength: 2,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: 1,
+      readDisplayRecord(_index, target) {
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        return target;
+      },
+      readValue() {
+        return "AB";
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  overlay.redraw(camera, [true]);
+
+  assert.deepEqual(canvas.calls.fillTextArguments[0], ["A", -1, -1]);
+  assert.ok(
+    canvas.calls.transforms.some(([a, b, c, d]) =>
+      a === 200 && b === 0 && c === 0 && d === 40,
     ),
   );
 });
@@ -291,6 +494,100 @@ test("clips only text below a later WIPEOUT mask", () => {
   assert.equal(metrics.clippedTextOccurrences, 1);
   assert.equal(metrics.maskClipOperations, 1);
   assert.deepEqual(canvas.calls.clips, ["evenodd"]);
+  assert.equal(canvas.calls.saves, 1);
+  assert.equal(canvas.calls.restores, 1);
+
+  overlay.setMaskVisibility(false);
+  const withoutMasks = overlay.redraw(camera, [true]);
+  assert.equal(withoutMasks.maskOccurrences, 0);
+  assert.equal(withoutMasks.clippedTextOccurrences, 0);
+  assert.equal(withoutMasks.maskClipOperations, 0);
+  assert.deepEqual(canvas.calls.clips, ["evenodd"]);
+});
+
+test("transforms and clips external ATTRIB text with its XREF root", () => {
+  const canvas = fakeCanvas();
+  const record = {
+    handle: 5n,
+    ownerHandle: 100n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 3,
+    insertionPoint: [0, 0, 0],
+    normal: [0, 0, 1],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    lineSpacingFactor: 1,
+    sourceFlags: 0,
+    horizontalAlignment: 0,
+    attachment: 0,
+    mtextType: 0,
+    valueByteLength: 3,
+    style: null,
+  };
+  const textEntities = {
+    length: 1,
+    readDisplayRecord(_index, target) {
+      Object.assign(target, record);
+      target.insertionPoint = [...record.insertionPoint];
+      target.normal = [...record.normal];
+      return target;
+    },
+    readValue() {
+      return "한";
+    },
+  };
+  const rootInstances = {
+    data: translationMat4(100, 0, 0),
+    maskBases: new Uint32Array([0]),
+    clipIds: new Uint32Array([1]),
+    count: 1,
+    length: 1,
+  };
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities,
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map(),
+      modelBlockIndices: new Set(),
+      rootInstances,
+      clipNodes: [
+        createClipNode(1, 0, [
+          [90, -10, 0],
+          [110, -10, 0],
+          [110, 10, 0],
+          [90, 10, 0],
+        ]),
+      ],
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  const metrics = overlay.redraw(
+    {
+      origin: [100, 0, 0],
+      worldWidth: 20,
+      worldHeight: 15,
+    },
+    [true],
+  );
+
+  assert.equal(metrics.visibleOccurrences, 1);
+  assert.equal(metrics.xclipOccurrences, 1);
+  assert.equal(metrics.xclipOperations, 1);
+  assert.deepEqual(canvas.calls.clips, ["nonzero"]);
   assert.equal(canvas.calls.saves, 1);
   assert.equal(canvas.calls.restores, 1);
 });

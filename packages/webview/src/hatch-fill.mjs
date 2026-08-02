@@ -1,5 +1,6 @@
 import earcut, { deviation } from "../node_modules/earcut/src/earcut.js";
 
+import { decodeCadColor } from "./cad-color.mjs";
 import {
   GpuLineBatchKind,
   HatchFlags,
@@ -246,48 +247,14 @@ function flattenGroup(group) {
   return { coordinates, sourceIndices, holes };
 }
 
-function aciRgb(index) {
-  switch (index) {
-    case 1:
-      return [255, 46, 46];
-    case 2:
-      return [255, 255, 51];
-    case 3:
-      return [51, 255, 89];
-    case 4:
-      return [51, 242, 255];
-    case 5:
-      return [89, 140, 255];
-    case 6:
-      return [255, 64, 255];
-    case 7:
-      return [235, 235, 235];
-    default: {
-      const gray = Math.round(89 + (153 * (index % 16)) / 15);
-      return [gray, gray, gray];
-    }
-  }
-}
-
 function decodeEncodedColor(encoded) {
-  const unsigned = encoded >>> 0;
-  const kind = unsigned >>> 30;
-  if (kind === 2) {
-    return aciRgb(unsigned & 255);
-  }
-  if (kind === 3) {
-    return [
-      (unsigned >>> 16) & 255,
-      (unsigned >>> 8) & 255,
-      unsigned & 255,
-    ];
-  }
-  return [235, 235, 235];
+  return decodeCadColor(encoded);
 }
 
-function encodeRgb([red, green, blue]) {
+function encodeRgb([red, green, blue], opacityBits = 0) {
   return (
     ((3 << 30) |
+      (opacityBits & 0x3f000000) |
       (Math.round(red) << 16) |
       (Math.round(green) << 8) |
       Math.round(blue)) >>>
@@ -298,11 +265,14 @@ function encodeRgb([red, green, blue]) {
 function tintedColor(encoded, tint) {
   const [red, green, blue] = decodeEncodedColor(encoded);
   const amount = clamp01(tint);
-  return encodeRgb([
-    red + (255 - red) * amount,
-    green + (255 - green) * amount,
-    blue + (255 - blue) * amount,
-  ]);
+  return encodeRgb(
+    [
+      red + (255 - red) * amount,
+      green + (255 - green) * amount,
+      blue + (255 - blue) * amount,
+    ],
+    encoded,
+  );
 }
 
 function hatchColors(source, entity, colorTarget) {
@@ -317,15 +287,18 @@ function hatchColors(source, entity, colorTarget) {
   let lastValue = Number.NEGATIVE_INFINITY;
   let firstColor = entity.color;
   let lastColor = entity.color;
+  const opacityBits = entity.color & 0x3f000000;
   for (let index = 0; index < entity.gradientColorCount; index += 1) {
     source.readGradientColor(entity.firstGradientColor + index, colorTarget);
     if (colorTarget.value < firstValue) {
       firstValue = colorTarget.value;
-      firstColor = colorTarget.color;
+      firstColor =
+        (colorTarget.color & 0xc0ffffff) | opacityBits;
     }
     if (colorTarget.value > lastValue) {
       lastValue = colorTarget.value;
-      lastColor = colorTarget.color;
+      lastColor =
+        (colorTarget.color & 0xc0ffffff) | opacityBits;
     }
   }
   if (entity.gradientColorCount === 0) {

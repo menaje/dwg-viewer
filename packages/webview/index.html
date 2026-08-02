@@ -4,16 +4,28 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DWG Scene Cache Viewer</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=1.18.0" />
   </head>
   <body>
     <main>
       <header>
         <div>
-          <p class="eyebrow">DWG Viewer · Scene Cache v1.11</p>
+          <p class="eyebrow">DWG Viewer · Scene Cache v1.18</p>
           <h1>대형 도면 첫 화면 검증기</h1>
         </div>
-        <div class="toolbar">
+        <button
+          id="viewer-tools-trigger"
+          class="viewer-tools-trigger"
+          type="button"
+          aria-label="도면 도구 펼치기"
+          aria-expanded="false"
+          aria-controls="viewer-toolbar"
+          title="도면 도구"
+          hidden
+        >
+          <span aria-hidden="true">•••</span>
+        </button>
+        <div id="viewer-toolbar" class="toolbar">
           <nav class="view-controls" aria-label="도면 화면 조절">
             <button type="button" data-view-action="zoom-out" disabled aria-label="축소">−</button>
             <button type="button" data-view-action="fit" disabled>전체 보기</button>
@@ -34,6 +46,33 @@
               aria-controls="font-panel"
             >
               글꼴
+            </button>
+            <button
+              id="xrefs-toggle"
+              type="button"
+              disabled
+              aria-expanded="false"
+              aria-controls="xref-panel"
+            >
+              외부 참조
+            </button>
+            <button
+              id="wipeout-toggle"
+              type="button"
+              disabled
+              aria-pressed="false"
+              title="WIPEOUT 가림 객체 표시 전환"
+            >
+              가림 끔
+            </button>
+            <button
+              id="plot-style-toggle"
+              type="button"
+              disabled
+              aria-pressed="false"
+              title="배치에 지정된 CTB 출력 스타일 표시 전환"
+            >
+              출력 스타일
             </button>
             <button type="button" data-view-action="zoom-in" disabled aria-label="확대">+</button>
           </nav>
@@ -57,8 +96,15 @@
         </div>
       </header>
       <section id="drop-zone" class="viewport">
+        <canvas id="image-overlay" aria-hidden="true"></canvas>
         <canvas id="drawing"></canvas>
         <canvas id="text-overlay" aria-hidden="true"></canvas>
+        <nav
+          id="layout-tabs"
+          class="layout-tabs"
+          aria-label="모델 및 도면 배치"
+          hidden
+        ></nav>
         <aside id="layer-panel" class="layer-panel" aria-label="레이어 표시 설정" hidden>
           <div class="layer-panel-heading">
             <strong>레이어</strong>
@@ -76,9 +122,9 @@
           </div>
           <ul id="layer-list"></ul>
         </aside>
-        <aside id="font-panel" class="font-panel" aria-label="SHX 글꼴 상태" hidden>
+        <aside id="font-panel" class="font-panel" aria-label="도면 글꼴 상태" hidden>
           <div class="font-panel-heading">
-            <strong>SHX·BigFont</strong>
+            <strong>도면 글꼴</strong>
             <span id="font-summary"></span>
           </div>
           <p id="font-panel-help">
@@ -88,6 +134,16 @@
             글꼴 폴더 추가
           </button>
           <ul id="font-status-list"></ul>
+        </aside>
+        <aside id="xref-panel" class="xref-panel" aria-label="외부 도면과 이미지 참조 상태" hidden>
+          <div class="xref-panel-heading">
+            <strong>외부 참조</strong>
+            <span id="xref-summary"></span>
+          </div>
+          <p id="xref-panel-help">
+            도면과 이미지의 저장 경로를 먼저 확인하고, 없으면 파일명과 상위 폴더가 많이 일치하는 파일을 찾습니다.
+          </p>
+          <ul id="xref-status-list"></ul>
         </aside>
         <div class="empty-state">
           <strong>생성된 DWG 캐시를 여기에 놓으세요.</strong>
@@ -104,6 +160,6 @@
         }
       }
     </script>
-    <script type="module" src="./src/main.mjs"></script>
+    <script type="module" src="./src/main.mjs?v=1.18.0"></script>
   </body>
 </html>

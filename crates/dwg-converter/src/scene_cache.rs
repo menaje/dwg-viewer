@@ -18,7 +18,7 @@ use crate::{duration_ms, engine, peak_rss_bytes, Bounds3, BoundsAccumulator, Inp
 
 pub const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
 pub const CACHE_VERSION_MAJOR: u16 = 1;
-pub const CACHE_VERSION_MINOR: u16 = 11;
+pub const CACHE_VERSION_MINOR: u16 = 14;
 pub const HEADER_SIZE: u32 = 64;
 pub const DIRECTORY_ENTRY_SIZE: u32 = 40;
 
@@ -54,6 +54,8 @@ const WIPEOUT_ENTITY_RECORD_SIZE: u32 = 168;
 const WIPEOUT_CLIP_VERTEX_RECORD_SIZE: u32 = 16;
 const DRAW_ORDER_TABLE_RECORD_SIZE: u32 = 40;
 const DRAW_ORDER_ENTRY_RECORD_SIZE: u32 = 16;
+const INSERT_CLIP_RECORD_SIZE: u32 = 32;
+const INSERT_CLIP_VERTEX_RECORD_SIZE: u32 = 16;
 const STRING_TABLE_HEADER_SIZE: u64 = 16;
 const SECTION_FLAG_STRING_TABLE: u32 = 1;
 const MAX_CACHE_STRING_BYTES: u64 = 1024 * 1024;
@@ -274,6 +276,8 @@ enum SectionKind {
     WipeoutClipVertices = 43,
     DrawOrderTables = 44,
     DrawOrderEntries = 45,
+    InsertClips = 46,
+    InsertClipVertices = 47,
 }
 
 impl SectionKind {
@@ -313,6 +317,8 @@ impl SectionKind {
             Self::WipeoutClipVertices => "wipeout_clip_vertices",
             Self::DrawOrderTables => "draw_order_tables",
             Self::DrawOrderEntries => "draw_order_entries",
+            Self::InsertClips => "insert_clips",
+            Self::InsertClipVertices => "insert_clip_vertices",
         }
     }
 
@@ -352,6 +358,8 @@ impl SectionKind {
             43 => Some(Self::WipeoutClipVertices),
             44 => Some(Self::DrawOrderTables),
             45 => Some(Self::DrawOrderEntries),
+            46 => Some(Self::InsertClips),
+            47 => Some(Self::InsertClipVertices),
             _ => None,
         }
     }
@@ -390,6 +398,8 @@ impl SectionKind {
             Self::WipeoutClipVertices => WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
             Self::DrawOrderTables => DRAW_ORDER_TABLE_RECORD_SIZE,
             Self::DrawOrderEntries => DRAW_ORDER_ENTRY_RECORD_SIZE,
+            Self::InsertClips => INSERT_CLIP_RECORD_SIZE,
+            Self::InsertClipVertices => INSERT_CLIP_VERTEX_RECORD_SIZE,
         }
     }
 
@@ -745,7 +755,7 @@ fn validate_scene_cache_reader<R: Read + Seek>(
     validate_section_ranges(&entries, align_up(directory_end, 8), actual_file_size)?;
     validate_required_sections(&entries, minor)?;
     for entry in &entries {
-        validate_section_layout(&mut reader, entry)?;
+        validate_section_layout(&mut reader, entry, minor)?;
     }
     validate_cross_section_references(&mut reader, &entries, minor)?;
 
@@ -864,6 +874,9 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
     if minor_version >= 11 {
         required.extend([SectionKind::DrawOrderTables, SectionKind::DrawOrderEntries]);
     }
+    if minor_version >= 13 {
+        required.extend([SectionKind::InsertClips, SectionKind::InsertClipVertices]);
+    }
     for kind in required {
         let count = entries
             .iter()
@@ -880,7 +893,11 @@ fn validate_required_sections(entries: &[RawSectionEntry], minor_version: u16) -
     Ok(())
 }
 
-fn validate_section_layout<R: Read + Seek>(reader: &mut R, entry: &RawSectionEntry) -> Result<()> {
+fn validate_section_layout<R: Read + Seek>(
+    reader: &mut R,
+    entry: &RawSectionEntry,
+    minor_version: u16,
+) -> Result<()> {
     let Some(kind) = SectionKind::from_code(entry.kind) else {
         return Ok(());
     };
@@ -914,7 +931,7 @@ fn validate_section_layout<R: Read + Seek>(reader: &mut R, entry: &RawSectionEnt
         if string_offset < minimum_offset || string_offset > entry.byte_length {
             anyhow::bail!("{} has an invalid UTF-8 blob offset", kind.name());
         }
-        validate_string_references(reader, entry, kind, string_offset)?;
+        validate_string_references(reader, entry, kind, string_offset, minor_version)?;
     } else {
         if entry.flags != 0 {
             anyhow::bail!("{} has unsupported section flags", kind.name());
@@ -935,6 +952,7 @@ fn validate_string_references<R: Read + Seek>(
     entry: &RawSectionEntry,
     kind: SectionKind,
     string_offset: u64,
+    minor_version: u16,
 ) -> Result<()> {
     for index in 0..entry.record_count {
         let record_offset = entry
@@ -975,6 +993,15 @@ fn validate_string_references<R: Read + Seek>(
                     slice_u32(&record, 8),
                     slice_u32(&record, 12),
                 )?;
+                if minor_version >= 12 {
+                    validate_utf8_reference(
+                        reader,
+                        entry,
+                        string_offset,
+                        slice_u32(&record, 56),
+                        slice_u32(&record, 60),
+                    )?;
+                }
             }
             SectionKind::TextStyles => {
                 for reference_offset in [8, 16, 24, 32] {
@@ -1057,11 +1084,19 @@ fn validate_cross_section_references<R: Read + Seek>(
     if let Some(drawing) = find_section(entries, SectionKind::Drawing) {
         let mut record = [0_u8; DRAWING_RECORD_SIZE as usize];
         read_record(reader, drawing, 0, &mut record)?;
-        let wipeout_frame = slice_u32(&record, 12);
+        let display_settings = slice_u32(&record, 12);
+        let wipeout_frame = if minor_version >= 14 && display_settings != u32::MAX {
+            display_settings & 3
+        } else {
+            display_settings
+        };
         if (minor_version < 10 && wipeout_frame != 0)
             || (minor_version >= 10 && wipeout_frame != u32::MAX && wipeout_frame > 2)
+            || (minor_version >= 14
+                && display_settings != u32::MAX
+                && display_settings & !0x1f != 0)
         {
-            anyhow::bail!("drawing contains an invalid WIPEOUT frame setting");
+            anyhow::bail!("drawing contains invalid display settings");
         }
     }
 
@@ -1749,7 +1784,7 @@ fn write_scene_cache<W: Write + Seek>(
     document: &CadDocument,
     source_size: u64,
 ) -> Result<CacheWriteSummary> {
-    let section_count = 34_u32;
+    let section_count = 36_u32;
     let directory_offset = u64::from(HEADER_SIZE);
     let body_offset = align_up(
         directory_offset + u64::from(section_count) * u64::from(DIRECTORY_ENTRY_SIZE),
@@ -1867,6 +1902,16 @@ fn write_scene_cache<W: Write + Seek>(
     sections.push(write_wipeout_clip_vertex_section(writer, document)?);
     sections.push(write_draw_order_table_section(writer, &draw_order_tables)?);
     sections.push(write_draw_order_entry_section(writer, &draw_order_tables)?);
+    sections.push(write_empty_fixed_section(
+        writer,
+        SectionKind::InsertClips,
+        INSERT_CLIP_RECORD_SIZE,
+    )?);
+    sections.push(write_empty_fixed_section(
+        writer,
+        SectionKind::InsertClipVertices,
+        INSERT_CLIP_VERTEX_RECORD_SIZE,
+    )?);
 
     let file_size = writer.stream_position()?;
     writer.seek(SeekFrom::Start(0))?;
@@ -2063,6 +2108,18 @@ fn write_drawing_section<W: Write + Seek>(
     wipeout_frame: u32,
 ) -> Result<SectionEntry> {
     let offset = aligned_position(writer)?;
+    let mut display_settings = wipeout_frame;
+    if display_settings != u32::MAX {
+        if document.header.lineweight_display {
+            display_settings |= 1 << 2;
+        }
+        if document.header.fill_mode {
+            display_settings |= 1 << 3;
+        }
+        if document.header.show_model_space {
+            display_settings |= 1 << 4;
+        }
+    }
     let bounds = drawing_bounds(document).unwrap_or(Bounds3 {
         min: [0.0; 3],
         max: [0.0; 3],
@@ -2070,7 +2127,7 @@ fn write_drawing_section<W: Write + Seek>(
     write_u32(writer, document.version.version_code().into())?;
     write_u32(writer, document.maintenance_version.into())?;
     write_i32(writer, document.header.insertion_units.into())?;
-    write_u32(writer, wipeout_frame)?;
+    write_u32(writer, display_settings)?;
     write_u64(writer, counts.total_entities)?;
     write_u64(writer, counts.serialized_entities)?;
     for value in bounds.min.into_iter().chain(bounds.max) {
@@ -2159,6 +2216,7 @@ fn write_block_section<W: Write + Seek>(
     struct BlockRow {
         handle: u64,
         name: (u32, u32),
+        xref_path: (u32, u32),
         entity_count: u32,
         reference_count: u32,
         flags: u32,
@@ -2171,6 +2229,7 @@ fn write_block_section<W: Write + Seek>(
     let mut rows = Vec::with_capacity(document.block_records.len());
     for block in document.block_records.iter() {
         let name = push_string(&mut strings, &block.name)?;
+        let xref_path = push_string(&mut strings, &block.xref_path)?;
         let mut flags = 0_u32;
         if block.flags.anonymous {
             flags |= 1;
@@ -2196,6 +2255,7 @@ fn write_block_section<W: Write + Seek>(
         rows.push(BlockRow {
             handle: block.handle.value(),
             name,
+            xref_path,
             entity_count: u32::try_from(block.entity_handles.len())
                 .context("block contains too many entities for scene cache")?,
             reference_count: u32::try_from(block.insert_handles.len())
@@ -2220,7 +2280,8 @@ fn write_block_section<W: Write + Seek>(
         write_u32(writer, row.flags)?;
         write_i32(writer, row.units)?;
         write_vec3(writer, row.base_point)?;
-        write_u64(writer, 0)?;
+        write_u32(writer, row.xref_path.0)?;
+        write_u32(writer, row.xref_path.1)?;
     }
     writer.write_all(&strings)?;
 
@@ -5962,6 +6023,15 @@ fn finish_fixed_section<W: Seek>(
     })
 }
 
+fn write_empty_fixed_section<W: Write + Seek>(
+    writer: &mut W,
+    kind: SectionKind,
+    record_size: u32,
+) -> Result<SectionEntry> {
+    let offset = aligned_position(writer)?;
+    finish_fixed_section(writer, kind, record_size, offset, 0)
+}
+
 fn finish_variable_section<W: Seek>(
     writer: &mut W,
     kind: SectionKind,
@@ -6120,7 +6190,7 @@ mod tests {
         assert_eq!(read_u16(&bytes, 8), CACHE_VERSION_MAJOR);
         assert_eq!(read_u16(&bytes, 10), CACHE_VERSION_MINOR);
         assert_eq!(read_u32(&bytes, 12), HEADER_SIZE);
-        assert_eq!(read_u32(&bytes, 16), 34);
+        assert_eq!(read_u32(&bytes, 16), 36);
         assert_eq!(read_u64(&bytes, 48), 1234);
         assert_eq!(summary.counts.serialized_entities, 7);
         assert_eq!(summary.gpu_lines.model_segments, 43);
@@ -6131,7 +6201,7 @@ mod tests {
 
         let validation =
             validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
-        assert_eq!(validation.sections.len(), 34);
+        assert_eq!(validation.sections.len(), 36);
         assert_eq!(validation.source_size, 1234);
 
         let line = directory_entry(&bytes, SectionKind::Lines);
@@ -6159,6 +6229,12 @@ mod tests {
         let gpu_vertices = directory_entry(&bytes, SectionKind::GpuLineVertices);
         assert_eq!(gpu_vertices.1, GPU_LINE_VERTEX_RECORD_SIZE);
         assert_eq!(gpu_vertices.3, 86);
+        let insert_clips = directory_entry(&bytes, SectionKind::InsertClips);
+        assert_eq!(insert_clips.1, INSERT_CLIP_RECORD_SIZE);
+        assert_eq!(insert_clips.3, 0);
+        let insert_clip_vertices = directory_entry(&bytes, SectionKind::InsertClipVertices);
+        assert_eq!(insert_clip_vertices.1, INSERT_CLIP_VERTEX_RECORD_SIZE);
+        assert_eq!(insert_clip_vertices.3, 0);
     }
 
     #[test]
@@ -6749,6 +6825,36 @@ mod tests {
     }
 
     #[test]
+    fn block_table_preserves_the_original_xref_path() {
+        let mut document = CadDocument::new();
+        let mut block = BlockRecord::new("외부도면");
+        block.handle = document.allocate_handle();
+        block.flags.is_xref = true;
+        block.xref_path = r".\xref\외부도면.dwg".to_string();
+        document.block_records.add(block).unwrap();
+
+        let xref_index = document.block_records.len() - 1;
+        let mut cursor = Cursor::new(Vec::new());
+        write_scene_cache(&mut cursor, &document, 0).unwrap();
+        let bytes = cursor.into_inner();
+        let blocks = directory_entry(&bytes, SectionKind::Blocks);
+        let section_offset = usize::try_from(blocks.2).unwrap();
+        let string_offset = usize::try_from(read_u64(&bytes, section_offset + 8)).unwrap();
+        let record_offset = section_offset
+            + STRING_TABLE_HEADER_SIZE as usize
+            + xref_index * BLOCK_RECORD_SIZE as usize;
+        let path_offset = read_u32(&bytes, record_offset + 56) as usize;
+        let path_length = read_u32(&bytes, record_offset + 60) as usize;
+        let path_start = section_offset + string_offset + path_offset;
+
+        assert_eq!(
+            std::str::from_utf8(&bytes[path_start..path_start + path_length]).unwrap(),
+            r".\xref\외부도면.dwg"
+        );
+        validate_scene_cache_reader(Cursor::new(bytes.clone()), bytes.len() as u64).unwrap();
+    }
+
+    #[test]
     fn dimension_picture_block_reuses_the_block_instance_stream() {
         let mut document = CadDocument::new();
         let owner_handle = document.allocate_handle();
@@ -6941,7 +7047,9 @@ mod tests {
         let mut document = CadDocument::new();
         document.header.point_display_mode = 66;
         document.header.point_display_size = -3.5;
+        document.header.lineweight_display = true;
         document.header.fill_mode = false;
+        document.header.show_model_space = false;
 
         let mut point = Point::from_coords(2.0, 3.0, 4.0);
         point.normal = Vector3::new(0.0, 1.0, 0.0);
@@ -7017,7 +7125,10 @@ mod tests {
         assert_eq!(summary.counts.deferred_entities, 0);
 
         let drawing_entry = directory_entry(&bytes, SectionKind::Drawing);
-        assert_eq!(read_u32(&bytes, drawing_entry.2 as usize + 12), 1);
+        assert_eq!(
+            read_u32(&bytes, drawing_entry.2 as usize + 12),
+            1 | (1 << 2)
+        );
 
         let point_entry = directory_entry(&bytes, SectionKind::PointEntities);
         assert_eq!(point_entry.1, POINT_ENTITY_RECORD_SIZE);

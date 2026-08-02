@@ -1,10 +1,14 @@
-# Scene Cache v1.11
+# Scene Cache v1.18
 
 Status: source geometry/text writer, resolved DIMENSION picture-block
 instances, bounded HATCH rings and asynchronous solid/gradient fill,
 viewport-clipped pattern, POINT marker, SOLID fill/outline and 3DFACE
 wireframe paths, plus lossless WIPEOUT source, frame display and normalized
-draw-order tables implemented;
+draw-order tables, original XREF paths, INSERT/XREF spatial clips and
+external line/text composition, CAD linetypes, paper/model layout tabs,
+viewport layer/clip state and the saved model-space view
+plus source IMAGE/IMAGEDEF paths, image bases and clip boundaries
+implemented;
 expansion tracked by GitHub issues #3 and #9.
 
 The cache is a little-endian, versioned binary container designed for range
@@ -42,10 +46,11 @@ Header flag bit 0 (`0x00000001`) marks a display-only progressive preview.
 All other bits are reserved and must be zero; the Webview rejects a cache with
 an unknown header flag. A canonical full cache always writes flags as zero.
 
-A flagged preview is still an independently readable v1.11 container with the
+A flagged preview is still an independently readable v1.18 container with the
 complete section directory. It carries drawing, layer, block and INSERT
-metadata plus only the LOD-0 GPU line batches and vertices needed for the
-first frame. Other required sections are encoded as valid empty sections.
+metadata, INSERT clip boundaries, plus only the LOD-0 GPU line batches and
+vertices needed for the first frame. Other required sections are encoded as
+valid empty sections.
 Preview geometry retains the 4 MiB overview cap and existing metadata section
 limits. The artifact is ephemeral: it is not a valid replacement for the
 canonical full conversion result, is not committed under the cache identity
@@ -101,6 +106,16 @@ Section kinds currently written:
 | 43 | WIPEOUT clip-boundary `f64[2]` vertex pool |
 | 44 | normalized block-local draw-order table records |
 | 45 | draw-order entity/sort-handle entry pool |
+| 46 | INSERT/XREF spatial-clip records |
+| 47 | INSERT/XREF clip-boundary `f64[2]` vertex pool |
+| 48 | linetype definitions and UTF-8 names/descriptions |
+| 49 | linetype dash/shape/text records |
+| 50 | model/paper layout records and UTF-8 plot settings |
+| 51 | paper-space viewport records |
+| 52 | viewport-frozen layer indices |
+| 53 | non-rectangular viewport clip vertices |
+| 54 | IMAGE records and IMAGEDEF UTF-8 paths |
+| 55 | IMAGE clip-boundary `f64[2]` vertex pool |
 
 Version 1.0 contains kinds 1–3 and 10–13. Version 1.1 adds kinds 14–21.
 Version 1.2 adds kinds 30–31 for straight and polyline GPU lines. Version 1.3
@@ -116,8 +131,18 @@ bump or new section. Version 1.9 adds kind 41 for WCS 3DFACE corners and
 invisible-edge flags. Version 1.10 adds kinds 42–43 for WIPEOUT image bases,
 display metadata and exact clip vertices; drawing metadata offset 12 stores
 the drawing-wide frame setting. Version 1.11 adds kinds 44–45 for normalized
-`SORTENTSTABLE` ownership and entity/sort-handle pairs. The validator
-continues to accept older v1 caches, while a v1.11 writer always emits all 34
+`SORTENTSTABLE` ownership and entity/sort-handle pairs. Version 1.12 uses the
+last eight bytes of the unchanged 64-byte block record for the original XREF
+path. The validator continues to accept older v1 caches, while a v1.12 writer
+retains that path unchanged. Version 1.13 adds kinds 46–47 for bounded
+`SPATIAL_FILTER`/XCLIP boundaries associated with INSERT records. A v1.13
+writer emits 36 sections. Version 1.14 expands the drawing display settings
+without adding a section. Version 1.15 adds kinds 48–49, extends drawing
+metadata with linetype scales and expands GPU vertices with a pattern-distance
+field. Version 1.16 adds kinds 50–53 for layouts and paper-space viewports.
+Version 1.17 extends drawing metadata with the saved model-space view.
+Version 1.18 adds kinds 54–55 for raster IMAGE placement, display metadata,
+IMAGEDEF paths and exact clip coordinates. A v1.18 writer always emits all 44
 sections, including empty pools.
 
 ## Shared primitive prefix
@@ -143,26 +168,37 @@ coordinates without replacing these source-precision records.
 
 ## Drawing record
 
-Kind 1 contains one 80-byte record:
+Kind 1 contains one 160-byte record in v1.17 and later:
 
 | Offset | Type | Field |
 | ---: | --- | --- |
 | 0 | `u32` | source DWG version code |
 | 4 | `u32` | source maintenance version |
 | 8 | `i32` | insertion units |
-| 12 | `u32` | v1.10 WIPEOUT frame setting: 0, 1, 2, or `0xffffffff` when unavailable |
+| 12 | `u32` | display bits: WIPEOUT frame 0–1, LWDISPLAY 2, FILLMODE 3, model space active 4; or `0xffffffff` |
 | 16 | `u64` | total logical entity count |
 | 24 | `u64` | serialized logical entity count |
 | 32 | `f64[3]` | drawing minimum bounds |
 | 56 | `f64[3]` | drawing maximum bounds |
+| 80 | `f64` | global linetype scale |
+| 88 | `f64` | current-entity linetype scale |
+| 96 | `u32` | linetype display flags; bit 0 is paper-space linetype scaling |
+| 100 | `u32` | reserved |
+| 104 | `f64[3]` | saved model-view center |
+| 128 | `f64` | saved model-view height |
+| 136 | `f64` | saved model-view width |
+| 144 | `f64` | saved model-view twist |
+| 152 | `u32` | saved-view flags; bit 0 means present |
+| 156 | `u32` | reserved |
 
-Before v1.10, offset 12 is reserved and must be zero. Readers expose the
-v1.10 value as nullable metadata so the first-frame reader can pass it to the
-later primitive worker without rereading kind 1.
+Before v1.10, offset 12 is reserved and must be zero. Versions 1.10–1.13 use
+only its WIPEOUT value; v1.14 adds the three display bits. Versions before
+v1.15 end at byte 80, v1.15–v1.16 end at byte 104, and v1.17 adds the saved
+view suffix. Readers expose unavailable values through stable defaults.
 
 ## String-table sections
 
-Layer, block, text-style and text-entity sections begin with:
+Layer, block, text-style, text-entity and IMAGE sections begin with:
 
 | Offset | Type | Field |
 | ---: | --- | --- |
@@ -173,6 +209,28 @@ Layer, block, text-style and text-entity sections begin with:
 Individual records contain offsets and lengths into the trailing UTF-8 blob.
 Layer and block data is stored once; primitive and block-instance records
 reference it by index or owner handle.
+
+### Block record
+
+Kind 3 stores one 64-byte record per shared block definition:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u64` | block handle |
+| 8 | `u32[2]` | block-name UTF-8 offset and length |
+| 16 | `u32` | owned entity count |
+| 20 | `u32` | INSERT reference count |
+| 24 | `u32` | block flags |
+| 28 | `i32` | insertion units |
+| 32 | `f64[3]` | block base point |
+| 56 | `u32[2]` | v1.12 original XREF-path UTF-8 offset and length |
+
+Block flag bits are 0 anonymous, 1 has attributes, 2 XREF, 3 XREF overlay,
+4 external path present, 5 explodable and 6 uniformly scaled. Before v1.12,
+offsets 56–63 are reserved and readers expose an empty XREF path. A v1.12
+writer retains the path stored by the DWG—relative, Windows drive, UNC or
+POSIX—without converting it to the current machine's path syntax. The host
+resolves that portable source string and never rewrites the original drawing.
 
 ## Shared block-instance records
 
@@ -206,6 +264,32 @@ explicit in `coverage.deferred_entities`.
 DIMENSION picture blocks may themselves contain nested block references. The
 existing cycle, depth and global-instance limits therefore apply unchanged,
 as do the packed `Float64Array` matrices and shared GPU geometry.
+
+### INSERT/XREF spatial clips
+
+Kind 46 stores one 32-byte record for each clipped INSERT or MINSERT:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u64` | INSERT handle |
+| 8 | `u64` | first kind-47 vertex |
+| 16 | `u32` | vertex count |
+| 20 | `u32` | flags: bit 0 rectangular, bit 1 inverted |
+| 24 | `u64` | reserved |
+
+Kind 47 stores target-block-local `f64[2]` clip vertices. Rectangular
+boundaries contain two opposing corners; polygonal boundaries contain 3–256
+ordered vertices. The native writer applies LibreDWG's spatial-filter inverse
+transform before serialization. The instance graph expands a rectangle to
+four corners, transforms each boundary into world coordinates and propagates
+the resulting clip chain through every nested block occurrence.
+
+The renderer stores clip-chain headers and camera-relative vertices in one
+bounded floating-point texture. The line, fill and point shaders discard
+fragments outside every inherited boundary. The Canvas text overlay applies
+the same chain with Canvas2D clipping, and fitted/detail bounds intersect the
+non-inverted clip envelopes so hidden block geometry cannot dominate the
+initial view or detail streaming.
 
 ## Text styles and source text
 
@@ -585,6 +669,68 @@ The Webview therefore reports visible source masks as
 `deferredWipeoutMasks` while preserving every source field needed by the
 draw-order-aware renderer tracked in issue #4.
 
+## Raster IMAGE references
+
+Scene Cache v1.18 preserves each raster `IMAGE` entity independently of the
+first line frame. Kind 54 is a string-table section with one 176-byte record
+per entity:
+
+| Offset | Type | Field |
+| ---: | --- | --- |
+| 0 | `u8[32]` | shared primitive prefix |
+| 32 | `u32[2]` | IMAGEDEF path UTF-8 offset and byte length |
+| 40 | `i32` | source class version |
+| 44 | `u16` | display properties; only bits 0–3 are valid |
+| 46 | `u8` | clip-boundary type: 1 rectangular, 2 polygonal |
+| 47 | `u8` | clipping enabled: 0 or 1 |
+| 48 | `u8` | brightness, 0–100; 50 is neutral |
+| 49 | `u8` | contrast, 0–100; 50 is neutral |
+| 50 | `u8` | fade, 0–100 |
+| 51 | `u8` | clip mode: 0 outside, 1 inside/inverted |
+| 52 | `u32` | reserved; zero |
+| 56 | `u64` | first kind-55 clip vertex |
+| 64 | `u32` | clip-vertex count |
+| 68 | `u32` | reserved; zero |
+| 72 | `u64` | IMAGEDEF handle, or zero |
+| 80 | `u64` | IMAGEDEF reactor handle, or zero |
+| 88 | `f64[3]` | insertion point |
+| 112 | `f64[3]` | image U vector per source pixel |
+| 136 | `f64[3]` | image V vector per source pixel |
+| 160 | `f64[2]` | positive source-pixel width and height |
+
+Kind 55 stores the contiguous 16-byte `f64[2]` local image-coordinate pool.
+Rectangular clips contain exactly two opposite corners and polygonal clips
+contain at least three vertices. The validator requires finite,
+non-degenerate U/V bases, bounded display values, valid UTF-8 paths and full
+pool coverage. Source is capped at 65,536 IMAGE records and 1,048,576 clip
+vertices. Serialized clip vertices retain the source IMAGE pixel convention.
+Before applying placement, the Webview converts each top-origin clip Y to its
+bottom-origin image basis with `height - 1 - y`; this leaves the default
+half-pixel boundary invariant while aligning cropped image content with its
+CAD geometry.
+
+The path is retained exactly as stored in IMAGEDEF. The VS Code host resolves
+saved manual mappings, current-platform absolute paths, drawing-relative
+paths and bounded filename/parent-folder search in that order. It currently
+accepts JPG/JPEG and PNG only. A file is limited to 32 MiB, one source image
+to 100 million pixels, one drawing session to 256 references and unique
+compressed transfer to 64 MiB. Missing or ambiguous paths remain available
+for explicit user selection.
+
+The Webview requests content only after the transformed image rectangle
+intersects the current viewport and is at least 0.75 screen pixel in each
+dimension. Its first decode is sized to 1.5 times the current screen footprint
+and upgrades only when the requested size grows by more than 1.5 times.
+Decoding is capped at 4,096 pixels on either axis and 8,388,608 pixels per
+bitmap. A least-recently-used cache retains at most 16,777,216 decoded pixels
+(64 MiB RGBA) while compressed content remains deduplicated by SHA-256. Each
+image reuses the existing block/XREF instance graph, layer visibility and
+nested XCLIP chain. Its transformed normal clip boundary contributes to fitted
+bounds, including image-only root and external drawings. Canvas placement maps
+the bitmap to `insertion + U*x + V*y`, applies rectangular or polygonal IMAGE
+clipping, brightness, contrast, fade and instance opacity, and keeps WebGL
+line/fill geometry above the raster plane.
+
 ## Viewport and LOD GPU lines
 
 LINE and normalized polyline segments are emitted as interleaved, GPU-ready
@@ -610,16 +756,20 @@ control-point chords instead of being silently dropped. These limits bound
 conversion work and cache growth; source-precision curve records remain the
 authority for future view-adaptive refinement.
 
-The converter creates at most 65,536 overview segments across model space and
-all non-empty blocks. When the number of non-empty groups fits that budget,
-each group receives one segment before the remainder is distributed by segment
-count; in the pathological case of more groups than slots, the largest groups
-are selected first. If the full drawing is already below the limit, the full
-data is also LOD 0 and no duplicate overview is written.
+The v1.15+ converter creates at most 58,254 overview segments across model
+space and all non-empty blocks, keeping its 36-byte vertex stream below
+4 MiB. Versions with 32-byte vertices used a 65,536-segment budget. When the
+number of non-empty groups fits the current budget, each group receives one
+segment before the remainder is distributed by segment count; in the
+pathological case of more groups than slots, the largest groups are selected
+first. If the full drawing is already below the limit, the full data is also
+LOD 0 and no duplicate overview is written.
 
 Overview batches are written before all LOD 1 detail batches. Consequently,
-the first-frame vertex data is one contiguous prefix of at most 4 MiB. Detail
-batches contain no more than 8,192 line segments (512 KiB of vertex data) and
+the first-frame vertex data is one contiguous prefix of at most 4 MiB. Current
+detail batches contain no more than 7,281 line segments (524,232 bytes of
+vertex data); versions with 32-byte vertices used 8,192 segments. Every
+current batch therefore remains below the 512 KiB range-read limit. Batches
 are ordered spatially by a 16-bit XY Morton key. A client can scan the small
 batch directory, intersect batch bounds with the viewport and range-read only
 the matching vertex spans.
@@ -651,8 +801,8 @@ block references, bounds, vertex/segment counts and pool coverage.
 
 ### GPU line vertex record
 
-Each kind-31 record is 32 bytes and can be bound directly as an interleaved GPU
-vertex buffer:
+Each v1.15+ kind-31 record is 36 bytes and can be bound directly as an
+interleaved GPU vertex buffer:
 
 | Offset | Type | Field |
 | ---: | --- | --- |
@@ -661,21 +811,25 @@ vertex buffer:
 | 16 | `u32` | encoded source color |
 | 20 | `u32` | entity handle low 32 bits |
 | 24 | `u32` | entity handle high 32 bits |
-| 28 | `u32` | packed line weight, visibility, source kind and approximation flag |
+| 28 | `u32` | packed line-weight index, linetype, visibility, source kind and approximation flag |
+| 32 | `f32` | cumulative linetype-pattern distance |
 
-For v1.5+, the packed style stores the signed line-weight bits in bits 0–15,
-invisibility in bit 16, source kind in bits 17–20 and the curved-chord
-approximation flag in bit 21. Source kinds are 0 LINE, 1 LWPOLYLINE, 2 2D
-POLYLINE, 3 3D POLYLINE, 4 ARC, 5 CIRCLE, 6 ELLIPSE, 7 SPLINE and 8 HATCH
-boundary. In v1.2–v1.4, source kind occupies bits 17–19 and approximation is
-bit 20. Precise standalone curve parameters, bulges and OCS metadata remain
-available in the source sections for later high-zoom refinement.
+For v1.15+, bits 0–4 select a normalized line weight, bits 5–15 carry the
+linetype code, bit 16 is invisibility, bits 17–20 are source kind and bit 21
+marks a curved or bounded fallback approximation. Source kinds are 0 LINE,
+1 LWPOLYLINE, 2 2D POLYLINE, 3 3D POLYLINE, 4 ARC, 5 CIRCLE, 6 ELLIPSE,
+7 SPLINE, 8 HATCH boundary, 9 XLINE, 10 MULTILEADER, 11 VIEWPORT frame,
+12 LEADER and 13 OLE2FRAME boundary. The OLE kind preserves the actual four
+WCS corners from AutoCAD's embedded preamble; it does not claim to decode the
+embedded compound-document body. Versions before v1.15 use 32-byte vertices
+without the pattern-distance field. Precise standalone curve parameters,
+bulges and OCS metadata remain available in the source sections for later
+high-zoom refinement.
 
 ## Deferred v1 work
 
 - complete MTEXT formatting, background, column and exact OCS/alignment display
   fidelity beyond the bounded first pass;
-- automatic trusted SHX font discovery and project font mapping;
 - linetype override table;
 - exact CAD draw-order parity beyond the bounded block-local/nested INSERT
   mask composition and safe fallback;
@@ -688,7 +842,7 @@ generated artifacts and must not be committed.
 
 ## LibreDWG qualification writer
 
-The optional LibreDWG adapter currently writes a valid but partial v1.11 cache
+The optional LibreDWG adapter currently writes a valid v1.18 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value
@@ -701,7 +855,9 @@ evaluation and malformed-input fallback use the 256-segments-per-entity limit.
 It also writes the seven bounded HATCH source/fill/pattern sections and the
 POINT/SOLID/3DFACE/WIPEOUT source sections, including `PDMODE`, `PDSIZE`,
 `FILLMODE`, invisible face edges, exact WIPEOUT clip vertices and the global
-frame setting, plus normalized draw-order tables and entries. The Webview
+frame setting, normalized draw-order tables and entries, bounded INSERT/XREF
+`SPATIAL_FILTER` boundaries, and IMAGE/IMAGEDEF paths, placement bases and
+clip vertices. The Webview
 range-reads those sections after the first line
 frame, builds POINT markers, SOLID geometry, 3DFACE wireframe edges and safe
 WIPEOUT frames in a one-shot worker, triangulates solid and gradient HATCH
@@ -712,11 +868,16 @@ omitted logical entities, unresolved DIMENSION blocks, skipped paths and safety
 caps are exposed in the conversion report rather than silently treated as
 supported.
 
-This qualification writer keeps the same 4 MiB overview and 512 KiB detail
+It also emits bounded classic LEADER polylines/arrows, MULTILEADER geometry,
+XLINE display chords, layout viewport frames and OLE2FRAME boundary
+placeholders. Embedded OLE compound-document contents remain a separately
+reported visual-fidelity limitation.
+
+This qualification writer keeps the 4 MiB overview and 512 KiB detail
 limits and uses disk-backed group-local XY Morton ordering for detail batches.
 When the extension requests progressive publication, the writer emits the
 flagged overview-only sidecar before that detail sort, then continues to the
-unchanged full v1.11 cache.
+full v1.18 cache.
 LibreDWG is the selected primary engine path. The remaining unsupported source
 families and exact CAD text-layout fidelity must be closed before that path is
 release-ready.

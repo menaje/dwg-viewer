@@ -7,7 +7,7 @@ import {
 } from "../src/range-source.mjs";
 import {
   DIRECTORY_ENTRY_SIZE,
-  GPU_LINE_VERTEX_RECORD_SIZE,
+  LEGACY_GPU_LINE_VERTEX_RECORD_SIZE,
   SceneCacheReader,
   SectionKind,
 } from "../src/scene-cache.mjs";
@@ -61,10 +61,156 @@ test("accepts the Scene Cache v1.3 header", async () => {
 test("rejects a newer unsupported Scene Cache minor version", async () => {
   await assert.rejects(
     SceneCacheReader.open(
-      new MemoryRangeSource(makeFixtureCache({ minorVersion: 12 })),
+      new MemoryRangeSource(makeFixtureCache({ minorVersion: 19 })),
     ),
-    /unsupported scene-cache version 1\.12/,
+    /unsupported scene-cache version 1\.19/,
   );
+});
+
+test("reads Scene Cache v1.14 drawing display settings", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(
+      makeFixtureCache({
+        minorVersion: 14,
+        wipeoutFrame: 2,
+        lineWeightDisplay: true,
+        fillMode: false,
+        modelSpaceActive: false,
+      }),
+    ),
+  );
+  const metadata = await reader.readRenderMetadata();
+
+  assert.equal(metadata.drawing.wipeoutFrame, 2);
+  assert.equal(metadata.drawing.lineWeightDisplay, true);
+  assert.equal(metadata.drawing.fillMode, false);
+  assert.equal(metadata.drawing.modelSpaceActive, false);
+});
+
+test("reads Scene Cache v1.15 linetype definitions and scale", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(
+      makeFixtureCache({
+        minorVersion: 15,
+        globalLinetypeScale: 300,
+      }),
+    ),
+  );
+  const metadata = await reader.readRenderMetadata();
+
+  assert.equal(metadata.drawing.globalLinetypeScale, 300);
+  assert.equal(metadata.drawing.paperSpaceLinetypeScale, true);
+  assert.equal(metadata.linetypes.length, 1);
+  assert.equal(metadata.linetypes[0].name, "DASHED");
+  assert.equal(metadata.linetypes[0].patternLength, 1.5);
+  assert.deepEqual(
+    metadata.linetypes[0].dashes.map((dash) => dash.length),
+    [1, -0.5],
+  );
+});
+
+test("reads Scene Cache v1.16 layouts, viewports and frozen layers", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 16 })),
+  );
+  const metadata = await reader.readRenderMetadata();
+
+  assert.equal(metadata.layouts.length, 2);
+  assert.equal(metadata.layouts[0].name, "Model");
+  assert.equal(metadata.layouts[0].blockIndex, 0);
+  assert.equal(metadata.layouts[1].name, "배치1");
+  assert.deepEqual(
+    [metadata.layouts[1].paperWidth, metadata.layouts[1].paperHeight],
+    [420, 297],
+  );
+  assert.equal(metadata.layouts[1].viewports.length, 2);
+  assert.equal(metadata.layouts[1].viewports[1].id, 2);
+  assert.deepEqual(
+    metadata.layouts[1].viewports[1].frozenLayerIndices,
+    [0],
+  );
+  assert.deepEqual(
+    metadata.layouts[1].viewports[1].clipBoundaryVertices,
+    [
+      [40, 20, 0],
+      [380, 20, 0],
+      [360, 277, 0],
+      [60, 277, 0],
+    ],
+  );
+});
+
+test("reads the Scene Cache v1.17 saved model view", async () => {
+  const savedModelView = {
+    center: [1_903_111.951778639, -372_937.2779705549, 0],
+    height: 144_557.98890031595,
+    width: 364_416.2807004749,
+    twist: 0,
+  };
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(
+      makeFixtureCache({
+        minorVersion: 17,
+        savedModelView,
+      }),
+    ),
+  );
+  const metadata = await reader.readRenderMetadata();
+
+  assert.deepEqual(metadata.drawing.savedModelView, savedModelView);
+});
+
+test("reads bounded Scene Cache v1.18 raster image references", async () => {
+  const source = new TrackedRangeSource(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 18 })),
+  );
+  const reader = await SceneCacheReader.open(source);
+  const requestsAfterOpen = source.requests.length;
+  const images = await reader.readImageEntities();
+
+  assert.equal(images.length, 1);
+  assert.equal(images.clipVertexCount, 2);
+  assert.equal(images.readPath(0), String.raw`.\image\한글 사진.png`);
+  assert.equal(images.get(0).displayProperties, 7);
+  assert.equal(images.get(0).clippingEnabled, true);
+  assert.equal(images.get(0).brightness, 40);
+  assert.equal(images.get(0).contrast, 60);
+  assert.equal(images.get(0).fade, 10);
+  assert.deepEqual(images.get(0).insertionPoint, [100, 200, 0]);
+  assert.deepEqual(images.get(0).uVector, [2, 0, 0]);
+  assert.deepEqual(images.get(0).vVector, [0, 3, 0]);
+  assert.deepEqual(images.get(0).size, [8, 6]);
+  assert.deepEqual(images.get(0).clipBoundaryVertices, [
+    [1.5, 0.5],
+    [6.5, 4.5],
+  ]);
+  assert.equal(source.requests.length - requestsAfterOpen, 2);
+});
+
+test("reads the original XREF path from Scene Cache v1.12", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 12 })),
+  );
+  const blocks = await reader.readBlocks();
+
+  assert.equal(blocks[0].xrefPath, "");
+  assert.equal(blocks[2].xrefPath, String.raw`.\xref\외부도면.dwg`);
+});
+
+test("reads bounded INSERT XCLIP metadata from Scene Cache v1.13", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 13 })),
+  );
+  const clips = await reader.readInsertClips();
+
+  assert.equal(clips.length, 1);
+  assert.equal(clips[0].insertHandle, 201n);
+  assert.equal(clips[0].rectangular, true);
+  assert.equal(clips[0].inverted, false);
+  assert.deepEqual(clips[0].vertices, [
+    [10, 20, 0],
+    [30, 40, 0],
+  ]);
 });
 
 test("accepts the Scene Cache v1.5 HATCH-boundary header", async () => {
@@ -465,7 +611,10 @@ test("parses render metadata and reads one contiguous overview prefix", async ()
   const beforeOverview = source.snapshot();
   const overview = await reader.readOverviewVertices();
   const vertexSection = reader.getSection(SectionKind.GpuLineVertices);
-  assert.equal(overview.byteLength, 4 * GPU_LINE_VERTEX_RECORD_SIZE);
+  assert.equal(
+    overview.byteLength,
+    4 * LEGACY_GPU_LINE_VERTEX_RECORD_SIZE,
+  );
   assert.deepEqual(source.requests.at(-1), {
     offset: vertexSection.offset,
     length: overview.byteLength,

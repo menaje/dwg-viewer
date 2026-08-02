@@ -1,7 +1,13 @@
 # Webview renderer
 
-Scene Cache v1.11 range reader, WebGL2 line/fill/point renderer and bounded CAD text
-overlay for the VS Code Webview.
+Scene Cache v1.18 range reader, WebGL2 line/fill/point renderer, bounded CAD
+text overlay and lazy raster IMAGE overlay for the VS Code Webview.
+
+The standalone page is the development and qualification shell: it keeps the
+framed canvas, diagnostics and full memory/performance dashboard. When hosted
+by VS Code, the same renderer switches to an immersive shell that fills the
+editor with the drawing, hides metrics and reveals its edge tool shelf and
+layout tabs on hover, focus or an explicit click.
 
 ## Implemented
 
@@ -12,10 +18,33 @@ overlay for the VS Code Webview.
 - Limits each detail read to 512 KiB.
 - Resolves nested INSERT, MINSERT and DIMENSION picture-block references while
   keeping block geometry shared.
+- Reads v1.12 original XREF paths, composes each child model/block instance
+  under its parent INSERT and preserves shared geometry across repeated inserts.
+- Reads v1.13 INSERT/XREF spatial clips, propagates nested clip chains through
+  shared instances and applies one boundary to WebGL geometry and Canvas text.
+- Reads v1.14-v1.18 linetype, saved-view, layout, VIEWPORT and raster IMAGE
+  sections and
+  allows every paper-space tab to be selected without duplicating model data.
+- Opens each tab at its saved CAD view while the `전체 보기` action fits the
+  complete stored layout extents, including multi-sheet paper-space layouts
+  without letting stray off-paper geometry distort the fit.
+- Requests only visible JPG/PNG IMAGE references, applies IMAGE and nested
+  XREF clipping plus brightness/contrast/fade, deduplicates compressed content
+  and bounds decoded bitmap memory with an LRU. Raster footprints participate
+  in fitted bounds even for image-only drawings, while decoding follows the
+  current on-screen size and upgrades only after a meaningful zoom. IMAGE clip
+  pixels are converted from their saved top-origin Y convention before
+  placement so cropped rasters stay aligned with CAD geometry.
+- Remaps child layers to root XREF-dependent names and renders external
+  overview/detail lines and source text without expanding a full scene graph.
+- Serializes external first-frame loads and caps aggregate external overview
+  source, overview GPU and detail GPU data at 32 MiB each.
 - Stores instance transforms in packed `Float64Array` collections.
 - Rebases world coordinates around the camera before WebGL2 `f32` upload.
 - Renders overview lines with batched, instanced draw calls.
 - Supports anchored wheel/button zoom, pointer pan and fitted-view reset.
+- Keeps byte-budgeted detail streaming active while zooming out so switching
+  to the sampled overview cannot abruptly remove visible objects.
 - Selects LOD 1 model and transformed block batches against the viewport.
 - Streams at most two detail reads concurrently and coalesces redraws.
 - Caps one visible detail set at 32 MiB and cached GPU detail at 96 MiB.
@@ -78,6 +107,8 @@ overlay for the VS Code Webview.
 - Loads source text after the first geometry frame and renders selected local
   SHX/BigFont glyphs through byte-bounded caches, with a Korean system-font
   fallback when a CAD font is unavailable.
+- Wraps MTEXT paragraphs to their stored drawing width while preserving
+  explicit `\P` paragraph breaks and bounded glyph processing.
 - Separates strict EUC-KR from CP949/UHC, encodes all 11,172 modern Hangul
   syllables as Johab/CP1361, and probes actual glyph presence instead of
   guessing from BigFont filenames. A per-font override resolves ambiguous
@@ -109,7 +140,8 @@ pnpm --filter @dwg-viewer/webview check
 Tests cover bounded range reads, cache validation, nested/DIMENSION block
 transforms, invalid targets, cycles and instance/depth caps, large-coordinate
 camera rebasing, camera controls, viewport detail selection, GPU resource
-ranges, layer visibility and LRU eviction/request coalescing.
+ranges, layer visibility, XREF instance/layer/text composition, aggregate XREF
+GPU budgets and LRU eviction/request coalescing.
 They also cover delayed Korean text reads, strict EUC-KR, CP949 and Johab
 mapping, per-BigFont overrides, SHX/BigFont cache limits and the
 v1.7 HATCH range, triangulation, dashed-pattern, block-clipping,

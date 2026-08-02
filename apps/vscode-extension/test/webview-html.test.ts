@@ -88,6 +88,26 @@ test("repository Webview CSS keeps host-only controls hidden", async () => {
     repositoryStyles,
     /\[hidden\]\s*\{\s*display:\s*none\s*!important;/u,
   );
+  assert.match(
+    repositoryStyles,
+    /body\[data-host="vscode"\]\s+#metrics\s*\{\s*display:\s*none;/u,
+  );
+  assert.match(
+    repositoryStyles,
+    /body\[data-host="vscode"\]\s+\.viewport,[\s\S]*?border:\s*0;/u,
+  );
+  assert.match(
+    repositoryStyles,
+    /header:hover\s+\.toolbar,[\s\S]*?pointer-events:\s*auto;/u,
+  );
+  assert.match(
+    repositoryStyles,
+    /body\[data-host="vscode"\]\s+\.layout-tabs\s*\{[\s\S]*?opacity:\s*0\.88;[\s\S]*?transform:\s*translate\(-50%,\s*0\);/u,
+  );
+  assert.doesNotMatch(
+    repositoryStyles,
+    /\.layout-tabs\s*\{[\s\S]*?translate\(-50%,\s*calc\(100%\s*-\s*8px\)\)/u,
+  );
 });
 
 test("repository host UI and manifest expose adapter selection and diagnosis", async () => {
@@ -115,6 +135,11 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
     template,
     /id="host-adapter-setup"[^>]*hidden/u,
   );
+  assert.match(
+    template,
+    /id="viewer-tools-trigger"[^>]*aria-expanded="false"/u,
+  );
+  assert.match(mainModule, /setViewerToolsOpen/u);
   assert.match(mainModule, /code\.startsWith\("ADAPTER_"\)/u);
   assert.match(mainModule, /type: "dwg-adapter-select\/1"/u);
 

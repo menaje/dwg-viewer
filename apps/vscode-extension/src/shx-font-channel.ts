@@ -5,13 +5,17 @@ export const MAX_SHX_FONT_FILE_BYTES = 32 * 1024 * 1024;
 export const MAX_SHX_FONT_TRANSFER_BYTES = 64 * 1024 * 1024;
 export const MAX_SHX_FONT_DIRECTORIES = 32;
 export const MAX_SHX_FONT_REQUESTS = 128;
+export const DEFAULT_PROJECT_FONT_SEARCH_DEPTH = 4;
+export const MAX_PROJECT_FONT_SEARCH_ENTRIES = 50_000;
 
 const MAX_INDEXED_FONT_FILES = 16_384;
 const MAX_FONT_NAME_BYTES = 512;
+const SUPPORTED_FONT_EXTENSIONS = new Set([".shx", ".ttf", ".otf", ".ttc"]);
 
-type FontSource = "drawing" | "configured" | "mapping";
+type FontSource = "drawing" | "project" | "configured" | "mapping";
 type FontFailureStatus =
   | "missing"
+  | "ambiguous"
   | "invalid"
   | "too-large"
   | "budget-exceeded"
@@ -39,9 +43,12 @@ interface IndexedFont {
 export interface ShxFontChannelOptions {
   drawingDirectory: string;
   fontDirectories?: readonly string[];
+  projectDirectories?: readonly string[];
   fontMappings?: Readonly<Record<string, string>>;
   maximumFileBytes?: number;
   maximumTransferBytes?: number;
+  maximumSearchDepth?: number;
+  maximumSearchEntries?: number;
 }
 
 type PostMessage = (message: unknown) => PromiseLike<boolean>;
@@ -54,13 +61,13 @@ function aliasesForCanonicalName(name: string): readonly string[] {
   const aliases = new Set([name]);
   if (name.endsWith(".shx")) {
     aliases.add(name.slice(0, -4));
-  } else {
+  } else if (!path.extname(name)) {
     aliases.add(`${name}.shx`);
   }
   return [...aliases];
 }
 
-export function normalizeShxFontName(value: unknown): string {
+export function normalizeDrawingFontName(value: unknown): string {
   if (typeof value !== "string") {
     return "";
   }
@@ -81,18 +88,29 @@ export function normalizeShxFontName(value: unknown): string {
   ) {
     return "";
   }
-  const normalized = basename.toLocaleLowerCase("en-US");
-  if (normalized.endsWith(".shx")) {
+  const normalized = basename.normalize("NFC").toLocaleLowerCase("en-US");
+  const extension = path.extname(normalized);
+  if (SUPPORTED_FONT_EXTENSIONS.has(extension)) {
     return normalized;
   }
-  if (normalized.includes(".")) {
+  if (extension) {
     return "";
   }
   return `${normalized}.shx`;
 }
 
+export function normalizeShxFontName(value: unknown): string {
+  const normalized = normalizeDrawingFontName(value);
+  return normalized.endsWith(".shx") ? normalized : "";
+}
+
+export function isOutlineFontName(value: unknown): boolean {
+  const normalized = normalizeDrawingFontName(value);
+  return [".ttf", ".otf", ".ttc"].includes(path.extname(normalized));
+}
+
 function normalizedPathKey(value: string): string {
-  const resolved = path.resolve(value);
+  const resolved = path.resolve(value).normalize("NFC");
   return process.platform === "win32"
     ? resolved.toLocaleLowerCase("en-US")
     : resolved;
@@ -113,22 +131,29 @@ function boundedPositiveInteger(
 class ShxFontResolver {
   private readonly directories: readonly {
     directoryPath: string;
-    source: Exclude<FontSource, "mapping">;
+    source: "drawing" | "configured";
   }[];
+  private readonly projectDirectories: readonly string[];
   private readonly mappings = new Map<string, string>();
   private readonly index = new Map<string, IndexedFont>();
+  private readonly projectResults = new Map<
+    string,
+    FontCandidate | "ambiguous" | "missing"
+  >();
+  private readonly maximumSearchDepth: number;
+  private readonly maximumSearchEntries: number;
   private nextDirectoryIndex = 0;
   private indexedFiles = 0;
 
   constructor(options: ShxFontChannelOptions) {
     const directories: {
       directoryPath: string;
-      source: Exclude<FontSource, "mapping">;
+      source: "drawing" | "configured";
     }[] = [];
     const seen = new Set<string>();
     const addDirectory = (
       value: unknown,
-      source: Exclude<FontSource, "mapping">,
+      source: "drawing" | "configured",
     ): void => {
       if (
         typeof value !== "string" ||
@@ -151,11 +176,48 @@ class ShxFontResolver {
       addDirectory(directory, "configured");
     }
     this.directories = Object.freeze(directories);
+    const projectDirectories: string[] = [];
+    for (const value of options.projectDirectories ?? []) {
+      if (
+        typeof value !== "string" ||
+        value.trim().length === 0 ||
+        !path.isAbsolute(value)
+      ) {
+        continue;
+      }
+      const directoryPath = path.resolve(value);
+      const key = normalizedPathKey(directoryPath);
+      if (
+        seen.has(key) ||
+        projectDirectories.length >= MAX_SHX_FONT_DIRECTORIES
+      ) {
+        continue;
+      }
+      seen.add(key);
+      projectDirectories.push(directoryPath);
+    }
+    this.projectDirectories = Object.freeze(projectDirectories);
+    this.maximumSearchDepth = boundedPositiveInteger(
+      options.maximumSearchDepth,
+      DEFAULT_PROJECT_FONT_SEARCH_DEPTH,
+      "maximumSearchDepth",
+    );
+    if (this.maximumSearchDepth > 16) {
+      throw new RangeError("maximumSearchDepth exceeds its hard limit");
+    }
+    this.maximumSearchEntries = boundedPositiveInteger(
+      options.maximumSearchEntries,
+      MAX_PROJECT_FONT_SEARCH_ENTRIES,
+      "maximumSearchEntries",
+    );
+    if (this.maximumSearchEntries > 1_000_000) {
+      throw new RangeError("maximumSearchEntries exceeds its hard limit");
+    }
 
     for (const [requestedName, replacement] of Object.entries(
       options.fontMappings ?? {},
     )) {
-      const normalized = normalizeShxFontName(requestedName);
+      const normalized = normalizeDrawingFontName(requestedName);
       if (
         !normalized ||
         typeof replacement !== "string" ||
@@ -169,8 +231,10 @@ class ShxFontResolver {
     }
   }
 
-  async resolve(requestedName: string): Promise<FontCandidate | undefined> {
-    const normalized = normalizeShxFontName(requestedName);
+  async resolve(
+    requestedName: string,
+  ): Promise<FontCandidate | "ambiguous" | undefined> {
+    const normalized = normalizeDrawingFontName(requestedName);
     if (!normalized) {
       return undefined;
     }
@@ -182,7 +246,7 @@ class ShxFontResolver {
       }
     }
     if (replacement && path.isAbsolute(replacement)) {
-      const normalized = normalizeShxFontName(path.basename(replacement));
+      const normalized = normalizeDrawingFontName(path.basename(replacement));
       if (!normalized) {
         return undefined;
       }
@@ -193,7 +257,7 @@ class ShxFontResolver {
       };
     }
     const targetName = replacement
-      ? normalizeShxFontName(replacement)
+      ? normalizeDrawingFontName(replacement)
       : normalized;
     if (!targetName) {
       return undefined;
@@ -209,10 +273,16 @@ class ShxFontResolver {
       await this.scanDirectory(directory);
       indexed = this.findIndexed(targetName);
     }
-    if (!indexed) {
-      return undefined;
+    if (indexed) {
+      return replacement ? { ...indexed, source: "mapping" } : indexed;
     }
-    return replacement ? { ...indexed, source: "mapping" } : indexed;
+    const project = await this.findProjectFont(targetName);
+    if (project === "ambiguous" || project === "missing") {
+      return project === "ambiguous" ? project : undefined;
+    }
+    return replacement && project
+      ? { ...project, source: "mapping" }
+      : project;
   }
 
   private findIndexed(name: string): IndexedFont | undefined {
@@ -228,7 +298,7 @@ class ShxFontResolver {
   private async scanDirectory(
     directory: {
       directoryPath: string;
-      source: Exclude<FontSource, "mapping">;
+      source: "drawing" | "configured";
     },
   ): Promise<void> {
     try {
@@ -240,11 +310,8 @@ class ShxFontResolver {
         if (!entry.isFile()) {
           continue;
         }
-        const normalized = normalizeShxFontName(entry.name);
-        if (
-          !normalized ||
-          !entry.name.toLocaleLowerCase("en-US").endsWith(".shx")
-        ) {
+        const normalized = normalizeDrawingFontName(entry.name);
+        if (!normalized) {
           continue;
         }
         const candidate: IndexedFont = {
@@ -267,6 +334,92 @@ class ShxFontResolver {
       // Missing or unreadable user-configured directories are treated as empty.
     }
   }
+
+  private async findProjectFont(
+    targetName: string,
+  ): Promise<FontCandidate | "ambiguous" | "missing"> {
+    const cached = this.projectResults.get(targetName);
+    if (cached) {
+      return cached;
+    }
+    for (const root of this.projectDirectories) {
+      const matches: { filePath: string; resolvedName: string; depth: number }[] =
+        [];
+      const seenDirectories = new Set<string>();
+      const seenFiles = new Set<string>();
+      let visitedEntries = 0;
+      let truncated = false;
+      const visit = async (directoryPath: string, depth: number): Promise<void> => {
+        if (
+          truncated ||
+          depth > this.maximumSearchDepth ||
+          seenDirectories.has(normalizedPathKey(directoryPath))
+        ) {
+          return;
+        }
+        seenDirectories.add(normalizedPathKey(directoryPath));
+        let handle;
+        try {
+          handle = await opendir(directoryPath);
+        } catch {
+          return;
+        }
+        try {
+          for await (const entry of handle) {
+            visitedEntries += 1;
+            if (visitedEntries > this.maximumSearchEntries) {
+              truncated = true;
+              return;
+            }
+            const candidatePath = path.join(directoryPath, entry.name);
+            if (entry.isDirectory() && !entry.isSymbolicLink()) {
+              await visit(candidatePath, depth + 1);
+            } else if (
+              entry.isFile() &&
+              normalizeDrawingFontName(entry.name) === targetName
+            ) {
+              const key = normalizedPathKey(candidatePath);
+              if (!seenFiles.has(key)) {
+                seenFiles.add(key);
+                matches.push({
+                  filePath: candidatePath,
+                  resolvedName: entry.name,
+                  depth,
+                });
+              }
+            }
+          }
+        } catch {
+          // Project resources can disappear while a bounded search is running.
+        }
+      };
+      await visit(root, 0);
+      if (matches.length === 0) {
+        continue;
+      }
+      const minimumDepth = Math.min(...matches.map(({ depth }) => depth));
+      const nearest = matches
+        .filter(({ depth }) => depth === minimumDepth)
+        .sort((left, right) =>
+          normalizedPathKey(left.filePath).localeCompare(
+            normalizedPathKey(right.filePath),
+          ),
+        );
+      if (nearest.length !== 1) {
+        this.projectResults.set(targetName, "ambiguous");
+        return "ambiguous";
+      }
+      const candidate: FontCandidate = {
+        filePath: nearest[0].filePath,
+        resolvedName: nearest[0].resolvedName,
+        source: "project",
+      };
+      this.projectResults.set(targetName, candidate);
+      return candidate;
+    }
+    this.projectResults.set(targetName, "missing");
+    return "missing";
+  }
 }
 
 async function readExactFile(
@@ -283,7 +436,7 @@ async function readExactFile(
       readBytes,
     );
     if (result.bytesRead === 0) {
-      throw new Error("short SHX font read");
+      throw new Error("short font read");
     }
     readBytes += result.bytesRead;
   }
@@ -345,13 +498,13 @@ export class ShxFontChannel {
       );
       return true;
     }
-    const normalized = normalizeShxFontName(candidate.name);
+    const normalized = normalizeDrawingFontName(candidate.name);
     if (!normalized) {
       void this.respondFailure(
         candidate.requestId,
         typeof candidate.name === "string" ? candidate.name : "",
         "invalid",
-        "올바른 SHX 글꼴 이름이 아닙니다.",
+        "지원하는 SHX/TTF/OTF 글꼴 이름이 아닙니다.",
       );
       return true;
     }
@@ -363,7 +516,7 @@ export class ShxFontChannel {
         candidate.requestId,
         candidate.name as string,
         "budget-exceeded",
-        "한 도면에서 요청할 수 있는 SHX 글꼴 수를 초과했습니다.",
+        "한 도면에서 요청할 수 있는 글꼴 수를 초과했습니다.",
       );
       return true;
     }
@@ -396,6 +549,15 @@ export class ShxFontChannel {
   private async execute(request: FontReadRequest): Promise<void> {
     const candidate = await this.resolver.resolve(request.name);
     if (this.disposed) {
+      return;
+    }
+    if (candidate === "ambiguous") {
+      await this.respondFailure(
+        request.requestId,
+        request.name,
+        "ambiguous",
+        "같은 위치에 동일한 이름의 글꼴이 여러 개 있어 자동 선택하지 않았습니다.",
+      );
       return;
     }
     if (!candidate) {
@@ -442,7 +604,7 @@ export class ShxFontChannel {
           request.requestId,
           request.name,
           "budget-exceeded",
-          `한 도면의 SHX 전송량이 ${Math.floor(this.maximumTransferBytes / 1024 / 1024)} MiB 제한을 초과했습니다.`,
+          `한 도면의 글꼴 전송량이 ${Math.floor(this.maximumTransferBytes / 1024 / 1024)} MiB 제한을 초과했습니다.`,
         );
         return;
       }

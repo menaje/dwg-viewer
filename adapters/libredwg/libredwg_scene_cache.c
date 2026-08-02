@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MPL-2.0
  *
- * A bounded-memory Scene Cache v1.11 writer for GNU LibreDWG. Geometry and
+ * A bounded-memory Scene Cache v1.18 writer for GNU LibreDWG. Geometry and
  * source text are traversed repeatedly and written directly to the
  * destination; the writer never creates a JSON or whole-drawing in-memory
  * representation. Large detail passes use private temporary files for an
@@ -36,6 +36,16 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/*
+ * LibreDWG's public dynapi text helper intentionally returns legacy TV
+ * strings without converting them. The pinned 0.14 library exports this
+ * converter, but does not expose its declaration from the installed public
+ * headers.
+ */
+extern char *bit_TV_to_utf8 (const char *restrict src,
+                             const BITCODE_RS codepage);
+extern char *bit_convert_TU (const BITCODE_TU restrict src);
+
 #define CACHE_VERSION_MAJOR LIBREDWG_SCENE_CACHE_VERSION_MAJOR
 #define CACHE_VERSION_MINOR LIBREDWG_SCENE_CACHE_VERSION_MINOR
 #define CACHE_HEADER_SIZE 64u
@@ -43,15 +53,29 @@
 #define SECTION_FLAG_STRING_TABLE 1u
 #define STRING_TABLE_HEADER_SIZE 16u
 #define MAX_CACHE_STRING_BYTES (1024u * 1024u)
-#define GPU_BATCH_SEGMENTS 8192u
-#define SCENE_OVERVIEW_SEGMENTS 65536u
+#define GPU_LINE_VERTEX_RECORD_SIZE 36u
+#define MAX_GPU_DETAIL_BATCH_BYTES (512u * 1024u)
+#define MAX_GPU_OVERVIEW_BYTES (4u * 1024u * 1024u)
+#define GPU_BATCH_SEGMENTS                                             \
+  (MAX_GPU_DETAIL_BATCH_BYTES / (2u * GPU_LINE_VERTEX_RECORD_SIZE))
+#define SCENE_OVERVIEW_SEGMENTS                                       \
+  (MAX_GPU_OVERVIEW_BYTES / (2u * GPU_LINE_VERTEX_RECORD_SIZE))
 #define SPATIAL_SORT_RUN_SEGMENTS 8192u
 #define SPATIAL_MERGE_BUFFER_RECORDS 16u
-#define GPU_LINE_VERTEX_RECORD_SIZE 32u
+_Static_assert (
+    GPU_BATCH_SEGMENTS * 2u * GPU_LINE_VERTEX_RECORD_SIZE
+        <= MAX_GPU_DETAIL_BATCH_BYTES,
+    "GPU detail batches must remain within the Webview range-read limit");
+_Static_assert (
+    SCENE_OVERVIEW_SEGMENTS * 2u * GPU_LINE_VERTEX_RECORD_SIZE
+        <= MAX_GPU_OVERVIEW_BYTES,
+    "GPU overview data must remain within the first-frame limit");
 #define GPU_BATCH_FLAG_APPROXIMATED_CURVE 1u
 #define GPU_STYLE_INVISIBLE (1u << 16)
 #define GPU_STYLE_SOURCE_KIND_SHIFT 17u
 #define GPU_STYLE_APPROXIMATED_CURVE (1u << 21)
+#define GPU_STYLE_LINETYPE_SHIFT 5u
+#define GPU_STYLE_LINETYPE_MASK 0x7ffu
 #define TEXT_FLAG_HAS_ALIGNMENT_POINT 1u
 #define TEXT_FLAG_HAS_RECTANGLE_HEIGHT (1u << 1)
 #define TEXT_FLAG_ANNOTATIVE (1u << 2)
@@ -74,8 +98,21 @@
 #define MAX_HATCH_PATTERN_DASHES 1048576u
 #define MAX_WIPEOUT_SOURCE_RECORDS 65536u
 #define MAX_WIPEOUT_CLIP_VERTICES 1048576u
+#define MAX_IMAGE_SOURCE_RECORDS 65536u
+#define MAX_IMAGE_CLIP_VERTICES 1048576u
 #define MAX_DRAW_ORDER_TABLES 65536u
 #define MAX_DRAW_ORDER_ENTRIES 1048576u
+#define MAX_INSERT_CLIP_RECORDS 65536u
+#define MAX_INSERT_CLIP_VERTICES 1048576u
+#define MAX_INSERT_CLIP_VERTICES_PER_BOUNDARY 256u
+#define MAX_VIEWPORT_CLIP_VERTICES 1048576u
+#define MAX_VIEWPORT_CLIP_VERTICES_PER_BOUNDARY 4096u
+#define VIEWPORT_CLIP_CURVE_SEGMENTS 64u
+#define MAX_MULTILEADER_NODES 65536u
+#define MAX_MULTILEADER_LINES_PER_NODE 65536u
+#define MAX_MULTILEADER_POINTS_PER_LINE 65536u
+#define MAX_MULTILEADER_SEGMENTS_PER_ENTITY 262144u
+#define MAX_LEADER_POINTS_PER_ENTITY 65536u
 #define HATCH_FLAG_SOLID 1u
 #define HATCH_FLAG_ASSOCIATIVE (1u << 1)
 #define HATCH_FLAG_DOUBLE (1u << 2)
@@ -119,12 +156,22 @@ enum
   SECTION_WIPEOUT_ENTITIES = 42,
   SECTION_WIPEOUT_CLIP_VERTICES = 43,
   SECTION_DRAW_ORDER_TABLES = 44,
-  SECTION_DRAW_ORDER_ENTRIES = 45
+  SECTION_DRAW_ORDER_ENTRIES = 45,
+  SECTION_INSERT_CLIPS = 46,
+  SECTION_INSERT_CLIP_VERTICES = 47,
+  SECTION_LINETYPES = 48,
+  SECTION_LINETYPE_DASHES = 49,
+  SECTION_LAYOUTS = 50,
+  SECTION_VIEWPORTS = 51,
+  SECTION_VIEWPORT_FROZEN_LAYERS = 52,
+  SECTION_VIEWPORT_CLIP_VERTICES = 53,
+  SECTION_IMAGE_ENTITIES = 54,
+  SECTION_IMAGE_CLIP_VERTICES = 55
 };
 
 enum
 {
-  DRAWING_RECORD_SIZE = 80,
+  DRAWING_RECORD_SIZE = 160,
   LAYER_RECORD_SIZE = 40,
   BLOCK_RECORD_SIZE = 64,
   TEXT_STYLE_RECORD_SIZE = 96,
@@ -154,7 +201,17 @@ enum
   WIPEOUT_ENTITY_RECORD_SIZE = 168,
   WIPEOUT_CLIP_VERTEX_RECORD_SIZE = 16,
   DRAW_ORDER_TABLE_RECORD_SIZE = 40,
-  DRAW_ORDER_ENTRY_RECORD_SIZE = 16
+  DRAW_ORDER_ENTRY_RECORD_SIZE = 16,
+  INSERT_CLIP_RECORD_SIZE = 32,
+  INSERT_CLIP_VERTEX_RECORD_SIZE = 16,
+  LINETYPE_RECORD_SIZE = 64,
+  LINETYPE_DASH_RECORD_SIZE = 72,
+  LAYOUT_RECORD_SIZE = 256,
+  VIEWPORT_RECORD_SIZE = 272,
+  VIEWPORT_FROZEN_LAYER_RECORD_SIZE = 8,
+  VIEWPORT_CLIP_VERTEX_RECORD_SIZE = 16,
+  IMAGE_ENTITY_RECORD_SIZE = 176,
+  IMAGE_CLIP_VERTEX_RECORD_SIZE = 16
 };
 
 typedef struct
@@ -170,6 +227,15 @@ typedef struct
 
 typedef struct
 {
+  double center[3];
+  double view_height;
+  double view_width;
+  double twist;
+  uint32_t flags;
+} SavedModelView;
+
+typedef struct
+{
   Dwg_Object *object;
   uint64_t handle;
   char *name;
@@ -181,6 +247,7 @@ typedef struct
   Dwg_Object *object;
   uint64_t handle;
   char *name;
+  char *xref_path;
   int is_model;
   int is_paper;
 } BlockEntry;
@@ -193,6 +260,15 @@ typedef struct
   char *font_file;
   char *bigfont_file;
 } TextStyleEntry;
+
+typedef struct
+{
+  Dwg_Object *object;
+  uint64_t handle;
+  uint32_t code;
+  char *name;
+  char *description;
+} LinetypeEntry;
 
 typedef struct
 {
@@ -211,6 +287,9 @@ typedef struct
   TextStyleEntry *text_styles;
   size_t text_style_count;
   HandleIndex *text_style_indices;
+  LinetypeEntry *linetypes;
+  size_t linetype_count;
+  HandleIndex *linetype_codes;
   uint64_t model_handle;
   uint64_t paper_handle;
 } CacheTables;
@@ -282,6 +361,10 @@ typedef struct
   uint32_t group;
   uint8_t source_kind;
   uint8_t approximated_curve;
+  uint16_t linetype_code;
+  double linetype_scale;
+  double pattern_start;
+  double pattern_end;
 } LineSegment;
 
 typedef int (*LineSegmentConsumer) (void *context,
@@ -455,7 +538,25 @@ typedef struct
   uint64_t emitted;
   uint64_t skipped;
   uint64_t approximated;
+  uint64_t pattern_handle;
+  double pattern_cursor;
+  double pattern_end_point[3];
+  int has_pattern_end;
 } SegmentIteration;
+
+static int segment_iteration_emit (SegmentIteration *iteration,
+                                   const LineSegment *segment);
+static void segment_iteration_reject (SegmentIteration *iteration);
+static int is_viewport_entity (const Dwg_Object *object);
+
+static uint32_t viewport_clip_vertex_count (
+    const Dwg_Data *dwg, const CacheTables *tables,
+    const Dwg_Entity_VIEWPORT *viewport);
+
+static int write_viewport_clip_vertex_section (
+    CacheWriter *writer, const Dwg_Data *dwg,
+    const CacheTables *tables,
+    SectionEntry *entry);
 
 typedef struct
 {
@@ -516,7 +617,17 @@ static const uint32_t SECTION_KINDS[LIBREDWG_SCENE_SECTION_COUNT]
         SECTION_WIPEOUT_ENTITIES,
         SECTION_WIPEOUT_CLIP_VERTICES,
         SECTION_DRAW_ORDER_TABLES,
-        SECTION_DRAW_ORDER_ENTRIES };
+        SECTION_DRAW_ORDER_ENTRIES,
+        SECTION_INSERT_CLIPS,
+        SECTION_INSERT_CLIP_VERTICES,
+        SECTION_LINETYPES,
+        SECTION_LINETYPE_DASHES,
+        SECTION_LAYOUTS,
+        SECTION_VIEWPORTS,
+        SECTION_VIEWPORT_FROZEN_LAYERS,
+        SECTION_VIEWPORT_CLIP_VERTICES,
+        SECTION_IMAGE_ENTITIES,
+        SECTION_IMAGE_CLIP_VERTICES };
 
 static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
     = { DRAWING_RECORD_SIZE,
@@ -552,7 +663,17 @@ static const uint32_t SECTION_RECORD_SIZES[LIBREDWG_SCENE_SECTION_COUNT]
         WIPEOUT_ENTITY_RECORD_SIZE,
         WIPEOUT_CLIP_VERTEX_RECORD_SIZE,
         DRAW_ORDER_TABLE_RECORD_SIZE,
-        DRAW_ORDER_ENTRY_RECORD_SIZE };
+        DRAW_ORDER_ENTRY_RECORD_SIZE,
+        INSERT_CLIP_RECORD_SIZE,
+        INSERT_CLIP_VERTEX_RECORD_SIZE,
+        LINETYPE_RECORD_SIZE,
+        LINETYPE_DASH_RECORD_SIZE,
+        LAYOUT_RECORD_SIZE,
+        VIEWPORT_RECORD_SIZE,
+        VIEWPORT_FROZEN_LAYER_RECORD_SIZE,
+        VIEWPORT_CLIP_VERTEX_RECORD_SIZE,
+        IMAGE_ENTITY_RECORD_SIZE,
+        IMAGE_CLIP_VERTEX_RECORD_SIZE };
 
 static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
     = { "drawing",
@@ -588,7 +709,17 @@ static const char *const SECTION_NAMES[LIBREDWG_SCENE_SECTION_COUNT]
         "wipeout_entities",
         "wipeout_clip_vertices",
         "draw_order_tables",
-        "draw_order_entries" };
+        "draw_order_entries",
+        "insert_clips",
+        "insert_clip_vertices",
+        "linetypes",
+        "linetype_dashes",
+        "layouts",
+        "viewports",
+        "viewport_frozen_layers",
+        "viewport_clip_vertices",
+        "image_entities",
+        "image_clip_vertices" };
 
 static void
 set_error (CacheWriter *writer, const char *message)
@@ -798,43 +929,166 @@ reference_handle (const Dwg_Object_Ref *reference)
   return (uint64_t)reference->handleref.value;
 }
 
+static Dwg_Object *
+reference_object (const Dwg_Data *dwg, Dwg_Object_Ref *reference)
+{
+  if (!reference)
+    return NULL;
+  if (reference->obj)
+    return reference->obj;
+  return dwg_ref_object_silent ((Dwg_Data *)dwg, reference);
+}
+
 static char *
-copy_utf8_field (void *value, const char *type, const char *field,
-                 const char *fallback)
+copy_valid_utf8 (const char *source)
+{
+  const unsigned char *cursor = (const unsigned char *)source;
+  size_t source_length = strlen (source);
+  size_t input_offset = 0;
+  size_t output_capacity;
+  size_t output_length = 0;
+  char *output;
+
+  if (source_length > MAX_CACHE_STRING_BYTES
+      || source_length > (SIZE_MAX - 1) / 3)
+    return NULL;
+  output_capacity = source_length * 3 + 1;
+  output = (char *)malloc (output_capacity);
+  if (!output)
+    return NULL;
+
+  while (*cursor)
+    {
+      size_t remaining = source_length - input_offset;
+      size_t sequence_length = 0;
+      unsigned char byte = cursor[0];
+
+      if (byte <= 0x7f)
+        sequence_length = 1;
+      else if (remaining >= 2 && byte >= 0xc2 && byte <= 0xdf
+               && cursor[1] >= 0x80 && cursor[1] <= 0xbf)
+        sequence_length = 2;
+      else if (remaining >= 3 && byte == 0xe0
+               && cursor[1] >= 0xa0 && cursor[1] <= 0xbf
+               && cursor[2] >= 0x80 && cursor[2] <= 0xbf)
+        sequence_length = 3;
+      else if (remaining >= 3 && byte >= 0xe1 && byte <= 0xec
+               && cursor[1] >= 0x80 && cursor[1] <= 0xbf
+               && cursor[2] >= 0x80 && cursor[2] <= 0xbf)
+        sequence_length = 3;
+      else if (remaining >= 3 && byte == 0xed
+               && cursor[1] >= 0x80 && cursor[1] <= 0x9f
+               && cursor[2] >= 0x80 && cursor[2] <= 0xbf)
+        sequence_length = 3;
+      else if (remaining >= 3 && byte >= 0xee && byte <= 0xef
+               && cursor[1] >= 0x80 && cursor[1] <= 0xbf
+               && cursor[2] >= 0x80 && cursor[2] <= 0xbf)
+        sequence_length = 3;
+      else if (remaining >= 4 && byte == 0xf0
+               && cursor[1] >= 0x90 && cursor[1] <= 0xbf
+               && cursor[2] >= 0x80 && cursor[2] <= 0xbf
+               && cursor[3] >= 0x80 && cursor[3] <= 0xbf)
+        sequence_length = 4;
+      else if (remaining >= 4 && byte >= 0xf1 && byte <= 0xf3
+               && cursor[1] >= 0x80 && cursor[1] <= 0xbf
+               && cursor[2] >= 0x80 && cursor[2] <= 0xbf
+               && cursor[3] >= 0x80 && cursor[3] <= 0xbf)
+        sequence_length = 4;
+      else if (remaining >= 4 && byte == 0xf4
+               && cursor[1] >= 0x80 && cursor[1] <= 0x8f
+               && cursor[2] >= 0x80 && cursor[2] <= 0xbf
+               && cursor[3] >= 0x80 && cursor[3] <= 0xbf)
+        sequence_length = 4;
+
+      if (sequence_length)
+        {
+          if (output_length + sequence_length > MAX_CACHE_STRING_BYTES)
+            {
+              free (output);
+              return NULL;
+            }
+          memcpy (output + output_length, cursor, sequence_length);
+          output_length += sequence_length;
+          cursor += sequence_length;
+          input_offset += sequence_length;
+        }
+      else
+        {
+          if (output_length + 3 > MAX_CACHE_STRING_BYTES)
+            {
+              free (output);
+              return NULL;
+            }
+          output[output_length++] = (char)0xef;
+          output[output_length++] = (char)0xbf;
+          output[output_length++] = (char)0xbd;
+          cursor++;
+          input_offset++;
+        }
+    }
+  output[output_length] = '\0';
+  return output;
+}
+
+static char *
+copy_utf8_field (BITCODE_RS codepage, void *value, const char *type,
+                 const char *field, const char *fallback)
 {
   char *text = NULL;
+  char *converted = NULL;
   char *copy;
-  size_t length;
+  const char *source;
   int is_new = 0;
 
   if (value && dwg_dynapi_entity_utf8text (value, type, field, &text, &is_new,
                                            NULL)
       && text)
     fallback = text;
-  length = strlen (fallback);
-  if (length > MAX_CACHE_STRING_BYTES)
+  source = fallback;
+  if (!is_new)
     {
-      if (is_new)
-        free (text);
-      return NULL;
+      converted = bit_TV_to_utf8 (fallback, codepage);
+      if (!converted)
+        return NULL;
+      source = converted;
     }
-  copy = (char *)malloc (length + 1);
-  if (copy)
-    memcpy (copy, fallback, length + 1);
+  copy = copy_valid_utf8 (source);
+  if (converted && converted != fallback)
+    free (converted);
   if (is_new)
     free (text);
   return copy;
 }
 
 static char *
-copy_linetype_name (const Dwg_Object_Ref *reference)
+copy_versioned_text (BITCODE_RS codepage, Dwg_Version_Type version,
+                     const BITCODE_T value)
+{
+  char *converted;
+  char *copy;
+  if (!value)
+    return copy_valid_utf8 ("");
+  converted
+      = version >= R_2007
+            ? bit_convert_TU ((const BITCODE_TU)value)
+            : bit_TV_to_utf8 ((const char *)value, codepage);
+  if (!converted)
+    return NULL;
+  copy = copy_valid_utf8 (converted);
+  free (converted);
+  return copy;
+}
+
+static char *
+copy_linetype_name (BITCODE_RS codepage,
+                    const Dwg_Object_Ref *reference)
 {
   Dwg_Object *object = reference ? reference->obj : NULL;
   if (!object || object->fixedtype != DWG_TYPE_LTYPE || !object->tio.object
       || !object->tio.object->tio.LTYPE)
-    return copy_utf8_field (NULL, "", "", "Continuous");
-  return copy_utf8_field (object->tio.object->tio.LTYPE, "LTYPE", "name",
-                          "Continuous");
+    return copy_utf8_field (codepage, NULL, "", "", "Continuous");
+  return copy_utf8_field (codepage, object->tio.object->tio.LTYPE, "LTYPE",
+                          "name", "Continuous");
 }
 
 static int
@@ -877,12 +1131,20 @@ free_tables (CacheTables *tables)
       free (tables->layers[i].linetype);
     }
   for (i = 0; i < tables->block_count; i++)
-    free (tables->blocks[i].name);
+    {
+      free (tables->blocks[i].name);
+      free (tables->blocks[i].xref_path);
+    }
   for (i = 0; i < tables->text_style_count; i++)
     {
       free (tables->text_styles[i].name);
       free (tables->text_styles[i].font_file);
       free (tables->text_styles[i].bigfont_file);
+    }
+  for (i = 0; i < tables->linetype_count; i++)
+    {
+      free (tables->linetypes[i].name);
+      free (tables->linetypes[i].description);
     }
   free (tables->layers);
   free (tables->layer_indices);
@@ -890,6 +1152,8 @@ free_tables (CacheTables *tables)
   free (tables->block_indices);
   free (tables->text_styles);
   free (tables->text_style_indices);
+  free (tables->linetypes);
+  free (tables->linetype_codes);
   memset (tables, 0, sizeof (*tables));
 }
 
@@ -899,9 +1163,12 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
   size_t layer_count = 0;
   size_t block_count = 0;
   size_t text_style_count = 0;
+  size_t linetype_count = 0;
   size_t layer_index = 0;
   size_t block_index = 0;
   size_t text_style_index = 0;
+  size_t linetype_index = 0;
+  uint32_t next_linetype_code = 3;
   size_t i;
 
   memset (tables, 0, sizeof (*tables));
@@ -918,9 +1185,11 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
         block_count++;
       else if (dwg->object[i].fixedtype == DWG_TYPE_STYLE)
         text_style_count++;
+      else if (dwg->object[i].fixedtype == DWG_TYPE_LTYPE)
+        linetype_count++;
     }
   if (layer_count > UINT32_MAX || block_count > UINT32_MAX
-      || text_style_count > UINT32_MAX)
+      || text_style_count > UINT32_MAX || linetype_count > 2045u)
     return 0;
   tables->layers
       = layer_count ? (LayerEntry *)calloc (layer_count, sizeof (LayerEntry))
@@ -945,10 +1214,21 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
       = text_style_count
             ? (HandleIndex *)malloc (text_style_count * sizeof (HandleIndex))
             : NULL;
+  tables->linetypes
+      = linetype_count
+            ? (LinetypeEntry *)calloc (linetype_count,
+                                      sizeof (LinetypeEntry))
+            : NULL;
+  tables->linetype_codes
+      = linetype_count
+            ? (HandleIndex *)malloc (linetype_count * sizeof (HandleIndex))
+            : NULL;
   if ((layer_count && (!tables->layers || !tables->layer_indices))
       || (block_count && (!tables->blocks || !tables->block_indices))
       || (text_style_count
-          && (!tables->text_styles || !tables->text_style_indices)))
+          && (!tables->text_styles || !tables->text_style_indices))
+      || (linetype_count
+          && (!tables->linetypes || !tables->linetype_codes)))
     {
       free_tables (tables);
       return 0;
@@ -960,6 +1240,7 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
   tables->layer_count = layer_count;
   tables->block_count = block_count;
   tables->text_style_count = text_style_count;
+  tables->linetype_count = linetype_count;
 
   for (i = 0; i < (size_t)dwg->num_objects; i++)
     {
@@ -971,9 +1252,11 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
           entry->object = object;
           entry->handle = (uint64_t)object->handle.value;
           entry->name
-              = copy_utf8_field (object->tio.object->tio.LAYER, "LAYER",
+              = copy_utf8_field (dwg->header.codepage,
+                                 object->tio.object->tio.LAYER, "LAYER",
                                  "name", "0");
           entry->linetype = copy_linetype_name (
+              dwg->header.codepage,
               object->tio.object->tio.LAYER->ltype);
           if (!entry->name || !entry->linetype)
             {
@@ -992,9 +1275,14 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
           entry->object = object;
           entry->handle = (uint64_t)object->handle.value;
           entry->name
-              = copy_utf8_field (object->tio.object->tio.BLOCK_HEADER,
+              = copy_utf8_field (dwg->header.codepage,
+                                 object->tio.object->tio.BLOCK_HEADER,
                                  "BLOCK_HEADER", "name", "");
-          if (!entry->name)
+          entry->xref_path
+              = copy_utf8_field (dwg->header.codepage,
+                                 object->tio.object->tio.BLOCK_HEADER,
+                                 "BLOCK_HEADER", "xref_pname", "");
+          if (!entry->name || !entry->xref_path)
             {
               free_tables (tables);
               return 0;
@@ -1016,11 +1304,14 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
           entry->object = object;
           entry->handle = (uint64_t)object->handle.value;
           entry->name
-              = copy_utf8_field (style, "STYLE", "name", "");
+              = copy_utf8_field (dwg->header.codepage, style, "STYLE",
+                                 "name", "");
           entry->font_file
-              = copy_utf8_field (style, "STYLE", "font_file", "");
+              = copy_utf8_field (dwg->header.codepage, style, "STYLE",
+                                 "font_file", "");
           entry->bigfont_file
-              = copy_utf8_field (style, "STYLE", "bigfont_file", "");
+              = copy_utf8_field (dwg->header.codepage, style, "STYLE",
+                                 "bigfont_file", "");
           if (!entry->name || !entry->font_file || !entry->bigfont_file)
             {
               free_tables (tables);
@@ -1031,16 +1322,73 @@ build_tables (Dwg_Data *dwg, CacheTables *tables)
               = (uint32_t)text_style_index;
           text_style_index++;
         }
+      else if (object->fixedtype == DWG_TYPE_LTYPE && object->tio.object
+               && object->tio.object->tio.LTYPE)
+        {
+          LinetypeEntry *entry = &tables->linetypes[linetype_index];
+          Dwg_Object_LTYPE *linetype = object->tio.object->tio.LTYPE;
+          uint64_t handle = (uint64_t)object->handle.value;
+          entry->object = object;
+          entry->handle = handle;
+          entry->name
+              = copy_utf8_field (dwg->header.codepage, linetype, "LTYPE",
+                                 "name", "Continuous");
+          entry->description
+              = copy_utf8_field (dwg->header.codepage, linetype, "LTYPE",
+                                 "description", "");
+          if (!entry->name || !entry->description)
+            {
+              free_tables (tables);
+              return 0;
+            }
+          if (handle
+              && handle
+                     == reference_handle (dwg->header_vars.LTYPE_BYLAYER))
+            entry->code = 0;
+          else if (
+              handle
+              && handle
+                     == reference_handle (dwg->header_vars.LTYPE_BYBLOCK))
+            entry->code = 1;
+          else if (
+              handle
+              && handle
+                     == reference_handle (dwg->header_vars.LTYPE_CONTINUOUS))
+            entry->code = 2;
+          else
+            entry->code = next_linetype_code++;
+          tables->linetype_codes[linetype_index].handle = handle;
+          tables->linetype_codes[linetype_index].index = entry->code;
+          linetype_index++;
+        }
     }
   tables->layer_count = layer_index;
   tables->block_count = block_index;
   tables->text_style_count = text_style_index;
+  tables->linetype_count = linetype_index;
   qsort (tables->layer_indices, tables->layer_count, sizeof (HandleIndex),
          handle_index_compare);
   qsort (tables->block_indices, tables->block_count, sizeof (HandleIndex),
          handle_index_compare);
   qsort (tables->text_style_indices, tables->text_style_count,
          sizeof (HandleIndex), handle_index_compare);
+  qsort (tables->linetype_codes, tables->linetype_count,
+         sizeof (HandleIndex), handle_index_compare);
+  for (i = 0; i < (size_t)dwg->num_objects; i++)
+    {
+      Dwg_Object *object = &dwg->object[i];
+      if (object->fixedtype == DWG_TYPE_LAYOUT && object->tio.object
+          && object->tio.object->tio.LAYOUT)
+        {
+          uint32_t index = find_handle_index (
+              tables->block_indices, tables->block_count,
+              reference_handle (
+                  object->tio.object->tio.LAYOUT->block_header));
+          if (index < tables->block_count
+              && !tables->blocks[index].is_model)
+            tables->blocks[index].is_paper = 1;
+        }
+    }
   return 1;
 }
 
@@ -1076,11 +1424,64 @@ encode_color (const Dwg_Color *color)
 
   if (method == 0xc2u)
     return (3u << 30) | (packed & 0x00ffffffu);
+  /*
+   * LibreDWG 0.14 preserves ACI table colours in the low byte of the
+   * packed CMC value while leaving color.index at 256. This is especially
+   * common for LAYER table records. Decode the packed ACI before treating
+   * index 256 as BYLAYER, otherwise nearly every layer becomes the default
+   * foreground colour.
+   */
+  if (method == 0xc3u)
+    {
+      uint32_t aci = packed & 0xffu;
+      if (aci == 0u)
+        return 1u << 30;
+      return (2u << 30) | aci;
+    }
   if (color->index == 256 || method == DWG_COLOR_METHOD_BYLAYER)
     return 0;
   if (color->index == 0 || method == DWG_COLOR_METHOD_BYBLOCK)
     return 1u << 30;
   return (2u << 30) | ((uint32_t)color->index & 0xffu);
+}
+
+static uint32_t
+encode_transparency (const Dwg_Color *color, int is_layer)
+{
+  uint32_t type;
+  uint32_t alpha;
+  uint32_t code;
+  if (!color)
+    return 0;
+  type = (uint32_t)color->alpha_type;
+  if (type != 0u && type != 1u && type != 3u)
+    type = (uint32_t)color->alpha_raw >> 24;
+  if (type == 3u)
+    {
+      alpha = (uint32_t)color->alpha;
+      if (alpha > 255u)
+        alpha = 255u;
+      code = 3u + (alpha * 60u + 127u) / 255u;
+    }
+  else if (!is_layer && type == 1u)
+    code = 2u;
+  else if (!is_layer && type == 0u)
+    code = 1u;
+  else
+    code = 0u;
+  return code << 24;
+}
+
+static uint32_t
+encode_entity_color (const Dwg_Color *color)
+{
+  return encode_color (color) | encode_transparency (color, 0);
+}
+
+static uint32_t
+encode_layer_color (const Dwg_Color *color)
+{
+  return encode_color (color) | encode_transparency (color, 1);
 }
 
 static uint64_t
@@ -1108,6 +1509,25 @@ entity_layer_index (const Dwg_Object_Entity *entity,
                             reference_handle (entity ? entity->layer : NULL));
 }
 
+static uint16_t
+entity_linetype_code (const Dwg_Object_Entity *entity,
+                      const CacheTables *tables)
+{
+  uint32_t code;
+  if (!entity)
+    return 2;
+  if (entity->ltype_flags == 0)
+    return 0;
+  if (entity->ltype_flags == 1)
+    return 1;
+  if (entity->ltype_flags == 2)
+    return 2;
+  code = find_handle_index (
+      tables->linetype_codes, tables->linetype_count,
+      reference_handle (entity->ltype));
+  return code <= 2047u ? (uint16_t)code : 2;
+}
+
 static int
 write_common (CacheWriter *writer, const Dwg_Object *object,
               const CacheTables *tables)
@@ -1120,10 +1540,12 @@ write_common (CacheWriter *writer, const Dwg_Object *object,
   return write_u64 (writer, (uint64_t)object->handle.value)
          && write_u64 (writer, entity_owner_handle (entity, tables))
          && write_u32 (writer, entity_layer_index (entity, tables))
-         && write_u32 (writer,
-                       encode_color (entity ? &entity->color : NULL))
+         && write_u32 (
+             writer,
+             encode_entity_color (entity ? &entity->color : NULL))
          && write_i16 (writer, (int16_t)line_weight)
-         && write_u16 (writer, flags) && write_u32 (writer, 0);
+         && write_u16 (writer, flags)
+         && write_u32 (writer, entity_linetype_code (entity, tables));
 }
 
 static void
@@ -1457,6 +1879,32 @@ is_logical_entity (const Dwg_Object *object)
     }
 }
 
+static int
+mleader_has_serializable_content (const Dwg_Object *object)
+{
+  const Dwg_Entity_MULTILEADER *mleader;
+  size_t leader_index;
+  if (!object || object->fixedtype != DWG_TYPE_MULTILEADER
+      || !object->tio.entity
+      || !(mleader = object->tio.entity->tio.MULTILEADER))
+    return 0;
+  if (mleader->ctx.has_content_txt)
+    return 1;
+  if (!mleader->ctx.leaders || mleader->ctx.num_leaders <= 0)
+    return 0;
+  for (leader_index = 0;
+       leader_index < (size_t)mleader->ctx.num_leaders;
+       leader_index++)
+    {
+      const Dwg_LEADER_Node *node
+          = &mleader->ctx.leaders[leader_index];
+      if ((node->lines && node->num_lines > 0)
+          || node->has_lastleaderlinepoint || node->has_dogleg)
+        return 1;
+    }
+  return 0;
+}
+
 static const Dwg_DIMENSION_common *
 dimension_common (const Dwg_Object *object)
 {
@@ -1597,6 +2045,35 @@ count_primitives (const Dwg_Data *dwg, const CacheTables *tables)
           if (object->tio.entity && object->tio.entity->tio.WIPEOUT)
             counts.wipeouts++;
           break;
+        case DWG_TYPE_IMAGE:
+          if (object->tio.entity && object->tio.entity->tio.IMAGE)
+            counts.images++;
+          break;
+        case DWG_TYPE_XLINE:
+          if (object->tio.entity && object->tio.entity->tio.XLINE)
+            counts.xlines++;
+          break;
+        case DWG_TYPE_MULTILEADER:
+          if (mleader_has_serializable_content (object))
+            counts.multileaders++;
+          break;
+        case DWG_TYPE_LEADER:
+          if (object->tio.entity && object->tio.entity->tio.LEADER)
+            counts.leaders++;
+          break;
+        case DWG_TYPE_OLE2FRAME:
+          if (object->tio.entity && object->tio.entity->tio.OLE2FRAME)
+            counts.ole2frames++;
+          break;
+        case DWG_TYPE_VIEWPORT:
+          /*
+           * VIEWPORT records are preserved as layout metadata even when the
+           * paper-space viewport itself has no visible rectangular frame
+           * (the primary paper viewport and non-rectangular clips).
+          */
+          if (is_viewport_entity (object))
+            counts.viewports++;
+          break;
         case DWG_TYPE_DIMENSION_LINEAR:
         case DWG_TYPE_DIMENSION_ALIGNED:
         case DWG_TYPE_DIMENSION_ANG2LN:
@@ -1633,7 +2110,10 @@ count_primitives (const Dwg_Data *dwg, const CacheTables *tables)
                                + counts.attribute_definitions
                                + counts.hatches + counts.points
                                + counts.solids + counts.faces
-                               + counts.wipeouts;
+                               + counts.wipeouts + counts.images
+                               + counts.xlines
+                               + counts.multileaders + counts.leaders
+                               + counts.ole2frames + counts.viewports;
   counts.deferred_entities
       = counts.total_entities - counts.serialized_entities;
   return counts;
@@ -1676,6 +2156,75 @@ read_drawing_wipeout_frame (CacheWriter *writer, const Dwg_Data *dwg,
   return 1;
 }
 
+static void
+read_saved_model_view (const Dwg_Data *dwg, SavedModelView *result)
+{
+  size_t object_index;
+  memset (result, 0, sizeof (*result));
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Object_VPORT *viewport;
+      char *name;
+      double direction_scale;
+      double cosine;
+      double sine;
+      if (object->fixedtype != DWG_TYPE_VPORT || !object->tio.object
+          || !(viewport = object->tio.object->tio.VPORT))
+        continue;
+      name = copy_utf8_field (
+          dwg->header.codepage, (void *)viewport, "VPORT", "name", "");
+      if (!name)
+        continue;
+      if (strcmp (name, "*Active") != 0)
+        {
+          free (name);
+          continue;
+        }
+      free (name);
+      direction_scale
+          = fmax (fabs (viewport->VIEWDIR.x),
+                  fmax (fabs (viewport->VIEWDIR.y),
+                        fabs (viewport->VIEWDIR.z)));
+      if (!isfinite (viewport->VIEWCTR.x)
+          || !isfinite (viewport->VIEWCTR.y)
+          || !isfinite (viewport->view_target.x)
+          || !isfinite (viewport->view_target.y)
+          || !isfinite (viewport->view_target.z)
+          || !isfinite (viewport->VIEWSIZE)
+          || !isfinite (viewport->view_width)
+          || !isfinite (viewport->VIEWTWIST)
+          || viewport->VIEWSIZE <= 1.0e-12
+          || direction_scale <= 1.0e-12
+          || viewport->VIEWDIR.z <= 0.0
+          || fabs (viewport->VIEWDIR.x)
+                 > direction_scale * 1.0e-9
+          || fabs (viewport->VIEWDIR.y)
+                 > direction_scale * 1.0e-9)
+        return;
+      cosine = cos (viewport->VIEWTWIST);
+      sine = sin (viewport->VIEWTWIST);
+      result->center[0]
+          = viewport->view_target.x
+            + viewport->VIEWCTR.x * cosine
+            - viewport->VIEWCTR.y * sine;
+      result->center[1]
+          = viewport->view_target.y
+            + viewport->VIEWCTR.x * sine
+            + viewport->VIEWCTR.y * cosine;
+      result->center[2] = viewport->view_target.z;
+      result->view_height = viewport->VIEWSIZE;
+      result->view_width
+          = viewport->view_width > 1.0e-12
+                ? viewport->view_width
+                : viewport->VIEWSIZE;
+      result->twist = viewport->VIEWTWIST;
+      result->flags = 1u;
+      return;
+    }
+}
+
 static int
 write_drawing_section (CacheWriter *writer, Dwg_Data *dwg,
                        const LibreDwgPrimitiveCounts *counts,
@@ -1683,9 +2232,12 @@ write_drawing_section (CacheWriter *writer, Dwg_Data *dwg,
                        SectionEntry *entry)
 {
   uint64_t offset;
+  uint32_t display_settings = wipeout_frame;
   double min[3];
   double max[3];
+  SavedModelView saved_view;
   size_t axis;
+  read_saved_model_view (dwg, &saved_view);
   min[0] = dwg_model_x_min (dwg);
   min[1] = dwg_model_y_min (dwg);
   min[2] = dwg_model_z_min (dwg);
@@ -1702,15 +2254,46 @@ write_drawing_section (CacheWriter *writer, Dwg_Data *dwg,
           break;
         }
     }
+  if (display_settings != UINT32_MAX)
+    {
+      if (dwg->header_vars.LWDISPLAY)
+        display_settings |= 1u << 2;
+      if (dwg->header_vars.FILLMODE)
+        display_settings |= 1u << 3;
+      if (dwg->header_vars.TILEMODE)
+        display_settings |= 1u << 4;
+    }
   if (!align_writer (writer, &offset)
       || !write_u32 (writer, source_version)
       || !write_u32 (writer,
                      (uint32_t)LIBREDWG_MAINTENANCE_VERSION (dwg))
       || !write_i32 (writer, (int32_t)dwg->header_vars.INSUNITS)
-      || !write_u32 (writer, wipeout_frame)
+      || !write_u32 (writer, display_settings)
       || !write_u64 (writer, counts->total_entities)
       || !write_u64 (writer, counts->serialized_entities)
-      || !write_vec3 (writer, min) || !write_vec3 (writer, max))
+      || !write_vec3 (writer, min) || !write_vec3 (writer, max)
+      || !write_f64 (
+          writer,
+          isfinite (dwg->header_vars.LTSCALE)
+                  && fabs (dwg->header_vars.LTSCALE) > 1.0e-12
+              ? fabs (dwg->header_vars.LTSCALE)
+              : 1.0)
+      || !write_f64 (
+          writer,
+          isfinite (dwg->header_vars.CELTSCALE)
+                  && fabs (dwg->header_vars.CELTSCALE) > 1.0e-12
+              ? fabs (dwg->header_vars.CELTSCALE)
+              : 1.0)
+      || !write_u32 (
+          writer,
+          dwg->header_vars.PSLTSCALE ? 1u : 0u)
+      || !write_u32 (writer, 0)
+      || !write_vec3 (writer, saved_view.center)
+      || !write_f64 (writer, saved_view.view_height)
+      || !write_f64 (writer, saved_view.view_width)
+      || !write_f64 (writer, saved_view.twist)
+      || !write_u32 (writer, saved_view.flags)
+      || !write_u32 (writer, 0))
     return 0;
   return finish_fixed_section (writer, entry, SECTION_DRAWING,
                                DRAWING_RECORD_SIZE, "drawing", offset, 1);
@@ -1798,7 +2381,7 @@ write_layer_section (CacheWriter *writer, const CacheTables *tables,
           || !write_u32 (writer, references[i * 4 + 1])
           || !write_u32 (writer, references[i * 4 + 2])
           || !write_u32 (writer, references[i * 4 + 3])
-          || !write_u32 (writer, encode_color (&layer->color))
+          || !write_u32 (writer, encode_layer_color (&layer->color))
           || !write_u32 (writer, flags)
           || !write_i32 (writer, (int32_t)line_weight)
           || !write_u32 (writer, 0))
@@ -1833,14 +2416,14 @@ write_block_section (CacheWriter *writer, const CacheTables *tables,
   uint64_t string_offset;
   uint32_t *references;
   size_t i;
-  if (tables->block_count > SIZE_MAX / (2 * sizeof (uint32_t)))
+  if (tables->block_count > SIZE_MAX / (4 * sizeof (uint32_t)))
     {
       set_error (writer, "too many blocks for scene cache");
       return 0;
     }
   references
       = tables->block_count
-            ? (uint32_t *)malloc (tables->block_count * 2 * sizeof (uint32_t))
+            ? (uint32_t *)malloc (tables->block_count * 4 * sizeof (uint32_t))
             : NULL;
   if (tables->block_count && !references)
     {
@@ -1850,7 +2433,11 @@ write_block_section (CacheWriter *writer, const CacheTables *tables,
   for (i = 0; i < tables->block_count; i++)
     {
       if (!checked_string_layout (&string_cursor, tables->blocks[i].name,
-                                  &references[i * 2], &references[i * 2 + 1]))
+                                  &references[i * 4],
+                                  &references[i * 4 + 1])
+          || !checked_string_layout (
+              &string_cursor, tables->blocks[i].xref_path,
+              &references[i * 4 + 2], &references[i * 4 + 3]))
         {
           free (references);
           set_error (writer, "block string table exceeds its limits");
@@ -1889,13 +2476,15 @@ write_block_section (CacheWriter *writer, const CacheTables *tables,
       if (block->block_scaling == 0)
         flags |= 1u << 6;
       if (!write_u64 (writer, tables->blocks[i].handle)
-          || !write_u32 (writer, references[i * 2])
-          || !write_u32 (writer, references[i * 2 + 1])
+          || !write_u32 (writer, references[i * 4])
+          || !write_u32 (writer, references[i * 4 + 1])
           || !write_u32 (writer, (uint32_t)block->num_owned)
           || !write_u32 (writer, (uint32_t)block->num_inserts)
           || !write_u32 (writer, flags)
           || !write_i32 (writer, (int32_t)block->insert_units)
-          || !write_vec3 (writer, base_point) || !write_u64 (writer, 0))
+          || !write_vec3 (writer, base_point)
+          || !write_u32 (writer, references[i * 4 + 2])
+          || !write_u32 (writer, references[i * 4 + 3]))
         {
           free (references);
           return 0;
@@ -1904,7 +2493,9 @@ write_block_section (CacheWriter *writer, const CacheTables *tables,
   for (i = 0; i < tables->block_count; i++)
     {
       if (!write_bytes (writer, tables->blocks[i].name,
-                        strlen (tables->blocks[i].name)))
+                        strlen (tables->blocks[i].name))
+          || !write_bytes (writer, tables->blocks[i].xref_path,
+                           strlen (tables->blocks[i].xref_path)))
         {
           free (references);
           return 0;
@@ -1968,7 +2559,8 @@ copy_embedded_mtext (TextSource *source,
 }
 
 static int
-read_text_source (const Dwg_Object *object, TextSource *source)
+read_text_source (const Dwg_Data *dwg, const Dwg_Object *object,
+                  TextSource *source)
 {
   const char *value_type;
   const char *value_field;
@@ -2166,25 +2758,114 @@ read_text_source (const Dwg_Object *object, TextSource *source)
           copy_embedded_mtext (source, &text->mtext);
         break;
       }
+    case DWG_TYPE_MULTILEADER:
+      {
+        const Dwg_Entity_MULTILEADER *mleader
+            = object->tio.entity->tio.MULTILEADER;
+        const Dwg_MLEADER_Content_MText *text;
+        if (!mleader || !mleader->ctx.has_content_txt)
+          return 0;
+        text = &mleader->ctx.content.txt;
+        source->kind = 1;
+        value_type = "";
+        value_field = "";
+        source->style
+            = text->style ? text->style : mleader->text_style;
+        source->insertion_point[0] = text->location.x;
+        source->insertion_point[1] = text->location.y;
+        source->insertion_point[2] = text->location.z;
+        finite_normal_or_unit_z (text->normal.x, text->normal.y,
+                                 text->normal.z, source->normal);
+        source->x_axis_direction[0] = text->direction.x;
+        source->x_axis_direction[1] = text->direction.y;
+        source->x_axis_direction[2] = text->direction.z;
+        if (!isfinite (source->x_axis_direction[0])
+            || !isfinite (source->x_axis_direction[1])
+            || !isfinite (source->x_axis_direction[2])
+            || (fabs (source->x_axis_direction[0]) <= 1.0e-12
+                && fabs (source->x_axis_direction[1]) <= 1.0e-12))
+          {
+            source->x_axis_direction[0] = cos (text->rotation);
+            source->x_axis_direction[1] = sin (text->rotation);
+            source->x_axis_direction[2] = 0.0;
+          }
+        source->rotation = isfinite (text->rotation)
+                               ? text->rotation
+                               : atan2 (source->x_axis_direction[1],
+                                        source->x_axis_direction[0]);
+        source->height
+            = isfinite (mleader->ctx.text_height)
+                      && mleader->ctx.text_height > 1.0e-12
+                  ? mleader->ctx.text_height
+                  : isfinite (text->height) && text->height > 1.0e-12
+                        ? text->height
+                        : 1.0;
+        source->rectangle_width
+            = isfinite (text->width) && text->width > 0.0
+                  ? text->width
+                  : 0.0;
+        source->rectangle_height
+            = isfinite (text->height) && text->height > 0.0
+                  ? text->height
+                  : 0.0;
+        source->extents_width = source->rectangle_width;
+        source->extents_height = source->rectangle_height;
+        source->flags |= TEXT_FLAG_HAS_RECTANGLE_HEIGHT;
+        if (mleader->is_annotative)
+          source->flags |= TEXT_FLAG_ANNOTATIVE;
+        source->attachment
+            = text->alignment >= 1 && text->alignment <= 9
+                  ? (int16_t)text->alignment
+                  : 1;
+        source->flow_direction
+            = normalize_mtext_flow_direction (text->flow);
+        source->line_spacing_style
+            = (int16_t)text->line_spacing_style;
+        source->line_spacing_factor
+            = isfinite (text->line_spacing_factor)
+                      && text->line_spacing_factor > 0.0
+                  ? text->line_spacing_factor
+                  : 1.0;
+        if (text->is_bg_fill || text->is_bg_mask_fill)
+          source->background_flags = 1;
+        source->background_scale
+            = isfinite (text->bg_scale) && text->bg_scale > 0.0
+                  ? text->bg_scale
+                  : 1.0;
+        source->background_color = encode_color (&text->bg_color);
+        source->background_transparency
+            = (int32_t)text->bg_transparency;
+        source->source_flags = mleader->has_text_frame ? 1 : 0;
+        source->line_count = 0;
+        break;
+      }
     default:
       return 0;
     }
 
-  source->value = copy_utf8_field (
-      (void *)(source->kind == 0
-                   ? (void *)object->tio.entity->tio.TEXT
-                   : source->kind == 1
-                         ? (void *)object->tio.entity->tio.MTEXT
-                         : source->kind == 2
-                               ? (void *)object->tio.entity->tio.ATTDEF
-                               : (void *)object->tio.entity->tio.ATTRIB),
-      value_type, value_field, "");
+  if (object->fixedtype == DWG_TYPE_MULTILEADER)
+    source->value = copy_versioned_text (
+        dwg->header.codepage, dwg->header.version,
+        object->tio.entity->tio.MULTILEADER->ctx.content.txt.default_text);
+  else
+    source->value = copy_utf8_field (
+        dwg->header.codepage,
+        (void *)(source->kind == 0
+                     ? (void *)object->tio.entity->tio.TEXT
+                     : source->kind == 1
+                           ? (void *)object->tio.entity->tio.MTEXT
+                           : source->kind == 2
+                                 ? (void *)object->tio.entity->tio.ATTDEF
+                                 : (void *)object->tio.entity->tio.ATTRIB),
+        value_type, value_field, "");
   source->tag = copy_utf8_field (
+      dwg->header.codepage,
       source->kind == 2
           ? (void *)object->tio.entity->tio.ATTDEF
           : source->kind == 3 ? (void *)object->tio.entity->tio.ATTRIB : NULL,
       tag_type, "tag", "");
   source->prompt = copy_utf8_field (
+      dwg->header.codepage,
       source->kind == 2 ? (void *)object->tio.entity->tio.ATTDEF : NULL,
       prompt_type, "prompt", "");
   if (!source->value || !source->tag || !source->prompt)
@@ -2311,13 +2992,762 @@ write_text_style_section (CacheWriter *writer, const CacheTables *tables,
       SECTION_FLAG_STRING_TABLE);
 }
 
+static uint64_t
+linetype_dash_count (const CacheTables *tables)
+{
+  uint64_t count = 0;
+  size_t index;
+  for (index = 0; index < tables->linetype_count; index++)
+    {
+      const Dwg_Object_LTYPE *linetype
+          = tables->linetypes[index].object->tio.object->tio.LTYPE;
+      if (UINT64_MAX - count < (uint64_t)linetype->numdashes)
+        return UINT64_MAX;
+      count += (uint64_t)linetype->numdashes;
+    }
+  return count;
+}
+
+static int
+write_linetype_section (CacheWriter *writer, const CacheTables *tables,
+                        SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t string_cursor = 0;
+  uint64_t string_offset;
+  uint64_t first_dash = 0;
+  uint32_t *references;
+  size_t index;
+  references
+      = tables->linetype_count
+            ? (uint32_t *)malloc (tables->linetype_count * 4
+                                 * sizeof (uint32_t))
+            : NULL;
+  if (tables->linetype_count && !references)
+    {
+      set_error (writer, "out of memory while writing linetype table");
+      return 0;
+    }
+  for (index = 0; index < tables->linetype_count; index++)
+    {
+      if (!checked_string_layout (
+              &string_cursor, tables->linetypes[index].name,
+              &references[index * 4], &references[index * 4 + 1])
+          || !checked_string_layout (
+              &string_cursor, tables->linetypes[index].description,
+              &references[index * 4 + 2],
+              &references[index * 4 + 3]))
+        {
+          free (references);
+          set_error (writer, "linetype string table exceeds its limits");
+          return 0;
+        }
+    }
+  string_offset
+      = STRING_TABLE_HEADER_SIZE
+        + (uint64_t)tables->linetype_count * LINETYPE_RECORD_SIZE;
+  if (!align_writer (writer, &offset)
+      || !write_u32 (writer, (uint32_t)tables->linetype_count)
+      || !write_u32 (writer, LINETYPE_RECORD_SIZE)
+      || !write_u64 (writer, string_offset))
+    {
+      free (references);
+      return 0;
+    }
+  for (index = 0; index < tables->linetype_count; index++)
+    {
+      const LinetypeEntry *entry_source = &tables->linetypes[index];
+      const Dwg_Object_LTYPE *linetype
+          = entry_source->object->tio.object->tio.LTYPE;
+      uint32_t flags = 0;
+      size_t dash_index;
+      double pattern_length = isfinite (linetype->pattern_len)
+                                  ? fabs (linetype->pattern_len)
+                                  : 0.0;
+      for (dash_index = 0; dash_index < (size_t)linetype->numdashes;
+           dash_index++)
+        if (linetype->dashes
+            && linetype->dashes[dash_index].shape_flag)
+          flags |= 1u;
+      if (!write_u64 (writer, entry_source->handle)
+          || !write_u32 (writer, entry_source->code)
+          || !write_u16 (writer, (uint16_t)linetype->alignment)
+          || !write_u16 (writer, (uint16_t)flags)
+          || !write_f64 (writer, pattern_length)
+          || !write_u64 (writer, first_dash)
+          || !write_u32 (writer, (uint32_t)linetype->numdashes)
+          || !write_u32 (writer, references[index * 4])
+          || !write_u32 (writer, references[index * 4 + 1])
+          || !write_u32 (writer, references[index * 4 + 2])
+          || !write_u32 (writer, references[index * 4 + 3])
+          || !write_u32 (writer, 0) || !write_u32 (writer, 0)
+          || !write_u32 (writer, 0))
+        {
+          free (references);
+          return 0;
+        }
+      first_dash += (uint64_t)linetype->numdashes;
+    }
+  for (index = 0; index < tables->linetype_count; index++)
+    {
+      if (!write_bytes (writer, tables->linetypes[index].name,
+                        strlen (tables->linetypes[index].name))
+          || !write_bytes (
+              writer, tables->linetypes[index].description,
+              strlen (tables->linetypes[index].description)))
+        {
+          free (references);
+          return 0;
+        }
+    }
+  free (references);
+  return finish_variable_section (
+      writer, entry, SECTION_LINETYPES, LINETYPE_RECORD_SIZE,
+      "linetypes", offset, (uint64_t)tables->linetype_count,
+      SECTION_FLAG_STRING_TABLE);
+}
+
+static int
+write_linetype_dash_section (CacheWriter *writer, const Dwg_Data *dwg,
+                             const CacheTables *tables,
+                             SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = linetype_dash_count (tables);
+  uint64_t string_cursor = 0;
+  uint64_t string_offset;
+  uint32_t *references = NULL;
+  char **texts = NULL;
+  uint64_t cursor = 0;
+  size_t linetype_index;
+  int success = 0;
+  if (count == UINT64_MAX || count > SIZE_MAX / sizeof (char *)
+      || count > SIZE_MAX / (2 * sizeof (uint32_t))
+      || count > UINT32_MAX)
+    {
+      set_error (writer, "linetype dash table exceeds its limits");
+      return 0;
+    }
+  if (count)
+    {
+      texts = (char **)calloc ((size_t)count, sizeof (char *));
+      references
+          = (uint32_t *)malloc ((size_t)count * 2 * sizeof (uint32_t));
+      if (!texts || !references)
+        {
+          set_error (
+              writer,
+              "out of memory while writing linetype dash table");
+          goto done;
+        }
+    }
+  for (linetype_index = 0;
+       linetype_index < tables->linetype_count; linetype_index++)
+    {
+      Dwg_Object_LTYPE *linetype
+          = tables->linetypes[linetype_index].object->tio.object->tio.LTYPE;
+      size_t dash_index;
+      for (dash_index = 0; dash_index < (size_t)linetype->numdashes;
+           dash_index++, cursor++)
+        {
+          Dwg_LTYPE_dash *dash = &linetype->dashes[dash_index];
+          texts[cursor] = copy_utf8_field (
+              dwg->header.codepage, dash, "LTYPE_dash", "text", "");
+          if (!texts[cursor]
+              || !checked_string_layout (
+                  &string_cursor, texts[cursor],
+                  &references[cursor * 2],
+                  &references[cursor * 2 + 1]))
+            {
+              set_error (
+                  writer,
+                  "linetype dash string table exceeds its limits");
+              goto done;
+            }
+        }
+    }
+  string_offset
+      = STRING_TABLE_HEADER_SIZE + count * LINETYPE_DASH_RECORD_SIZE;
+  if (!align_writer (writer, &offset)
+      || !write_u32 (writer, (uint32_t)count)
+      || !write_u32 (writer, LINETYPE_DASH_RECORD_SIZE)
+      || !write_u64 (writer, string_offset))
+    goto done;
+  cursor = 0;
+  for (linetype_index = 0;
+       linetype_index < tables->linetype_count; linetype_index++)
+    {
+      Dwg_Object_LTYPE *linetype
+          = tables->linetypes[linetype_index].object->tio.object->tio.LTYPE;
+      size_t dash_index;
+      for (dash_index = 0; dash_index < (size_t)linetype->numdashes;
+           dash_index++, cursor++)
+        {
+          Dwg_LTYPE_dash *dash = &linetype->dashes[dash_index];
+          uint32_t style_index = find_handle_index (
+              tables->text_style_indices, tables->text_style_count,
+              reference_handle (dash->style));
+          double length = isfinite (dash->length) ? dash->length : 0.0;
+          double x_offset
+              = isfinite (dash->x_offset) ? dash->x_offset : 0.0;
+          double y_offset
+              = isfinite (dash->y_offset) ? dash->y_offset : 0.0;
+          double scale = isfinite (dash->scale) ? dash->scale : 1.0;
+          double rotation
+              = isfinite (dash->rotation) ? dash->rotation : 0.0;
+          if (!write_u32 (writer, tables->linetypes[linetype_index].code)
+              || !write_u32 (writer, (uint32_t)dash->shape_flag)
+              || !write_f64 (writer, length)
+              || !write_i32 (
+                  writer, (int32_t)dash->complex_shapecode)
+              || !write_u32 (writer, style_index)
+              || !write_f64 (writer, x_offset)
+              || !write_f64 (writer, y_offset)
+              || !write_f64 (writer, scale)
+              || !write_f64 (writer, rotation)
+              || !write_u32 (writer, references[cursor * 2])
+              || !write_u32 (writer, references[cursor * 2 + 1])
+              || !write_u64 (writer, 0))
+            goto done;
+        }
+    }
+  for (cursor = 0; cursor < count; cursor++)
+    if (!write_bytes (writer, texts[cursor], strlen (texts[cursor])))
+      goto done;
+  success = finish_variable_section (
+      writer, entry, SECTION_LINETYPE_DASHES,
+      LINETYPE_DASH_RECORD_SIZE, "linetype_dashes", offset, count,
+      SECTION_FLAG_STRING_TABLE);
+
+done:
+  if (texts)
+    for (cursor = 0; cursor < count; cursor++)
+      free (texts[cursor]);
+  free (texts);
+  free (references);
+  return success;
+}
+
+static int
+is_layout_object (const Dwg_Object *object)
+{
+  return object && object->fixedtype == DWG_TYPE_LAYOUT
+         && object->tio.object && object->tio.object->tio.LAYOUT;
+}
+
+static int
+is_viewport_entity (const Dwg_Object *object)
+{
+  return object && object->fixedtype == DWG_TYPE_VIEWPORT
+         && object->tio.entity && object->tio.entity->tio.VIEWPORT;
+}
+
+static uint64_t
+viewport_count_for_owner (const Dwg_Data *dwg,
+                          const CacheTables *tables,
+                          uint64_t owner_handle)
+{
+  uint64_t count = 0;
+  size_t index;
+  for (index = 0; index < (size_t)dwg->num_objects; index++)
+    if (is_viewport_entity (&dwg->object[index])
+        && entity_owner_handle (dwg->object[index].tio.entity, tables)
+               == owner_handle)
+      count++;
+  return count;
+}
+
+static uint32_t
+viewport_frozen_layer_count (const Dwg_Entity_VIEWPORT *viewport,
+                             const CacheTables *tables)
+{
+  uint32_t count = 0;
+  size_t index;
+  if (!viewport || !viewport->frozen_layers
+      || viewport->num_frozen_layers <= 0)
+    return 0;
+  for (index = 0; index < (size_t)viewport->num_frozen_layers; index++)
+    if (find_handle_index (
+            tables->layer_indices, tables->layer_count,
+            reference_handle (viewport->frozen_layers[index]))
+        != UINT32_MAX)
+      count++;
+  return count;
+}
+
+static double
+finite_or_zero (double value)
+{
+  return isfinite (value) ? value : 0.0;
+}
+
+static int
+write_layout_section (CacheWriter *writer, const Dwg_Data *dwg,
+                      const CacheTables *tables, SectionEntry *entry)
+{
+  uint64_t layout_count = 0;
+  uint64_t string_cursor = 0;
+  uint64_t string_offset;
+  uint64_t first_viewport = 0;
+  uint64_t offset;
+  uint32_t *references = NULL;
+  char **strings = NULL;
+  uint64_t row = 0;
+  size_t object_index;
+  int success = 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    if (is_layout_object (&dwg->object[object_index]))
+      layout_count++;
+  if (layout_count > UINT32_MAX
+      || layout_count > SIZE_MAX / (4 * sizeof (char *))
+      || layout_count > SIZE_MAX / (8 * sizeof (uint32_t)))
+    {
+      set_error (writer, "layout table exceeds its limits");
+      return 0;
+    }
+  if (layout_count)
+    {
+      strings = (char **)calloc ((size_t)layout_count * 4, sizeof (char *));
+      references = (uint32_t *)malloc (
+          (size_t)layout_count * 8 * sizeof (uint32_t));
+      if (!strings || !references)
+        {
+          set_error (writer, "out of memory while writing layout table");
+          goto done;
+        }
+    }
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      Dwg_Object *object = &dwg->object[object_index];
+      Dwg_Object_LAYOUT *layout;
+      size_t string_index;
+      if (!is_layout_object (object))
+        continue;
+      layout = object->tio.object->tio.LAYOUT;
+      strings[row * 4]
+          = copy_utf8_field (dwg->header.codepage, layout, "LAYOUT",
+                             "layout_name", "");
+      strings[row * 4 + 1]
+          = copy_versioned_text (
+              dwg->header.codepage, dwg->header.version,
+              layout->plotsettings.stylesheet);
+      strings[row * 4 + 2]
+          = copy_versioned_text (
+              dwg->header.codepage, dwg->header.version,
+              layout->plotsettings.canonical_media_name);
+      strings[row * 4 + 3]
+          = copy_versioned_text (
+              dwg->header.codepage, dwg->header.version,
+              layout->plotsettings.printer_cfg_file);
+      for (string_index = 0; string_index < 4; string_index++)
+        if (!strings[row * 4 + string_index]
+            || !checked_string_layout (
+                &string_cursor, strings[row * 4 + string_index],
+                &references[row * 8 + string_index * 2],
+                &references[row * 8 + string_index * 2 + 1]))
+          {
+            set_error (writer, "layout string table exceeds its limits");
+            goto done;
+          }
+      row++;
+    }
+  string_offset
+      = STRING_TABLE_HEADER_SIZE + layout_count * LAYOUT_RECORD_SIZE;
+  if (!align_writer (writer, &offset)
+      || !write_u32 (writer, (uint32_t)layout_count)
+      || !write_u32 (writer, LAYOUT_RECORD_SIZE)
+      || !write_u64 (writer, string_offset))
+    goto done;
+  row = 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      Dwg_Object *object = &dwg->object[object_index];
+      Dwg_Object_LAYOUT *layout;
+      Dwg_Object_PLOTSETTINGS *plot;
+      uint64_t block_handle;
+      uint64_t viewport_count;
+      if (!is_layout_object (object))
+        continue;
+      layout = object->tio.object->tio.LAYOUT;
+      plot = &layout->plotsettings;
+      block_handle = reference_handle (layout->block_header);
+      viewport_count
+          = viewport_count_for_owner (dwg, tables, block_handle);
+      if (viewport_count > UINT32_MAX
+          || UINT64_MAX - first_viewport < viewport_count)
+        {
+          set_error (writer, "layout viewport range exceeds its limits");
+          goto done;
+        }
+      if (!write_u64 (writer, (uint64_t)object->handle.value)
+          || !write_u64 (writer, block_handle)
+          || !write_u64 (
+              writer, reference_handle (layout->active_viewport))
+          || !write_u64 (writer, first_viewport)
+          || !write_u32 (writer, (uint32_t)viewport_count)
+          || !write_u16 (writer, (uint16_t)layout->tab_order)
+          || !write_u16 (writer, (uint16_t)layout->layout_flags)
+          || !write_u32 (writer, (uint32_t)plot->plot_flags)
+          || !write_u16 (
+              writer, (uint16_t)plot->plot_paper_unit)
+          || !write_u16 (
+              writer, (uint16_t)plot->plot_rotation_mode)
+          || !write_u16 (writer, (uint16_t)plot->plot_type)
+          || !write_u16 (
+              writer, (uint16_t)plot->std_scale_type)
+          || !write_u16 (
+              writer, (uint16_t)plot->shadeplot_type)
+          || !write_u16 (writer, 0)
+          || !write_f64 (
+              writer, finite_or_zero (plot->std_scale_factor))
+          || !write_f64 (
+              writer, finite_or_zero (plot->paper_units))
+          || !write_f64 (
+              writer, finite_or_zero (plot->drawing_units))
+          || !write_f64 (
+              writer, finite_or_zero (plot->paper_width))
+          || !write_f64 (
+              writer, finite_or_zero (plot->paper_height))
+          || !write_f64 (
+              writer, finite_or_zero (plot->left_margin))
+          || !write_f64 (
+              writer, finite_or_zero (plot->bottom_margin))
+          || !write_f64 (
+              writer, finite_or_zero (plot->right_margin))
+          || !write_f64 (
+              writer, finite_or_zero (plot->top_margin))
+          || !write_f64 (
+              writer, finite_or_zero (plot->plot_origin.x))
+          || !write_f64 (
+              writer, finite_or_zero (plot->plot_origin.y))
+          || !write_f64 (writer, finite_or_zero (layout->LIMMIN.x))
+          || !write_f64 (writer, finite_or_zero (layout->LIMMIN.y))
+          || !write_f64 (writer, finite_or_zero (layout->LIMMAX.x))
+          || !write_f64 (writer, finite_or_zero (layout->LIMMAX.y))
+          || !write_f64 (writer, finite_or_zero (layout->EXTMIN.x))
+          || !write_f64 (writer, finite_or_zero (layout->EXTMIN.y))
+          || !write_f64 (writer, finite_or_zero (layout->EXTMIN.z))
+          || !write_f64 (writer, finite_or_zero (layout->EXTMAX.x))
+          || !write_f64 (writer, finite_or_zero (layout->EXTMAX.y))
+          || !write_f64 (writer, finite_or_zero (layout->EXTMAX.z)))
+        goto done;
+      for (size_t reference_index = 0; reference_index < 8;
+           reference_index++)
+        if (!write_u32 (
+                writer, references[row * 8 + reference_index]))
+          goto done;
+      first_viewport += viewport_count;
+      row++;
+    }
+  for (row = 0; row < layout_count * 4; row++)
+    if (!write_bytes (writer, strings[row], strlen (strings[row])))
+      goto done;
+  success = finish_variable_section (
+      writer, entry, SECTION_LAYOUTS, LAYOUT_RECORD_SIZE, "layouts",
+      offset, layout_count, SECTION_FLAG_STRING_TABLE);
+
+done:
+  if (strings)
+    for (row = 0; row < layout_count * 4; row++)
+      free (strings[row]);
+  free (strings);
+  free (references);
+  return success;
+}
+
+static int
+write_viewport_section (CacheWriter *writer, const Dwg_Data *dwg,
+                        const CacheTables *tables, SectionEntry *entry)
+{
+  uint64_t viewport_count = 0;
+  uint64_t string_cursor = 0;
+  uint64_t string_offset;
+  uint64_t first_frozen_layer = 0;
+  uint64_t first_clip_vertex = 0;
+  uint64_t offset;
+  uint32_t *references = NULL;
+  char **strings = NULL;
+  uint64_t row = 0;
+  size_t layout_index;
+  int success = 0;
+  for (layout_index = 0; layout_index < (size_t)dwg->num_objects;
+       layout_index++)
+    if (is_layout_object (&dwg->object[layout_index]))
+      viewport_count += viewport_count_for_owner (
+          dwg, tables,
+          reference_handle (
+              dwg->object[layout_index].tio.object->tio.LAYOUT
+                  ->block_header));
+  if (viewport_count > UINT32_MAX
+      || viewport_count > SIZE_MAX / sizeof (char *)
+      || viewport_count > SIZE_MAX / (2 * sizeof (uint32_t)))
+    {
+      set_error (writer, "viewport table exceeds its limits");
+      return 0;
+    }
+  if (viewport_count)
+    {
+      strings = (char **)calloc ((size_t)viewport_count, sizeof (char *));
+      references = (uint32_t *)malloc (
+          (size_t)viewport_count * 2 * sizeof (uint32_t));
+      if (!strings || !references)
+        {
+          set_error (writer, "out of memory while writing viewport table");
+          goto done;
+        }
+    }
+  for (layout_index = 0; layout_index < (size_t)dwg->num_objects;
+       layout_index++)
+    {
+      Dwg_Object *layout_object = &dwg->object[layout_index];
+      uint64_t block_handle;
+      size_t object_index;
+      if (!is_layout_object (layout_object))
+        continue;
+      block_handle = reference_handle (
+          layout_object->tio.object->tio.LAYOUT->block_header);
+      for (object_index = 0; object_index < (size_t)dwg->num_objects;
+           object_index++)
+        {
+          Dwg_Object *object = &dwg->object[object_index];
+          Dwg_Entity_VIEWPORT *viewport;
+          if (!is_viewport_entity (object)
+              || entity_owner_handle (object->tio.entity, tables)
+                     != block_handle)
+            continue;
+          viewport = object->tio.entity->tio.VIEWPORT;
+          strings[row] = copy_versioned_text (
+              dwg->header.codepage, dwg->header.version,
+              viewport->style_sheet);
+          if (!strings[row]
+              || !checked_string_layout (
+                  &string_cursor, strings[row], &references[row * 2],
+                  &references[row * 2 + 1]))
+            {
+              set_error (
+                  writer, "viewport string table exceeds its limits");
+              goto done;
+            }
+          row++;
+        }
+    }
+  string_offset
+      = STRING_TABLE_HEADER_SIZE
+        + viewport_count * VIEWPORT_RECORD_SIZE;
+  if (!align_writer (writer, &offset)
+      || !write_u32 (writer, (uint32_t)viewport_count)
+      || !write_u32 (writer, VIEWPORT_RECORD_SIZE)
+      || !write_u64 (writer, string_offset))
+    goto done;
+  row = 0;
+  for (layout_index = 0; layout_index < (size_t)dwg->num_objects;
+       layout_index++)
+    {
+      Dwg_Object *layout_object = &dwg->object[layout_index];
+      uint64_t block_handle;
+      size_t object_index;
+      if (!is_layout_object (layout_object))
+        continue;
+      block_handle = reference_handle (
+          layout_object->tio.object->tio.LAYOUT->block_header);
+      for (object_index = 0; object_index < (size_t)dwg->num_objects;
+           object_index++)
+        {
+          Dwg_Object *object = &dwg->object[object_index];
+          Dwg_Object_Entity *entity;
+          Dwg_Entity_VIEWPORT *viewport;
+          uint32_t frozen_count;
+          uint32_t clip_vertex_count;
+          uint32_t flags;
+          if (!is_viewport_entity (object)
+              || entity_owner_handle (object->tio.entity, tables)
+                     != block_handle)
+            continue;
+          entity = object->tio.entity;
+          viewport = entity->tio.VIEWPORT;
+          frozen_count
+              = viewport_frozen_layer_count (viewport, tables);
+          clip_vertex_count
+              = viewport_clip_vertex_count (dwg, tables, viewport);
+          if (clip_vertex_count
+                  > MAX_VIEWPORT_CLIP_VERTICES_PER_BOUNDARY
+              || first_clip_vertex
+                     > MAX_VIEWPORT_CLIP_VERTICES
+                           - clip_vertex_count)
+            {
+              set_error (
+                  writer, "viewport clip vertex pool exceeds its limits");
+              goto done;
+            }
+          flags = (entity->invisible ? 1u : 0u)
+                  | (viewport->ucs_at_origin ? 2u : 0u)
+                  | (viewport->UCSVP ? 4u : 0u)
+                  | (viewport->use_default_lights ? 8u : 0u);
+          if (!write_u64 (writer, (uint64_t)object->handle.value)
+              || !write_u64 (writer, block_handle)
+              || !write_u32 (
+                  writer, entity_layer_index (entity, tables))
+              || !write_u32 (
+                  writer, encode_entity_color (&entity->color))
+              || !write_u64 (writer, first_frozen_layer)
+              || !write_u32 (writer, frozen_count)
+              || !write_u32 (
+                  writer, (uint32_t)viewport->status_flag)
+              || !write_i16 (writer, (int16_t)viewport->on_off)
+              || !write_i16 (writer, (int16_t)viewport->id)
+              || !write_u32 (writer, flags)
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->center.x))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->center.y))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->center.z))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->width))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->height))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->view_target.x))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->view_target.y))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->view_target.z))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->VIEWDIR.x))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->VIEWDIR.y))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->VIEWDIR.z))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->VIEWTWIST))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->VIEWSIZE))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->VIEWCTR.x))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->VIEWCTR.y))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->LENSLENGTH))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->FRONTZ))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->BACKZ))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->brightness))
+              || !write_f64 (
+                  writer, finite_or_zero (viewport->contrast))
+              || !write_u32 (
+                  writer, encode_color (&viewport->ambient_color))
+              || !write_u16 (
+                  writer, (uint16_t)viewport->render_mode)
+              || !write_u16 (
+                  writer, (uint16_t)viewport->shadeplot_mode)
+              || !write_u64 (
+                  writer, reference_handle (viewport->clip_boundary))
+              || !write_u64 (
+                  writer, reference_handle (viewport->visualstyle))
+              || !write_u64 (
+                  writer, reference_handle (viewport->background))
+              || !write_u32 (writer, references[row * 2])
+              || !write_u32 (writer, references[row * 2 + 1])
+              || !write_u64 (writer, first_clip_vertex)
+              || !write_u32 (writer, clip_vertex_count)
+              || !write_u32 (writer, 0)
+              || !write_u64 (writer, 0))
+            goto done;
+          first_frozen_layer += frozen_count;
+          first_clip_vertex += clip_vertex_count;
+          row++;
+        }
+    }
+  for (row = 0; row < viewport_count; row++)
+    if (!write_bytes (writer, strings[row], strlen (strings[row])))
+      goto done;
+  success = finish_variable_section (
+      writer, entry, SECTION_VIEWPORTS, VIEWPORT_RECORD_SIZE,
+      "viewports", offset, viewport_count, SECTION_FLAG_STRING_TABLE);
+
+done:
+  if (strings)
+    for (row = 0; row < viewport_count; row++)
+      free (strings[row]);
+  free (strings);
+  free (references);
+  return success;
+}
+
+static int
+write_viewport_frozen_layer_section (
+    CacheWriter *writer, const Dwg_Data *dwg,
+    const CacheTables *tables, SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t layout_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (layout_index = 0; layout_index < (size_t)dwg->num_objects;
+       layout_index++)
+    {
+      Dwg_Object *layout_object = &dwg->object[layout_index];
+      uint64_t block_handle;
+      size_t object_index;
+      if (!is_layout_object (layout_object))
+        continue;
+      block_handle = reference_handle (
+          layout_object->tio.object->tio.LAYOUT->block_header);
+      for (object_index = 0; object_index < (size_t)dwg->num_objects;
+           object_index++)
+        {
+          Dwg_Object *object = &dwg->object[object_index];
+          Dwg_Entity_VIEWPORT *viewport;
+          size_t frozen_index;
+          if (!is_viewport_entity (object)
+              || entity_owner_handle (object->tio.entity, tables)
+                     != block_handle)
+            continue;
+          viewport = object->tio.entity->tio.VIEWPORT;
+          if (!viewport->frozen_layers
+              || viewport->num_frozen_layers <= 0)
+            continue;
+          for (frozen_index = 0;
+               frozen_index < (size_t)viewport->num_frozen_layers;
+               frozen_index++)
+            {
+              uint32_t layer_index = find_handle_index (
+                  tables->layer_indices, tables->layer_count,
+                  reference_handle (
+                      viewport->frozen_layers[frozen_index]));
+              if (layer_index == UINT32_MAX)
+                continue;
+              if (!write_u32 (writer, layer_index)
+                  || !write_u32 (writer, 0))
+                return 0;
+              count++;
+            }
+        }
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_VIEWPORT_FROZEN_LAYERS,
+      VIEWPORT_FROZEN_LAYER_RECORD_SIZE,
+      "viewport_frozen_layers", offset, count);
+}
+
 static int
 is_text_source_object (const Dwg_Object *object)
 {
   return object && (object->fixedtype == DWG_TYPE_TEXT
                     || object->fixedtype == DWG_TYPE_MTEXT
                     || object->fixedtype == DWG_TYPE_ATTDEF
-                    || object->fixedtype == DWG_TYPE_ATTRIB);
+                    || object->fixedtype == DWG_TYPE_ATTRIB
+                    || (object->fixedtype == DWG_TYPE_MULTILEADER
+                        && object->tio.entity
+                        && object->tio.entity->tio.MULTILEADER
+                        && object->tio.entity->tio.MULTILEADER
+                               ->ctx.has_content_txt));
 }
 
 static int
@@ -2359,7 +3789,7 @@ write_text_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
       TextSource source;
       if (!is_text_source_object (&dwg->object[i]))
         continue;
-      if (!read_text_source (&dwg->object[i], &source))
+      if (!read_text_source (dwg, &dwg->object[i], &source))
         {
           free (references);
           set_error (writer, "cannot decode source text as UTF-8");
@@ -2404,7 +3834,7 @@ write_text_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
       size_t j;
       if (!is_text_source_object (&dwg->object[i]))
         continue;
-      if (!read_text_source (&dwg->object[i], &source))
+      if (!read_text_source (dwg, &dwg->object[i], &source))
         {
           free (references);
           set_error (writer, "cannot decode source text as UTF-8");
@@ -2484,7 +3914,7 @@ write_text_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
       TextSource source;
       if (!is_text_source_object (&dwg->object[i]))
         continue;
-      if (!read_text_source (&dwg->object[i], &source))
+      if (!read_text_source (dwg, &dwg->object[i], &source))
         {
           free (references);
           set_error (writer, "cannot decode source text as UTF-8");
@@ -2522,7 +3952,7 @@ write_text_column_height_section (CacheWriter *writer, const Dwg_Data *dwg,
       uint64_t column_index;
       if (!is_text_source_object (&dwg->object[i]))
         continue;
-      if (!read_text_source (&dwg->object[i], &source))
+      if (!read_text_source (dwg, &dwg->object[i], &source))
         {
           set_error (writer, "cannot decode source text as UTF-8");
           return 0;
@@ -2763,6 +4193,178 @@ write_insert_section (CacheWriter *writer, const Dwg_Data *dwg,
     }
   return finish_fixed_section (writer, entry, SECTION_INSERTS,
                                INSERT_RECORD_SIZE, "inserts", offset, count);
+}
+
+static const Dwg_Object_SPATIAL_FILTER *
+find_spatial_filter (const Dwg_Data *dwg, Dwg_Object *object,
+                     unsigned depth)
+{
+  Dwg_Object_DICTIONARY *dictionary;
+  uint32_t index;
+  if (!object || depth > 4)
+    return NULL;
+  if (object->fixedtype == DWG_TYPE_SPATIAL_FILTER
+      && object->tio.object
+      && object->tio.object->tio.SPATIAL_FILTER)
+    return object->tio.object->tio.SPATIAL_FILTER;
+  if (object->fixedtype != DWG_TYPE_DICTIONARY
+      || !object->tio.object
+      || !(dictionary = object->tio.object->tio.DICTIONARY)
+      || dictionary->numitems <= 0
+      || !dictionary->itemhandles)
+    return NULL;
+  for (index = 0; index < (uint32_t)dictionary->numitems; index++)
+    {
+      const Dwg_Object_SPATIAL_FILTER *filter = find_spatial_filter (
+          dwg, reference_object (dwg, dictionary->itemhandles[index]),
+          depth + 1);
+      if (filter)
+        return filter;
+    }
+  return NULL;
+}
+
+static const Dwg_Object_SPATIAL_FILTER *
+insert_spatial_filter (const Dwg_Data *dwg, const Dwg_Object *object)
+{
+  if (!object || !object->tio.entity
+      || (object->fixedtype != DWG_TYPE_INSERT
+          && object->fixedtype != DWG_TYPE_MINSERT)
+      || !object->tio.entity->xdicobjhandle)
+    return NULL;
+  return find_spatial_filter (
+      dwg,
+      reference_object (dwg, object->tio.entity->xdicobjhandle), 0);
+}
+
+static int
+validate_insert_clip (CacheWriter *writer,
+                      const Dwg_Object_SPATIAL_FILTER *filter)
+{
+  uint32_t index;
+  if (!filter)
+    return 1;
+  if (filter->num_clip_verts < 2
+      || filter->num_clip_verts > MAX_INSERT_CLIP_VERTICES_PER_BOUNDARY
+      || !filter->clip_verts || !filter->inverse_transform)
+    {
+      set_error (writer, "INSERT XCLIP boundary is unsupported or incomplete");
+      return 0;
+    }
+  for (index = 0; index < (uint32_t)filter->num_clip_verts; index++)
+    if (!isfinite (filter->clip_verts[index].x)
+        || !isfinite (filter->clip_verts[index].y))
+      {
+        set_error (writer, "INSERT XCLIP contains a non-finite vertex");
+        return 0;
+      }
+  for (index = 0; index < 12; index++)
+    if (!isfinite (filter->inverse_transform[index]))
+      {
+        set_error (writer, "INSERT XCLIP contains a non-finite transform");
+        return 0;
+      }
+  return 1;
+}
+
+static int
+write_insert_clip_section (CacheWriter *writer, const Dwg_Data *dwg,
+                           SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t first_vertex = 0;
+  uint64_t count = 0;
+  size_t object_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Object_SPATIAL_FILTER *filter
+          = insert_spatial_filter (dwg, object);
+      uint32_t vertex_count;
+      uint32_t flags;
+      if (!filter)
+        continue;
+      if (!validate_insert_clip (writer, filter))
+        return 0;
+      vertex_count = (uint32_t)filter->num_clip_verts;
+      if (count >= MAX_INSERT_CLIP_RECORDS
+          || first_vertex > MAX_INSERT_CLIP_VERTICES - vertex_count)
+        {
+          set_error (writer, "INSERT XCLIP source exceeds its bounded limit");
+          return 0;
+        }
+      flags = vertex_count == 2 ? 1u : 0u;
+      if (!write_u64 (writer, (uint64_t)object->handle.value)
+          || !write_u64 (writer, first_vertex)
+          || !write_u32 (writer, vertex_count)
+          || !write_u32 (writer, flags) || !write_u64 (writer, 0))
+        return 0;
+      first_vertex += vertex_count;
+      count++;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_INSERT_CLIPS, INSERT_CLIP_RECORD_SIZE,
+      "insert_clips", offset, count);
+}
+
+static int
+write_insert_clip_vertex_section (CacheWriter *writer,
+                                  const Dwg_Data *dwg,
+                                  SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t object_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Object_SPATIAL_FILTER *filter
+          = insert_spatial_filter (dwg, object);
+      uint32_t vertex_index;
+      if (!filter)
+        continue;
+      if (!validate_insert_clip (writer, filter))
+        return 0;
+      if (count > MAX_INSERT_CLIP_VERTICES
+                      - (uint32_t)filter->num_clip_verts)
+        {
+          set_error (writer, "INSERT XCLIP vertex pool exceeds its limit");
+          return 0;
+        }
+      for (vertex_index = 0;
+           vertex_index < (uint32_t)filter->num_clip_verts;
+           vertex_index++)
+        {
+          const double source_x = filter->clip_verts[vertex_index].x;
+          const double source_y = filter->clip_verts[vertex_index].y;
+          const double *inverse = filter->inverse_transform;
+          const double local_x = inverse[0] * source_x
+                                 + inverse[1] * source_y + inverse[3];
+          const double local_y = inverse[4] * source_x
+                                 + inverse[5] * source_y + inverse[7];
+          if (!isfinite (local_x) || !isfinite (local_y))
+            {
+              set_error (
+                  writer,
+                  "INSERT XCLIP transform produced a non-finite vertex");
+              return 0;
+            }
+          if (!write_f64 (writer, local_x)
+              || !write_f64 (writer, local_y))
+            return 0;
+        }
+      count += (uint32_t)filter->num_clip_verts;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_INSERT_CLIP_VERTICES,
+      INSERT_CLIP_VERTEX_RECORD_SIZE, "insert_clip_vertices", offset,
+      count);
 }
 
 static int
@@ -3156,8 +4758,6 @@ entity_group (const Dwg_Object_Entity *entity, const CacheTables *tables)
     {
       if (tables->blocks[index].is_model)
         return UINT32_MAX;
-      if (tables->blocks[index].is_paper)
-        return UINT32_MAX - 1u;
       return index;
     }
   if (entity && entity->entmode == 2)
@@ -3184,11 +4784,17 @@ initialize_entity_segment (const Dwg_Object *object,
     line_weight = -1;
   segment->handle = (uint64_t)object->handle.value;
   segment->layer_index = entity_layer_index (entity, tables);
-  segment->color = encode_color (&entity->color);
+  segment->color = encode_entity_color (&entity->color);
   segment->line_weight = (int16_t)line_weight;
   segment->flags = entity->invisible ? 1u : 0u;
   segment->source_kind = source_kind;
   segment->approximated_curve = approximated_curve ? 1u : 0u;
+  segment->linetype_code = entity_linetype_code (entity, tables);
+  segment->linetype_scale
+      = isfinite (entity->ltype_scale)
+                && fabs (entity->ltype_scale) > 1.0e-12
+            ? fabs (entity->ltype_scale)
+            : 1.0;
   return 1;
 }
 
@@ -3214,6 +4820,635 @@ line_segment_from_object (const Dwg_Object *object,
       if (!isfinite (segment->start[axis])
           || !isfinite (segment->end[axis]))
         return -1;
+    }
+  return 1;
+}
+
+static int
+finite_point3 (const BITCODE_3BD point)
+{
+  return isfinite (point.x) && isfinite (point.y)
+         && isfinite (point.z);
+}
+
+static int
+xline_segment_from_object (const Dwg_Data *dwg,
+                           const Dwg_Object *object,
+                           const CacheTables *tables,
+                           LineSegment *segment)
+{
+  const Dwg_Entity_XLINE *xline;
+  double bounds_min[2];
+  double bounds_max[2];
+  double direction[3];
+  double t_min = -DBL_MAX;
+  double t_max = DBL_MAX;
+  double length;
+  size_t axis;
+  if (!dwg || !object || object->fixedtype != DWG_TYPE_XLINE
+      || !object->tio.entity
+      || !(xline = object->tio.entity->tio.XLINE))
+    return 0;
+  if (!finite_point3 (xline->point) || !finite_point3 (xline->vector))
+    return -1;
+  length = hypot (xline->vector.x, xline->vector.y);
+  if (!isfinite (length) || length <= 1.0e-12)
+    return -1;
+  direction[0] = xline->vector.x / length;
+  direction[1] = xline->vector.y / length;
+  direction[2] = xline->vector.z / length;
+  bounds_min[0] = fmin (dwg->header_vars.EXTMIN.x,
+                        dwg->header_vars.EXTMAX.x);
+  bounds_min[1] = fmin (dwg->header_vars.EXTMIN.y,
+                        dwg->header_vars.EXTMAX.y);
+  bounds_max[0] = fmax (dwg->header_vars.EXTMIN.x,
+                        dwg->header_vars.EXTMAX.x);
+  bounds_max[1] = fmax (dwg->header_vars.EXTMIN.y,
+                        dwg->header_vars.EXTMAX.y);
+  if (!isfinite (bounds_min[0]) || !isfinite (bounds_min[1])
+      || !isfinite (bounds_max[0]) || !isfinite (bounds_max[1])
+      || bounds_max[0] - bounds_min[0] <= 1.0e-9
+      || bounds_max[1] - bounds_min[1] <= 1.0e-9)
+    {
+      bounds_min[0] = xline->point.x - 1000.0;
+      bounds_min[1] = xline->point.y - 1000.0;
+      bounds_max[0] = xline->point.x + 1000.0;
+      bounds_max[1] = xline->point.y + 1000.0;
+    }
+  else
+    {
+      double padding = fmax (bounds_max[0] - bounds_min[0],
+                             bounds_max[1] - bounds_min[1])
+                       * 0.01;
+      bounds_min[0] = fmin (bounds_min[0], xline->point.x) - padding;
+      bounds_min[1] = fmin (bounds_min[1], xline->point.y) - padding;
+      bounds_max[0] = fmax (bounds_max[0], xline->point.x) + padding;
+      bounds_max[1] = fmax (bounds_max[1], xline->point.y) + padding;
+    }
+  for (axis = 0; axis < 2; axis++)
+    {
+      double coordinate
+          = axis == 0 ? xline->point.x : xline->point.y;
+      if (fabs (direction[axis]) <= 1.0e-12)
+        {
+          if (coordinate < bounds_min[axis]
+              || coordinate > bounds_max[axis])
+            return -1;
+        }
+      else
+        {
+          double first
+              = (bounds_min[axis] - coordinate) / direction[axis];
+          double last
+              = (bounds_max[axis] - coordinate) / direction[axis];
+          double near = fmin (first, last);
+          double far = fmax (first, last);
+          if (near > t_min)
+            t_min = near;
+          if (far < t_max)
+            t_max = far;
+          if (t_min > t_max)
+            return -1;
+        }
+    }
+  if (!isfinite (t_min) || !isfinite (t_max)
+      || !initialize_entity_segment (object, tables, 9u, 0, segment))
+    return -1;
+  segment->start[0] = xline->point.x + direction[0] * t_min;
+  segment->start[1] = xline->point.y + direction[1] * t_min;
+  segment->start[2] = xline->point.z + direction[2] * t_min;
+  segment->end[0] = xline->point.x + direction[0] * t_max;
+  segment->end[1] = xline->point.y + direction[1] * t_max;
+  segment->end[2] = xline->point.z + direction[2] * t_max;
+  return 1;
+}
+
+static int
+line_points_differ (const double start[3], const double end[3])
+{
+  return fabs (start[0] - end[0]) > 1.0e-9
+         || fabs (start[1] - end[1]) > 1.0e-9
+         || fabs (start[2] - end[2]) > 1.0e-9;
+}
+
+static void
+apply_mleader_line_style (const Dwg_Entity_MULTILEADER *mleader,
+                          const Dwg_LEADER_Line *line,
+                          const CacheTables *tables,
+                          LineSegment *segment)
+{
+  uint32_t linetype_code;
+  int line_weight;
+  if ((mleader->flags & 2u) != 0u)
+    segment->color = encode_color (&mleader->line_color);
+  if ((mleader->flags & 4u) != 0u)
+    {
+      linetype_code = find_handle_index (
+          tables->linetype_codes, tables->linetype_count,
+          reference_handle (mleader->line_ltype));
+      if (linetype_code != UINT32_MAX)
+        segment->linetype_code = (uint16_t)linetype_code;
+    }
+  if ((mleader->flags & 8u) != 0u)
+    {
+      line_weight = dxf_cvt_lweight (mleader->line_linewt);
+      if (line_weight >= INT16_MIN && line_weight <= INT16_MAX)
+        segment->line_weight = (int16_t)line_weight;
+    }
+  if (!line)
+    return;
+  if ((line->flags & 2u) != 0u)
+    segment->color = encode_color (&line->color);
+  if ((line->flags & 4u) != 0u)
+    {
+      linetype_code = find_handle_index (
+          tables->linetype_codes, tables->linetype_count,
+          reference_handle (line->ltype));
+      if (linetype_code != UINT32_MAX)
+        segment->linetype_code = (uint16_t)linetype_code;
+    }
+  if ((line->flags & 8u) != 0u)
+    {
+      line_weight = dxf_cvt_lweight (line->linewt);
+      if (line_weight >= INT16_MIN && line_weight <= INT16_MAX)
+        segment->line_weight = (int16_t)line_weight;
+    }
+}
+
+static int
+emit_mleader_segment (SegmentIteration *iteration,
+                      const LineSegment *base,
+                      const double start[3], const double end[3],
+                      int approximated, uint64_t *generated)
+{
+  LineSegment segment;
+  if (!line_points_differ (start, end))
+    return 1;
+  if (*generated >= MAX_MULTILEADER_SEGMENTS_PER_ENTITY)
+    return 1;
+  segment = *base;
+  memcpy (segment.start, start, sizeof (segment.start));
+  memcpy (segment.end, end, sizeof (segment.end));
+  segment.approximated_curve = approximated ? 1u : 0u;
+  (*generated)++;
+  return segment_iteration_emit (iteration, &segment);
+}
+
+static int
+emit_mleader_arrow (SegmentIteration *iteration,
+                    const LineSegment *base, const double tip[3],
+                    const double next[3], double arrow_size,
+                    uint64_t *generated)
+{
+  double direction[2];
+  double direction_length;
+  double center[3];
+  double left[3];
+  double right[3];
+  if (!isfinite (arrow_size) || arrow_size <= 1.0e-9)
+    return 1;
+  direction[0] = next[0] - tip[0];
+  direction[1] = next[1] - tip[1];
+  direction_length = hypot (direction[0], direction[1]);
+  if (!isfinite (direction_length) || direction_length <= 1.0e-12)
+    return 1;
+  direction[0] /= direction_length;
+  direction[1] /= direction_length;
+  center[0] = tip[0] + direction[0] * arrow_size;
+  center[1] = tip[1] + direction[1] * arrow_size;
+  center[2] = tip[2];
+  left[0] = center[0] - direction[1] * arrow_size * 0.35;
+  left[1] = center[1] + direction[0] * arrow_size * 0.35;
+  left[2] = tip[2];
+  right[0] = center[0] + direction[1] * arrow_size * 0.35;
+  right[1] = center[1] - direction[0] * arrow_size * 0.35;
+  right[2] = tip[2];
+  return emit_mleader_segment (
+             iteration, base, tip, left, 0, generated)
+         && emit_mleader_segment (
+             iteration, base, left, right, 0, generated)
+         && emit_mleader_segment (
+             iteration, base, right, tip, 0, generated);
+}
+
+static int
+iterate_mleader_segments (const Dwg_Object *object,
+                          const CacheTables *tables,
+                          SegmentIteration *iteration)
+{
+  const Dwg_Entity_MULTILEADER *mleader;
+  size_t leader_count;
+  size_t leader_index;
+  uint64_t generated = 0;
+  if (!object || object->fixedtype != DWG_TYPE_MULTILEADER
+      || !object->tio.entity
+      || !(mleader = object->tio.entity->tio.MULTILEADER))
+    return 1;
+  if (!mleader->ctx.leaders || mleader->ctx.num_leaders <= 0)
+    return 1;
+  leader_count = (size_t)mleader->ctx.num_leaders;
+  if (leader_count > MAX_MULTILEADER_NODES)
+    leader_count = MAX_MULTILEADER_NODES;
+  for (leader_index = 0; leader_index < leader_count; leader_index++)
+    {
+      const Dwg_LEADER_Node *node
+          = &mleader->ctx.leaders[leader_index];
+      size_t line_count;
+      size_t line_index;
+      if (!node->lines || node->num_lines <= 0)
+        continue;
+      line_count = (size_t)node->num_lines;
+      if (line_count > MAX_MULTILEADER_LINES_PER_NODE)
+        line_count = MAX_MULTILEADER_LINES_PER_NODE;
+      for (line_index = 0; line_index < line_count; line_index++)
+        {
+          const Dwg_LEADER_Line *line = &node->lines[line_index];
+          LineSegment base;
+          size_t point_count;
+          size_t point_index;
+          double last[3];
+          int has_last = 0;
+          if (line->type == 0 || !line->points
+              || line->num_points <= 0)
+            continue;
+          if (!initialize_entity_segment (
+                  object, tables, 10u, line->type == 2, &base))
+            continue;
+          apply_mleader_line_style (mleader, line, tables, &base);
+          point_count = (size_t)line->num_points;
+          if (point_count > MAX_MULTILEADER_POINTS_PER_LINE)
+            point_count = MAX_MULTILEADER_POINTS_PER_LINE;
+          for (point_index = 0; point_index < point_count; point_index++)
+            {
+              double current[3] = {
+                line->points[point_index].x,
+                line->points[point_index].y,
+                line->points[point_index].z
+              };
+              if (!isfinite (current[0]) || !isfinite (current[1])
+                  || !isfinite (current[2]))
+                {
+                  segment_iteration_reject (iteration);
+                  has_last = 0;
+                  continue;
+                }
+              if (has_last
+                  && !emit_mleader_segment (
+                      iteration, &base, last, current,
+                      line->type == 2, &generated))
+                return 0;
+              memcpy (last, current, sizeof (last));
+              has_last = 1;
+            }
+          if (has_last && node->has_lastleaderlinepoint
+              && finite_point3 (node->lastleaderlinepoint))
+            {
+              double landing[3] = {
+                node->lastleaderlinepoint.x,
+                node->lastleaderlinepoint.y,
+                node->lastleaderlinepoint.z
+              };
+              double arrow_size
+                  = isfinite (line->arrow_size)
+                            && line->arrow_size > 1.0e-9
+                        ? line->arrow_size
+                        : isfinite (mleader->arrow_size)
+                                  && mleader->arrow_size > 1.0e-9
+                              ? mleader->arrow_size
+                              : mleader->ctx.arrow_size;
+              double tip[3] = {
+                line->points[0].x,
+                line->points[0].y,
+                line->points[0].z
+              };
+              double next[3];
+              if (point_count > 1)
+                {
+                  next[0] = line->points[1].x;
+                  next[1] = line->points[1].y;
+                  next[2] = line->points[1].z;
+                }
+              else
+                memcpy (next, landing, sizeof (next));
+              if (!emit_mleader_segment (
+                      iteration, &base, last, landing,
+                      line->type == 2, &generated)
+                  || !emit_mleader_arrow (
+                      iteration, &base, tip, next, arrow_size,
+                      &generated))
+                return 0;
+              memcpy (last, landing, sizeof (last));
+              if (node->has_dogleg
+                  && finite_point3 (node->dogleg_vector)
+                  && isfinite (node->dogleg_length)
+                  && node->dogleg_length > 1.0e-9)
+                {
+                  double dogleg[3] = {
+                    last[0]
+                        + node->dogleg_vector.x
+                              * node->dogleg_length,
+                    last[1]
+                        + node->dogleg_vector.y
+                              * node->dogleg_length,
+                    last[2]
+                        + node->dogleg_vector.z
+                              * node->dogleg_length
+                  };
+                  if (!emit_mleader_segment (
+                          iteration, &base, last, dogleg, 0,
+                          &generated))
+                    return 0;
+                }
+            }
+        }
+    }
+  return 1;
+}
+
+static int
+iterate_leader_segments (const Dwg_Object *object,
+                         const CacheTables *tables,
+                         SegmentIteration *iteration)
+{
+  const Dwg_Entity_LEADER *leader;
+  LineSegment base;
+  size_t point_count;
+  size_t point_index;
+  uint64_t generated = 0;
+  double first[3] = { 0.0, 0.0, 0.0 };
+  double second[3] = { 0.0, 0.0, 0.0 };
+  double last[3] = { 0.0, 0.0, 0.0 };
+  int finite_count = 0;
+  int has_last = 0;
+  if (!object || object->fixedtype != DWG_TYPE_LEADER
+      || !object->tio.entity
+      || !(leader = object->tio.entity->tio.LEADER))
+    return 1;
+  if (!leader->points || leader->num_points <= 0)
+    {
+      segment_iteration_reject (iteration);
+      return 1;
+    }
+  if (!initialize_entity_segment (
+          object, tables, 12u, leader->path_type != 0, &base))
+    {
+      segment_iteration_reject (iteration);
+      return 1;
+    }
+  point_count = (size_t)leader->num_points;
+  if (point_count > MAX_LEADER_POINTS_PER_ENTITY)
+    point_count = MAX_LEADER_POINTS_PER_ENTITY;
+  for (point_index = 0; point_index < point_count; point_index++)
+    {
+      double current[3] = {
+        leader->points[point_index].x,
+        leader->points[point_index].y,
+        leader->points[point_index].z
+      };
+      if (!isfinite (current[0]) || !isfinite (current[1])
+          || !isfinite (current[2]))
+        {
+          segment_iteration_reject (iteration);
+          has_last = 0;
+          continue;
+        }
+      if (finite_count == 0)
+        memcpy (first, current, sizeof (first));
+      else if (finite_count == 1)
+        memcpy (second, current, sizeof (second));
+      finite_count++;
+      if (has_last
+          && !emit_mleader_segment (
+              iteration, &base, last, current,
+              leader->path_type != 0, &generated))
+        return 0;
+      memcpy (last, current, sizeof (last));
+      has_last = 1;
+    }
+  if (finite_count >= 2 && leader->arrowhead_on)
+    {
+      double arrow_size
+          = isfinite (leader->dimasz) && leader->dimasz > 1.0e-9
+                ? leader->dimasz
+                : 0.0;
+      if (!emit_mleader_arrow (
+              iteration, &base, first, second, arrow_size, &generated))
+        return 0;
+    }
+  if (has_last && leader->hookline_on
+      && finite_point3 (leader->x_direction))
+    {
+      double direction[3] = {
+        leader->x_direction.x,
+        leader->x_direction.y,
+        leader->x_direction.z
+      };
+      double length = sqrt (direction[0] * direction[0]
+                            + direction[1] * direction[1]
+                            + direction[2] * direction[2]);
+      double hook_length
+          = (isfinite (leader->box_width)
+                     ? fabs (leader->box_width)
+                     : 0.0)
+            + (isfinite (leader->dimgap)
+                       ? fabs (leader->dimgap)
+                       : 0.0);
+      if (isfinite (length) && length > 1.0e-12
+          && hook_length > 1.0e-9)
+        {
+          double sign = leader->hookline_dir ? 1.0 : -1.0;
+          double hook[3] = {
+            last[0] + sign * direction[0] / length * hook_length,
+            last[1] + sign * direction[1] / length * hook_length,
+            last[2] + sign * direction[2] / length * hook_length
+          };
+          if (!emit_mleader_segment (
+                  iteration, &base, last, hook, 0, &generated))
+            return 0;
+        }
+    }
+  return 1;
+}
+
+static int
+read_embedded_ole_f64 (const uint8_t *bytes, double *value)
+{
+  uint64_t bits = 0;
+  size_t byte_index;
+  if (!bytes || !value)
+    return 0;
+  for (byte_index = 0; byte_index < sizeof (bits); byte_index++)
+    bits |= (uint64_t)bytes[byte_index] << (byte_index * 8u);
+  memcpy (value, &bits, sizeof (*value));
+  return isfinite (*value);
+}
+
+static int
+ole2frame_corners (const Dwg_Entity_OLE2FRAME *frame,
+                   double points[4][3])
+{
+  size_t point_index;
+  size_t axis;
+  double signed_area = 0.0;
+  if (!frame || !points)
+    return 0;
+  /*
+   * LibreDWG 0.14 leaves the public pt1/pt2 fields at the embedded object's
+   * natural size for binary DWG OLE2FRAME records. AutoCAD's 128-byte OLE
+   * preamble starts with 0x5581 and stores the four actual WCS corners as
+   * twelve little-endian f64 values at byte 2, before the CFB stream.
+   */
+  if (frame->data && frame->data_size >= 98u
+      && frame->data[0] == 0x81u && frame->data[1] == 0x55u)
+    {
+      for (point_index = 0; point_index < 4; point_index++)
+        for (axis = 0; axis < 3; axis++)
+          if (!read_embedded_ole_f64 (
+                  frame->data + 2u
+                      + (point_index * 3u + axis) * sizeof (double),
+                  &points[point_index][axis]))
+            return 0;
+      for (point_index = 0; point_index < 4; point_index++)
+        {
+          size_t next = (point_index + 1u) % 4u;
+          signed_area
+              += points[point_index][0] * points[next][1]
+                 - points[next][0] * points[point_index][1];
+        }
+      if (fabs (signed_area) > 1.0e-12)
+        return 1;
+    }
+  if (!finite_point3 (frame->pt1) || !finite_point3 (frame->pt2)
+      || (fabs (frame->pt1.x - frame->pt2.x) <= 1.0e-12
+          && fabs (frame->pt1.y - frame->pt2.y) <= 1.0e-12))
+    return 0;
+  points[0][0] = frame->pt1.x;
+  points[0][1] = frame->pt1.y;
+  points[0][2] = frame->pt1.z;
+  points[1][0] = frame->pt2.x;
+  points[1][1] = frame->pt1.y;
+  points[1][2] = frame->pt1.z;
+  points[2][0] = frame->pt2.x;
+  points[2][1] = frame->pt2.y;
+  points[2][2] = frame->pt2.z;
+  points[3][0] = frame->pt1.x;
+  points[3][1] = frame->pt2.y;
+  points[3][2] = frame->pt2.z;
+  return 1;
+}
+
+static int
+iterate_ole2frame_segments (const Dwg_Object *object,
+                            const CacheTables *tables,
+                            SegmentIteration *iteration)
+{
+  const Dwg_Entity_OLE2FRAME *frame;
+  LineSegment base;
+  double points[4][3];
+  uint64_t generated = 0;
+  size_t index;
+  if (!object || object->fixedtype != DWG_TYPE_OLE2FRAME
+      || !object->tio.entity
+      || !(frame = object->tio.entity->tio.OLE2FRAME))
+    return 1;
+  if (!ole2frame_corners (frame, points)
+      || !initialize_entity_segment (object, tables, 13u, 1, &base))
+    {
+      segment_iteration_reject (iteration);
+      return 1;
+    }
+  for (index = 0; index < 4; index++)
+    {
+      if (!emit_mleader_segment (
+              iteration, &base, points[index],
+              points[(index + 1) % 4], 1, &generated))
+        return 0;
+    }
+  return 1;
+}
+
+static int
+is_primary_paper_viewport (const Dwg_Data *dwg,
+                           const Dwg_Object *object,
+                           const Dwg_Entity_VIEWPORT *viewport)
+{
+  uint64_t handle;
+  size_t object_index;
+  if (!dwg || !object || !viewport)
+    return 0;
+  if (viewport->id == 1)
+    return 1;
+  if (viewport->id > 1)
+    return 0;
+  handle = (uint64_t)object->handle.value;
+  for (object_index = 0;
+       object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *candidate = &dwg->object[object_index];
+      const Dwg_Object_LAYOUT *layout;
+      if (candidate->fixedtype != DWG_TYPE_LAYOUT
+          || !candidate->tio.object
+          || !(layout = candidate->tio.object->tio.LAYOUT))
+        continue;
+      if (reference_handle (layout->active_viewport) == handle)
+        return 1;
+    }
+  return 0;
+}
+
+static int
+iterate_viewport_frame_segments (const Dwg_Data *dwg,
+                                 const Dwg_Object *object,
+                                 const CacheTables *tables,
+                                 SegmentIteration *iteration)
+{
+  const Dwg_Entity_VIEWPORT *viewport;
+  LineSegment base;
+  double points[4][3];
+  double half_width;
+  double half_height;
+  size_t index;
+  if (!is_viewport_entity (object)
+      || !(viewport = object->tio.entity->tio.VIEWPORT))
+    return 1;
+  /*
+   * Viewport 1 is AutoCAD's implicit paper-space viewport and has no frame.
+   * A non-rectangular viewport uses its referenced boundary entity, which is
+   * already emitted through the normal primitive path; drawing its fallback
+   * rectangle would expose geometry that AutoCAD intentionally hides.
+   */
+  if (is_primary_paper_viewport (dwg, object, viewport)
+      || reference_handle (viewport->clip_boundary) != 0)
+    return 1;
+  if (!isfinite (viewport->width) || !isfinite (viewport->height)
+      || viewport->width <= 1.0e-9 || viewport->height <= 1.0e-9
+      || !finite_point3 (viewport->center)
+      || !initialize_entity_segment (object, tables, 11u, 0, &base))
+    {
+      segment_iteration_reject (iteration);
+      return 1;
+    }
+  half_width = viewport->width * 0.5;
+  half_height = viewport->height * 0.5;
+  points[0][0] = viewport->center.x - half_width;
+  points[0][1] = viewport->center.y - half_height;
+  points[1][0] = viewport->center.x + half_width;
+  points[1][1] = viewport->center.y - half_height;
+  points[2][0] = viewport->center.x + half_width;
+  points[2][1] = viewport->center.y + half_height;
+  points[3][0] = viewport->center.x - half_width;
+  points[3][1] = viewport->center.y + half_height;
+  for (index = 0; index < 4; index++)
+    points[index][2] = viewport->center.z;
+  for (index = 0; index < 4; index++)
+    {
+      LineSegment segment = base;
+      memcpy (segment.start, points[index], sizeof (segment.start));
+      memcpy (segment.end, points[(index + 1) % 4],
+              sizeof (segment.end));
+      if (!segment_iteration_emit (iteration, &segment))
+        return 0;
     }
   return 1;
 }
@@ -3389,6 +5624,9 @@ static int
 segment_iteration_emit (SegmentIteration *iteration,
                         const LineSegment *segment)
 {
+  LineSegment styled;
+  double length_squared = 0.0;
+  double scale;
   size_t axis;
   for (axis = 0; axis < 3; axis++)
     {
@@ -3398,14 +5636,40 @@ segment_iteration_emit (SegmentIteration *iteration,
           iteration->skipped++;
           return 1;
         }
+      length_squared
+          += (segment->end[axis] - segment->start[axis])
+             * (segment->end[axis] - segment->start[axis]);
     }
+  styled = *segment;
+  scale = isfinite (segment->linetype_scale)
+                  && segment->linetype_scale > 1.0e-12
+              ? segment->linetype_scale
+              : 1.0;
+  if (
+      !iteration->has_pattern_end
+      || iteration->pattern_handle != segment->handle
+      || fabs (iteration->pattern_end_point[0] - segment->start[0])
+             > 1.0e-7
+      || fabs (iteration->pattern_end_point[1] - segment->start[1])
+             > 1.0e-7
+      || fabs (iteration->pattern_end_point[2] - segment->start[2])
+             > 1.0e-7)
+    iteration->pattern_cursor = 0.0;
+  styled.pattern_start = iteration->pattern_cursor / scale;
+  if (isfinite (length_squared) && length_squared > 0.0)
+    iteration->pattern_cursor += sqrt (length_squared);
+  styled.pattern_end = iteration->pattern_cursor / scale;
+  iteration->pattern_handle = segment->handle;
+  memcpy (iteration->pattern_end_point, segment->end,
+          sizeof (iteration->pattern_end_point));
+  iteration->has_pattern_end = 1;
   if (segment->approximated_curve)
     iteration->approximated++;
   if (iteration->overview
-      && !overview_select (iteration->overview, segment))
+      && !overview_select (iteration->overview, &styled))
     return 1;
   if (!iteration->consumer (
-          iteration->consumer_context, segment))
+          iteration->consumer_context, &styled))
     return 0;
   iteration->emitted++;
   return 1;
@@ -3598,11 +5862,18 @@ initialize_polyline_segment (const PolylineSegmentBuilder *builder,
     line_weight = -1;
   segment->handle = (uint64_t)builder->object->handle.value;
   segment->layer_index = entity_layer_index (entity, builder->tables);
-  segment->color = encode_color (&entity->color);
+  segment->color = encode_entity_color (&entity->color);
   segment->line_weight = (int16_t)line_weight;
   segment->flags = entity->invisible ? 1u : 0u;
   segment->group = entity_group (entity, builder->tables);
   segment->source_kind = (uint8_t)builder->info->kind;
+  segment->linetype_code
+      = entity_linetype_code (entity, builder->tables);
+  segment->linetype_scale
+      = isfinite (entity->ltype_scale)
+                && fabs (entity->ltype_scale) > 1.0e-12
+            ? fabs (entity->ltype_scale)
+            : 1.0;
 }
 
 static int
@@ -4260,6 +6531,241 @@ iterate_spline_segments (const Dwg_Object *object,
       }
   }
   return 1;
+}
+
+typedef struct
+{
+  CacheWriter *writer;
+  uint64_t count;
+  double last[2];
+  int has_last;
+  int failed;
+} ViewportClipCollector;
+
+static int
+viewport_clip_point_equal (const double left[2], const double right[2])
+{
+  return fabs (left[0] - right[0]) <= 1.0e-9
+         && fabs (left[1] - right[1]) <= 1.0e-9;
+}
+
+static int
+viewport_clip_collect_point (ViewportClipCollector *collector,
+                             const double point[3])
+{
+  double candidate[2] = { point[0], point[1] };
+  if (!isfinite (candidate[0]) || !isfinite (candidate[1]))
+    return 1;
+  if (collector->has_last
+      && viewport_clip_point_equal (collector->last, candidate))
+    return 1;
+  if (collector->count >= MAX_VIEWPORT_CLIP_VERTICES_PER_BOUNDARY)
+    {
+      collector->failed = 1;
+      return 0;
+    }
+  if (collector->writer
+      && (!write_f64 (collector->writer, candidate[0])
+          || !write_f64 (collector->writer, candidate[1])))
+    {
+      collector->failed = 1;
+      return 0;
+    }
+  memcpy (collector->last, candidate, sizeof (collector->last));
+  collector->has_last = 1;
+  collector->count++;
+  return 1;
+}
+
+static int
+viewport_clip_collect_segment (void *context,
+                               const LineSegment *segment)
+{
+  return viewport_clip_collect_point (
+      (ViewportClipCollector *)context, segment->start);
+}
+
+static int
+collect_viewport_clip_vertices (
+    const Dwg_Data *dwg, const CacheTables *tables,
+    const Dwg_Entity_VIEWPORT *viewport, CacheWriter *writer,
+    uint32_t *vertex_count)
+{
+  Dwg_Object *clip_object;
+  ViewportClipCollector collector;
+  SegmentIteration iteration;
+  if (vertex_count)
+    *vertex_count = 0;
+  if (!dwg || !tables || !viewport || !viewport->clip_boundary)
+    return 1;
+  clip_object
+      = reference_object (dwg, viewport->clip_boundary);
+  if (!clip_object || !clip_object->tio.entity)
+    return 1;
+  memset (&collector, 0, sizeof (collector));
+  collector.writer = writer;
+  if (clip_object->fixedtype == DWG_TYPE_CIRCLE
+      && clip_object->tio.entity->tio.CIRCLE)
+    {
+      const Dwg_Entity_CIRCLE *circle
+          = clip_object->tio.entity->tio.CIRCLE;
+      double center[3] = { circle->center.x, circle->center.y,
+                           circle->center.z };
+      double normal[3] = { circle->extrusion.x,
+                           circle->extrusion.y,
+                           circle->extrusion.z };
+      unsigned index;
+      if (!isfinite (circle->radius)
+          || fabs (circle->radius) <= CURVE_EPSILON)
+        return 1;
+      for (index = 0; index < VIEWPORT_CLIP_CURVE_SEGMENTS; index++)
+        {
+          double point[3];
+          circular_ocs_point (
+              center, circle->radius,
+              CURVE_FULL_TURN_RADIANS * (double)index
+                  / (double)VIEWPORT_CLIP_CURVE_SEGMENTS,
+              normal, point);
+          if (!viewport_clip_collect_point (&collector, point))
+            return 0;
+        }
+    }
+  else if (clip_object->fixedtype == DWG_TYPE_ELLIPSE
+           && clip_object->tio.entity->tio.ELLIPSE)
+    {
+      const Dwg_Entity_ELLIPSE *ellipse
+          = clip_object->tio.entity->tio.ELLIPSE;
+      double center[3] = { ellipse->center.x, ellipse->center.y,
+                           ellipse->center.z };
+      double major_axis[3] = { ellipse->sm_axis.x,
+                               ellipse->sm_axis.y,
+                               ellipse->sm_axis.z };
+      double normal[3] = { ellipse->extrusion.x,
+                           ellipse->extrusion.y,
+                           ellipse->extrusion.z };
+      double minor_axis[3];
+      double sweep;
+      unsigned index;
+      if (!normalized_curve_sweep (
+              ellipse->start_angle, ellipse->end_angle, &sweep)
+          || fabs (sweep - CURVE_FULL_TURN_RADIANS) > 1.0e-7
+          || !ellipse_axes (
+              major_axis, normal, ellipse->axis_ratio, minor_axis))
+        return 1;
+      for (index = 0; index < VIEWPORT_CLIP_CURVE_SEGMENTS; index++)
+        {
+          double point[3];
+          ellipse_point (
+              center, major_axis, minor_axis,
+              ellipse->start_angle
+                  + CURVE_FULL_TURN_RADIANS * (double)index
+                        / (double)VIEWPORT_CLIP_CURVE_SEGMENTS,
+              point);
+          if (!viewport_clip_collect_point (&collector, point))
+            return 0;
+        }
+    }
+  else if (clip_object->fixedtype == DWG_TYPE_LWPOLYLINE
+           || clip_object->fixedtype == DWG_TYPE_POLYLINE_2D)
+    {
+      PolylineInfo info;
+      if (!read_polyline_info (clip_object, &info) || !info.closed)
+        return 1;
+      memset (&iteration, 0, sizeof (iteration));
+      iteration.consumer = viewport_clip_collect_segment;
+      iteration.consumer_context = &collector;
+      if (!iterate_polyline_segments (
+              clip_object, tables, &iteration))
+        return 0;
+    }
+  else if (clip_object->fixedtype == DWG_TYPE_SPLINE
+           && clip_object->tio.entity->tio.SPLINE
+           && spline_is_closed (
+               clip_object->tio.entity->tio.SPLINE))
+    {
+      memset (&iteration, 0, sizeof (iteration));
+      iteration.consumer = viewport_clip_collect_segment;
+      iteration.consumer_context = &collector;
+      if (!iterate_spline_segments (
+              clip_object, tables, &iteration))
+        return 0;
+    }
+  else
+    return 1;
+  if (collector.failed)
+    return 0;
+  if (collector.count < 3
+      || collector.count > UINT32_MAX)
+    return 1;
+  if (vertex_count)
+    *vertex_count = (uint32_t)collector.count;
+  return 1;
+}
+
+static uint32_t
+viewport_clip_vertex_count (const Dwg_Data *dwg,
+                            const CacheTables *tables,
+                            const Dwg_Entity_VIEWPORT *viewport)
+{
+  uint32_t count = 0;
+  if (!collect_viewport_clip_vertices (
+          dwg, tables, viewport, NULL, &count))
+    return 0;
+  return count;
+}
+
+static int
+write_viewport_clip_vertex_section (
+    CacheWriter *writer, const Dwg_Data *dwg,
+    const CacheTables *tables, SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t layout_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (layout_index = 0; layout_index < (size_t)dwg->num_objects;
+       layout_index++)
+    {
+      const Dwg_Object *layout_object = &dwg->object[layout_index];
+      uint64_t block_handle;
+      size_t object_index;
+      if (!is_layout_object (layout_object))
+        continue;
+      block_handle = reference_handle (
+          layout_object->tio.object->tio.LAYOUT->block_header);
+      for (object_index = 0; object_index < (size_t)dwg->num_objects;
+           object_index++)
+        {
+          const Dwg_Object *object = &dwg->object[object_index];
+          const Dwg_Entity_VIEWPORT *viewport;
+          uint32_t expected;
+          uint32_t written = 0;
+          if (!is_viewport_entity (object)
+              || entity_owner_handle (object->tio.entity, tables)
+                     != block_handle)
+            continue;
+          viewport = object->tio.entity->tio.VIEWPORT;
+          expected = viewport_clip_vertex_count (
+              dwg, tables, viewport);
+          if (!expected)
+            continue;
+          if (!collect_viewport_clip_vertices (
+                  dwg, tables, viewport, writer, &written)
+              || written != expected
+              || count > MAX_VIEWPORT_CLIP_VERTICES - written)
+            {
+              set_error (
+                  writer, "cannot serialize viewport clip boundary");
+              return 0;
+            }
+          count += written;
+        }
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_VIEWPORT_CLIP_VERTICES,
+      VIEWPORT_CLIP_VERTEX_RECORD_SIZE, "viewport_clip_vertices",
+      offset, count);
 }
 
 static int
@@ -4923,6 +7429,9 @@ iterate_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
       const Dwg_Object *object = &dwg->object[i];
       LineSegment segment;
       int status = line_segment_from_object (object, tables, &segment);
+      if (status == 0)
+        status = xline_segment_from_object (
+            dwg, object, tables, &segment);
       if (status < 0)
         iteration.skipped++;
       else if (status > 0)
@@ -4944,6 +7453,22 @@ iterate_gpu_segments (const Dwg_Data *dwg, const CacheTables *tables,
       if (status == 0
           && !iterate_hatch_boundary_segments (
               object, tables, &iteration))
+        return 0;
+      if (status == 0
+          && !iterate_mleader_segments (
+              object, tables, &iteration))
+        return 0;
+      if (status == 0
+          && !iterate_leader_segments (
+              object, tables, &iteration))
+        return 0;
+      if (status == 0
+          && !iterate_ole2frame_segments (
+              object, tables, &iteration))
+        return 0;
+      if (status == 0
+          && !iterate_viewport_frame_segments (
+              dwg, object, tables, &iteration))
         return 0;
     }
   if (selected)
@@ -5673,12 +8198,14 @@ finite_or_default (double value, double fallback)
 }
 
 static int
-copy_hatch_names (const Dwg_Entity_HATCH *hatch, char **pattern_name,
-                  char **gradient_name)
+copy_hatch_names (BITCODE_RS codepage, const Dwg_Entity_HATCH *hatch,
+                  char **pattern_name, char **gradient_name)
 {
   *pattern_name = copy_utf8_field (
+      codepage,
       (void *)hatch, "HATCH", "name", "");
   *gradient_name = copy_utf8_field (
+      codepage,
       (void *)hatch, "HATCH", "gradient_name", "");
   if (!*pattern_name || !*gradient_name)
     {
@@ -5764,7 +8291,7 @@ write_hatch_entity_section (
               &global_pattern_dashes, NULL, NULL, &pattern_scan))
         return 0;
       if (!copy_hatch_names (
-              hatch, &pattern_name, &gradient_name)
+              dwg->header.codepage, hatch, &pattern_name, &gradient_name)
           || !checked_string_layout (
               &string_cursor, pattern_name, &pattern_offset,
               &pattern_length)
@@ -5882,7 +8409,7 @@ write_hatch_entity_section (
           || !(hatch = object->tio.entity->tio.HATCH))
         continue;
       if (!copy_hatch_names (
-              hatch, &pattern_name, &gradient_name))
+              dwg->header.codepage, hatch, &pattern_name, &gradient_name))
         {
           set_error (writer, "cannot copy bounded HATCH strings");
           return 0;
@@ -6663,6 +9190,311 @@ write_wipeout_clip_vertex_section (CacheWriter *writer,
   return finish_fixed_section (
       writer, entry, SECTION_WIPEOUT_CLIP_VERTICES,
       WIPEOUT_CLIP_VERTEX_RECORD_SIZE, "wipeout_clip_vertices", offset,
+      count);
+}
+
+static Dwg_Object_IMAGEDEF *
+image_definition (const Dwg_Data *dwg, const Dwg_Entity_IMAGE *image)
+{
+  Dwg_Object *object;
+  if (!image)
+    return NULL;
+  object = reference_object (dwg, image->imagedef);
+  if (!object || object->fixedtype != DWG_TYPE_IMAGEDEF
+      || !object->tio.object || !object->tio.object->tio.IMAGEDEF)
+    return NULL;
+  return object->tio.object->tio.IMAGEDEF;
+}
+
+static char *
+copy_image_path (const Dwg_Data *dwg, const Dwg_Entity_IMAGE *image)
+{
+  Dwg_Object_IMAGEDEF *definition = image_definition (dwg, image);
+  if (!definition)
+    return copy_valid_utf8 ("");
+  return copy_utf8_field (
+      dwg->header.codepage, definition, "IMAGEDEF", "file_path", "");
+}
+
+static int
+validate_image_source (CacheWriter *writer,
+                       const Dwg_Entity_IMAGE *image)
+{
+  double cross_x;
+  double cross_y;
+  double cross_z;
+  double basis_length_squared;
+  uint32_t clip_vertex_count;
+  uint32_t vertex_index;
+  if ((uint32_t)image->class_version > INT32_MAX)
+    {
+      set_error (writer, "IMAGE class version exceeds cache limits");
+      return 0;
+    }
+  if (((uint32_t)image->display_props & ~15u) != 0)
+    {
+      set_error (
+          writer, "IMAGE source contains unsupported display properties");
+      return 0;
+    }
+  if ((uint32_t)image->clipping > 1u
+      || (uint32_t)image->clip_mode > 1u
+      || (uint32_t)image->brightness > 100u
+      || (uint32_t)image->contrast > 100u
+      || (uint32_t)image->fade > 100u)
+    {
+      set_error (writer, "IMAGE source contains invalid display metadata");
+      return 0;
+    }
+  clip_vertex_count = (uint32_t)image->num_clip_verts;
+  if (clip_vertex_count > MAX_IMAGE_CLIP_VERTICES
+      || (clip_vertex_count && !image->clip_verts))
+    {
+      set_error (writer, "IMAGE clip boundary exceeds cache limits");
+      return 0;
+    }
+  if (clip_vertex_count
+      && (((uint32_t)image->clip_boundary_type == 1u
+           && clip_vertex_count != 2u)
+          || ((uint32_t)image->clip_boundary_type == 2u
+              && clip_vertex_count < 3u)
+          || ((uint32_t)image->clip_boundary_type != 1u
+              && (uint32_t)image->clip_boundary_type != 2u)))
+    {
+      set_error (writer, "IMAGE source contains an invalid clip boundary");
+      return 0;
+    }
+  if (image->clipping && (image->display_props & 4u)
+      && clip_vertex_count == 0)
+    {
+      set_error (writer, "IMAGE clipping is enabled without a boundary");
+      return 0;
+    }
+  if (!isfinite (image->pt0.x) || !isfinite (image->pt0.y)
+      || !isfinite (image->pt0.z) || !isfinite (image->uvec.x)
+      || !isfinite (image->uvec.y) || !isfinite (image->uvec.z)
+      || !isfinite (image->vvec.x) || !isfinite (image->vvec.y)
+      || !isfinite (image->vvec.z)
+      || !isfinite (image->image_size.x)
+      || !isfinite (image->image_size.y)
+      || image->image_size.x <= 0.0 || image->image_size.y <= 0.0)
+    {
+      set_error (
+          writer, "IMAGE source contains a non-finite or invalid coordinate");
+      return 0;
+    }
+  for (vertex_index = 0; vertex_index < clip_vertex_count;
+       vertex_index++)
+    {
+      if (!isfinite (image->clip_verts[vertex_index].x)
+          || !isfinite (image->clip_verts[vertex_index].y))
+        {
+          set_error (
+              writer, "IMAGE source contains a non-finite clip coordinate");
+          return 0;
+        }
+    }
+  cross_x = image->uvec.y * image->vvec.z
+            - image->uvec.z * image->vvec.y;
+  cross_y = image->uvec.z * image->vvec.x
+            - image->uvec.x * image->vvec.z;
+  cross_z = image->uvec.x * image->vvec.y
+            - image->uvec.y * image->vvec.x;
+  basis_length_squared
+      = cross_x * cross_x + cross_y * cross_y + cross_z * cross_z;
+  if (!isfinite (basis_length_squared)
+      || basis_length_squared <= 1.0e-24)
+    {
+      set_error (writer, "IMAGE source contains a degenerate image basis");
+      return 0;
+    }
+  return 1;
+}
+
+static int
+write_image_entity_section (CacheWriter *writer, const Dwg_Data *dwg,
+                            const CacheTables *tables,
+                            SectionEntry *entry)
+{
+  uint64_t image_count = 0;
+  uint64_t string_cursor = 0;
+  uint64_t string_offset;
+  uint64_t offset;
+  uint64_t first_clip_vertex = 0;
+  uint32_t *references = NULL;
+  char **paths = NULL;
+  uint64_t row = 0;
+  size_t object_index;
+  int success = 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      if (object->fixedtype == DWG_TYPE_IMAGE && object->tio.entity
+          && object->tio.entity->tio.IMAGE)
+        image_count++;
+    }
+  if (image_count > MAX_IMAGE_SOURCE_RECORDS
+      || image_count > UINT32_MAX
+      || image_count > SIZE_MAX / sizeof (char *)
+      || image_count > SIZE_MAX / (2 * sizeof (uint32_t)))
+    {
+      set_error (writer, "IMAGE source exceeds its entity limit");
+      return 0;
+    }
+  if (image_count)
+    {
+      paths = (char **)calloc ((size_t)image_count, sizeof (char *));
+      references = (uint32_t *)malloc (
+          (size_t)image_count * 2 * sizeof (uint32_t));
+      if (!paths || !references)
+        {
+          set_error (writer, "cannot allocate bounded IMAGE paths");
+          goto done;
+        }
+    }
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_IMAGE *image;
+      if (object->fixedtype != DWG_TYPE_IMAGE || !object->tio.entity
+          || !(image = object->tio.entity->tio.IMAGE))
+        continue;
+      if (!validate_image_source (writer, image))
+        goto done;
+      paths[row] = copy_image_path (dwg, image);
+      if (!paths[row]
+          || !checked_string_layout (
+              &string_cursor, paths[row], &references[row * 2],
+              &references[row * 2 + 1]))
+        {
+          set_error (writer, "IMAGE path table exceeds its limits");
+          goto done;
+        }
+      row++;
+    }
+  string_offset
+      = STRING_TABLE_HEADER_SIZE + image_count * IMAGE_ENTITY_RECORD_SIZE;
+  if (!align_writer (writer, &offset)
+      || !write_u32 (writer, (uint32_t)image_count)
+      || !write_u32 (writer, IMAGE_ENTITY_RECORD_SIZE)
+      || !write_u64 (writer, string_offset))
+    goto done;
+  row = 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_IMAGE *image;
+      uint32_t clip_vertex_count;
+      double insertion_point[3];
+      double u_vector[3];
+      double v_vector[3];
+      if (object->fixedtype != DWG_TYPE_IMAGE || !object->tio.entity
+          || !(image = object->tio.entity->tio.IMAGE))
+        continue;
+      clip_vertex_count = (uint32_t)image->num_clip_verts;
+      if (first_clip_vertex
+          > (uint64_t)MAX_IMAGE_CLIP_VERTICES - clip_vertex_count)
+        {
+          set_error (writer, "IMAGE source exceeds its clip-vertex limit");
+          goto done;
+        }
+      insertion_point[0] = image->pt0.x;
+      insertion_point[1] = image->pt0.y;
+      insertion_point[2] = image->pt0.z;
+      u_vector[0] = image->uvec.x;
+      u_vector[1] = image->uvec.y;
+      u_vector[2] = image->uvec.z;
+      v_vector[0] = image->vvec.x;
+      v_vector[1] = image->vvec.y;
+      v_vector[2] = image->vvec.z;
+      if (!write_common (writer, object, tables)
+          || !write_u32 (writer, references[row * 2])
+          || !write_u32 (writer, references[row * 2 + 1])
+          || !write_i32 (writer, (int32_t)image->class_version)
+          || !write_u16 (writer, (uint16_t)image->display_props)
+          || !write_u8 (
+              writer, (uint8_t)image->clip_boundary_type)
+          || !write_u8 (writer, (uint8_t)image->clipping)
+          || !write_u8 (writer, (uint8_t)image->brightness)
+          || !write_u8 (writer, (uint8_t)image->contrast)
+          || !write_u8 (writer, (uint8_t)image->fade)
+          || !write_u8 (writer, (uint8_t)image->clip_mode)
+          || !write_u32 (writer, 0)
+          || !write_u64 (writer, first_clip_vertex)
+          || !write_u32 (writer, clip_vertex_count)
+          || !write_u32 (writer, 0)
+          || !write_u64 (writer, reference_handle (image->imagedef))
+          || !write_u64 (
+              writer, reference_handle (image->imagedefreactor))
+          || !write_vec3 (writer, insertion_point)
+          || !write_vec3 (writer, u_vector)
+          || !write_vec3 (writer, v_vector)
+          || !write_f64 (writer, image->image_size.x)
+          || !write_f64 (writer, image->image_size.y))
+        goto done;
+      first_clip_vertex += clip_vertex_count;
+      row++;
+    }
+  for (row = 0; row < image_count; row++)
+    if (!write_bytes (writer, paths[row], strlen (paths[row])))
+      goto done;
+  success = finish_variable_section (
+      writer, entry, SECTION_IMAGE_ENTITIES, IMAGE_ENTITY_RECORD_SIZE,
+      "image_entities", offset, image_count, SECTION_FLAG_STRING_TABLE);
+
+done:
+  if (paths)
+    for (row = 0; row < image_count; row++)
+      free (paths[row]);
+  free (paths);
+  free (references);
+  return success;
+}
+
+static int
+write_image_clip_vertex_section (CacheWriter *writer,
+                                 const Dwg_Data *dwg,
+                                 SectionEntry *entry)
+{
+  uint64_t offset;
+  uint64_t count = 0;
+  size_t object_index;
+  if (!align_writer (writer, &offset))
+    return 0;
+  for (object_index = 0; object_index < (size_t)dwg->num_objects;
+       object_index++)
+    {
+      const Dwg_Object *object = &dwg->object[object_index];
+      const Dwg_Entity_IMAGE *image;
+      uint32_t vertex_index;
+      if (object->fixedtype != DWG_TYPE_IMAGE || !object->tio.entity
+          || !(image = object->tio.entity->tio.IMAGE))
+        continue;
+      if (!validate_image_source (writer, image))
+        return 0;
+      if (count > (uint64_t)MAX_IMAGE_CLIP_VERTICES
+                      - (uint32_t)image->num_clip_verts)
+        {
+          set_error (writer, "IMAGE source exceeds its clip-vertex limit");
+          return 0;
+        }
+      for (vertex_index = 0;
+           vertex_index < (uint32_t)image->num_clip_verts;
+           vertex_index++)
+        {
+          if (!write_f64 (writer, image->clip_verts[vertex_index].x)
+              || !write_f64 (
+                  writer, image->clip_verts[vertex_index].y))
+            return 0;
+        }
+      count += (uint32_t)image->num_clip_verts;
+    }
+  return finish_fixed_section (
+      writer, entry, SECTION_IMAGE_CLIP_VERTICES,
+      IMAGE_CLIP_VERTEX_RECORD_SIZE, "image_clip_vertices", offset,
       count);
 }
 
@@ -7556,8 +10388,26 @@ static int
 write_gpu_vertex (CacheWriter *writer, const double point[3],
                   const double origin[3], const LineSegment *segment)
 {
-  uint32_t style = (uint32_t)(uint16_t)segment->line_weight;
+  static const int16_t line_weights[] = {
+    -3, -2, -1, 0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40,
+    50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211
+  };
+  uint32_t style = 0;
+  size_t line_weight_index;
   size_t axis;
+  for (line_weight_index = 0;
+       line_weight_index
+       < sizeof (line_weights) / sizeof (line_weights[0]);
+       line_weight_index++)
+    if (line_weights[line_weight_index] == segment->line_weight)
+      break;
+  if (line_weight_index
+      == sizeof (line_weights) / sizeof (line_weights[0]))
+    line_weight_index = 2;
+  style = (uint32_t)line_weight_index;
+  style
+      |= ((uint32_t)segment->linetype_code & GPU_STYLE_LINETYPE_MASK)
+         << GPU_STYLE_LINETYPE_SHIFT;
   for (axis = 0; axis < 3; axis++)
     {
       double relative = point[axis] - origin[axis];
@@ -7580,7 +10430,11 @@ write_gpu_vertex (CacheWriter *writer, const double point[3],
          && write_u32 (writer, segment->color)
          && write_u32 (writer, (uint32_t)segment->handle)
          && write_u32 (writer, (uint32_t)(segment->handle >> 32))
-         && write_u32 (writer, style);
+         && write_u32 (writer, style)
+         && write_f32 (
+             writer,
+             (float)(point == segment->start ? segment->pattern_start
+                                             : segment->pattern_end));
 }
 
 static int
@@ -7858,9 +10712,25 @@ write_scene_preview (
           &sections[19], separate_overview, 1)
       || !write_empty_string_section (&writer, &sections[20], 20))
     goto done;
-  for (index = 21; index < LIBREDWG_SCENE_SECTION_COUNT; index++)
+  for (index = 21; index <= 33; index++)
     if (!write_empty_fixed_section (&writer, &sections[index], index))
       goto done;
+  if (!write_insert_clip_section (&writer, dwg, &sections[34])
+      || !write_insert_clip_vertex_section (
+          &writer, dwg, &sections[35])
+      || !write_linetype_section (&writer, tables, &sections[36])
+      || !write_linetype_dash_section (
+          &writer, dwg, tables, &sections[37])
+      || !write_layout_section (
+          &writer, dwg, tables, &sections[38])
+      || !write_viewport_section (
+          &writer, dwg, tables, &sections[39])
+      || !write_viewport_frozen_layer_section (
+          &writer, dwg, tables, &sections[40])
+      || !write_empty_fixed_section (&writer, &sections[41], 41)
+      || !write_empty_string_section (&writer, &sections[42], 42)
+      || !write_empty_fixed_section (&writer, &sections[43], 43))
+    goto done;
   if (!position (&writer, &file_size)
       || !write_header (
           &writer, file_size, source_size, source_version,
@@ -8080,6 +10950,26 @@ libredwg_write_scene_cache (
           &writer, dwg, &sections[32])
       || !write_draw_order_entry_section (
           &writer, dwg, &sections[33])
+      || !write_insert_clip_section (
+          &writer, dwg, &sections[34])
+      || !write_insert_clip_vertex_section (
+          &writer, dwg, &sections[35])
+      || !write_linetype_section (
+          &writer, &tables, &sections[36])
+      || !write_linetype_dash_section (
+          &writer, dwg, &tables, &sections[37])
+      || !write_layout_section (
+          &writer, dwg, &tables, &sections[38])
+      || !write_viewport_section (
+          &writer, dwg, &tables, &sections[39])
+      || !write_viewport_frozen_layer_section (
+          &writer, dwg, &tables, &sections[40])
+      || !write_viewport_clip_vertex_section (
+          &writer, dwg, &tables, &sections[41])
+      || !write_image_entity_section (
+          &writer, dwg, &tables, &sections[42])
+      || !write_image_clip_vertex_section (
+          &writer, dwg, &sections[43])
       || !position (&writer, &file_size)
       || !write_header (
           &writer, file_size, source_size, source_version,

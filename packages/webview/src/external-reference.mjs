@@ -1,0 +1,446 @@
+import { GpuLineBatchKind } from "./scene-cache.mjs";
+import {
+  multiplyMat4,
+  transformPoint,
+} from "./math.mjs";
+import { createClipNode } from "./instance-graph.mjs";
+
+const MATRIX_VALUES = 16;
+const MODEL_BLOCK_INDEX = -1;
+const NO_LAYER_OVERRIDE = 0xffffffff;
+
+function layerKey(value) {
+  return String(value ?? "")
+    .normalize("NFC")
+    .toLocaleLowerCase("en-US");
+}
+
+export function buildExternalLinetypeMap(rootLinetypes, childLinetypes) {
+  const rootByName = new Map(
+    (rootLinetypes ?? []).map((linetype) => [
+      layerKey(linetype.name),
+      linetype.code,
+    ]),
+  );
+  let maximumChildCode = 2;
+  for (const linetype of childLinetypes ?? []) {
+    maximumChildCode = Math.max(maximumChildCode, linetype.code);
+  }
+  const output = new Uint16Array(maximumChildCode + 1);
+  output.fill(2);
+  output[0] = 0;
+  output[1] = 1;
+  output[2] = 2;
+  for (const linetype of childLinetypes ?? []) {
+    const rootCode = rootByName.get(layerKey(linetype.name));
+    output[linetype.code] =
+      Number.isInteger(rootCode) && rootCode >= 0 ? rootCode : 2;
+  }
+  return output;
+}
+
+function childClipChain(childClipNodes, clipId) {
+  const chain = [];
+  let current = clipId;
+  let depth = 0;
+  while (current > 0 && depth < 64) {
+    const node = childClipNodes[current - 1];
+    if (!node || node.id !== current) {
+      return null;
+    }
+    chain.push(node);
+    current = node.parentId;
+    depth += 1;
+  }
+  return current === 0 ? chain.reverse() : null;
+}
+
+function composeCollections(
+  outer,
+  inner,
+  childClipNodes,
+  outputClipNodes,
+  layerMap,
+  linetypeMap,
+) {
+  const count = outer.count * inner.count;
+  const data = new Float64Array(count * MATRIX_VALUES);
+  const maskBases = new Uint32Array(count);
+  const clipIds = new Uint32Array(count);
+  const colors = new Uint32Array(count);
+  const layerIndices = new Uint32Array(count);
+  const colorInherited = new Uint8Array(count);
+  const layerInherited = new Uint8Array(count);
+  const opacities = new Float32Array(count);
+  const opacityInherited = new Uint8Array(count);
+  const lineWeights = new Int16Array(count);
+  const lineWeightInherited = new Uint8Array(count);
+  const linetypeCodes = new Uint16Array(count);
+  const linetypeInherited = new Uint8Array(count);
+  const visibilityRows = new Uint32Array(count);
+  const clipCache = new Map();
+  let cursor = 0;
+  for (let outerIndex = 0; outerIndex < outer.count; outerIndex += 1) {
+    const outerMatrix = outer.data.subarray(
+      outerIndex * MATRIX_VALUES,
+      (outerIndex + 1) * MATRIX_VALUES,
+    );
+    for (let innerIndex = 0; innerIndex < inner.count; innerIndex += 1) {
+      const innerMatrix = inner.data.subarray(
+        innerIndex * MATRIX_VALUES,
+        (innerIndex + 1) * MATRIX_VALUES,
+      );
+      data.set(
+        multiplyMat4(outerMatrix, innerMatrix),
+        cursor * MATRIX_VALUES,
+      );
+      maskBases[cursor] =
+        (outer.maskBases?.[outerIndex] ?? 0) +
+        (inner.maskBases?.[innerIndex] ?? 0);
+      const outerClipId = outer.clipIds?.[outerIndex] ?? 0;
+      const innerClipId = inner.clipIds?.[innerIndex] ?? 0;
+      const cacheKey = `${outerIndex}:${innerClipId}`;
+      let composedClipId = clipCache.get(cacheKey);
+      if (composedClipId === undefined) {
+        composedClipId = outerClipId;
+        const chain = childClipChain(childClipNodes, innerClipId);
+        if (chain) {
+          for (const node of chain) {
+            const id = outputClipNodes.length + 1;
+            outputClipNodes.push(
+              createClipNode(
+                id,
+                composedClipId,
+                node.points.map((point) =>
+                  transformPoint(outerMatrix, point),
+                ),
+                node.inverted,
+              ),
+            );
+            composedClipId = id;
+          }
+        }
+        clipCache.set(cacheKey, composedClipId);
+      }
+      clipIds[cursor] = composedClipId;
+      const inheritsColor = inner.colorInherited?.[innerIndex] === 1;
+      const inheritsLayer = inner.layerInherited?.[innerIndex] === 1;
+      const outerColor =
+        outer.colors?.[outerIndex] ?? ((2 << 30) | 7);
+      const outerLayer =
+        outer.layerIndices?.[outerIndex] ?? NO_LAYER_OVERRIDE;
+      colors[cursor] = inheritsColor
+        ? outerColor
+        : inner.colors?.[innerIndex] ?? outerColor;
+      const innerLayer =
+        inner.layerIndices?.[innerIndex] ?? NO_LAYER_OVERRIDE;
+      layerIndices[cursor] = inheritsLayer
+        ? outerLayer
+        : innerLayer === NO_LAYER_OVERRIDE
+          ? outerLayer
+          : layerMap instanceof Uint32Array
+            ? innerLayer < layerMap.length
+              ? layerMap[innerLayer]
+              : layerMap[0]
+            : innerLayer;
+      colorInherited[cursor] =
+        inheritsColor && outer.colorInherited?.[outerIndex] === 1 ? 1 : 0;
+      layerInherited[cursor] =
+        inheritsLayer && outer.layerInherited?.[outerIndex] === 1 ? 1 : 0;
+      const inheritsOpacity =
+        inner.opacityInherited?.[innerIndex] === 1;
+      opacities[cursor] = inheritsOpacity
+        ? outer.opacities?.[outerIndex] ?? 1
+        : inner.opacities?.[innerIndex] ?? 1;
+      opacityInherited[cursor] =
+        inheritsOpacity &&
+        outer.opacityInherited?.[outerIndex] === 1
+          ? 1
+          : 0;
+      const inheritsLineWeight =
+        inner.lineWeightInherited?.[innerIndex] === 1;
+      lineWeights[cursor] = inheritsLineWeight
+        ? outer.lineWeights?.[outerIndex] ?? -3
+        : inner.lineWeights?.[innerIndex] ?? -3;
+      lineWeightInherited[cursor] =
+        inheritsLineWeight &&
+        outer.lineWeightInherited?.[outerIndex] === 1
+          ? 1
+          : 0;
+      const inheritsLinetype =
+        inner.linetypeInherited?.[innerIndex] === 1;
+      linetypeCodes[cursor] = inheritsLinetype
+        ? outer.linetypeCodes?.[outerIndex] ?? 2
+        : linetypeMap instanceof Uint16Array
+          ? linetypeMap[inner.linetypeCodes?.[innerIndex] ?? 2] ?? 2
+          : inner.linetypeCodes?.[innerIndex] ?? 2;
+      linetypeInherited[cursor] =
+        inheritsLinetype &&
+        outer.linetypeInherited?.[outerIndex] === 1
+          ? 1
+          : 0;
+      visibilityRows[cursor] =
+        outer.visibilityRows?.[outerIndex] ?? 0;
+      cursor += 1;
+    }
+  }
+  return Object.freeze({
+    data,
+    maskBases,
+    clipIds,
+    colors,
+    layerIndices,
+    colorInherited,
+    layerInherited,
+    opacities,
+    opacityInherited,
+    lineWeights,
+    lineWeightInherited,
+    linetypeCodes,
+    linetypeInherited,
+    visibilityRows,
+    count,
+    length: count,
+  });
+}
+
+export function composeExternalInstanceGraph(
+  parentInstanceGraph,
+  parentBlockIndex,
+  childInstanceGraph,
+  childBatches,
+  layerMap = null,
+  linetypeMap = null,
+) {
+  const outer = parentInstanceGraph.instancesByBlock.get(parentBlockIndex);
+  if (!outer || outer.count === 0) {
+    return Object.freeze({
+      batches: Object.freeze([]),
+      instanceGraph: Object.freeze({
+        instancesByBlock: new Map(),
+        rootInstances: Object.freeze({
+          data: new Float64Array(0),
+          maskBases: new Uint32Array(0),
+          clipIds: new Uint32Array(0),
+          colors: new Uint32Array(0),
+          layerIndices: new Uint32Array(0),
+          colorInherited: new Uint8Array(0),
+          layerInherited: new Uint8Array(0),
+          opacities: new Float32Array(0),
+          opacityInherited: new Uint8Array(0),
+          lineWeights: new Int16Array(0),
+          lineWeightInherited: new Uint8Array(0),
+          linetypeCodes: new Uint16Array(0),
+          linetypeInherited: new Uint8Array(0),
+          visibilityRows: new Uint32Array(0),
+          count: 0,
+          length: 0,
+        }),
+        clipNodes: Object.freeze([]),
+        instanceCount: 0,
+      }),
+    });
+  }
+  const instancesByBlock = new Map();
+  const clipNodes = [...(parentInstanceGraph.clipNodes ?? [])];
+  const modelInstances = Object.freeze({
+    data: outer.data,
+    maskBases: outer.maskBases ?? new Uint32Array(outer.count),
+    clipIds: outer.clipIds ?? new Uint32Array(outer.count),
+    colors:
+      outer.colors ??
+      new Uint32Array(outer.count).fill((2 << 30) | 7),
+    layerIndices:
+      outer.layerIndices ??
+      new Uint32Array(outer.count).fill(NO_LAYER_OVERRIDE),
+    colorInherited:
+      outer.colorInherited ?? new Uint8Array(outer.count),
+    layerInherited:
+      outer.layerInherited ?? new Uint8Array(outer.count),
+    opacities:
+      outer.opacities ?? new Float32Array(outer.count).fill(1),
+    opacityInherited:
+      outer.opacityInherited ?? new Uint8Array(outer.count),
+    lineWeights:
+      outer.lineWeights ?? new Int16Array(outer.count).fill(-3),
+    lineWeightInherited:
+      outer.lineWeightInherited ?? new Uint8Array(outer.count),
+    linetypeCodes:
+      outer.linetypeCodes ?? new Uint16Array(outer.count).fill(2),
+    linetypeInherited:
+      outer.linetypeInherited ?? new Uint8Array(outer.count),
+    visibilityRows:
+      outer.visibilityRows ?? new Uint32Array(outer.count),
+    count: outer.count,
+    length: outer.count,
+  });
+  instancesByBlock.set(
+    MODEL_BLOCK_INDEX,
+    modelInstances,
+  );
+  let instanceCount = outer.count;
+  for (const modelBlockIndex of childInstanceGraph.modelBlockIndices ?? []) {
+    instancesByBlock.set(modelBlockIndex, instancesByBlock.get(MODEL_BLOCK_INDEX));
+  }
+  for (const [blockIndex, inner] of childInstanceGraph.instancesByBlock) {
+    const composed = composeCollections(
+      outer,
+      inner,
+      childInstanceGraph.clipNodes ?? [],
+      clipNodes,
+      layerMap,
+      linetypeMap,
+    );
+    instancesByBlock.set(blockIndex, composed);
+    instanceCount += composed.count;
+  }
+  const batches = childBatches.map((batch) =>
+    batch.kind === GpuLineBatchKind.BlockDefinition
+      ? batch
+      : Object.freeze({
+          ...batch,
+          kind: GpuLineBatchKind.BlockDefinition,
+          blockIndex: MODEL_BLOCK_INDEX,
+        }),
+  );
+  return Object.freeze({
+    batches: Object.freeze(batches),
+    instanceGraph: Object.freeze({
+      instancesByBlock,
+      modelBlockIndices: new Set(),
+      rootInstances: modelInstances,
+      clipNodes: Object.freeze(clipNodes),
+      layerVisibilityRows:
+        parentInstanceGraph.layerVisibilityRows,
+      instanceCount,
+    }),
+  });
+}
+
+export function buildExternalLayerMap(
+  rootLayers,
+  childLayers,
+  prefix,
+) {
+  const rootByName = new Map(
+    rootLayers.map((layer, index) => [layerKey(layer.name), index]),
+  );
+  const normalizedPrefix = String(prefix ?? "")
+    .normalize("NFC")
+    .replace(/\|+$/u, "");
+  const fallback = rootByName.get("0") ?? 0;
+  return Uint32Array.from(
+    childLayers.map((layer) => {
+      const childName = String(layer.name ?? "");
+      if (layerKey(childName) === "0") {
+        return fallback;
+      }
+      return (
+        rootByName.get(
+          layerKey(
+            normalizedPrefix
+              ? `${normalizedPrefix}|${childName}`
+              : childName,
+          ),
+        ) ??
+        rootByName.get(layerKey(childName)) ??
+        fallback
+      );
+    }),
+  );
+}
+
+export function remapLineVertexLayers(buffer, layerMap, stride = 36) {
+  if (
+    !(buffer instanceof ArrayBuffer) ||
+    !Number.isInteger(stride) ||
+    stride < 32 ||
+    buffer.byteLength % stride !== 0
+  ) {
+    throw new TypeError("line vertex buffer is inconsistent");
+  }
+  if (!(layerMap instanceof Uint32Array) || layerMap.length === 0) {
+    throw new TypeError("external layer map is empty");
+  }
+  const view = new DataView(buffer);
+  for (let offset = 0; offset < buffer.byteLength; offset += stride) {
+    const sourceLayer = view.getUint32(offset + 12, true);
+    view.setUint32(
+      offset + 12,
+      sourceLayer < layerMap.length ? layerMap[sourceLayer] : layerMap[0],
+      true,
+    );
+  }
+  return buffer;
+}
+
+export function remapLineVertexLinetypes(
+  buffer,
+  linetypeMap,
+  stride = 36,
+) {
+  if (
+    !(buffer instanceof ArrayBuffer) ||
+    !(linetypeMap instanceof Uint16Array) ||
+    !Number.isInteger(stride) ||
+    stride < 32 ||
+    buffer.byteLength % stride !== 0
+  ) {
+    throw new TypeError("line linetype remapping input is inconsistent");
+  }
+  const view = new DataView(buffer);
+  const linetypeMask = 0x7ff << 5;
+  for (let offset = 0; offset < buffer.byteLength; offset += stride) {
+    const style = view.getUint32(offset + 28, true);
+    const sourceCode = (style >>> 5) & 0x7ff;
+    const targetCode =
+      sourceCode < linetypeMap.length
+        ? linetypeMap[sourceCode]
+        : 2;
+    view.setUint32(
+      offset + 28,
+      ((style & ~linetypeMask) | (targetCode << 5)) >>> 0,
+      true,
+    );
+  }
+  return buffer;
+}
+
+export function remapTextEntityLayers(textEntities, layerMap) {
+  if (
+    !textEntities ||
+    !Number.isSafeInteger(textEntities.length) ||
+    !(layerMap instanceof Uint32Array) ||
+    layerMap.length === 0
+  ) {
+    throw new TypeError("text layer remapping requires a bounded source");
+  }
+  const mapLayer = (layerIndex) =>
+    layerIndex === 0xffffffff
+      ? layerIndex
+      : layerIndex < layerMap.length
+        ? layerMap[layerIndex]
+        : layerMap[0];
+  return Object.freeze({
+    length: textEntities.length,
+    readDisplayRecord(index, target) {
+      const record = textEntities.readDisplayRecord(index, target);
+      record.layerIndex = mapLayer(record.layerIndex);
+      return record;
+    },
+    readValue(index) {
+      return typeof textEntities.readValue === "function"
+        ? textEntities.readValue(index)
+        : textEntities.get(index).value;
+    },
+    get(index) {
+      const record = textEntities.get(index);
+      return Object.freeze({
+        ...record,
+        layerIndex: mapLayer(record.layerIndex),
+      });
+    },
+  });
+}
+
+export { MODEL_BLOCK_INDEX };

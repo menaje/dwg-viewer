@@ -32,6 +32,7 @@ test("resolves nested block instances without copying block geometry", async () 
     cycles: 0,
     depthLimit: 0,
     instanceLimit: 0,
+    invalidClip: 0,
   });
 
   const blockAOrigin = transformPoint(
@@ -45,6 +46,107 @@ test("resolves nested block instances without copying block geometry", async () 
     blocks[2].basePoint,
   );
   assert.deepEqual(nestedOrigin, [90, 200, 0]);
+});
+
+test("propagates an INSERT XCLIP through nested block instances", async () => {
+  const reader = await SceneCacheReader.open(
+    new MemoryRangeSource(makeFixtureCache({ minorVersion: 13 })),
+  );
+  const metadata = await reader.readRenderMetadata();
+  const graph = buildInstanceGraph(metadata.blocks, metadata.inserts, {
+    insertClips: metadata.insertClips,
+  });
+
+  assert.equal(graph.clipNodes.length, 1);
+  assert.equal(graph.instancesByBlock.get(1).clipIds[0], 1);
+  assert.equal(graph.instancesByBlock.get(2).clipIds[0], 1);
+  assert.deepEqual(graph.clipNodes[0].points, [
+    [100, 240, 0],
+    [140, 240, 0],
+    [140, 280, 0],
+    [100, 280, 0],
+  ]);
+});
+
+test("inherits ByBlock color and Layer 0 from the containing INSERT", () => {
+  const blocks = [
+    { index: 0, handle: 100n, name: "*Model_Space", basePoint: [0, 0, 0] },
+    { index: 1, handle: 101n, name: "A", basePoint: [0, 0, 0] },
+    { index: 2, handle: 102n, name: "B", basePoint: [0, 0, 0] },
+  ];
+  const layers = [
+    { name: "0", color: (2 << 30) | 1 },
+    { name: "A-WALL", color: (2 << 30) | 5 },
+  ];
+  const insert = ({
+    handle,
+    ownerHandle,
+    blockIndex,
+    layerIndex,
+    color,
+    linetypeCode,
+  }) => ({
+    handle,
+    ownerHandle,
+    blockIndex,
+    layerIndex,
+    color,
+    linetypeCode,
+    columnCount: 1,
+    rowCount: 1,
+    insertPoint: [0, 0, 0],
+    scale: [1, 1, 1],
+    rotation: 0,
+    normal: [0, 0, 1],
+    columnSpacing: 0,
+    rowSpacing: 0,
+  });
+  const graph = buildInstanceGraph(
+    blocks,
+    [
+      insert({
+        handle: 201n,
+        ownerHandle: 100n,
+        blockIndex: 1,
+        layerIndex: 1,
+        color: ((33 << 24) | (2 << 30) | 3) >>> 0,
+        linetypeCode: 3,
+      }),
+      insert({
+        handle: 202n,
+        ownerHandle: 101n,
+        blockIndex: 2,
+        layerIndex: 0,
+        color: ((2 << 24) | (1 << 30)) >>> 0,
+        linetypeCode: 1,
+      }),
+    ],
+    {
+      layers,
+      layerLinetypeCodes: new Uint16Array([2, 8]),
+    },
+  );
+
+  const outer = graph.instancesByBlock.get(1);
+  const nested = graph.instancesByBlock.get(2);
+  assert.equal(
+    outer.colors[0],
+    ((33 << 24) | (2 << 30) | 3) >>> 0,
+  );
+  assert.equal(outer.layerIndices[0], 1);
+  assert.equal(
+    nested.colors[0],
+    ((33 << 24) | (2 << 30) | 3) >>> 0,
+  );
+  assert.equal(nested.layerIndices[0], 1);
+  assert.equal(nested.colorInherited[0], 0);
+  assert.equal(nested.layerInherited[0], 0);
+  assert.equal(nested.opacities[0], 0.5);
+  assert.equal(nested.opacityInherited[0], 0);
+  assert.equal(outer.linetypeCodes[0], 3);
+  assert.equal(nested.linetypeCodes[0], 3);
+  assert.equal(nested.linetypeInherited[0], 0);
+  assert.equal(graph.layerZeroIndex, 0);
 });
 
 test("dimension picture references inherit their owner's world transform", () => {

@@ -47,7 +47,20 @@ lossless WIPEOUT image bases, clip boundaries and drawing-wide frame metadata;
 the worker displays enabled frames while keeping background masks deferred
 until block-local and nested-INSERT draw order is available. Scene Cache v1.11
 preserves bounded, normalized `SORTENTSTABLE` tables and entries in two lazy
-sections without adding them to the first-frame read path. Remaining exact
+sections without adding them to the first-frame read path. Scene Cache v1.12
+retains the original XREF path in each block record, and v1.13 retains bounded
+INSERT/XREF spatial-clip boundaries. The VS Code host resolves
+relative, drive, UNC and POSIX forms through bounded project-local search,
+persists explicit manual mappings, converts child caches serially and the
+Webview composes their shared line/text instances under the parent INSERT.
+Aggregate XREF overview source, overview GPU and detail GPU data are each
+capped at 32 MiB. Versions 1.14–1.17 add drawing display settings, named
+linetypes, saved model view and paper/model layout viewport state. Scene Cache
+v1.18 adds IMAGE/IMAGEDEF paths, placement bases and clip vertices without
+adding raster bytes to the cache or first-frame read. The host resolves only
+visible JPG/PNG references and transfers deduplicated, bounded content; the
+Webview applies image/XREF clipping and keeps decoded bitmaps in a 64 MiB RGBA
+LRU below the transparent WebGL drawing plane. Remaining exact
 CAD text layout and draw-order work are product-completeness gates on this
 selected engine, not an open parser choice.
 
@@ -451,10 +464,11 @@ analytic HATCH edge topology is not yet a lossless source record.
 
 The v1.2 display slice added local-origin `f32` line buffers. It keeps model
 space and block definitions separate, assigns every non-empty block a bounded
-overview allocation within the global 65,536-segment budget, writes the
-complete first-frame vertex set as one
-contiguous prefix of at most 4 MiB and caps each spatial detail batch at
-512 KiB.
+overview allocation within the then-current global 65,536-segment budget,
+writes the complete first-frame vertex set as one contiguous prefix of at most
+4 MiB and caps each spatial detail batch at 512 KiB. The current 36-byte
+vertex format uses 58,254 overview segments and 7,281 detail segments to keep
+those same byte limits.
 
 The v1.3 display slice adds bounded first-pass chords for ARC, CIRCLE, ELLIPSE,
 polyline bulges and NURBS SPLINE entities. Circular curves use at most 16

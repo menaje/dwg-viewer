@@ -7,6 +7,7 @@ import {
   encodeMaskBucket,
   maskBucketFor,
 } from "./mask-order.mjs";
+import { encodeCadLineStyle } from "./cad-line-style.mjs";
 
 export const HATCH_PATTERN_VERTEX_STRIDE = 32;
 export const MAX_HATCH_PATTERN_GPU_BYTES = 32 * 1024 * 1024;
@@ -22,7 +23,6 @@ const MAX_POSITION_ERROR = 1e-3;
 const GEOMETRY_EPSILON = 1e-10;
 const PATH_FLAG_SELF_INTERSECTING = 64;
 const PATH_FLAG_DUPLICATE = 256;
-const GPU_STYLE_INVISIBLE = 1 << 16;
 
 function dot3(left, right) {
   return left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
@@ -948,7 +948,11 @@ export function buildHatchPatternMesh(
       handleLow: Number(entity.handle & 0xffffffffn),
       handleHigh: Number((entity.handle >> 32n) & 0xffffffffn),
       style: encodeMaskBucket(
-        entity.commonFlags & 1 ? GPU_STYLE_INVISIBLE : 0,
+        encodeCadLineStyle({
+          lineWeight: entity.lineWeight,
+          linetypeCode: 2,
+          invisible: Boolean(entity.commonFlags & 1),
+        }),
         maskBucketFor(maskOrder, entity.ownerHandle, entity.handle),
       ),
     };

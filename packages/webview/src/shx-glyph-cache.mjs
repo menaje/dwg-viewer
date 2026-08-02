@@ -24,7 +24,29 @@ export function normalizeShxFontName(value) {
     return "";
   }
   const unquoted = value.trim().replace(/^["']|["']$/g, "");
-  return unquoted.split(/[\\/]/).at(-1)?.toLocaleLowerCase("en-US") ?? "";
+  return (
+    unquoted
+      .split(/[\\/]/)
+      .at(-1)
+      ?.normalize("NFC")
+      .toLocaleLowerCase("en-US") ?? ""
+  );
+}
+
+export function isOutlineFontReference(value) {
+  return /\.(?:ttf|otf|ttc)$/i.test(normalizeShxFontName(value));
+}
+
+export function isShxFontReference(value, { bigFont = false } = {}) {
+  const normalized = normalizeShxFontName(value);
+  if (!normalized) {
+    return false;
+  }
+  if (bigFont) {
+    return true;
+  }
+  const extension = normalized.match(/\.([a-z0-9]+)$/)?.[1] ?? "";
+  return extension === "" || extension === "shx";
 }
 
 function fontAliases(name) {
@@ -299,7 +321,13 @@ export class ShxGlyphCache {
   missingFonts(styles) {
     const missing = new Set();
     for (const style of styles) {
-      for (const name of [style.fontFile, style.bigFontFile]) {
+      for (const [name, bigFont] of [
+        [style.fontFile, false],
+        [style.bigFontFile, true],
+      ]) {
+        if (!isShxFontReference(name, { bigFont })) {
+          continue;
+        }
         const record = this.#resolveFont(name);
         if (name && (!record || record.error)) {
           missing.add(name);

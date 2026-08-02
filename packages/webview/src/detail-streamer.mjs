@@ -9,6 +9,7 @@ import {
   GPU_LINE_VERTEX_RECORD_SIZE,
   GpuLineBatchKind,
 } from "./scene-cache.mjs";
+import { effectiveClipBounds } from "./instance-graph.mjs";
 
 const DEFAULT_CACHE_BYTES = 96 * 1024 * 1024;
 const DEFAULT_VISIBLE_BYTES = 32 * 1024 * 1024;
@@ -33,22 +34,44 @@ function candidateForModel(batch, viewport, centerX, centerY) {
   };
 }
 
-function candidateForBlock(
+function candidateForInstances(
   batch,
+  instances,
   instanceGraph,
   viewport,
   centerX,
   centerY,
 ) {
-  const instances = instanceGraph.instancesByBlock.get(batch.blockIndex);
   if (!instances || instances.count === 0) {
     return null;
   }
   const visible = [];
   const transformed = new Float64Array(4);
+  const clipBoundsCache = new Map();
   let distance = Infinity;
   for (let index = 0; index < instances.count; index += 1) {
     transformedBounds2D(batch.bounds, instances.data, index * 16, transformed);
+    const clipId = instances.clipIds?.[index] ?? 0;
+    if (clipId > 0) {
+      let clipBounds = clipBoundsCache.get(clipId);
+      if (clipBounds === undefined) {
+        clipBounds = effectiveClipBounds(
+          instanceGraph.clipNodes,
+          clipId,
+        );
+        clipBoundsCache.set(clipId, clipBounds);
+      }
+      if (!clipBounds) {
+        continue;
+      }
+      transformed[0] = Math.max(transformed[0], clipBounds.min[0]);
+      transformed[1] = Math.max(transformed[1], clipBounds.min[1]);
+      transformed[2] = Math.min(transformed[2], clipBounds.max[0]);
+      transformed[3] = Math.min(transformed[3], clipBounds.max[1]);
+      if (transformed[0] > transformed[2] || transformed[1] > transformed[3]) {
+        continue;
+      }
+    }
     if (!packedBoundsIntersect2D(transformed, viewport)) {
       continue;
     }
@@ -71,6 +94,23 @@ function candidateForBlock(
     instanceIndices: Uint32Array.from(visible),
     distance,
   };
+}
+
+function candidateForBlock(
+  batch,
+  instanceGraph,
+  viewport,
+  centerX,
+  centerY,
+) {
+  return candidateForInstances(
+    batch,
+    instanceGraph.instancesByBlock.get(batch.blockIndex),
+    instanceGraph,
+    viewport,
+    centerX,
+    centerY,
+  );
 }
 
 export function selectVisibleDetailBatches(
@@ -100,7 +140,16 @@ export function selectVisibleDetailBatches(
             centerX,
             centerY,
           )
-        : candidateForModel(batch, viewport, centerX, centerY);
+        : instanceGraph.modelInstances
+          ? candidateForInstances(
+              batch,
+              instanceGraph.modelInstances,
+              instanceGraph,
+              viewport,
+              centerX,
+              centerY,
+            )
+          : candidateForModel(batch, viewport, centerX, centerY);
     if (!candidate) {
       continue;
     }
@@ -166,6 +215,8 @@ export class DetailStreamer {
     this.lastError = null;
     this.active = Promise.resolve();
     this.disposed = false;
+    this.renderCamera = null;
+    this.renderOptions = Object.freeze({});
     this.renderRequest = null;
     this.renderPromise = Promise.resolve();
     this.pendingRender = null;
@@ -197,11 +248,15 @@ export class DetailStreamer {
     );
   }
 
-  update(camera, { enabled = true } = {}) {
+  update(
+    camera,
+    { enabled = true, redraw = true, emit = true } = {},
+  ) {
     if (this.disposed) {
       throw new Error("cannot update a disposed detail streamer");
     }
     const revision = ++this.revision;
+    this.setRenderCamera(camera);
     this.lastError = null;
     this.candidates = enabled
       ? selectVisibleDetailBatches(
@@ -212,7 +267,7 @@ export class DetailStreamer {
         )
       : Object.freeze([]);
     this.renderer.setDetailSelections(this.candidates);
-    this.lastRender = this.renderer.redraw(camera);
+    this.lastRender = redraw ? this.renderer.redraw(camera) : null;
 
     const queue = [];
     for (const candidate of this.candidates) {
@@ -223,7 +278,9 @@ export class DetailStreamer {
       }
     }
     this.loading = queue.length;
-    this.emit();
+    if (emit) {
+      this.emit();
+    }
     let cursor = 0;
     const worker = async () => {
       while (revision === this.revision && cursor < queue.length) {
@@ -245,7 +302,7 @@ export class DetailStreamer {
         if (revision !== this.revision) {
           return;
         }
-        this.scheduleRedraw(revision, camera);
+        this.scheduleRedraw(revision);
       }
     };
     const workerCount = Math.min(this.concurrency, queue.length);
@@ -286,8 +343,25 @@ export class DetailStreamer {
     this.onUpdate(this.snapshot());
   }
 
-  scheduleRedraw(revision, camera) {
-    this.pendingRender = { revision, camera };
+  setRenderCamera(camera, renderOptions = {}) {
+    if (this.disposed) {
+      return false;
+    }
+    if (
+      !camera ||
+      !Array.isArray(camera.origin) ||
+      !Number.isFinite(camera.worldHeight) ||
+      camera.worldHeight <= 0
+    ) {
+      throw new TypeError("detail render camera is invalid");
+    }
+    this.renderCamera = camera;
+    this.renderOptions = Object.freeze({ ...renderOptions });
+    return true;
+  }
+
+  scheduleRedraw(revision) {
+    this.pendingRender = { revision };
     if (this.renderRequest !== null) {
       return;
     }
@@ -299,8 +373,14 @@ export class DetailStreamer {
         this.renderRequest = null;
         const pending = this.pendingRender;
         this.pendingRender = null;
-        if (pending?.revision === this.revision) {
-          this.lastRender = this.renderer.redraw(pending.camera);
+        if (
+          pending?.revision === this.revision &&
+          this.renderCamera
+        ) {
+          this.lastRender = this.renderer.redraw(
+            this.renderCamera,
+            this.renderOptions,
+          );
           this.emit();
         }
         resolve();
@@ -313,6 +393,8 @@ export class DetailStreamer {
     this.revision += 1;
     this.loading = 0;
     this.candidates = Object.freeze([]);
+    this.renderCamera = null;
+    this.renderOptions = Object.freeze({});
     this.renderer.setDetailSelections(this.candidates);
     this.cache.clear();
   }

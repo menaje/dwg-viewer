@@ -2,6 +2,12 @@
 
 Free, local-first, read-only DWG viewing inside VS Code.
 
+The extension uses an immersive viewer shell: the drawing fills the editor
+without the development frame or performance dashboard. Its top-right tool
+shelf and bottom layout tabs stay folded until hovered, keyboard-focused or
+explicitly opened. The repository's standalone Webview remains the diagnostic
+and performance-development surface.
+
 This early build opens `.dwg` files with a native Custom Editor, converts them
 to the project scene-cache format on the local machine, and streams only the
 ranges required by the Webview. Drawing data is never uploaded.
@@ -130,12 +136,55 @@ EUC-KR and CP949 are separate, and the Johab path covers all 11,172 modern
 Hangul syllables. Non-Hangul Johab symbols and Hanja still require a direct
 Unicode glyph or the system-font fallback.
 
+## External references
+
+Scene Cache v1.12 and later retain each DWG XREF's original path. The extension tries,
+in order, a saved manual mapping, an absolute path valid on the current
+platform, a path relative to the parent drawing, and the adjacent `xref`
+folder. It then performs a bounded basename search and ranks candidates by
+matching parent, grandparent and further trailing path segments. Equally
+ranked files are never selected silently; the **외부 참조** panel offers a
+manual file picker.
+
+The resolver understands Windows drive, UNC, POSIX and relative paths on both
+Windows and macOS, including leading `..`, Unicode normalization and
+case-insensitive comparison where required. A manual selection can be saved
+for only that source reference, the same basename, or the original directory
+prefix. Optional project roots are configured as absolute paths:
+
+```json
+{
+  "dwgViewer.xrefSearchDirectories": [
+    "/absolute/path/to/project-drawings"
+  ]
+}
+```
+
+Search is limited to 32 roots, depth 8, 50,000 entries and 256 candidates.
+Symlink directories and the whole disk are not traversed. Conversion and
+Webview loading are serialized; cycles, nesting beyond depth 8 and more than
+64 references are rejected. External overview source, overview GPU and detail
+GPU data each have a 32 MiB aggregate limit.
+
+Scene Cache v1.18 raster IMAGE references reuse the same portable-path and
+bounded parent-folder search rules. The host currently transfers JPG/JPEG and
+PNG only, with a 32 MiB file limit, 100-million-pixel source limit, 256
+references and 64 MiB unique compressed-transfer budget per open drawing.
+`dwgViewer.imageSearchDirectories` adds absolute project image roots. Missing
+or ambiguous images appear in the same **외부 참조** panel for manual
+selection. The Webview decodes only visible references at their current
+screen size, then upgrades the bitmap after a meaningful zoom instead of
+eagerly decoding every source at full resolution.
+
 ## Current scope
 
 - Read-only model-space viewing
 - Memory-balanced first open with an optional progressive Native overview
 - Bounded cache range reads (maximum 8 MiB per request)
 - Layer visibility, pan, zoom, hatch, and text
+- Automatic and manual cross-platform DWG XREF resolution
+- Lazy cross-platform JPG/PNG IMAGE resolution and manual replacement
+- Shared-instance XREF linework, layer visibility, text, and detail streaming
 - Delayed SHX/BigFont discovery, mapping, diagnostics, and Korean fallback
 - Conversion cancellation when the editor closes
 - Retry and forced cache rebuild

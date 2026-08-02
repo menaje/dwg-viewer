@@ -1,4 +1,12 @@
-import { ViewportInteraction } from "./interaction.mjs";
+import { ViewportInteraction } from "./interaction.mjs?v=1.18.0";
+import {
+  buildExternalLayerMap,
+  buildExternalLinetypeMap,
+  composeExternalInstanceGraph,
+  remapLineVertexLayers,
+  remapLineVertexLinetypes,
+  remapTextEntityLayers,
+} from "./external-reference.mjs";
 import {
   createVsCodeRangeSource,
   installWorkerRangeProxy,
@@ -8,13 +16,36 @@ import { applyMaskOrderToInstanceGraph } from "./instance-graph.mjs";
 import { buildMaskOrderPlan } from "./mask-order.mjs";
 import { WebviewMemoryTelemetry } from "./memory-telemetry.mjs";
 import { BlobRangeSource, TrackedRangeSource } from "./range-source.mjs";
-import { WebGlLineRenderer } from "./renderer.mjs";
 import {
+  calculateRasterImageBounds,
+  CanvasRasterImageOverlay,
+  CompositeRasterImageOverlay,
+  RasterImageAssetStore,
+} from "./raster-image-overlay.mjs";
+import {
+  makePlotStyleLineWeights,
+  makePlotStylePalette,
+  plotStyleDiagnostics,
+  plotStyleShownInLayout,
+} from "./cad-plot-style.mjs";
+import { ComplexLinetypeOverlay } from "./complex-linetype-overlay.mjs";
+import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.0";
+import {
+  isOutlineFontReference,
+  isShxFontReference,
   normalizeShxFontName,
   ShxGlyphCache,
 } from "./shx-glyph-cache.mjs";
-import { CanvasTextOverlay } from "./text-overlay.mjs";
-import { loadFirstFrame } from "./viewer.mjs";
+import {
+  CanvasTextOverlay,
+  CompositeTextOverlay,
+  registerLocalOutlineFont,
+  unregisterLocalOutlineFont,
+} from "./text-overlay.mjs";
+import {
+  loadExternalFirstFrame,
+  loadFirstFrame,
+} from "./viewer.mjs?v=1.18.0";
 
 const fileInput = document.querySelector("#cache-file");
 const cachePicker = document.querySelector("#cache-picker");
@@ -30,7 +61,9 @@ const dropZone = document.querySelector("#drop-zone");
 const status = document.querySelector("#status");
 const metrics = document.querySelector("#metrics");
 const canvas = document.querySelector("#drawing");
+const imageCanvas = document.querySelector("#image-overlay");
 const textCanvas = document.querySelector("#text-overlay");
+const layoutTabs = document.querySelector("#layout-tabs");
 const viewControls = [...document.querySelectorAll("[data-view-action]")];
 const layersToggle = document.querySelector("#layers-toggle");
 const layerPanel = document.querySelector("#layer-panel");
@@ -42,9 +75,22 @@ const layersHideAll = document.querySelector("#layers-hide-all");
 const hostRetry = document.querySelector("#host-retry");
 const hostRebuild = document.querySelector("#host-rebuild");
 const hostAdapterSetup = document.querySelector("#host-adapter-setup");
+const xrefsToggle = document.querySelector("#xrefs-toggle");
+const wipeoutToggle = document.querySelector("#wipeout-toggle");
+const plotStyleToggle = document.querySelector("#plot-style-toggle");
+const xrefPanel = document.querySelector("#xref-panel");
+const xrefSummary = document.querySelector("#xref-summary");
+const xrefStatusList = document.querySelector("#xref-status-list");
+const pageHeader = document.querySelector("header");
+const viewerToolsTrigger = document.querySelector(
+  "#viewer-tools-trigger",
+);
 let activeScene;
 let activeInteraction;
 let activeTextStatus;
+let activeTextComposite;
+let activeImageComposite;
+let activeImageAssetStore;
 let activeHatchStatus;
 let activeHatchWorker;
 let activePrimitiveStatus;
@@ -52,6 +98,12 @@ let activePrimitiveWorker;
 let activeMaskOrder;
 let activeRenderInstanceGraph;
 let activeMaskStatus;
+let activeWipeoutMasksVisible = false;
+let activeViewId;
+let viewSwitchRevision = 0;
+let activePlotStyleName = "";
+let activePlotStyleEnabled = false;
+let nextPlotStyleRequestId = 1;
 let activeMemoryTelemetry;
 let hatchPatternTimer;
 let fontRefreshTimer;
@@ -63,6 +115,7 @@ const fontDiagnostics = new Map();
 const pendingHostFontRequests = new Map();
 const attemptedHostFontKeys = new Set();
 const hostLoadedFontKeys = new Set();
+const localOutlineFaces = new Map();
 let activeTextStyles = Object.freeze([]);
 let activeHostCacheId;
 let nextHostFontRequestId = 1;
@@ -72,6 +125,22 @@ const vscodeApi =
     ? globalThis.acquireVsCodeApi()
     : null;
 let activeHostRangeSource;
+let activeRangeMetricsSource;
+const externalHostSources = new Map();
+const externalRangeSources = new Map();
+const externalCacheData = new Map();
+const externalAttachmentsByCache = new Map();
+const xrefDiagnostics = new Map();
+const pendingImageRequests = new Map();
+let nextImageRequestId = 1;
+const discoveredXrefCaches = new Set();
+const readyExternalMessages = new Map();
+const plotStyleTables = new Map();
+const plotStylePreferences = new Map();
+const pendingPlotStyleRequests = new Map();
+const MAX_EXTERNAL_SOURCE_OVERVIEW_BYTES = 32 * 1024 * 1024;
+let externalSourceOverviewBytes = 0;
+let externalLoadQueue = Promise.resolve();
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -86,6 +155,194 @@ function displayFontName(value) {
   return value.split(/[\\/]/).at(-1)?.slice(0, 120) || "(이름 없음)";
 }
 
+function normalizePlotStyleName(value) {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const name = value
+    .trim()
+    .replace(/^["']|["']$/gu, "")
+    .split(/[\\/]/u)
+    .at(-1)
+    ?.trim();
+  return name?.toLocaleLowerCase("en-US").endsWith(".ctb")
+    ? name.normalize("NFC").toLocaleLowerCase("en-US")
+    : "";
+}
+
+function resetPlotStyleSession() {
+  activePlotStyleName = "";
+  activePlotStyleEnabled = false;
+  plotStyleTables.clear();
+  plotStylePreferences.clear();
+  pendingPlotStyleRequests.clear();
+  plotStyleToggle.disabled = true;
+  plotStyleToggle.textContent = "출력 스타일";
+  plotStyleToggle.setAttribute("aria-pressed", "false");
+  plotStyleToggle.title = "배치에 지정된 CTB 출력 스타일 표시 전환";
+}
+
+function setPlotStyleUnavailable(name, state) {
+  const label =
+    {
+      ambiguous: "동일한 CTB가 여러 곳에 있어 자동 선택하지 않았습니다.",
+      invalid: "CTB 파일을 읽을 수 없습니다.",
+      missing: "같은 이름의 CTB 파일을 찾지 못했습니다.",
+      unavailable: "VS Code에서 DWG를 열면 CTB를 자동으로 찾습니다.",
+    }[state] ?? "CTB 출력 스타일을 사용할 수 없습니다.";
+  plotStyleToggle.disabled = true;
+  plotStyleToggle.textContent = "출력 없음";
+  plotStyleToggle.setAttribute("aria-pressed", "false");
+  plotStyleToggle.title = `${name} · ${label}`;
+}
+
+function clearPlotStyleForView(scene) {
+  scene.renderer.clearPlotStyle();
+  activeTextComposite?.setPalette(scene.renderer.aciPalette);
+}
+
+function applyPlotStyleEntry(scene, key, entry, enabled) {
+  if (activeScene !== scene || entry?.status !== "loaded") {
+    return;
+  }
+  try {
+    if (enabled) {
+      const palette = makePlotStylePalette(entry.table);
+      scene.renderer.setPlotStyle(
+        palette,
+        makePlotStyleLineWeights(entry.table),
+      );
+      activeTextComposite?.setPalette(palette);
+    } else {
+      clearPlotStyleForView(scene);
+    }
+    activePlotStyleName = key;
+    activePlotStyleEnabled = enabled;
+    plotStylePreferences.set(key, enabled);
+    plotStyleToggle.disabled = false;
+    plotStyleToggle.textContent = enabled ? "출력 켬" : "출력 끔";
+    plotStyleToggle.setAttribute("aria-pressed", String(enabled));
+    const details = plotStyleDiagnostics(entry.table);
+    plotStyleToggle.title =
+      `${entry.resolvedName || entry.requestedName || key} · ` +
+      `색 ${details.colorOverrides.toLocaleString()} · ` +
+      `선굵기 ${details.lineWeightOverrides.toLocaleString()} · ` +
+      "클릭하여 원본 화면 색과 전환";
+    activeInteraction?.refresh();
+  } catch (error) {
+    console.error(error);
+    setPlotStyleUnavailable(key, "invalid");
+  }
+}
+
+function configurePlotStyleForView(scene, view, revision) {
+  clearPlotStyleForView(scene);
+  activePlotStyleName = "";
+  activePlotStyleEnabled = false;
+  plotStyleToggle.setAttribute("aria-pressed", "false");
+  if (view?.kind !== "layout") {
+    plotStyleToggle.disabled = true;
+    plotStyleToggle.textContent = "출력 스타일";
+    plotStyleToggle.title = "모델 탭은 화면 색으로 표시합니다.";
+    return;
+  }
+  const requestedName = view.layout?.styleSheet ?? "";
+  const key = normalizePlotStyleName(requestedName);
+  if (!key) {
+    setPlotStyleUnavailable("이 배치", "missing");
+    return;
+  }
+  activePlotStyleName = key;
+  activePlotStyleEnabled =
+    plotStylePreferences.get(key) ??
+    plotStyleShownInLayout(view.layout);
+  const cached = plotStyleTables.get(key);
+  if (cached?.status === "loaded") {
+    applyPlotStyleEntry(
+      scene,
+      key,
+      cached,
+      activePlotStyleEnabled,
+    );
+    return;
+  }
+  if (cached) {
+    setPlotStyleUnavailable(requestedName, cached.status);
+    return;
+  }
+  if (!vscodeApi || !activeHostCacheId) {
+    setPlotStyleUnavailable(requestedName, "unavailable");
+    return;
+  }
+  const alreadyPending = [...pendingPlotStyleRequests.values()].some(
+    (request) =>
+      request.cacheId === activeHostCacheId && request.key === key,
+  );
+  plotStyleToggle.disabled = true;
+  plotStyleToggle.textContent = "출력 찾는 중";
+  plotStyleToggle.title = `${requestedName} 자동 검색 중`;
+  if (alreadyPending) {
+    return;
+  }
+  const requestId = nextPlotStyleRequestId++;
+  pendingPlotStyleRequests.set(requestId, {
+    cacheId: activeHostCacheId,
+    key,
+    requestedName,
+    revision,
+  });
+  vscodeApi.postMessage({
+    type: "dwg-plot-style-read/1",
+    cacheId: activeHostCacheId,
+    requestId,
+    name: requestedName,
+  });
+}
+
+function handleHostPlotStyleResponse(message) {
+  const pending = pendingPlotStyleRequests.get(message?.requestId);
+  if (
+    !pending ||
+    pending.cacheId !== activeHostCacheId ||
+    message.cacheId !== activeHostCacheId
+  ) {
+    return;
+  }
+  pendingPlotStyleRequests.delete(message.requestId);
+  const statusValue = ["loaded", "missing", "ambiguous", "invalid"].includes(
+    message.status,
+  )
+    ? message.status
+    : "invalid";
+  const entry = Object.freeze({
+    status: statusValue,
+    requestedName: pending.requestedName,
+    resolvedName:
+      typeof message.resolvedName === "string"
+        ? message.resolvedName.slice(0, 512)
+        : "",
+    table: message.table,
+  });
+  plotStyleTables.set(pending.key, entry);
+  if (
+    pending.revision !== openRevision ||
+    activePlotStyleName !== pending.key ||
+    !activeScene
+  ) {
+    return;
+  }
+  if (entry.status === "loaded") {
+    applyPlotStyleEntry(
+      activeScene,
+      pending.key,
+      entry,
+      activePlotStyleEnabled,
+    );
+  } else {
+    setPlotStyleUnavailable(pending.requestedName, entry.status);
+  }
+}
+
 function requiredFonts(styles) {
   const required = new Map();
   for (const style of styles) {
@@ -93,6 +350,11 @@ function requiredFonts(styles) {
       [style.fontFile, false],
       [style.bigFontFile, true],
     ]) {
+      const outline = !isBigFont && isOutlineFontReference(name);
+      const shx = isShxFontReference(name, { bigFont: isBigFont });
+      if (!outline && !shx) {
+        continue;
+      }
       const key = normalizeShxFontName(name);
       if (!key) {
         continue;
@@ -104,13 +366,35 @@ function requiredFonts(styles) {
           name,
           displayName: displayFontName(name),
           isBigFont,
+          kind: outline ? "outline" : "shx",
         });
       } else if (isBigFont && !existing.isBigFont) {
-        required.set(key, { ...existing, isBigFont: true });
+        required.set(key, {
+          ...existing,
+          isBigFont: true,
+          kind: "shx",
+        });
       }
     }
   }
   return required;
+}
+
+function mergeTextStyles(...styleGroups) {
+  const merged = new Map();
+  for (const styles of styleGroups) {
+    for (const style of styles) {
+      const key = [
+        normalizeShxFontName(style?.fontFile),
+        normalizeShxFontName(style?.bigFontFile),
+        normalizeShxFontName(style?.trueTypeFont),
+      ].join("\u0000");
+      if (!merged.has(key)) {
+        merged.set(key, style);
+      }
+    }
+  }
+  return Object.freeze([...merged.values()]);
 }
 
 function fontStateLabel(state) {
@@ -120,6 +404,7 @@ function fontStateLabel(state) {
       mapped: "대체됨",
       loading: "찾는 중",
       missing: "누락",
+      ambiguous: "선택 필요",
       invalid: "손상",
       unreadable: "읽기 실패",
       "too-large": "크기 초과",
@@ -183,12 +468,14 @@ function renderFontDiagnostics() {
       entry.state === "mapped"
         ? `${displayFontName(entry.resolvedName)} 파일로 대체`
         : entry.state === "loaded" && entry.size
-          ? `${entry.source === "drawing" ? "도면 폴더" : entry.source === "configured" ? "등록 폴더" : "현재 세션"} · ${formatBytes(entry.size)}`
+          ? `${entry.source === "drawing" ? "도면 폴더" : entry.source === "project" ? "프로젝트 폴더" : entry.source === "configured" ? "등록 폴더" : "현재 세션"} · ${formatBytes(entry.size)}`
           : entry.error;
     const detailText = [
       resolution,
       entry.isBigFont
         ? `문자 코드: ${bigFontEncodingLabel(entry.encoding)}`
+        : entry.kind === "outline"
+          ? "TrueType/OpenType"
         : "",
     ]
       .filter(Boolean)
@@ -204,6 +491,141 @@ function renderFontDiagnostics() {
   fontStatusList.append(fragment);
 }
 
+function xrefStateLabel(state) {
+  return (
+    {
+      waiting: "대기",
+      searching: "찾는 중",
+      converting: "변환 중",
+      decoding: "표시 준비",
+      ready: "연결됨",
+      missing: "누락",
+      ambiguous: "선택 필요",
+      cycle: "순환 참조",
+      limit: "한도",
+      unsupported: "미지원",
+      error: "오류",
+    }[state] ?? "확인 중"
+  );
+}
+
+function renderXrefDiagnostics() {
+  const entries = [...xrefDiagnostics.values()];
+  const ready = entries.filter((entry) => entry.status === "ready").length;
+  const unresolved = entries.filter((entry) =>
+    [
+      "missing",
+      "ambiguous",
+      "cycle",
+      "limit",
+      "unsupported",
+      "error",
+    ].includes(
+      entry.status,
+    ),
+  ).length;
+  xrefSummary.textContent =
+    entries.length === 0
+      ? "참조 없음"
+      : `${ready.toLocaleString()} / ${entries.length.toLocaleString()} 연결`;
+  xrefsToggle.textContent =
+    unresolved > 0
+      ? `외부 참조 ${unresolved.toLocaleString()}`
+      : "외부 참조";
+  xrefsToggle.disabled = entries.length === 0;
+  xrefStatusList.replaceChildren();
+  if (entries.length === 0) {
+    const item = document.createElement("li");
+    item.textContent = "이 도면에는 외부 도면이나 이미지 참조가 없습니다.";
+    xrefStatusList.append(item);
+    return;
+  }
+  entries.sort(
+    (left, right) =>
+      (left.depth ?? 0) - (right.depth ?? 0) ||
+      String(left.kind ?? "xref").localeCompare(
+        String(right.kind ?? "xref"),
+      ) ||
+      left.name.localeCompare(right.name, "ko"),
+  );
+  const fragment = document.createDocumentFragment();
+  for (const entry of entries) {
+    const item = document.createElement("li");
+    const name = document.createElement("span");
+    const state = document.createElement("span");
+    const storedPath = document.createElement("span");
+    name.className = "xref-name";
+    name.textContent =
+      entry.kind === "image"
+        ? `이미지 · ${entry.name || "(이름 없음)"}`
+        : entry.name || "(이름 없음)";
+    state.className = "xref-state";
+    state.dataset.state = entry.status;
+    state.textContent = xrefStateLabel(entry.status);
+    storedPath.className = "xref-path";
+    storedPath.title = entry.storedPath ?? "";
+    storedPath.textContent =
+      entry.fileName || entry.storedPath || "저장 경로 없음";
+    item.append(name, state, storedPath);
+    if (entry.message) {
+      const detail = document.createElement("span");
+      detail.className = "xref-message";
+      detail.textContent = entry.message;
+      item.append(detail);
+    }
+    if (entry.canSelect && vscodeApi) {
+      const select = document.createElement("button");
+      select.type = "button";
+      select.className = "xref-select";
+      select.textContent = "파일 직접 선택";
+      select.addEventListener("click", () => {
+        select.disabled = true;
+        vscodeApi.postMessage(
+          entry.kind === "image"
+            ? {
+                type: "dwg-image-select/1",
+                cacheId: entry.cacheId,
+                imageIndex: entry.imageIndex,
+              }
+            : {
+                type: "dwg-xref-select/1",
+                parentCacheId: entry.parentCacheId,
+                blockIndex: entry.blockIndex,
+              },
+        );
+      });
+      item.append(select);
+    }
+    fragment.append(item);
+  }
+  xrefStatusList.append(fragment);
+}
+
+function resetExternalReferences() {
+  for (const source of externalHostSources.values()) {
+    source.dispose();
+  }
+  externalHostSources.clear();
+  externalRangeSources.clear();
+  externalCacheData.clear();
+  externalAttachmentsByCache.clear();
+  discoveredXrefCaches.clear();
+  readyExternalMessages.clear();
+  xrefDiagnostics.clear();
+  externalSourceOverviewBytes = 0;
+  externalLoadQueue = Promise.resolve();
+  activeTextComposite = undefined;
+  activeImageComposite = undefined;
+  activeImageAssetStore?.dispose();
+  activeImageAssetStore = undefined;
+  pendingImageRequests.clear();
+  xrefsToggle.disabled = true;
+  xrefsToggle.textContent = "외부 참조";
+  xrefsToggle.setAttribute("aria-expanded", "false");
+  xrefPanel.hidden = true;
+  renderXrefDiagnostics();
+}
+
 function syncFontDiagnostics(styles) {
   activeTextStyles = Object.freeze([...styles]);
   const required = requiredFonts(styles);
@@ -214,7 +636,12 @@ function syncFontDiagnostics(styles) {
   }
   for (const descriptor of required.values()) {
     const existing = fontDiagnostics.get(descriptor.key);
-    const cacheStatus = glyphCache.fontStatus(descriptor.name);
+    const cacheStatus =
+      descriptor.kind === "outline"
+        ? localOutlineFaces.has(descriptor.key)
+          ? { state: "registered", size: localOutlineFaces.get(descriptor.key).size }
+          : { state: "missing" }
+        : glyphCache.fontStatus(descriptor.name);
     const encoding = descriptor.isBigFont
       ? glyphCache.legacyEncodingForFont(descriptor.name)
       : undefined;
@@ -224,7 +651,10 @@ function syncFontDiagnostics(styles) {
         ...descriptor,
         encoding,
         state: "invalid",
-        error: "SHX 파일 형식을 해석할 수 없습니다.",
+        error:
+          descriptor.kind === "outline"
+            ? "TTF/OTF 파일을 해석할 수 없습니다."
+            : "SHX 파일 형식을 해석할 수 없습니다.",
       });
     } else if (cacheStatus.state === "registered") {
       fontDiagnostics.set(descriptor.key, {
@@ -242,8 +672,8 @@ function syncFontDiagnostics(styles) {
         encoding,
         state: "missing",
         error: vscodeApi
-          ? "도면 폴더와 등록된 글꼴 폴더에서 찾지 못했습니다."
-          : "SHX 파일을 선택해 연결할 수 있습니다.",
+          ? "도면·프로젝트·등록 글꼴 폴더에서 찾지 못했습니다."
+          : "글꼴 파일을 선택해 연결할 수 있습니다.",
       });
     }
   }
@@ -258,7 +688,9 @@ function requestHostFonts(styles = activeTextStyles, revision = openRevision) {
   const required = requiredFonts(styles);
   for (const descriptor of required.values()) {
     if (
-      glyphCache.hasFont(descriptor.name) ||
+      (descriptor.kind === "outline"
+        ? localOutlineFaces.has(descriptor.key)
+        : glyphCache.hasFont(descriptor.name)) ||
       attemptedHostFontKeys.has(descriptor.key)
     ) {
       continue;
@@ -317,7 +749,55 @@ function scheduleFontRefresh(revision) {
   }, 40);
 }
 
-function handleHostFontResponse(message) {
+function unregisterHostFont(key) {
+  const outline = localOutlineFaces.get(key);
+  if (outline) {
+    document.fonts.delete(outline.face);
+    unregisterLocalOutlineFont(outline.name);
+    localOutlineFaces.delete(key);
+  } else {
+    glyphCache.unregisterFont(key);
+  }
+  hostLoadedFontKeys.delete(key);
+}
+
+function clearHostFonts() {
+  for (const key of [...hostLoadedFontKeys]) {
+    unregisterHostFont(key);
+  }
+  hostLoadedFontKeys.clear();
+}
+
+async function registerHostOutlineFont(pending, message) {
+  if (
+    typeof FontFace !== "function" ||
+    !(message.bytes instanceof ArrayBuffer)
+  ) {
+    throw new Error("local outline fonts are unsupported");
+  }
+  unregisterHostFont(pending.key);
+  const family = `DwgLocalFont_${pending.revision}_${message.requestId}`;
+  const face = new FontFace(family, message.bytes);
+  await face.load();
+  if (
+    pending.revision !== openRevision ||
+    pending.cacheId !== activeHostCacheId
+  ) {
+    return undefined;
+  }
+  document.fonts.add(face);
+  registerLocalOutlineFont(pending.name, family);
+  const entry = Object.freeze({
+    face,
+    family,
+    name: pending.name,
+    size: Number.isSafeInteger(message.size) ? message.size : 0,
+  });
+  localOutlineFaces.set(pending.key, entry);
+  return entry;
+}
+
+async function handleHostFontResponse(message) {
   const pending = pendingHostFontRequests.get(message?.requestId);
   if (!pending) {
     return;
@@ -332,7 +812,13 @@ function handleHostFontResponse(message) {
   }
   if (message.status === "loaded") {
     try {
-      const registered = glyphCache.registerFont(pending.name, message.bytes);
+      const registered =
+        pending.kind === "outline"
+          ? await registerHostOutlineFont(pending, message)
+          : glyphCache.registerFont(pending.name, message.bytes);
+      if (!registered) {
+        return;
+      }
       const mapped =
         message.source === "mapping" ||
         normalizeShxFontName(message.resolvedName) !== pending.key;
@@ -341,7 +827,7 @@ function handleHostFontResponse(message) {
         state: mapped ? "mapped" : "loaded",
         resolvedName: message.resolvedName,
         source: message.source,
-        size: registered.size,
+        size: registered.size ?? message.size,
       });
       hostLoadedFontKeys.add(pending.key);
       scheduleFontRefresh(pending.revision);
@@ -349,7 +835,10 @@ function handleHostFontResponse(message) {
       fontDiagnostics.set(pending.key, {
         ...pending,
         state: "invalid",
-        error: "SHX 파일을 등록하거나 해석할 수 없습니다.",
+        error:
+          pending.kind === "outline"
+            ? "TTF/OTF 파일을 등록하거나 해석할 수 없습니다."
+            : "SHX 파일을 등록하거나 해석할 수 없습니다.",
       });
       renderFontDiagnostics();
     }
@@ -357,6 +846,7 @@ function handleHostFontResponse(message) {
   }
   const allowedFailures = new Set([
     "missing",
+    "ambiguous",
     "invalid",
     "too-large",
     "budget-exceeded",
@@ -384,10 +874,7 @@ function handleFontConfigurationChanged(message) {
     return;
   }
   glyphCache.configureLegacyEncodings(message.bigFontEncodings);
-  for (const key of hostLoadedFontKeys) {
-    glyphCache.unregisterFont(key);
-  }
-  hostLoadedFontKeys.clear();
+  clearHostFonts();
   pendingHostFontRequests.clear();
   attemptedHostFontKeys.clear();
   syncFontDiagnostics(activeTextStyles);
@@ -411,11 +898,34 @@ function missingFontSuffix() {
 function renderMetrics(scene, rangeSource, viewport = null) {
   const value = scene.metrics;
   const reads = rangeSource.snapshot();
+  const externalReads = [...externalRangeSources.values()].reduce(
+    (total, source) => {
+      const snapshot = source.snapshot();
+      total.requests += snapshot.requests;
+      total.bytesRead += snapshot.bytesRead;
+      total.maximumRequestBytes = Math.max(
+        total.maximumRequestBytes,
+        snapshot.maximumRequestBytes,
+      );
+      return total;
+    },
+    { requests: 0, bytesRead: 0, maximumRequestBytes: 0 },
+  );
   const render = viewport?.render ?? value.renderer;
   const memory = activeMemoryTelemetry?.sample(
     render?.gpuTrackedBytes ?? 0,
   );
   const detail = viewport?.detail;
+  const xrefRows =
+    (render?.externalScenes ?? 0) > 0 || xrefDiagnostics.size > 0
+      ? `
+      <div><dt>참조도면 장면</dt><dd>${(render?.externalScenes ?? 0).toLocaleString()}개</dd></div>
+      <div><dt>참조 첫 화면 원본</dt><dd>${formatBytes(externalSourceOverviewBytes)}</dd></div>
+      <div><dt>참조 첫 화면 GPU</dt><dd>${formatBytes(render?.externalOverviewGpuBytes ?? 0)}</dd></div>
+      <div><dt>참조 상세 GPU</dt><dd>${formatBytes(render?.externalDetailGpuBytes ?? 0)}</dd></div>
+      <div><dt>참조 범위 읽기</dt><dd>${formatBytes(externalReads.bytesRead)}</dd></div>
+    `
+      : "";
   const detailRows = detail
     ? `
       <div><dt>현재 확대</dt><dd>${viewport.zoom.toFixed(2)}×</dd></div>
@@ -436,6 +946,16 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>화면 가림</dt><dd>${text.maskOccurrences.toLocaleString()}개</dd></div>
       <div><dt>문자 가림 적용</dt><dd>${text.clippedTextOccurrences.toLocaleString()}개</dd></div>
       <div><dt>Glyph 캐시</dt><dd>${formatBytes(glyphCache.stats.glyphBytes)}</dd></div>
+    `
+    : "";
+  const images = render?.images;
+  const imageRows = images
+    ? `
+      <div><dt>이미지 원본</dt><dd>${images.sourceImages.toLocaleString()}개</dd></div>
+      <div><dt>화면 이미지</dt><dd>${images.loadedOccurrences.toLocaleString()} / ${images.visibleOccurrences.toLocaleString()}개</dd></div>
+      <div><dt>이미지 대기</dt><dd>${(images.requestedImages + images.decodingImages).toLocaleString()}개</dd></div>
+      <div><dt>이미지 압축 메모리</dt><dd>${formatBytes(images.memory?.compressedBytes ?? 0)}</dd></div>
+      <div><dt>이미지 화면 메모리</dt><dd>${formatBytes(images.memory?.decodedBytes ?? 0)}</dd></div>
     `
     : "";
   const hatch = render?.hatchFill ?? activeHatchStatus?.fillMetrics;
@@ -483,7 +1003,7 @@ function renderMetrics(scene, rangeSource, viewport = null) {
     : "";
   const maskRows = activeMaskStatus
     ? `
-      <div><dt>가림 순서</dt><dd>${activeMaskStatus.enabled ? "활성" : "비활성"}</dd></div>
+      <div><dt>가림 순서</dt><dd>${activeMaskStatus.enabled ? (activeWipeoutMasksVisible ? "표시" : "숨김") : "비활성"}</dd></div>
       <div><dt>정렬표 읽기</dt><dd>${activeMaskStatus.tables.toLocaleString()} / ${activeMaskStatus.entries.toLocaleString()}개</dd></div>
       <div><dt>확장 가림</dt><dd>${activeMaskStatus.maximumExpandedMasks.toLocaleString()}개</dd></div>
       <div><dt>순서 계산</dt><dd>${activeMaskStatus.buildMs.toFixed(1)} ms</dd></div>
@@ -517,12 +1037,14 @@ function renderMetrics(scene, rangeSource, viewport = null) {
       <div><dt>제출 정점</dt><dd>${render.submittedVertices.toLocaleString()}</dd></div>
       <div><dt>GPU 정점 버퍼</dt><dd>${formatBytes(render.gpuVertexBytes)}</dd></div>
       <div><dt>전체 캐시</dt><dd>${formatBytes(value.cacheBytes)}</dd></div>
+      ${xrefRows}
       ${memoryRows}
       ${detailRows}
       ${hatchRows}
       ${patternRows}
       ${primitiveRows}
       ${maskRows}
+      ${imageRows}
       ${textRows}
     </dl>
   `;
@@ -533,6 +1055,19 @@ function setControlsEnabled(enabled) {
     control.disabled = !enabled;
   }
   layersToggle.disabled = !enabled;
+  wipeoutToggle.disabled = !enabled || !activeMaskStatus?.enabled;
+}
+
+function updateWipeoutToggle() {
+  wipeoutToggle.textContent =
+    activeWipeoutMasksVisible ? "가림 켬" : "가림 끔";
+  wipeoutToggle.setAttribute(
+    "aria-pressed",
+    String(activeWipeoutMasksVisible),
+  );
+  wipeoutToggle.title = activeWipeoutMasksVisible
+    ? "가림 객체를 숨겨 가려진 도면 확인"
+    : "도면의 가림 객체 다시 표시";
 }
 
 function updateLayerSummary() {
@@ -596,6 +1131,245 @@ function setAllLayersVisible(visible) {
   updateLayerSummary();
 }
 
+function imageDiagnosticKey(cacheId, imageIndex) {
+  return `image:${cacheId}:${imageIndex}`;
+}
+
+function imageRequestKey(cacheId, imageIndex) {
+  return `${cacheId}:${imageIndex}`;
+}
+
+function displayReferenceName(value) {
+  return String(value ?? "")
+    .replaceAll("\\", "/")
+    .split("/")
+    .at(-1)
+    ?.slice(0, 300) || "(경로 없음)";
+}
+
+function requestRasterImage({ cacheId, imageIndex, path }) {
+  if (
+    !vscodeApi ||
+    !activeImageAssetStore ||
+    typeof cacheId !== "string" ||
+    !Number.isSafeInteger(imageIndex) ||
+    imageIndex < 0 ||
+    typeof path !== "string" ||
+    path.length > 32_768
+  ) {
+    return false;
+  }
+  const key = imageRequestKey(cacheId, imageIndex);
+  if (pendingImageRequests.has(key)) {
+    return false;
+  }
+  const requestId = nextImageRequestId;
+  nextImageRequestId += 1;
+  const pending = Object.freeze({
+    cacheId,
+    imageIndex,
+    requestId,
+    path,
+    revision: openRevision,
+  });
+  pendingImageRequests.set(key, pending);
+  xrefDiagnostics.set(imageDiagnosticKey(cacheId, imageIndex), {
+    kind: "image",
+    cacheId,
+    imageIndex,
+    requestId,
+    revision: openRevision,
+    name: displayReferenceName(path),
+    storedPath: path,
+    status: "searching",
+    depth: 0,
+    canSelect: false,
+  });
+  renderXrefDiagnostics();
+  vscodeApi.postMessage({
+    type: "dwg-image-read/1",
+    cacheId,
+    imageIndex,
+    requestId,
+    path,
+  });
+  return true;
+}
+
+function handleImageStatus(message) {
+  if (
+    typeof message?.cacheId !== "string" ||
+    !Number.isSafeInteger(message.imageIndex)
+  ) {
+    return;
+  }
+  const key = imageDiagnosticKey(message.cacheId, message.imageIndex);
+  const existing = xrefDiagnostics.get(key);
+  if (existing?.kind !== "image" || existing.revision !== openRevision) {
+    return;
+  }
+  xrefDiagnostics.set(key, {
+    ...existing,
+    status: message.status === "searching" ? "searching" : existing.status,
+  });
+  renderXrefDiagnostics();
+}
+
+function imageResolutionMessage(resolution) {
+  if (resolution === "relative") {
+    return "도면과 같은 위치의 상대경로에서 연결했습니다.";
+  }
+  if (resolution === "search") {
+    return "파일명과 상위 폴더 일치 순으로 자동 연결했습니다.";
+  }
+  if (typeof resolution === "string" && resolution.startsWith("manual")) {
+    return "저장된 수동 연결을 적용했습니다.";
+  }
+  return "저장된 경로에서 연결했습니다.";
+}
+
+function handleImageResponse(message) {
+  if (
+    typeof message?.cacheId !== "string" ||
+    !Number.isSafeInteger(message.imageIndex) ||
+    !Number.isSafeInteger(message.requestId)
+  ) {
+    return;
+  }
+  const requestKey = imageRequestKey(
+    message.cacheId,
+    message.imageIndex,
+  );
+  const diagnosticKey = imageDiagnosticKey(
+    message.cacheId,
+    message.imageIndex,
+  );
+  const pending = pendingImageRequests.get(requestKey);
+  const existing = xrefDiagnostics.get(diagnosticKey);
+  const knownRequest =
+    pending?.requestId === message.requestId &&
+    pending.revision === openRevision;
+  const knownManualRetry =
+    existing?.kind === "image" &&
+    existing.requestId === message.requestId &&
+    existing.revision === openRevision;
+  if (
+    (!knownRequest && !knownManualRetry) ||
+    !activeImageAssetStore
+  ) {
+    return;
+  }
+  if (message.ok !== true) {
+    const knownStates = new Set([
+      "missing",
+      "ambiguous",
+      "limit",
+      "unsupported",
+    ]);
+    const state = knownStates.has(message.status)
+      ? message.status
+      : "error";
+    xrefDiagnostics.set(diagnosticKey, {
+      ...existing,
+      kind: "image",
+      cacheId: message.cacheId,
+      imageIndex: message.imageIndex,
+      requestId: message.requestId,
+      revision: openRevision,
+      name: existing?.name ?? "(이미지)",
+      storedPath: existing?.storedPath ?? pending?.path ?? "",
+      status: state,
+      message:
+        typeof message.message === "string"
+          ? message.message.slice(0, 240)
+          : "이미지 파일을 연결하지 못했습니다.",
+      canSelect: Boolean(message.canSelect),
+    });
+    if (!message.canSelect) {
+      pendingImageRequests.delete(requestKey);
+    }
+    renderXrefDiagnostics();
+    return;
+  }
+  try {
+    activeImageAssetStore.accept(message);
+  } catch (error) {
+    pendingImageRequests.delete(requestKey);
+    xrefDiagnostics.set(diagnosticKey, {
+      ...existing,
+      status: "error",
+      canSelect: true,
+      message:
+        error instanceof Error
+          ? error.message.slice(0, 240)
+          : "이미지 데이터를 안전하게 받을 수 없습니다.",
+    });
+    renderXrefDiagnostics();
+    return;
+  }
+  pendingImageRequests.delete(requestKey);
+  xrefDiagnostics.set(diagnosticKey, {
+    ...existing,
+    status: "ready",
+    canSelect: false,
+    resourceId: message.resourceId,
+    fileName:
+      typeof message.fileName === "string"
+        ? message.fileName.slice(0, 300)
+        : existing?.fileName,
+    message: imageResolutionMessage(message.resolution),
+  });
+  renderXrefDiagnostics();
+  activeInteraction?.refresh();
+}
+
+async function initializeImageOverlay(
+  scene,
+  revision,
+  cacheId,
+  instanceGraph = activeRenderInstanceGraph ?? scene.instanceGraph,
+) {
+  if (
+    scene.reader.header.minor < 18 ||
+    !activeImageAssetStore ||
+    !cacheId
+  ) {
+    return;
+  }
+  const composite = activeImageComposite;
+  const imageEntities =
+    scene.imageEntities ?? (await scene.reader.readImageEntities());
+  if (
+    revision !== openRevision ||
+    activeScene !== scene ||
+    !activeImageAssetStore ||
+    activeImageComposite !== composite ||
+    instanceGraph !==
+      (activeRenderInstanceGraph ?? scene.instanceGraph)
+  ) {
+    return;
+  }
+  if (!activeImageComposite) {
+    activeImageComposite = new CompositeRasterImageOverlay(imageCanvas);
+    scene.renderer.setImageOverlay(activeImageComposite);
+  }
+  const overlay = new CanvasRasterImageOverlay(imageCanvas, {
+      imageEntities,
+      blocks: scene.metadata.blocks,
+      layers: scene.metadata.layers,
+      instanceGraph,
+      cacheId,
+      assetStore: activeImageAssetStore,
+      requestAsset: requestRasterImage,
+    });
+  activeImageComposite.add(
+    overlay,
+    { first: true },
+  );
+  scene.renderer.setSupplementalBounds("root", overlay.bounds);
+  activeInteraction?.refresh();
+}
+
 async function initializeTextOverlay(
   scene,
   revision,
@@ -610,7 +1384,12 @@ async function initializeTextOverlay(
     scene.reader.readTextEntities(),
     scene.reader.readTextStyles(),
   ]);
-  if (revision !== openRevision || activeScene !== scene) {
+  if (
+    revision !== openRevision ||
+    activeScene !== scene ||
+    instanceGraph !==
+      (activeRenderInstanceGraph ?? scene.instanceGraph)
+  ) {
     return;
   }
   const overlay = new CanvasTextOverlay(textCanvas, {
@@ -621,7 +1400,27 @@ async function initializeTextOverlay(
     glyphCache,
     maskOrder,
   });
-  scene.renderer.setTextOverlay(overlay);
+  if (!activeTextComposite) {
+    activeTextComposite = new CompositeTextOverlay(textCanvas);
+    scene.renderer.setTextOverlay(activeTextComposite);
+  }
+  activeTextComposite.add(overlay, { first: true });
+  if (scene.reader.header.minor >= 15) {
+    const complexOverlay = new ComplexLinetypeOverlay(textCanvas, {
+      vertices: scene.overview,
+      batches: scene.metadata.batches,
+      linetypes: scene.metadata.linetypes,
+      textStyles: styles,
+      layers: scene.metadata.layers,
+      instanceGraph,
+      glyphCache,
+      globalLinetypeScale:
+        scene.metadata.drawing.globalLinetypeScale,
+    });
+    if (complexOverlay.source.sourceSegments > 0) {
+      activeTextComposite.add(complexOverlay);
+    }
+  }
   const missing = glyphCache.missingFonts(styles);
   activeTextStatus = Object.freeze({
     sourceTexts: textEntities.length,
@@ -668,11 +1467,13 @@ async function initializeMaskComposition(scene, revision) {
     scene.metadata.inserts,
   );
   const instanceGraph = maskOrder.enabled
-    ? applyMaskOrderToInstanceGraph(
-        scene.instanceGraph,
-        scene.metadata.blocks,
-        maskOrder,
-      )
+    ? typeof scene.buildViewInstanceGraph === "function"
+      ? scene.buildViewInstanceGraph(scene.activeView, { maskOrder })
+      : applyMaskOrderToInstanceGraph(
+          scene.instanceGraph,
+          scene.metadata.blocks,
+          maskOrder,
+        )
     : scene.instanceGraph;
   const enabled =
     maskOrder.enabled && instanceGraph.maskOrderEnabled;
@@ -721,6 +1522,18 @@ function patternCameraKey(camera) {
   ]
     .map((value) => Number(value).toPrecision(12))
     .join(":");
+}
+
+function hatchWorkerView(scene) {
+  const view =
+    scene.views.find((candidate) => candidate.id === activeViewId) ??
+    scene.activeView;
+  return view?.kind === "layout"
+    ? Object.freeze({
+        kind: "layout",
+        layoutIndex: view.layout.index,
+      })
+    : Object.freeze({ kind: "model" });
 }
 
 async function createViewerWorker(relativeUrl) {
@@ -983,6 +1796,7 @@ async function initializeHatchFills(
     ...workerSourcePayload(workerSource),
     camera: workerCamera(scene.render.camera),
     maskOrder,
+    view: hatchWorkerView(scene),
   });
   if (revision !== openRevision || activeScene !== scene) {
     worker.cancel();
@@ -1051,6 +1865,7 @@ function scheduleHatchPatterns(scene, camera, revision) {
     try {
       const result = await worker.request("render-pattern", {
         camera: workerCamera(camera),
+        view: hatchWorkerView(scene),
       });
       if (
         requestRevision !== patternRequestRevision ||
@@ -1077,6 +1892,14 @@ function scheduleHatchPatterns(scene, camera, revision) {
       }
     }
   }, HATCH_PATTERN_DEBOUNCE_MS);
+}
+
+function invalidatePendingHatchPatterns() {
+  patternRequestRevision += 1;
+  if (hatchPatternTimer !== undefined) {
+    clearTimeout(hatchPatternTimer);
+    hatchPatternTimer = undefined;
+  }
 }
 
 async function initializeDeferredGeometry(
@@ -1144,14 +1967,753 @@ async function registerFontFiles(files) {
   }
 }
 
+function discoverExternalReferences(scene, cacheId, depth = 0) {
+  if (
+    !vscodeApi ||
+    !cacheId ||
+    scene.reader.header.minor < 12 ||
+    discoveredXrefCaches.has(cacheId)
+  ) {
+    return;
+  }
+  discoveredXrefCaches.add(cacheId);
+  const references = scene.metadata.blocks
+    .filter(
+      (block) =>
+        (block.flags & (1 << 2)) !== 0 &&
+        typeof block.xrefPath === "string" &&
+        block.xrefPath.length > 0,
+    )
+    .slice(0, 64)
+    .map((block) => ({
+      blockIndex: block.index,
+      name: block.name,
+      path: block.xrefPath,
+      overlay: (block.flags & (1 << 3)) !== 0,
+    }));
+  for (const reference of references) {
+    const key = `${cacheId}:${reference.blockIndex}`;
+    if (!xrefDiagnostics.has(key)) {
+      xrefDiagnostics.set(key, {
+        ...reference,
+        parentCacheId: cacheId,
+        storedPath: reference.path,
+        status: "waiting",
+        depth,
+      });
+    }
+  }
+  renderXrefDiagnostics();
+  if (references.length > 0) {
+    vscodeApi.postMessage({
+      type: "dwg-xrefs-discovered/1",
+      cacheId,
+      references,
+    });
+  }
+}
+
+function handleXrefStatus(message) {
+  if (
+    typeof message?.parentCacheId !== "string" ||
+    !Number.isSafeInteger(message.blockIndex)
+  ) {
+    return;
+  }
+  const key = `${message.parentCacheId}:${message.blockIndex}`;
+  const existing = xrefDiagnostics.get(key);
+  if (!existing) {
+    return;
+  }
+  xrefDiagnostics.set(key, {
+    ...existing,
+    status:
+      typeof message.status === "string" ? message.status : "error",
+    message:
+      typeof message.message === "string"
+        ? message.message.slice(0, 300)
+        : undefined,
+    canSelect: Boolean(message.canSelect),
+  });
+  renderXrefDiagnostics();
+}
+
+function externalParentContexts(parentCacheId) {
+  if (
+    parentCacheId === activeHostCacheId &&
+    activeScene &&
+    activeRenderInstanceGraph
+  ) {
+    return [
+      {
+        id: "root",
+        prefix: "",
+        instanceGraph: activeRenderInstanceGraph,
+      },
+    ];
+  }
+  return externalAttachmentsByCache.get(parentCacheId) ?? [];
+}
+
+function loadExternalCacheData(message, revision) {
+  const existing = externalCacheData.get(message.cacheId);
+  if (existing) {
+    return existing;
+  }
+  const rawSource = createVsCodeRangeSource(vscodeApi, {
+    cacheId: message.cacheId,
+    size: message.size,
+  });
+  externalHostSources.set(message.cacheId, rawSource);
+  const source = new TrackedRangeSource(rawSource);
+  externalRangeSources.set(message.cacheId, source);
+  const loading = loadExternalFirstFrame(source, {
+    onProgress(progressMessage) {
+      if (revision === openRevision) {
+        status.textContent = progressMessage;
+      }
+    },
+  })
+    .then((scene) => {
+      if (revision !== openRevision) {
+        throw new Error("stale external reference load");
+      }
+      if (
+        scene.overview.byteLength >
+        MAX_EXTERNAL_SOURCE_OVERVIEW_BYTES -
+          externalSourceOverviewBytes
+      ) {
+        throw new Error(
+          `참조도면 첫 화면 데이터가 전체 ${formatBytes(
+            MAX_EXTERNAL_SOURCE_OVERVIEW_BYTES,
+          )} 한도를 초과합니다.`,
+        );
+      }
+      externalSourceOverviewBytes += scene.overview.byteLength;
+      return Object.freeze({ scene, source });
+    })
+    .catch((error) => {
+      if (externalCacheData.get(message.cacheId) === loading) {
+        externalCacheData.delete(message.cacheId);
+        externalHostSources.delete(message.cacheId);
+        externalRangeSources.delete(message.cacheId);
+      }
+      rawSource.dispose();
+      throw error;
+    });
+  externalCacheData.set(message.cacheId, loading);
+  return loading;
+}
+
+function enqueueExternalCacheReady(message) {
+  const revision = openRevision;
+  if (
+    typeof message?.parentCacheId === "string" &&
+    Number.isSafeInteger(message.parentBlockIndex) &&
+    typeof message.cacheId === "string"
+  ) {
+    readyExternalMessages.set(
+      `${message.parentCacheId}:${message.parentBlockIndex}:${message.cacheId}`,
+      Object.freeze({ ...message }),
+    );
+  }
+  externalLoadQueue = externalLoadQueue
+    .catch(() => undefined)
+    .then(async () => {
+      if (revision !== openRevision) {
+        return;
+      }
+      let mounted = false;
+      try {
+        await handleExternalCacheReady(message);
+        mounted = true;
+      } catch (error) {
+        handleXrefStatus({
+          parentCacheId: message.parentCacheId,
+          blockIndex: message.parentBlockIndex,
+          status: "error",
+          message: `참조도면 표시 실패: ${
+            error instanceof Error ? error.message : "알 수 없는 오류"
+          }`,
+        });
+        console.error(error);
+      } finally {
+        if (
+          vscodeApi &&
+          typeof message?.parentCacheId === "string" &&
+          Number.isSafeInteger(message.parentBlockIndex) &&
+          typeof message.cacheId === "string"
+        ) {
+          vscodeApi.postMessage({
+            type: "dwg-xref-mounted/1",
+            parentCacheId: message.parentCacheId,
+            blockIndex: message.parentBlockIndex,
+            cacheId: message.cacheId,
+            status: mounted ? "ready" : "error",
+          });
+        }
+      }
+    });
+}
+
+async function addExternalText(
+  externalScene,
+  composedInstanceGraph,
+  layerMap,
+  overview = null,
+) {
+  const revision = openRevision;
+  const rootScene = activeScene;
+  const textComposite = activeTextComposite;
+  if (
+    !rootScene ||
+    !textComposite ||
+    externalScene.reader.header.minor < 4
+  ) {
+    return;
+  }
+  const needsComplexOverlay =
+    overview?.vertices && externalScene.reader.header.minor >= 15;
+  const [textEntities, styles, rootStyles] = await Promise.all([
+    externalScene.reader.readTextEntities(),
+    externalScene.reader.readTextStyles(),
+    needsComplexOverlay
+      ? rootScene.reader.readTextStyles()
+      : Promise.resolve(null),
+  ]);
+  if (
+    revision !== openRevision ||
+    activeScene !== rootScene ||
+    activeTextComposite !== textComposite
+  ) {
+    return;
+  }
+  const remapped = remapTextEntityLayers(textEntities, layerMap);
+  const overlay = new CanvasTextOverlay(textCanvas, {
+    textEntities: remapped,
+    blocks: externalScene.metadata.blocks,
+    layers: rootScene.metadata.layers,
+    instanceGraph: composedInstanceGraph,
+    glyphCache,
+  });
+  textComposite.add(overlay);
+  if (needsComplexOverlay) {
+    const complexOverlay = new ComplexLinetypeOverlay(textCanvas, {
+      vertices: overview.vertices,
+      batches: overview.batches,
+      linetypes: rootScene.metadata.linetypes,
+      textStyles: rootStyles,
+      layers: rootScene.metadata.layers,
+      instanceGraph: composedInstanceGraph,
+      glyphCache,
+      globalLinetypeScale:
+        rootScene.metadata.drawing.globalLinetypeScale,
+    });
+    if (complexOverlay.source.sourceSegments > 0) {
+      textComposite.add(complexOverlay);
+    }
+  }
+  const combinedStyles = mergeTextStyles(activeTextStyles, styles);
+  syncFontDiagnostics(combinedStyles);
+  requestHostFonts(combinedStyles, revision);
+}
+
+async function addExternalImages(
+  externalScene,
+  cacheId,
+  sceneId,
+  composedInstanceGraph,
+  layerMap,
+) {
+  const revision = openRevision;
+  const rootScene = activeScene;
+  const store = activeImageAssetStore;
+  const composite = activeImageComposite;
+  if (
+    !rootScene ||
+    !store ||
+    externalScene.reader.header.minor < 18
+  ) {
+    return;
+  }
+  const imageEntities =
+    externalScene.imageEntities ??
+    (await externalScene.reader.readImageEntities());
+  if (
+    revision !== openRevision ||
+    activeScene !== rootScene ||
+    activeImageAssetStore !== store ||
+    activeImageComposite !== composite
+  ) {
+    return;
+  }
+  if (!activeImageComposite) {
+    activeImageComposite = new CompositeRasterImageOverlay(imageCanvas);
+    rootScene.renderer.setImageOverlay(activeImageComposite);
+  }
+  const overlay = new CanvasRasterImageOverlay(imageCanvas, {
+      imageEntities,
+      blocks: externalScene.metadata.blocks,
+      layers: externalScene.metadata.layers,
+      instanceGraph: composedInstanceGraph,
+      cacheId,
+      assetStore: store,
+      requestAsset: requestRasterImage,
+      layerMap,
+    });
+  activeImageComposite.add(overlay);
+  return rootScene.renderer.setSupplementalBounds(
+    `image:${sceneId}`,
+    overlay.bounds,
+  );
+}
+
+async function handleExternalCacheReady(message) {
+  if (
+    !activeScene ||
+    !activeInteraction ||
+    typeof message?.cacheId !== "string" ||
+    typeof message.parentCacheId !== "string" ||
+    !Number.isSafeInteger(message.parentBlockIndex) ||
+    !Number.isSafeInteger(message.size) ||
+    message.size <= 0 ||
+    typeof message.name !== "string"
+  ) {
+    return;
+  }
+  const revision = openRevision;
+  const parentContexts = externalParentContexts(message.parentCacheId);
+  if (parentContexts.length === 0) {
+    return;
+  }
+  const loaded = await loadExternalCacheData(message, revision);
+  if (revision !== openRevision || !activeScene || !activeInteraction) {
+    return;
+  }
+  const childContexts = externalAttachmentsByCache.get(message.cacheId) ?? [];
+  let lastFit;
+  for (const parentContext of parentContexts) {
+    const prefix = parentContext.prefix
+      ? `${parentContext.prefix}|${message.name}`
+      : message.name;
+    const layerMap = buildExternalLayerMap(
+      activeScene.metadata.layers,
+      loaded.scene.metadata.layers,
+      prefix,
+    );
+    const composed = composeExternalInstanceGraph(
+      parentContext.instanceGraph,
+      message.parentBlockIndex,
+      loaded.scene.instanceGraph,
+      loaded.scene.metadata.batches,
+      layerMap,
+      buildExternalLinetypeMap(
+        activeScene.metadata.linetypes,
+        loaded.scene.metadata.linetypes,
+      ),
+    );
+    if (composed.instanceGraph.instanceCount === 0) {
+      continue;
+    }
+    const sceneId = `${message.parentCacheId}:${message.parentBlockIndex}:${message.cacheId}:${parentContext.id}`;
+    if (childContexts.some((context) => context.id === sceneId)) {
+      continue;
+    }
+    let mountedOverview = null;
+    if (
+      loaded.scene.overview.byteLength > 0 &&
+      composed.batches.some((batch) => batch.lodLevel === 0)
+    ) {
+      const overviewBuffer = loaded.scene.overview.buffer.slice(0);
+      const linetypeMap = buildExternalLinetypeMap(
+        activeScene.metadata.linetypes,
+        loaded.scene.metadata.linetypes,
+      );
+      remapLineVertexLayers(
+        overviewBuffer,
+        layerMap,
+        loaded.scene.overview.recordSize,
+      );
+      remapLineVertexLinetypes(
+        overviewBuffer,
+        linetypeMap,
+        loaded.scene.overview.recordSize,
+      );
+      lastFit = activeScene.renderer.addExternalOverview({
+        id: sceneId,
+        batches: composed.batches,
+        instanceGraph: composed.instanceGraph,
+        vertices: {
+          buffer: overviewBuffer,
+          byteLength: overviewBuffer.byteLength,
+          vertexCount:
+            overviewBuffer.byteLength / loaded.scene.overview.recordSize,
+        },
+      });
+      const detailReader = {
+        async readBatchVertices(batch) {
+          const vertices =
+            await loaded.scene.reader.readBatchVertices(batch);
+          remapLineVertexLayers(
+            vertices.buffer,
+            layerMap,
+            vertices.recordSize,
+          );
+          remapLineVertexLinetypes(
+            vertices.buffer,
+            linetypeMap,
+            vertices.recordSize,
+          );
+          return vertices;
+        },
+      };
+      activeInteraction.addExternalDetailSource(
+        sceneId,
+        detailReader,
+        composed.batches,
+        composed.instanceGraph,
+      );
+      mountedOverview = Object.freeze({
+        batches: composed.batches,
+        vertices: Object.freeze({
+          buffer: overviewBuffer,
+          byteLength: overviewBuffer.byteLength,
+          vertexCount:
+            overviewBuffer.byteLength / loaded.scene.overview.recordSize,
+          recordSize: loaded.scene.overview.recordSize,
+        }),
+      });
+    }
+    await addExternalText(
+      loaded.scene,
+      composed.instanceGraph,
+      layerMap,
+      mountedOverview,
+    );
+    const imageFit = await addExternalImages(
+      loaded.scene,
+      message.cacheId,
+      sceneId,
+      composed.instanceGraph,
+      layerMap,
+    );
+    lastFit = imageFit ?? lastFit;
+    childContexts.push({
+      id: sceneId,
+      prefix,
+      instanceGraph: composed.instanceGraph,
+    });
+  }
+  externalAttachmentsByCache.set(message.cacheId, childContexts);
+  if (lastFit) {
+    activeInteraction.updateFit(lastFit.camera);
+  } else {
+    activeInteraction.refresh();
+  }
+  const key = `${message.parentCacheId}:${message.parentBlockIndex}`;
+  const existing = xrefDiagnostics.get(key);
+  if (existing) {
+    xrefDiagnostics.set(key, {
+      ...existing,
+      status: "ready",
+      canSelect: false,
+      fileName:
+        typeof message.fileName === "string"
+          ? message.fileName.slice(0, 300)
+          : existing.fileName,
+      message:
+        message.resolution === "relative"
+          ? "도면 기준 상대경로에서 연결했습니다."
+          : message.resolution === "search"
+            ? "파일명과 상위 폴더 일치 순으로 자동 연결했습니다."
+            : message.resolution?.startsWith("manual")
+              ? "저장된 수동 연결을 적용했습니다."
+              : "저장된 경로에서 연결했습니다.",
+    });
+  }
+  renderXrefDiagnostics();
+  if (!message.overlay) {
+    discoverExternalReferences(
+      loaded.scene,
+      message.cacheId,
+      Number.isSafeInteger(message.depth) ? message.depth : 1,
+    );
+  }
+  if (activeRangeMetricsSource) {
+    renderMetrics(
+      activeScene,
+      activeRangeMetricsSource,
+      activeInteraction.snapshot(),
+    );
+  }
+  status.textContent = `참조도면 ${message.name} 연결 완료`;
+}
+
+async function remountExternalReferences(revision, switchRevision) {
+  externalAttachmentsByCache.clear();
+  const messages = [...readyExternalMessages.values()].sort(
+    (left, right) => (left.depth ?? 0) - (right.depth ?? 0),
+  );
+  for (const message of messages) {
+    if (
+      revision !== openRevision ||
+      switchRevision !== viewSwitchRevision ||
+      !activeScene ||
+      !activeInteraction
+    ) {
+      return;
+    }
+    try {
+      await handleExternalCacheReady(message);
+    } catch (error) {
+      console.error(error);
+    }
+  }
+}
+
+function installInteraction(
+  scene,
+  instanceGraph,
+  render,
+  source,
+  revision,
+) {
+  const interactionScene = Object.freeze({
+    ...scene,
+    instanceGraph,
+    render,
+  });
+  activeInteraction = new ViewportInteraction(interactionScene, canvas, {
+    onUpdate(viewport) {
+      renderMetrics(scene, source, viewport);
+      if (viewport.render.interactive) {
+        invalidatePendingHatchPatterns();
+      } else {
+        scheduleHatchPatterns(
+          scene,
+          viewport.render.camera,
+          revision,
+        );
+      }
+      status.textContent = viewport.render.interactive
+        ? `${viewport.zoom.toFixed(2)}× · 빠른 이동 화면`
+        : viewport.detail.loading > 0
+          ? `상세 청크 ${viewport.detail.loading.toLocaleString()}개 읽는 중`
+          : `${viewport.zoom.toFixed(2)}× · 화면 상세 ${viewport.detail.selectedBatches.toLocaleString()}개`;
+      if (scene.metrics.preview) {
+        status.textContent += " · 빠른 미리보기";
+      }
+      status.textContent += missingFontSuffix();
+    },
+    onError(error) {
+      status.textContent = `상세 표시 실패: ${error.message}`;
+      console.error(error);
+    },
+  });
+  return interactionScene;
+}
+
+function updateLayoutTabSelection() {
+  for (const button of layoutTabs.querySelectorAll("button[data-view-id]")) {
+    button.setAttribute(
+      "aria-selected",
+      String(button.dataset.viewId === activeViewId),
+    );
+  }
+}
+
+async function activateView(scene, view, source, revision) {
+  if (
+    revision !== openRevision ||
+    activeScene !== scene ||
+    view.id === activeViewId
+  ) {
+    return;
+  }
+  const switchRevision = ++viewSwitchRevision;
+  for (const button of layoutTabs.querySelectorAll("button")) {
+    button.disabled = true;
+  }
+  status.textContent = `${view.label} 화면 구성 중`;
+  activeInteraction?.dispose();
+  activeInteraction = undefined;
+  try {
+    const instanceGraph = scene.buildViewInstanceGraph(
+      view,
+      activeMaskOrder?.enabled
+        ? { maskOrder: activeMaskOrder }
+        : {},
+    );
+    const imageBounds = scene.imageEntities
+      ? calculateRasterImageBounds({
+          imageEntities: scene.imageEntities,
+          blocks: scene.metadata.blocks,
+          instanceGraph,
+        })
+      : null;
+    if (
+      revision !== openRevision ||
+      switchRevision !== viewSwitchRevision ||
+      activeScene !== scene
+    ) {
+      return;
+    }
+    const render = scene.renderer.setInstanceGraph(instanceGraph, {
+      preferredBounds: view.preferredBounds,
+      preferredView: view.preferredView,
+      supplementalBounds: imageBounds,
+      clearExternal: true,
+    });
+    activeRenderInstanceGraph = instanceGraph;
+    activeViewId = view.id;
+    updateLayoutTabSelection();
+    activeTextStatus = undefined;
+    activeTextComposite = new CompositeTextOverlay(textCanvas);
+    scene.renderer.setTextOverlay(activeTextComposite);
+    activeImageComposite = new CompositeRasterImageOverlay(imageCanvas);
+    scene.renderer.setImageOverlay(activeImageComposite);
+    installInteraction(scene, instanceGraph, render, source, revision);
+    configurePlotStyleForView(scene, view, revision);
+    lastPatternCameraKey = undefined;
+    patternRequestRevision += 1;
+    if (activeHatchStatus?.state === "ready") {
+      activeHatchStatus = Object.freeze({
+        ...activeHatchStatus,
+        patternMetrics: null,
+      });
+    }
+    activeInteraction.refresh();
+    activeInteraction.scheduleDetail(0);
+    initializeTextOverlay(
+      scene,
+      revision,
+      activeMaskOrder,
+      instanceGraph,
+    ).catch((error) => {
+      if (revision === openRevision && activeScene === scene) {
+        status.textContent = `문자 표시 실패: ${error.message}`;
+      }
+      console.error(error);
+    });
+    initializeImageOverlay(
+      scene,
+      revision,
+      activeHostCacheId ?? `local-${revision}`,
+      instanceGraph,
+    ).catch((error) => {
+      if (revision === openRevision && activeScene === scene) {
+        status.textContent = `이미지 표시 실패: ${error.message}`;
+      }
+      console.error(error);
+    });
+    remountExternalReferences(revision, switchRevision).catch(
+      console.error,
+    );
+    status.textContent = `${view.label} 표시 완료`;
+  } catch (error) {
+    if (
+      revision === openRevision &&
+      switchRevision === viewSwitchRevision
+    ) {
+      status.textContent = `${view.label} 표시 실패: ${error.message}`;
+      console.error(error);
+    }
+  } finally {
+    if (
+      revision === openRevision &&
+      switchRevision === viewSwitchRevision
+    ) {
+      for (const button of layoutTabs.querySelectorAll("button")) {
+        button.disabled = false;
+      }
+    }
+  }
+}
+
+function populateLayoutTabs(scene, source, revision) {
+  layoutTabs.replaceChildren();
+  activeViewId = scene.activeView.id;
+  if (scene.views.length <= 1) {
+    layoutTabs.hidden = true;
+    dropZone.classList.remove("has-layout-tabs");
+    return;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const view of scene.views) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.dataset.viewId = view.id;
+    button.setAttribute("role", "tab");
+    button.textContent = view.label;
+    button.title =
+      view.kind === "model"
+        ? "모델 공간"
+        : `배치 탭 · 뷰포트 ${view.layout.viewports.length.toLocaleString()}개`;
+    button.addEventListener("click", () => {
+      activateView(scene, view, source, revision);
+    });
+    fragment.append(button);
+  }
+  layoutTabs.append(fragment);
+  layoutTabs.hidden = false;
+  dropZone.classList.add("has-layout-tabs");
+  updateLayoutTabSelection();
+}
+
 async function openCache(source, workerSource) {
   const revision = ++openRevision;
+  viewSwitchRevision += 1;
+  activeViewId = undefined;
+  layoutTabs.replaceChildren();
+  layoutTabs.hidden = true;
+  dropZone.classList.remove("has-layout-tabs");
   status.textContent = "준비 중";
   metrics.innerHTML = "";
+  activeRangeMetricsSource = source;
   setControlsEnabled(false);
   resetLayerPanel();
+  resetExternalReferences();
+  const imageStore = new RasterImageAssetStore({
+    onChange(event) {
+      if (
+        revision === openRevision &&
+        activeImageAssetStore === imageStore
+      ) {
+        let diagnosticsChanged = false;
+        for (const [key, entry] of xrefDiagnostics) {
+          if (
+            entry.kind !== "image" ||
+            entry.resourceId !== event.resourceId
+          ) {
+            continue;
+          }
+          xrefDiagnostics.set(key, {
+            ...entry,
+            status: event.type === "error" ? "error" : "ready",
+            canSelect: event.type === "error",
+            ...(event.type === "error"
+              ? {
+                  message:
+                    event.error instanceof Error
+                      ? event.error.message.slice(0, 240)
+                      : "이미지를 화면용으로 해석하지 못했습니다.",
+                }
+              : {}),
+          });
+          diagnosticsChanged = true;
+        }
+        if (diagnosticsChanged) {
+          renderXrefDiagnostics();
+        }
+        activeInteraction?.refresh();
+      }
+    },
+  });
+  activeImageAssetStore = imageStore;
+  resetPlotStyleSession();
   activeTextStatus = undefined;
   activeTextStyles = Object.freeze([]);
+  clearHostFonts();
   fontDiagnostics.clear();
   pendingHostFontRequests.clear();
   attemptedHostFontKeys.clear();
@@ -1165,6 +2727,8 @@ async function openCache(source, workerSource) {
   activeMaskOrder = undefined;
   activeRenderInstanceGraph = undefined;
   activeMaskStatus = undefined;
+  activeWipeoutMasksVisible = false;
+  updateWipeoutToggle();
   activeMemoryTelemetry = new WebviewMemoryTelemetry();
   lastPatternCameraKey = undefined;
   patternRequestRevision += 1;
@@ -1188,6 +2752,7 @@ async function openCache(source, workerSource) {
   activeHostRangeSource =
     workerSource.kind === "host" ? workerSource.source : undefined;
   const renderer = new WebGlLineRenderer(canvas);
+  renderer.setWipeoutMasksVisible(activeWipeoutMasksVisible);
   try {
     const scene = await loadFirstFrame(source, canvas, {
       renderer,
@@ -1202,6 +2767,10 @@ async function openCache(source, workerSource) {
       return;
     }
     activeScene = scene;
+    activeTextComposite = new CompositeTextOverlay(textCanvas);
+    scene.renderer.setTextOverlay(activeTextComposite);
+    activeImageComposite = new CompositeRasterImageOverlay(imageCanvas);
+    scene.renderer.setImageOverlay(activeImageComposite);
     dropZone.classList.add("loaded");
     populateLayerPanel(scene);
     renderMetrics(activeScene, source);
@@ -1234,29 +2803,24 @@ async function openCache(source, workerSource) {
     activeMaskOrder = maskState.maskOrder;
     activeRenderInstanceGraph = maskState.instanceGraph;
     renderMetrics(activeScene, source);
-    activeInteraction = new ViewportInteraction(activeScene, canvas, {
-      onUpdate(viewport) {
-        renderMetrics(activeScene, source, viewport);
-        scheduleHatchPatterns(
-          activeScene,
-          viewport.render.camera,
-          revision,
-        );
-        status.textContent =
-          viewport.detail.loading > 0
-            ? `상세 청크 ${viewport.detail.loading.toLocaleString()}개 읽는 중`
-            : `${viewport.zoom.toFixed(2)}× · 화면 상세 ${viewport.detail.selectedBatches.toLocaleString()}개`;
-        if (activeScene.metrics.preview) {
-          status.textContent += " · 빠른 미리보기";
-        }
-        status.textContent += missingFontSuffix();
+    installInteraction(
+      scene,
+      activeRenderInstanceGraph,
+      {
+        ...scene.render,
+        ...scene.renderer.redraw(scene.render.camera),
       },
-      onError(error) {
-        status.textContent = `상세 표시 실패: ${error.message}`;
-        console.error(error);
-      },
-    });
+      source,
+      revision,
+    );
+    populateLayoutTabs(scene, source, revision);
+    configurePlotStyleForView(scene, scene.activeView, revision);
     setControlsEnabled(true);
+    discoverExternalReferences(
+      activeScene,
+      activeHostCacheId,
+      0,
+    );
     initializeDeferredGeometry(
       workerSource,
       activeScene,
@@ -1273,6 +2837,17 @@ async function openCache(source, workerSource) {
     ).catch((error) => {
       if (revision === openRevision) {
         status.textContent = `문자 표시 실패: ${error.message}`;
+      }
+      console.error(error);
+    });
+    initializeImageOverlay(
+      activeScene,
+      revision,
+      activeHostCacheId ?? `local-${revision}`,
+      activeRenderInstanceGraph,
+    ).catch((error) => {
+      if (revision === openRevision) {
+        status.textContent = `이미지 표시 실패: ${error.message}`;
       }
       console.error(error);
     });
@@ -1318,12 +2893,25 @@ function openHostedCache(message) {
   );
 }
 
+function setViewerToolsOpen(open) {
+  if (!pageHeader || !viewerToolsTrigger) {
+    return;
+  }
+  pageHeader.classList.toggle("tools-open", open);
+  viewerToolsTrigger.setAttribute("aria-expanded", String(open));
+  viewerToolsTrigger.setAttribute(
+    "aria-label",
+    open ? "도면 도구 접기" : "도면 도구 펼치기",
+  );
+}
+
 function setHostedState(state, detail = "", code = "") {
   if (!vscodeApi) {
     return;
   }
   switch (state) {
     case "preparing":
+      setViewerToolsOpen(false);
       status.textContent = "로컬 DWG 변환을 준비하는 중";
       hostRetry.hidden = true;
       hostRebuild.hidden = true;
@@ -1342,6 +2930,7 @@ function setHostedState(state, detail = "", code = "") {
       hostAdapterSetup.hidden = true;
       break;
     case "error":
+      setViewerToolsOpen(true);
       status.textContent = detail
         ? `도면을 열 수 없습니다: ${detail.slice(0, 300)}`
         : "도면을 열 수 없습니다";
@@ -1361,6 +2950,7 @@ function setHostedState(state, detail = "", code = "") {
 if (vscodeApi) {
   cachePicker.hidden = true;
   fontFileButton.hidden = true;
+  viewerToolsTrigger.hidden = false;
   hostFontFolder.hidden = false;
   fontPanelHelp.textContent =
     "도면 폴더와 등록한 폴더에서 필요한 글꼴만 찾아 첫 화면 뒤에 연결합니다.";
@@ -1373,7 +2963,11 @@ if (vscodeApi) {
   window.addEventListener("message", (event) => {
     const message = event.data;
     if (message?.type === "dwg-font-read-response/1") {
-      handleHostFontResponse(message);
+      void handleHostFontResponse(message);
+      return;
+    }
+    if (message?.type === "dwg-plot-style-read-response/1") {
+      handleHostPlotStyleResponse(message);
       return;
     }
     if (message?.type === "dwg-font-configuration-changed/1") {
@@ -1393,6 +2987,22 @@ if (vscodeApi) {
     }
     if (message?.type === "dwg-adapter-select-result/1") {
       hostAdapterSetup.disabled = false;
+      return;
+    }
+    if (message?.type === "dwg-image-status/1") {
+      handleImageStatus(message);
+      return;
+    }
+    if (message?.type === "dwg-image-read-response/1") {
+      handleImageResponse(message);
+      return;
+    }
+    if (message?.type === "dwg-xref-status/1") {
+      handleXrefStatus(message);
+      return;
+    }
+    if (message?.type === "dwg-xref-cache-ready/1") {
+      enqueueExternalCacheReady(message);
       return;
     }
     if (message?.type === "dwg-cache-state/1") {
@@ -1496,6 +3106,29 @@ for (const control of viewControls) {
   });
 }
 
+viewerToolsTrigger.addEventListener("click", (event) => {
+  event.stopPropagation();
+  setViewerToolsOpen(
+    viewerToolsTrigger.getAttribute("aria-expanded") !== "true",
+  );
+});
+
+document.addEventListener("pointerdown", (event) => {
+  if (
+    pageHeader.classList.contains("tools-open") &&
+    event.target instanceof Node &&
+    !pageHeader.contains(event.target)
+  ) {
+    setViewerToolsOpen(false);
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    setViewerToolsOpen(false);
+  }
+});
+
 layersToggle.addEventListener("click", () => {
   const opening = layerPanel.hidden;
   layerPanel.hidden = !opening;
@@ -1503,6 +3136,8 @@ layersToggle.addEventListener("click", () => {
   if (opening) {
     fontPanel.hidden = true;
     fontsToggle.setAttribute("aria-expanded", "false");
+    xrefPanel.hidden = true;
+    xrefsToggle.setAttribute("aria-expanded", "false");
     layerSearch.focus();
   }
 });
@@ -1514,7 +3149,58 @@ fontsToggle.addEventListener("click", () => {
   if (opening) {
     layerPanel.hidden = true;
     layersToggle.setAttribute("aria-expanded", "false");
+    xrefPanel.hidden = true;
+    xrefsToggle.setAttribute("aria-expanded", "false");
   }
+});
+
+xrefsToggle.addEventListener("click", () => {
+  const opening = xrefPanel.hidden;
+  xrefPanel.hidden = !opening;
+  xrefsToggle.setAttribute("aria-expanded", String(opening));
+  if (opening) {
+    layerPanel.hidden = true;
+    layersToggle.setAttribute("aria-expanded", "false");
+    fontPanel.hidden = true;
+    fontsToggle.setAttribute("aria-expanded", "false");
+  }
+});
+
+wipeoutToggle.addEventListener("click", () => {
+  if (!activeScene || !activeMaskStatus?.enabled) {
+    return;
+  }
+  activeWipeoutMasksVisible = !activeWipeoutMasksVisible;
+  activeScene.renderer.setWipeoutMasksVisible(
+    activeWipeoutMasksVisible,
+  );
+  updateWipeoutToggle();
+  const viewport = activeInteraction?.refresh();
+  if (activeRangeMetricsSource) {
+    renderMetrics(activeScene, activeRangeMetricsSource, viewport);
+  }
+  status.textContent = activeWipeoutMasksVisible
+    ? "도면의 가림 객체를 다시 표시했습니다"
+    : "가림 객체를 숨겼습니다 · 가려졌던 원본 선을 확인할 수 있습니다";
+});
+
+plotStyleToggle.addEventListener("click", () => {
+  if (!activeScene || !activePlotStyleName) {
+    return;
+  }
+  const entry = plotStyleTables.get(activePlotStyleName);
+  if (entry?.status !== "loaded") {
+    return;
+  }
+  applyPlotStyleEntry(
+    activeScene,
+    activePlotStyleName,
+    entry,
+    !activePlotStyleEnabled,
+  );
+  status.textContent = activePlotStyleEnabled
+    ? `${entry.resolvedName || entry.requestedName} 출력 스타일을 적용했습니다`
+    : "출력 스타일을 끄고 도면의 화면 색으로 표시합니다";
 });
 
 hostFontFolder.addEventListener("click", () => {
@@ -1574,16 +3260,19 @@ window.addEventListener("beforeunload", () => {
     fontRefreshTimer = undefined;
   }
   pendingHostFontRequests.clear();
+  clearHostFonts();
   activeHatchWorker?.cancel();
   activeHatchWorker = undefined;
   activePrimitiveWorker?.cancel();
   activePrimitiveWorker = undefined;
   activeInteraction?.dispose();
   activeScene?.renderer.dispose();
+  resetExternalReferences();
   activeInteraction = undefined;
   activeScene = undefined;
   activeHostRangeSource?.dispose();
   activeHostRangeSource = undefined;
+  activeRangeMetricsSource = undefined;
   activeMemoryTelemetry = undefined;
   glyphCache.dispose();
   resetLayerPanel();

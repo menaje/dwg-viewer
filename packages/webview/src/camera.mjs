@@ -57,6 +57,40 @@ export class CameraController2D {
     return this.view();
   }
 
+  updateFit(fitCamera, { resetIfFitted = true } = {}) {
+    if (!fitCamera || !Array.isArray(fitCamera.origin)) {
+      throw new TypeError("camera fit update requires a fitted camera");
+    }
+    const wasFitted =
+      Math.abs(this.worldHeight - this.fitWorldHeight) <=
+        this.fitWorldHeight * 1e-9 &&
+      this.origin.every(
+        (value, axis) =>
+          Math.abs(value - this.fitOrigin[axis]) <=
+          Math.max(this.fitWorldHeight, 1) * 1e-9,
+      );
+    const minimumScale =
+      this.minimumWorldHeight / this.fitWorldHeight;
+    const maximumScale =
+      this.maximumWorldHeight / this.fitWorldHeight;
+    this.fitOrigin = [...fitCamera.origin];
+    this.fitWorldHeight = requirePositive(
+      fitCamera.worldHeight,
+      "fit camera world height",
+    );
+    this.minimumWorldHeight = this.fitWorldHeight * minimumScale;
+    this.maximumWorldHeight = this.fitWorldHeight * maximumScale;
+    if (resetIfFitted && wasFitted) {
+      return this.reset();
+    }
+    this.worldHeight = clamp(
+      this.worldHeight,
+      this.minimumWorldHeight,
+      this.maximumWorldHeight,
+    );
+    return this.view();
+  }
+
   panByPixels(deltaX, deltaY, width, height) {
     requirePositive(width, "camera viewport width");
     requirePositive(height, "camera viewport height");

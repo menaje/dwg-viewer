@@ -5,7 +5,7 @@ This optional process-isolated adapter measures LibreDWG with the same
 acadrust engine. It traverses LibreDWG's object model directly instead of
 creating a full JSON dump.
 
-The `convert` path writes Scene Cache v1.11 without a whole-drawing intermediate
+The `convert` path writes Scene Cache v1.18 without a whole-drawing intermediate
 model. It repeatedly traverses LibreDWG objects and streams sections and
 bounded GPU batches directly to a new cache file. For large drawings, it
 spills fixed-size detail records into private unnamed temporary files, sorts
@@ -20,7 +20,10 @@ fixed-size block-instance stream and do not copy their geometry.
 
 This is a deliberately partial conversion milestone:
 
-- layer and block names stay UTF-8;
+- layer, linetype, block, style and entity strings are converted from the
+  DWG code page to valid UTF-8 before serialization, including `ANSI_949`;
+- XREF block records retain the original relative, drive, UNC or POSIX path
+  for host-side resolution without changing the source drawing;
 - LINE, ARC, CIRCLE, INSERT/MINSERT, LWPOLYLINE, 2D/3D POLYLINE and
   ELLIPSE source records plus SPLINE headers and knot/weight/control/fit pools
   are preserved;
@@ -55,8 +58,20 @@ This is a deliberately partial conversion milestone:
   polygonal clip vertices, definition handles and the drawing-wide frame
   setting; enabled frames are displayed while masks remain explicitly
   deferred until draw-order-aware rendering exists;
+- IMAGE retains the IMAGEDEF path, insertion/U/V basis, source pixel size,
+  brightness/contrast/fade, definition handles and exact rectangular or
+  polygonal clipping boundary for lazy JPG/PNG display;
 - `SORTENTSTABLE` objects retain their block owner plus entity/sort-handle
   pairs in deterministic, bounded sections that the Webview reads lazily;
+- layer and entity colors, lineweights and named linetypes are retained,
+  including bounded complex-linetype text/shape metadata;
+- named paper-space layouts retain their paper settings, active viewport and
+  bounded VIEWPORT records so every saved layout can be selected independently;
+- XLINE, MULTILEADER and classic LEADER geometry is displayed with bounded
+  approximations, including LEADER arrows and hook lines;
+- OLE2FRAME uses the embedded four-corner placement when available and falls
+  back to its public rectangle; the embedded CFB/Excel/image body is not
+  decoded and only the placement boundary is currently displayed;
 - after the first line frame, the Webview fills solid/gradient rings and
   clips pattern strokes to the current viewport in one persistent worker;
 - a preceding one-shot worker builds instanced POINT markers, SOLID
@@ -71,13 +86,15 @@ This writer is the selected primary engine path, but its remaining source
 families and exact text layout are not yet release-ready. Its large-drawing
 detail batches use the same group-local midpoint quantization and 16-bit XY
 Morton key as the acadrust writer, with original source order as the
-deterministic tie breaker. The first-frame overview remains capped at 65,536
-segments and 4 MiB.
+deterministic tie breaker. The current 36-byte vertex record caps the
+first-frame overview at 58,254 segments and 4 MiB. Each detail GPU batch is
+capped at 7,281 segments (524,232 bytes), below the Webview's 512 KiB
+range-read limit.
 
 ## Progressive first frame
 
 When the VS Code host supplies both private preview paths, the same conversion
-process emits a Scene Cache v1.11 first-frame sidecar immediately after parsing
+process emits a Scene Cache v1.18 first-frame sidecar immediately after parsing
 and overview planning, before the disk-backed full-detail sort. The sidecar
 contains drawing/layer/block/INSERT metadata and overview-only GPU line data;
 all other required sections are schema-valid and empty. Header flag bit 0

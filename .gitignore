@@ -28,6 +28,8 @@ node_modules/
 /coverage/
 /artifacts/
 /benchmarks/results/
+/tmp/
+/work/
 /adapters/libredwg/bin/
 /adapters/acadsharp/bin/
 /adapters/acadsharp/obj/

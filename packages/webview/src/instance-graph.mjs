@@ -2,27 +2,79 @@ import {
   identityMat4,
   insertCellMatrix,
   multiplyMat4,
+  transformPoint,
 } from "./math.mjs";
 import {
   MAX_GLOBAL_MASK_BUCKET,
   maskBucketBefore,
   maskSpanForBlock,
 } from "./mask-order.mjs";
+import {
+  cadOpacityCode,
+  decodeCadOpacity,
+} from "./cad-color.mjs";
 
 const DEFAULT_MAX_DEPTH = 64;
 const DEFAULT_MAX_INSTANCES = 1_000_000;
 const MATRIX_VALUES = 16;
 const MATRICES_PER_CHUNK = 256;
+const NO_LAYER_OVERRIDE = 0xffffffff;
+const DEFAULT_BYBLOCK_COLOR = (2 << 30) | 7;
+const ROOT_INSTANCES = Object.freeze({
+  data: identityMat4(),
+  maskBases: new Uint32Array([0]),
+  clipIds: new Uint32Array([0]),
+  colors: new Uint32Array([DEFAULT_BYBLOCK_COLOR]),
+  layerIndices: new Uint32Array([NO_LAYER_OVERRIDE]),
+  colorInherited: new Uint8Array([1]),
+  layerInherited: new Uint8Array([1]),
+  opacities: new Float32Array([1]),
+  opacityInherited: new Uint8Array([1]),
+  lineWeights: new Int16Array([-3]),
+  lineWeightInherited: new Uint8Array([1]),
+  linetypeCodes: new Uint16Array([2]),
+  linetypeInherited: new Uint8Array([1]),
+  visibilityRows: new Uint32Array([0]),
+  count: 1,
+  length: 1,
+});
 
 class MatrixCollectionBuilder {
   constructor(includeMaskBases) {
     this.includeMaskBases = includeMaskBases;
     this.chunks = [];
     this.maskBaseChunks = [];
+    this.clipIdChunks = [];
+    this.colorChunks = [];
+    this.layerIndexChunks = [];
+    this.colorInheritedChunks = [];
+    this.layerInheritedChunks = [];
+    this.opacityChunks = [];
+    this.opacityInheritedChunks = [];
+    this.lineWeightChunks = [];
+    this.lineWeightInheritedChunks = [];
+    this.linetypeCodeChunks = [];
+    this.linetypeInheritedChunks = [];
+    this.visibilityRowChunks = [];
     this.count = 0;
   }
 
-  add(matrix, maskBase) {
+  add(
+    matrix,
+    maskBase,
+    clipId,
+    color,
+    layerIndex,
+    colorInherited,
+    layerInherited,
+    opacity,
+    opacityInherited,
+    lineWeight,
+    lineWeightInherited,
+    linetypeCode,
+    linetypeInherited,
+    visibilityRow = 0,
+  ) {
     const chunkIndex = Math.floor(this.count / MATRICES_PER_CHUNK);
     const indexInChunk = this.count % MATRICES_PER_CHUNK;
     if (!this.chunks[chunkIndex]) {
@@ -34,11 +86,62 @@ class MatrixCollectionBuilder {
           MATRICES_PER_CHUNK,
         );
       }
+      this.clipIdChunks[chunkIndex] = new Uint32Array(
+        MATRICES_PER_CHUNK,
+      );
+      this.colorChunks[chunkIndex] = new Uint32Array(MATRICES_PER_CHUNK);
+      this.layerIndexChunks[chunkIndex] = new Uint32Array(
+        MATRICES_PER_CHUNK,
+      );
+      this.colorInheritedChunks[chunkIndex] = new Uint8Array(
+        MATRICES_PER_CHUNK,
+      );
+      this.layerInheritedChunks[chunkIndex] = new Uint8Array(
+        MATRICES_PER_CHUNK,
+      );
+      this.opacityChunks[chunkIndex] = new Float32Array(
+        MATRICES_PER_CHUNK,
+      );
+      this.opacityInheritedChunks[chunkIndex] = new Uint8Array(
+        MATRICES_PER_CHUNK,
+      );
+      this.lineWeightChunks[chunkIndex] = new Int16Array(
+        MATRICES_PER_CHUNK,
+      );
+      this.lineWeightInheritedChunks[chunkIndex] = new Uint8Array(
+        MATRICES_PER_CHUNK,
+      );
+      this.linetypeCodeChunks[chunkIndex] = new Uint16Array(
+        MATRICES_PER_CHUNK,
+      );
+      this.linetypeInheritedChunks[chunkIndex] = new Uint8Array(
+        MATRICES_PER_CHUNK,
+      );
+      this.visibilityRowChunks[chunkIndex] = new Uint32Array(
+        MATRICES_PER_CHUNK,
+      );
     }
     this.chunks[chunkIndex].set(matrix, indexInChunk * MATRIX_VALUES);
     if (this.includeMaskBases) {
       this.maskBaseChunks[chunkIndex][indexInChunk] = maskBase;
     }
+    this.clipIdChunks[chunkIndex][indexInChunk] = clipId;
+    this.colorChunks[chunkIndex][indexInChunk] = color;
+    this.layerIndexChunks[chunkIndex][indexInChunk] = layerIndex;
+    this.colorInheritedChunks[chunkIndex][indexInChunk] =
+      colorInherited ? 1 : 0;
+    this.layerInheritedChunks[chunkIndex][indexInChunk] =
+      layerInherited ? 1 : 0;
+    this.opacityChunks[chunkIndex][indexInChunk] = opacity;
+    this.opacityInheritedChunks[chunkIndex][indexInChunk] =
+      opacityInherited ? 1 : 0;
+    this.lineWeightChunks[chunkIndex][indexInChunk] = lineWeight;
+    this.lineWeightInheritedChunks[chunkIndex][indexInChunk] =
+      lineWeightInherited ? 1 : 0;
+    this.linetypeCodeChunks[chunkIndex][indexInChunk] = linetypeCode;
+    this.linetypeInheritedChunks[chunkIndex][indexInChunk] =
+      linetypeInherited ? 1 : 0;
+    this.visibilityRowChunks[chunkIndex][indexInChunk] = visibilityRow;
     this.count += 1;
   }
 
@@ -47,6 +150,18 @@ class MatrixCollectionBuilder {
     const maskBases = this.includeMaskBases
       ? new Uint32Array(this.count)
       : null;
+    const clipIds = new Uint32Array(this.count);
+    const colors = new Uint32Array(this.count);
+    const layerIndices = new Uint32Array(this.count);
+    const colorInherited = new Uint8Array(this.count);
+    const layerInherited = new Uint8Array(this.count);
+    const opacities = new Float32Array(this.count);
+    const opacityInherited = new Uint8Array(this.count);
+    const lineWeights = new Int16Array(this.count);
+    const lineWeightInherited = new Uint8Array(this.count);
+    const linetypeCodes = new Uint16Array(this.count);
+    const linetypeInherited = new Uint8Array(this.count);
+    const visibilityRows = new Uint32Array(this.count);
     let destination = 0;
     let maskDestination = 0;
     for (let index = 0; index < this.chunks.length; index += 1) {
@@ -64,11 +179,143 @@ class MatrixCollectionBuilder {
         maskBases.set(maskChunk.subarray(0, maskLength), maskDestination);
         maskDestination += maskLength;
       }
+      clipIds.set(
+        this.clipIdChunks[index].subarray(
+          0,
+          Math.min(
+            this.clipIdChunks[index].length,
+            clipIds.length - (index * MATRICES_PER_CHUNK),
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      colors.set(
+        this.colorChunks[index].subarray(
+          0,
+          Math.min(
+            this.colorChunks[index].length,
+            colors.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      layerIndices.set(
+        this.layerIndexChunks[index].subarray(
+          0,
+          Math.min(
+            this.layerIndexChunks[index].length,
+            layerIndices.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      colorInherited.set(
+        this.colorInheritedChunks[index].subarray(
+          0,
+          Math.min(
+            this.colorInheritedChunks[index].length,
+            colorInherited.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      layerInherited.set(
+        this.layerInheritedChunks[index].subarray(
+          0,
+          Math.min(
+            this.layerInheritedChunks[index].length,
+            layerInherited.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      opacities.set(
+        this.opacityChunks[index].subarray(
+          0,
+          Math.min(
+            this.opacityChunks[index].length,
+            opacities.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      opacityInherited.set(
+        this.opacityInheritedChunks[index].subarray(
+          0,
+          Math.min(
+            this.opacityInheritedChunks[index].length,
+            opacityInherited.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      lineWeights.set(
+        this.lineWeightChunks[index].subarray(
+          0,
+          Math.min(
+            this.lineWeightChunks[index].length,
+            lineWeights.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      lineWeightInherited.set(
+        this.lineWeightInheritedChunks[index].subarray(
+          0,
+          Math.min(
+            this.lineWeightInheritedChunks[index].length,
+            lineWeightInherited.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      linetypeCodes.set(
+        this.linetypeCodeChunks[index].subarray(
+          0,
+          Math.min(
+            this.linetypeCodeChunks[index].length,
+            linetypeCodes.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      linetypeInherited.set(
+        this.linetypeInheritedChunks[index].subarray(
+          0,
+          Math.min(
+            this.linetypeInheritedChunks[index].length,
+            linetypeInherited.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
+      visibilityRows.set(
+        this.visibilityRowChunks[index].subarray(
+          0,
+          Math.min(
+            this.visibilityRowChunks[index].length,
+            visibilityRows.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
     }
     const result = {
       data,
       count: this.count,
       length: this.count,
+      clipIds,
+      colors,
+      layerIndices,
+      colorInherited,
+      layerInherited,
+      opacities,
+      opacityInherited,
+      lineWeights,
+      lineWeightInherited,
+      linetypeCodes,
+      linetypeInherited,
+      visibilityRows,
     };
     if (maskBases) {
       result.maskBases = maskBases;
@@ -77,13 +324,89 @@ class MatrixCollectionBuilder {
   }
 }
 
+function rectanglePoints(points) {
+  const minimumX = Math.min(points[0][0], points[1][0]);
+  const maximumX = Math.max(points[0][0], points[1][0]);
+  const minimumY = Math.min(points[0][1], points[1][1]);
+  const maximumY = Math.max(points[0][1], points[1][1]);
+  return [
+    [minimumX, minimumY, 0],
+    [maximumX, minimumY, 0],
+    [maximumX, maximumY, 0],
+    [minimumX, maximumY, 0],
+  ];
+}
+
+export function createClipNode(
+  id,
+  parentId,
+  points,
+  inverted = false,
+) {
+  const minimum = [Infinity, Infinity];
+  const maximum = [-Infinity, -Infinity];
+  for (const point of points) {
+    minimum[0] = Math.min(minimum[0], point[0]);
+    minimum[1] = Math.min(minimum[1], point[1]);
+    maximum[0] = Math.max(maximum[0], point[0]);
+    maximum[1] = Math.max(maximum[1], point[1]);
+  }
+  return Object.freeze({
+    id,
+    parentId,
+    inverted: Boolean(inverted),
+    points: Object.freeze(
+      points.map((point) => Object.freeze([...point])),
+    ),
+    bounds: Object.freeze({
+      min: Object.freeze(minimum),
+      max: Object.freeze(maximum),
+    }),
+  });
+}
+
+export function effectiveClipBounds(clipNodes, clipId) {
+  let minimumX = -Infinity;
+  let minimumY = -Infinity;
+  let maximumX = Infinity;
+  let maximumY = Infinity;
+  let current = clipId;
+  let depth = 0;
+  while (current > 0 && depth < DEFAULT_MAX_DEPTH) {
+    const node = clipNodes?.[current - 1];
+    if (!node || node.id !== current) {
+      return null;
+    }
+    if (!node.inverted) {
+      minimumX = Math.max(minimumX, node.bounds.min[0]);
+      minimumY = Math.max(minimumY, node.bounds.min[1]);
+      maximumX = Math.min(maximumX, node.bounds.max[0]);
+      maximumY = Math.min(maximumY, node.bounds.max[1]);
+    }
+    current = node.parentId;
+    depth += 1;
+  }
+  if (current > 0 || minimumX > maximumX || minimumY > maximumY) {
+    return null;
+  }
+  return Object.freeze({
+    min: Object.freeze([minimumX, minimumY]),
+    max: Object.freeze([maximumX, maximumY]),
+  });
+}
+
 export function buildInstanceGraph(
   blocks,
   inserts,
   {
+    layers = Object.freeze([]),
     maximumDepth = DEFAULT_MAX_DEPTH,
     maximumInstances = DEFAULT_MAX_INSTANCES,
     maskOrder = null,
+    insertClips = Object.freeze([]),
+    layerLinetypeCodes = Object.freeze([]),
+    rootContexts = null,
+    layerVisibilityRows = null,
   } = {},
 ) {
   const blockIndexByHandle = new Map(
@@ -94,13 +417,39 @@ export function buildInstanceGraph(
       .filter((block) => block.name.toUpperCase() === "*MODEL_SPACE")
       .map((block) => block.index),
   );
+  const layerZeroIndex = layers.findIndex(
+    (layer) => layer.name?.normalize("NFC").toLocaleLowerCase("en-US") === "0",
+  );
   const insertsByOwner = new Map();
+  const insertClipByHandle = new Map(
+    insertClips.map((clip) => [clip.insertHandle, clip]),
+  );
+  const clipNodes = [];
+  const visibilityRows =
+    Array.isArray(layerVisibilityRows) && layerVisibilityRows.length > 0
+      ? Object.freeze(
+          layerVisibilityRows.map((row, index) => {
+            if (
+              !(row instanceof Uint8Array) ||
+              row.length !== layers.length
+            ) {
+              throw new TypeError(
+                `layer visibility row ${index} has an invalid size`,
+              );
+            }
+            return new Uint8Array(row);
+          }),
+        )
+      : Object.freeze([
+          new Uint8Array(layers.length).fill(1),
+        ]);
   const diagnostics = {
     invalidOwner: 0,
     invalidTarget: 0,
     cycles: 0,
     depthLimit: 0,
     instanceLimit: 0,
+    invalidClip: 0,
   };
 
   for (const insert of inserts) {
@@ -121,13 +470,44 @@ export function buildInstanceGraph(
   let instanceCount = 0;
   let stopped = false;
 
-  const addInstance = (blockIndex, matrix, maskBase) => {
+  const addInstance = (
+    blockIndex,
+    matrix,
+    maskBase,
+    clipId,
+    color,
+    layerIndex,
+    colorInherited,
+    layerInherited,
+    opacity,
+    opacityInherited,
+    lineWeight,
+    lineWeightInherited,
+    linetypeCode,
+    linetypeInherited,
+    visibilityRow,
+  ) => {
     let builder = instanceBuilders.get(blockIndex);
     if (!builder) {
       builder = new MatrixCollectionBuilder(Boolean(maskOrder?.enabled));
       instanceBuilders.set(blockIndex, builder);
     }
-    builder.add(matrix, maskBase);
+    builder.add(
+      matrix,
+      maskBase,
+      clipId,
+      color,
+      layerIndex,
+      colorInherited,
+      layerInherited,
+      opacity,
+      opacityInherited,
+      lineWeight,
+      lineWeightInherited,
+      linetypeCode,
+      linetypeInherited,
+      visibilityRow,
+    );
     instanceCount += 1;
     if (instanceCount >= maximumInstances) {
       diagnostics.instanceLimit += 1;
@@ -139,6 +519,18 @@ export function buildInstanceGraph(
     insert,
     parentMatrix,
     parentMaskBase,
+    parentClipId,
+    parentColor,
+    parentLayerIndex,
+    parentColorInherited,
+    parentLayerInherited,
+    parentOpacity,
+    parentOpacityInherited,
+    parentLineWeight,
+    parentLineWeightInherited,
+    parentLinetypeCode,
+    parentLinetypeInherited,
+    parentVisibilityRow,
     path,
     depth,
   ) => {
@@ -166,6 +558,75 @@ export function buildInstanceGraph(
       ownerBlockIndex === undefined
         ? insert.ownerHandle
         : blocks[ownerBlockIndex].handle;
+    const insertLayerIndex =
+      Number.isInteger(insert.layerIndex)
+        ? insert.layerIndex
+        : layerZeroIndex >= 0
+          ? layerZeroIndex
+          : NO_LAYER_OVERRIDE;
+    const inheritsLayer = insertLayerIndex === layerZeroIndex;
+    const layerIndex =
+      inheritsLayer && parentLayerIndex !== NO_LAYER_OVERRIDE
+        ? parentLayerIndex
+        : insertLayerIndex;
+    const layerInherited = inheritsLayer
+      ? parentLayerInherited
+      : false;
+    const insertColor =
+      Number.isInteger(insert.color) ? insert.color >>> 0 : 0;
+    const colorKind = insertColor >>> 30;
+    const color =
+      colorKind === 0
+        ? layers[layerIndex]?.color ?? DEFAULT_BYBLOCK_COLOR
+        : colorKind === 1
+          ? parentColor
+          : insertColor;
+    const colorInherited =
+      colorKind === 1 ? parentColorInherited : false;
+    const opacityCode = cadOpacityCode(insertColor);
+    const layerOpacity = decodeCadOpacity(
+      layers[layerIndex]?.color ?? 0,
+    );
+    const opacity = decodeCadOpacity(insertColor, {
+      layer: layerOpacity,
+      byBlock: parentOpacity,
+    });
+    const opacityInherited =
+      opacityCode === 2 ? parentOpacityInherited : false;
+    const sourceLineWeight =
+      Number.isInteger(insert.lineWeight) ? insert.lineWeight : -1;
+    const layerLineWeight = Number.isInteger(layers[layerIndex]?.lineWeight)
+      ? layers[layerIndex].lineWeight
+      : -3;
+    const lineWeight =
+      sourceLineWeight === -1
+        ? layerLineWeight >= 0
+          ? layerLineWeight
+          : -3
+        : sourceLineWeight === -2
+          ? parentLineWeight
+          : sourceLineWeight;
+    const lineWeightInherited =
+      sourceLineWeight === -2 ? parentLineWeightInherited : false;
+    const sourceLinetypeCode =
+      Number.isInteger(insert.linetypeCode) &&
+      insert.linetypeCode >= 0 &&
+      insert.linetypeCode <= 2047
+        ? insert.linetypeCode
+        : 0;
+    const layerLinetypeCode =
+      Number.isInteger(layerLinetypeCodes[layerIndex]) &&
+      layerLinetypeCodes[layerIndex] >= 2
+        ? layerLinetypeCodes[layerIndex]
+        : 2;
+    const linetypeCode =
+      sourceLinetypeCode === 0
+        ? layerLinetypeCode
+        : sourceLinetypeCode === 1
+          ? parentLinetypeCode
+          : sourceLinetypeCode;
+    const linetypeInherited =
+      sourceLinetypeCode === 1 ? parentLinetypeInherited : false;
     const prefix = maskBucketBefore(
       maskOrder,
       ownerHandle,
@@ -188,7 +649,51 @@ export function buildInstanceGraph(
           stopped = true;
           break;
         }
-        addInstance(target.index, world, maskBase);
+        let clipId = parentClipId;
+        const clip = insertClipByHandle.get(insert.handle);
+        if (clip) {
+          const sourcePoints = clip.rectangular
+            ? rectanglePoints(clip.vertices)
+            : clip.vertices;
+          const worldPoints = sourcePoints.map((point) =>
+            transformPoint(world, point),
+          );
+          if (
+            worldPoints.length < 3 ||
+            !worldPoints.every((point) =>
+              point.every(Number.isFinite),
+            )
+          ) {
+            diagnostics.invalidClip += 1;
+          } else {
+            clipId = clipNodes.length + 1;
+            clipNodes.push(
+              createClipNode(
+                clipId,
+                parentClipId,
+                worldPoints,
+                clip.inverted,
+              ),
+            );
+          }
+        }
+        addInstance(
+          target.index,
+          world,
+          maskBase,
+          clipId,
+          color,
+          layerIndex,
+          colorInherited,
+          layerInherited,
+          opacity,
+          opacityInherited,
+          lineWeight,
+          lineWeightInherited,
+          linetypeCode,
+          linetypeInherited,
+          parentVisibilityRow,
+        );
 
         const nested = insertsByOwner.get(target.index);
         if (!nested || stopped) {
@@ -201,6 +706,18 @@ export function buildInstanceGraph(
             child,
             world,
             maskBase,
+            clipId,
+            color,
+            layerIndex,
+            colorInherited,
+            layerInherited,
+            opacity,
+            opacityInherited,
+            lineWeight,
+            lineWeightInherited,
+            linetypeCode,
+            linetypeInherited,
+            parentVisibilityRow,
             nestedPath,
             depth + 1,
           );
@@ -212,15 +729,103 @@ export function buildInstanceGraph(
     }
   };
 
-  const identity = identityMat4();
-  for (const modelIndex of modelBlockIndices) {
-    const roots = insertsByOwner.get(modelIndex) ?? [];
+  const modelInstanceBuilder = new MatrixCollectionBuilder(
+    Boolean(maskOrder?.enabled),
+  );
+  const contexts =
+    rootContexts === null
+      ? [...modelBlockIndices].map((blockIndex) => ({
+          blockIndex,
+          matrix: identityMat4(),
+          modelSpace: true,
+        }))
+      : rootContexts;
+  if (!Array.isArray(contexts)) {
+    throw new TypeError("instance root contexts must be an array");
+  }
+  for (const [contextIndex, context] of contexts.entries()) {
+    const block = blocks[context?.blockIndex];
+    const matrix = context?.matrix;
+    const visibilityRow = context?.visibilityRow ?? 0;
+    if (
+      !block ||
+      !(matrix instanceof Float64Array) ||
+      matrix.length !== MATRIX_VALUES ||
+      !Number.isInteger(visibilityRow) ||
+      visibilityRow < 0 ||
+      visibilityRow >= visibilityRows.length
+    ) {
+      throw new TypeError(
+        `instance root context ${contextIndex} is invalid`,
+      );
+    }
+    let clipId = 0;
+    if (context.clipPoints) {
+      if (
+        !Array.isArray(context.clipPoints) ||
+        context.clipPoints.length < 3 ||
+        !context.clipPoints.every(
+          (point) =>
+            Array.isArray(point) &&
+            point.length >= 2 &&
+            point.every(Number.isFinite),
+        )
+      ) {
+        throw new TypeError(
+          `instance root context ${contextIndex} has an invalid clip`,
+        );
+      }
+      clipId = clipNodes.length + 1;
+      clipNodes.push(
+        createClipNode(
+          clipId,
+          0,
+          context.clipPoints,
+          Boolean(context.clipInverted),
+        ),
+      );
+    }
+    const rootValues = [
+      matrix,
+      0,
+      clipId,
+      DEFAULT_BYBLOCK_COLOR,
+      NO_LAYER_OVERRIDE,
+      true,
+      true,
+      1,
+      true,
+      -3,
+      true,
+      2,
+      true,
+      visibilityRow,
+    ];
+    if (context.modelSpace) {
+      modelInstanceBuilder.add(...rootValues);
+    }
+    if (context.includeRootBatch) {
+      addInstance(block.index, ...rootValues);
+    }
+    const roots = insertsByOwner.get(block.index) ?? [];
     for (const insert of roots) {
       visitInsert(
         insert,
-        identity,
+        matrix,
         0,
-        new Set([modelIndex]),
+        clipId,
+        DEFAULT_BYBLOCK_COLOR,
+        NO_LAYER_OVERRIDE,
+        true,
+        true,
+        1,
+        true,
+        -3,
+        true,
+        2,
+        true,
+        visibilityRow,
+        new Set([block.index]),
         1,
       );
       if (stopped) {
@@ -238,13 +843,20 @@ export function buildInstanceGraph(
       builder.finish(),
     ]),
   );
+  const modelInstances = modelInstanceBuilder.finish();
 
   return Object.freeze({
     instancesByBlock,
     insertsByOwner,
     modelBlockIndices,
+    modelInstances,
+    rootInstances: modelInstances,
+    clipNodes: Object.freeze(clipNodes),
+    layerVisibilityRows: visibilityRows,
     instanceCount,
     diagnostics: Object.freeze(diagnostics),
+    layerZeroIndex:
+      layerZeroIndex >= 0 ? layerZeroIndex : NO_LAYER_OVERRIDE,
     truncated: stopped,
     maskOrderEnabled:
       Boolean(maskOrder?.enabled) &&

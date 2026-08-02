@@ -7,6 +7,8 @@ import {
 } from "#shx-parser";
 
 import {
+  isOutlineFontReference,
+  isShxFontReference,
   ShxGlyphCache,
   encodeLegacyBigFontCode,
   normalizeShxFontName,
@@ -88,6 +90,30 @@ test("normalizes Windows and POSIX SHX font references", () => {
   assert.equal(normalizeShxFontName("C:\\Fonts\\WHGTXT.SHX"), "whgtxt.shx");
   assert.equal(normalizeShxFontName("/fonts/TXT.SHX"), "txt.shx");
   assert.equal(normalizeShxFontName(""), "");
+});
+
+test("distinguishes SHX and BigFont references from TrueType files", () => {
+  assert.equal(isShxFontReference("TXT.SHX"), true);
+  assert.equal(isShxFontReference("simplex"), true);
+  assert.equal(isShxFontReference("malgun.ttf"), false);
+  assert.equal(isShxFontReference("font.otf"), false);
+  assert.equal(isShxFontReference("KSC", { bigFont: true }), true);
+  assert.equal(isShxFontReference(""), false);
+  assert.equal(isOutlineFontReference("C:\\Fonts\\굵은돋움체.TTF"), true);
+  assert.equal(isOutlineFontReference("font.otf"), true);
+  assert.equal(isOutlineFontReference("font.ttc"), true);
+  assert.equal(isOutlineFontReference("font.shx"), false);
+});
+
+test("does not report system TrueType fonts as missing SHX", () => {
+  const cache = new ShxGlyphCache();
+  assert.deepEqual(
+    cache.missingFonts([
+      { fontFile: "malgun.ttf", bigFontFile: "" },
+      { fontFile: "arial.ttf", bigFontFile: "KSC.SHX" },
+    ]),
+    ["KSC.SHX"],
+  );
 });
 
 test("parses a compiled SHX lazily and caches compact line segments", () => {

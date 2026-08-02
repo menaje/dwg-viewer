@@ -1,11 +1,12 @@
 export const CACHE_MAGIC = new Uint8Array([68, 87, 71, 83, 67, 78, 49, 0]);
 export const CACHE_VERSION_MAJOR = 1;
-export const MAX_CACHE_VERSION_MINOR = 11;
+export const MAX_CACHE_VERSION_MINOR = 18;
 export const HEADER_SIZE = 64;
 export const DIRECTORY_ENTRY_SIZE = 40;
 export const CACHE_HEADER_FLAG_PREVIEW = 1;
 export const GPU_LINE_BATCH_RECORD_SIZE = 128;
-export const GPU_LINE_VERTEX_RECORD_SIZE = 32;
+export const GPU_LINE_VERTEX_RECORD_SIZE = 36;
+export const LEGACY_GPU_LINE_VERTEX_RECORD_SIZE = 32;
 export const TEXT_STYLE_RECORD_SIZE = 96;
 export const TEXT_ENTITY_RECORD_SIZE = 336;
 export const TEXT_COLUMN_HEIGHT_RECORD_SIZE = 8;
@@ -23,6 +24,16 @@ export const WIPEOUT_ENTITY_RECORD_SIZE = 168;
 export const WIPEOUT_CLIP_VERTEX_RECORD_SIZE = 16;
 export const DRAW_ORDER_TABLE_RECORD_SIZE = 40;
 export const DRAW_ORDER_ENTRY_RECORD_SIZE = 16;
+export const INSERT_CLIP_RECORD_SIZE = 32;
+export const INSERT_CLIP_VERTEX_RECORD_SIZE = 16;
+export const LINETYPE_RECORD_SIZE = 64;
+export const LINETYPE_DASH_RECORD_SIZE = 72;
+export const LAYOUT_RECORD_SIZE = 256;
+export const VIEWPORT_RECORD_SIZE = 272;
+export const VIEWPORT_FROZEN_LAYER_RECORD_SIZE = 8;
+export const VIEWPORT_CLIP_VERTEX_RECORD_SIZE = 16;
+export const IMAGE_ENTITY_RECORD_SIZE = 176;
+export const IMAGE_CLIP_VERTEX_RECORD_SIZE = 16;
 
 export const SectionKind = Object.freeze({
   Drawing: 1,
@@ -59,6 +70,16 @@ export const SectionKind = Object.freeze({
   WipeoutClipVertices: 43,
   DrawOrderTables: 44,
   DrawOrderEntries: 45,
+  InsertClips: 46,
+  InsertClipVertices: 47,
+  Linetypes: 48,
+  LinetypeDashes: 49,
+  Layouts: 50,
+  Viewports: 51,
+  ViewportFrozenLayers: 52,
+  ViewportClipVertices: 53,
+  ImageEntities: 54,
+  ImageClipVertices: 55,
 });
 
 export const GpuLineBatchKind = Object.freeze({
@@ -68,11 +89,9 @@ export const GpuLineBatchKind = Object.freeze({
 });
 
 const FIXED_RECORD_SIZES = new Map([
-  [SectionKind.Drawing, 80],
   [SectionKind.Inserts, 136],
   [SectionKind.TextColumnHeights, TEXT_COLUMN_HEIGHT_RECORD_SIZE],
   [SectionKind.GpuLineBatches, GPU_LINE_BATCH_RECORD_SIZE],
-  [SectionKind.GpuLineVertices, GPU_LINE_VERTEX_RECORD_SIZE],
   [SectionKind.HatchLoops, HATCH_LOOP_RECORD_SIZE],
   [SectionKind.HatchVertices, HATCH_VERTEX_RECORD_SIZE],
   [SectionKind.HatchGradientColors, HATCH_GRADIENT_COLOR_RECORD_SIZE],
@@ -86,6 +105,17 @@ const FIXED_RECORD_SIZES = new Map([
   [SectionKind.WipeoutClipVertices, WIPEOUT_CLIP_VERTEX_RECORD_SIZE],
   [SectionKind.DrawOrderTables, DRAW_ORDER_TABLE_RECORD_SIZE],
   [SectionKind.DrawOrderEntries, DRAW_ORDER_ENTRY_RECORD_SIZE],
+  [SectionKind.InsertClips, INSERT_CLIP_RECORD_SIZE],
+  [SectionKind.InsertClipVertices, INSERT_CLIP_VERTEX_RECORD_SIZE],
+  [
+    SectionKind.ViewportFrozenLayers,
+    VIEWPORT_FROZEN_LAYER_RECORD_SIZE,
+  ],
+  [
+    SectionKind.ViewportClipVertices,
+    VIEWPORT_CLIP_VERTEX_RECORD_SIZE,
+  ],
+  [SectionKind.ImageClipVertices, IMAGE_CLIP_VERTEX_RECORD_SIZE],
 ]);
 const MAX_METADATA_SECTION_BYTES = 64 * 1024 * 1024;
 const MAX_CACHE_STRING_BYTES = 1024 * 1024;
@@ -102,6 +132,18 @@ const MAX_WIPEOUT_SOURCE_RECORDS = 65_536;
 const MAX_WIPEOUT_CLIP_VERTICES = 1_048_576;
 const MAX_DRAW_ORDER_TABLES = 65_536;
 const MAX_DRAW_ORDER_ENTRIES = 1_048_576;
+const MAX_INSERT_CLIPS = 65_536;
+const MAX_INSERT_CLIP_VERTICES = 1_048_576;
+const MAX_INSERT_CLIP_VERTICES_PER_BOUNDARY = 256;
+const MAX_LINETYPES = 2_045;
+const MAX_LINETYPE_DASHES = 131_072;
+const MAX_LAYOUTS = 1_024;
+const MAX_VIEWPORTS = 65_536;
+const MAX_VIEWPORT_FROZEN_LAYERS = 1_048_576;
+const MAX_VIEWPORT_CLIP_VERTICES = 1_048_576;
+const MAX_VIEWPORT_CLIP_VERTICES_PER_BOUNDARY = 4_096;
+const MAX_IMAGE_SOURCE_RECORDS = 65_536;
+const MAX_IMAGE_CLIP_VERTICES = 1_048_576;
 const STRING_TABLE_HEADER_SIZE = 16;
 const STRING_TABLE_FLAG = 1;
 
@@ -110,6 +152,11 @@ export const TextEntityKind = Object.freeze({
   MText: 1,
   AttributeDefinition: 2,
   Attribute: 3,
+});
+
+export const InsertClipFlags = Object.freeze({
+  Rectangular: 1,
+  Inverted: 1 << 1,
 });
 
 export const HatchFlags = Object.freeze({
@@ -262,15 +309,21 @@ export class TextEntityTable {
     target.color = this.view.getUint32(offset + 20, true);
     target.commonFlags = this.view.getUint16(offset + 26, true);
     target.kind = this.view.getUint16(offset + 32, true);
+    target.flags = this.view.getUint16(offset + 34, true);
     target.styleIndex = styleIndex === 0xffffffff ? null : styleIndex;
     target.style =
       styleIndex === 0xffffffff ? null : this.styles[styleIndex];
     target.valueByteLength = this.view.getUint32(offset + 44, true);
     target.insertionPoint ??= [0, 0, 0];
+    target.alignmentPoint ??= [0, 0, 0];
     target.normal ??= [0, 0, 1];
     for (let axis = 0; axis < 3; axis += 1) {
       target.insertionPoint[axis] = this.view.getFloat64(
         offset + 72 + axis * 8,
+        true,
+      );
+      target.alignmentPoint[axis] = this.view.getFloat64(
+        offset + 96 + axis * 8,
         true,
       );
       target.normal[axis] = this.view.getFloat64(
@@ -282,10 +335,16 @@ export class TextEntityTable {
     target.widthFactor = this.view.getFloat64(offset + 176, true);
     target.rotation = this.view.getFloat64(offset + 184, true);
     target.obliqueAngle = this.view.getFloat64(offset + 192, true);
+    target.rectangleWidth = this.view.getFloat64(offset + 208, true);
+    target.rectangleHeight = this.view.getFloat64(offset + 216, true);
+    target.extentsWidth = this.view.getFloat64(offset + 224, true);
+    target.extentsHeight = this.view.getFloat64(offset + 232, true);
     target.lineSpacingFactor = this.view.getFloat64(offset + 240, true);
     target.sourceFlags = this.view.getInt32(offset + 268, true);
     target.horizontalAlignment = this.view.getInt16(offset + 272, true);
+    target.verticalAlignment = this.view.getInt16(offset + 274, true);
     target.attachment = this.view.getInt16(offset + 276, true);
+    target.generationFlags = this.view.getInt16(offset + 282, true);
     target.mtextType = this.view.getInt16(offset + 286, true);
     return target;
   }
@@ -662,17 +721,26 @@ function readPrimitiveCommon(view, offset, target) {
   target.color = view.getUint32(offset + 20, true);
   target.lineWeight = view.getInt16(offset + 24, true);
   target.commonFlags = view.getUint16(offset + 26, true);
+  target.linetypeCode = view.getUint32(offset + 28, true);
   return target;
 }
 
-function validatePrimitiveCommon(view, offset, layerCount, label, index) {
+function validatePrimitiveCommon(
+  view,
+  offset,
+  layerCount,
+  label,
+  index,
+  minorVersion,
+) {
   const layerIndex = view.getUint32(offset + 16, true);
+  const linetypeCode = view.getUint32(offset + 28, true);
   if (layerIndex !== 0xffffffff && layerIndex >= layerCount) {
     throw new Error(`${label} entity ${index} has an invalid layer reference`);
   }
   if (
     view.getUint16(offset + 26, true) & ~1 ||
-    view.getUint32(offset + 28, true) !== 0
+    (minorVersion < 15 ? linetypeCode !== 0 : linetypeCode > 2047)
   ) {
     throw new Error(`${label} entity ${index} has invalid common metadata`);
   }
@@ -962,6 +1030,140 @@ export class WipeoutSourceTable {
   }
 }
 
+export class ImageSourceTable {
+  constructor(
+    entityBuffer,
+    stringOffset,
+    recordCount,
+    clipVertexBuffer,
+    clipVertexCount,
+  ) {
+    this.entityBuffer = entityBuffer;
+    this.entityView = new DataView(entityBuffer);
+    this.stringOffset = stringOffset;
+    this.recordCount = recordCount;
+    this.clipVertexBuffer = clipVertexBuffer;
+    this.clipVertexView = new DataView(clipVertexBuffer);
+    this.clipVertexCount = clipVertexCount;
+    this.decoder = new TextDecoder("utf-8", { fatal: true });
+  }
+
+  get length() {
+    return this.recordCount;
+  }
+
+  #recordOffset(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= this.recordCount) {
+      throw new RangeError(`IMAGE entity index is out of range: ${index}`);
+    }
+    return STRING_TABLE_HEADER_SIZE + index * IMAGE_ENTITY_RECORD_SIZE;
+  }
+
+  readPath(index) {
+    const offset = this.#recordOffset(index);
+    const relativeOffset = this.entityView.getUint32(offset + 32, true);
+    const byteLength = this.entityView.getUint32(offset + 36, true);
+    return this.decoder.decode(
+      new Uint8Array(
+        this.entityBuffer,
+        this.stringOffset + relativeOffset,
+        byteLength,
+      ),
+    );
+  }
+
+  readEntity(index, target) {
+    if (!target || typeof target !== "object") {
+      throw new TypeError("IMAGE entity target must be an object");
+    }
+    const offset = this.#recordOffset(index);
+    target.index = index;
+    readPrimitiveCommon(this.entityView, offset, target);
+    target.pathByteLength = this.entityView.getUint32(offset + 36, true);
+    target.classVersion = this.entityView.getInt32(offset + 40, true);
+    target.displayProperties = this.entityView.getUint16(offset + 44, true);
+    target.clipType = this.entityView.getUint8(offset + 46);
+    target.clippingEnabled = Boolean(this.entityView.getUint8(offset + 47));
+    target.brightness = this.entityView.getUint8(offset + 48);
+    target.contrast = this.entityView.getUint8(offset + 49);
+    target.fade = this.entityView.getUint8(offset + 50);
+    target.clipMode = this.entityView.getUint8(offset + 51);
+    target.firstClipVertex = readSafeU64(
+      this.entityView,
+      offset + 56,
+      `IMAGE entity ${index} first clip vertex`,
+    );
+    target.clipVertexCount = this.entityView.getUint32(offset + 64, true);
+    target.definitionHandle = this.entityView.getBigUint64(offset + 72, true);
+    target.definitionReactorHandle = this.entityView.getBigUint64(
+      offset + 80,
+      true,
+    );
+    target.insertionPoint ??= [0, 0, 0];
+    target.uVector ??= [0, 0, 0];
+    target.vVector ??= [0, 0, 0];
+    target.size ??= [0, 0];
+    for (let axis = 0; axis < 3; axis += 1) {
+      target.insertionPoint[axis] = this.entityView.getFloat64(
+        offset + 88 + axis * 8,
+        true,
+      );
+      target.uVector[axis] = this.entityView.getFloat64(
+        offset + 112 + axis * 8,
+        true,
+      );
+      target.vVector[axis] = this.entityView.getFloat64(
+        offset + 136 + axis * 8,
+        true,
+      );
+    }
+    target.size[0] = this.entityView.getFloat64(offset + 160, true);
+    target.size[1] = this.entityView.getFloat64(offset + 168, true);
+    return target;
+  }
+
+  readClipVertex(index, target) {
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= this.clipVertexCount
+    ) {
+      throw new RangeError(`IMAGE clip vertex index is out of range: ${index}`);
+    }
+    if (!Array.isArray(target) || target.length < 2) {
+      throw new TypeError("IMAGE clip vertex target must be a two-value array");
+    }
+    const offset = index * IMAGE_CLIP_VERTEX_RECORD_SIZE;
+    target[0] = this.clipVertexView.getFloat64(offset, true);
+    target[1] = this.clipVertexView.getFloat64(offset + 8, true);
+    return target;
+  }
+
+  get(index) {
+    const record = this.readEntity(index, {
+      insertionPoint: [0, 0, 0],
+      uVector: [0, 0, 0],
+      vVector: [0, 0, 0],
+      size: [0, 0],
+    });
+    const clipBoundaryVertices = new Array(record.clipVertexCount);
+    for (let vertex = 0; vertex < record.clipVertexCount; vertex += 1) {
+      clipBoundaryVertices[vertex] = Object.freeze(
+        this.readClipVertex(record.firstClipVertex + vertex, [0, 0]),
+      );
+    }
+    return Object.freeze({
+      ...record,
+      path: this.readPath(index),
+      insertionPoint: Object.freeze([...record.insertionPoint]),
+      uVector: Object.freeze([...record.uVector]),
+      vVector: Object.freeze([...record.vVector]),
+      size: Object.freeze([...record.size]),
+      clipBoundaryVertices: Object.freeze(clipBoundaryVertices),
+    });
+  }
+}
+
 export class DrawOrderSourceTable {
   constructor(tableBuffer, tableCount, entryBuffer, entryCount) {
     this.tableBuffer = tableBuffer;
@@ -1130,7 +1332,18 @@ export class SceneCacheReader {
       if (entry.offset < bodyStart || entry.offset % 8 !== 0 || end > fileSize) {
         throw new Error(`section ${entry.kind} has an invalid range`);
       }
-      const expectedRecordSize = FIXED_RECORD_SIZES.get(entry.kind);
+      const expectedRecordSize =
+        entry.kind === SectionKind.Drawing
+          ? minor >= 17
+            ? 160
+            : minor >= 15
+              ? 104
+              : 80
+          : entry.kind === SectionKind.GpuLineVertices
+            ? minor >= 15
+              ? GPU_LINE_VERTEX_RECORD_SIZE
+              : LEGACY_GPU_LINE_VERTEX_RECORD_SIZE
+            : FIXED_RECORD_SIZES.get(entry.kind);
       if (expectedRecordSize !== undefined) {
         validateRecordSection(entry, expectedRecordSize);
       }
@@ -1264,6 +1477,100 @@ export class SceneCacheReader {
         DRAW_ORDER_ENTRY_RECORD_SIZE,
       );
     }
+    if (minor >= 13) {
+      const insertClips = sections.get(SectionKind.InsertClips);
+      const insertClipVertices = sections.get(
+        SectionKind.InsertClipVertices,
+      );
+      if (!insertClips || !insertClipVertices) {
+        throw new Error(
+          "Scene Cache v1.13 is missing required INSERT XCLIP sections",
+        );
+      }
+      validateRecordSection(insertClips, INSERT_CLIP_RECORD_SIZE);
+      validateRecordSection(
+        insertClipVertices,
+        INSERT_CLIP_VERTEX_RECORD_SIZE,
+      );
+    }
+    if (minor >= 15) {
+      const linetypes = sections.get(SectionKind.Linetypes);
+      const linetypeDashes = sections.get(SectionKind.LinetypeDashes);
+      if (!linetypes || !linetypeDashes) {
+        throw new Error(
+          "Scene Cache v1.15 is missing required linetype sections",
+        );
+      }
+      validateStringTableDirectoryEntry(linetypes, LINETYPE_RECORD_SIZE);
+      validateStringTableDirectoryEntry(
+        linetypeDashes,
+        LINETYPE_DASH_RECORD_SIZE,
+      );
+      if (
+        linetypes.recordCount > MAX_LINETYPES ||
+        linetypeDashes.recordCount > MAX_LINETYPE_DASHES
+      ) {
+        throw new Error("Scene Cache linetype metadata exceeds its limits");
+      }
+    }
+    if (minor >= 16) {
+      const layouts = sections.get(SectionKind.Layouts);
+      const viewports = sections.get(SectionKind.Viewports);
+      const frozenLayers = sections.get(
+        SectionKind.ViewportFrozenLayers,
+      );
+      const clipVertices = sections.get(
+        SectionKind.ViewportClipVertices,
+      );
+      if (!layouts || !viewports || !frozenLayers || !clipVertices) {
+        throw new Error(
+          "Scene Cache v1.16 is missing required layout sections",
+        );
+      }
+      validateStringTableDirectoryEntry(layouts, LAYOUT_RECORD_SIZE);
+      validateStringTableDirectoryEntry(viewports, VIEWPORT_RECORD_SIZE);
+      validateRecordSection(
+        frozenLayers,
+        VIEWPORT_FROZEN_LAYER_RECORD_SIZE,
+      );
+      validateRecordSection(
+        clipVertices,
+        VIEWPORT_CLIP_VERTEX_RECORD_SIZE,
+      );
+      if (
+        layouts.recordCount > MAX_LAYOUTS ||
+        viewports.recordCount > MAX_VIEWPORTS ||
+        frozenLayers.recordCount > MAX_VIEWPORT_FROZEN_LAYERS ||
+        clipVertices.recordCount > MAX_VIEWPORT_CLIP_VERTICES
+      ) {
+        throw new Error("Scene Cache layout metadata exceeds its limits");
+      }
+    }
+    if (minor >= 18) {
+      const imageEntities = sections.get(SectionKind.ImageEntities);
+      const imageClipVertices = sections.get(
+        SectionKind.ImageClipVertices,
+      );
+      if (!imageEntities || !imageClipVertices) {
+        throw new Error(
+          "Scene Cache v1.18 is missing required IMAGE sections",
+        );
+      }
+      validateStringTableDirectoryEntry(
+        imageEntities,
+        IMAGE_ENTITY_RECORD_SIZE,
+      );
+      validateRecordSection(
+        imageClipVertices,
+        IMAGE_CLIP_VERTEX_RECORD_SIZE,
+      );
+      if (
+        imageEntities.recordCount > MAX_IMAGE_SOURCE_RECORDS ||
+        imageClipVertices.recordCount > MAX_IMAGE_CLIP_VERTICES
+      ) {
+        throw new Error("Scene Cache IMAGE metadata exceeds its limits");
+      }
+    }
 
     return new SceneCacheReader(
       source,
@@ -1303,14 +1610,70 @@ export class SceneCacheReader {
         min: ensureFiniteVector(readVec3F64(view, 32), "drawing minimum bounds"),
         max: ensureFiniteVector(readVec3F64(view, 56), "drawing maximum bounds"),
       };
-      const rawWipeoutFrame = view.getUint32(12, true);
+      const rawDisplaySettings = view.getUint32(12, true);
+      const rawWipeoutFrame =
+        this.header.minor >= 14 &&
+        rawDisplaySettings !== 0xffffffff
+          ? rawDisplaySettings & 3
+          : rawDisplaySettings;
       if (
         (this.header.minor < 10 && rawWipeoutFrame !== 0) ||
         (this.header.minor >= 10 &&
           rawWipeoutFrame !== 0xffffffff &&
-          rawWipeoutFrame > 2)
+          rawWipeoutFrame > 2) ||
+        (this.header.minor >= 14 &&
+          rawDisplaySettings !== 0xffffffff &&
+          (rawDisplaySettings & ~0x1f) !== 0)
       ) {
-        throw new Error("drawing contains an invalid WIPEOUT frame setting");
+        throw new Error("drawing contains invalid display settings");
+      }
+      const globalLinetypeScale =
+        this.header.minor >= 15 ? view.getFloat64(80, true) : 1;
+      const currentEntityLinetypeScale =
+        this.header.minor >= 15 ? view.getFloat64(88, true) : 1;
+      const linetypeDisplayFlags =
+        this.header.minor >= 15 ? view.getUint32(96, true) : 0;
+      if (
+        !Number.isFinite(globalLinetypeScale) ||
+        globalLinetypeScale <= 0 ||
+        !Number.isFinite(currentEntityLinetypeScale) ||
+        currentEntityLinetypeScale <= 0 ||
+        (linetypeDisplayFlags & ~1) !== 0 ||
+        (this.header.minor >= 15 && view.getUint32(100, true) !== 0)
+      ) {
+        throw new Error("drawing contains invalid linetype settings");
+      }
+      let savedModelView = null;
+      if (this.header.minor >= 17) {
+        const savedViewFlags = view.getUint32(152, true);
+        const savedViewReserved = view.getUint32(156, true);
+        if ((savedViewFlags & ~1) !== 0 || savedViewReserved !== 0) {
+          throw new Error("drawing contains invalid saved model-view flags");
+        }
+        if ((savedViewFlags & 1) !== 0) {
+          const center = ensureFiniteVector(
+            readVec3F64(view, 104),
+            "saved model-view center",
+          );
+          const height = view.getFloat64(128, true);
+          const width = view.getFloat64(136, true);
+          const twist = view.getFloat64(144, true);
+          if (
+            !Number.isFinite(height) ||
+            height <= 0 ||
+            !Number.isFinite(width) ||
+            width <= 0 ||
+            !Number.isFinite(twist)
+          ) {
+            throw new Error("drawing contains an invalid saved model view");
+          }
+          savedModelView = Object.freeze({
+            center,
+            height,
+            width,
+            twist,
+          });
+        }
       }
       return Object.freeze({
         version: view.getUint32(0, true),
@@ -1320,6 +1683,25 @@ export class SceneCacheReader {
           this.header.minor >= 10 && rawWipeoutFrame !== 0xffffffff
             ? rawWipeoutFrame
             : null,
+        lineWeightDisplay:
+          this.header.minor >= 14 &&
+          rawDisplaySettings !== 0xffffffff
+            ? (rawDisplaySettings & (1 << 2)) !== 0
+            : false,
+        fillMode:
+          this.header.minor >= 14 &&
+          rawDisplaySettings !== 0xffffffff
+            ? (rawDisplaySettings & (1 << 3)) !== 0
+            : true,
+        modelSpaceActive:
+          this.header.minor >= 14 &&
+          rawDisplaySettings !== 0xffffffff
+            ? (rawDisplaySettings & (1 << 4)) !== 0
+            : true,
+        globalLinetypeScale,
+        currentEntityLinetypeScale,
+        paperSpaceLinetypeScale: (linetypeDisplayFlags & 1) !== 0,
+        savedModelView,
         totalEntities: readSafeU64(view, 16, "drawing entity count"),
         serializedEntities: readSafeU64(view, 24, "serialized entity count"),
         bounds,
@@ -1349,6 +1731,132 @@ export class SceneCacheReader {
     });
   }
 
+  async readLinetypes() {
+    if (this.header.minor < 15) {
+      return Object.freeze([]);
+    }
+    return this.memoize("linetypes", async () => {
+      const definitionsSection = this.getSection(SectionKind.Linetypes);
+      const dashesSection = this.getSection(SectionKind.LinetypeDashes);
+      const [definitions, dashes] = await Promise.all([
+        this.readStringTable(
+          definitionsSection,
+          LINETYPE_RECORD_SIZE,
+          (view, offset, readString) =>
+            Object.freeze({
+              handle: view.getBigUint64(offset, true),
+              code: view.getUint32(offset + 8, true),
+              alignment: view.getUint16(offset + 12, true),
+              flags: view.getUint16(offset + 14, true),
+              patternLength: view.getFloat64(offset + 16, true),
+              firstDash: readSafeU64(
+                view,
+                offset + 24,
+                "linetype first dash",
+              ),
+              dashCount: view.getUint32(offset + 32, true),
+              name: readString(
+                view.getUint32(offset + 36, true),
+                view.getUint32(offset + 40, true),
+              ),
+              description: readString(
+                view.getUint32(offset + 44, true),
+                view.getUint32(offset + 48, true),
+              ),
+              reserved: [
+                view.getUint32(offset + 52, true),
+                view.getUint32(offset + 56, true),
+                view.getUint32(offset + 60, true),
+              ],
+            }),
+        ),
+        this.readStringTable(
+          dashesSection,
+          LINETYPE_DASH_RECORD_SIZE,
+          (view, offset, readString) => {
+            const encodedStyleIndex = view.getUint32(offset + 20, true);
+            return Object.freeze({
+              linetypeCode: view.getUint32(offset, true),
+              flags: view.getUint32(offset + 4, true),
+              length: view.getFloat64(offset + 8, true),
+              shapeCode: view.getInt32(offset + 16, true),
+              textStyleIndex:
+                encodedStyleIndex === 0xffffffff
+                  ? null
+                  : encodedStyleIndex,
+              xOffset: view.getFloat64(offset + 24, true),
+              yOffset: view.getFloat64(offset + 32, true),
+              scale: view.getFloat64(offset + 40, true),
+              rotation: view.getFloat64(offset + 48, true),
+              text: readString(
+                view.getUint32(offset + 56, true),
+                view.getUint32(offset + 60, true),
+              ),
+              reserved: view.getBigUint64(offset + 64, true),
+            });
+          },
+        ),
+      ]);
+      const textStyleCount =
+        this.getSection(SectionKind.TextStyles)?.recordCount ?? 0;
+      const codes = new Set();
+      let expectedFirstDash = 0;
+      const output = definitions.map((definition, index) => {
+        const endDash = checkedAdd(
+          definition.firstDash,
+          definition.dashCount,
+          `linetype ${index} dash range`,
+        );
+        if (
+          definition.code > 2047 ||
+          codes.has(definition.code) ||
+          definition.flags & ~1 ||
+          definition.reserved.some(Boolean) ||
+          !Number.isFinite(definition.patternLength) ||
+          definition.patternLength < 0 ||
+          definition.firstDash !== expectedFirstDash ||
+          endDash > dashes.length
+        ) {
+          throw new Error(`linetype ${index} contains invalid metadata`);
+        }
+        codes.add(definition.code);
+        expectedFirstDash = endDash;
+        const definitionDashes = dashes.slice(
+          definition.firstDash,
+          endDash,
+        );
+        for (const dash of definitionDashes) {
+          if (
+            dash.linetypeCode !== definition.code ||
+            dash.flags & ~15 ||
+            dash.reserved !== 0n ||
+            (dash.textStyleIndex !== null &&
+              dash.textStyleIndex >= textStyleCount) ||
+            ![
+              dash.length,
+              dash.xOffset,
+              dash.yOffset,
+              dash.scale,
+              dash.rotation,
+            ].every(Number.isFinite)
+          ) {
+            throw new Error(
+              `linetype ${index} contains an invalid dash definition`,
+            );
+          }
+        }
+        return Object.freeze({
+          ...definition,
+          dashes: Object.freeze(definitionDashes),
+        });
+      });
+      if (expectedFirstDash !== dashes.length) {
+        throw new Error("linetype dash pool is not fully covered");
+      }
+      return Object.freeze(output);
+    });
+  }
+
   async readBlocks() {
     return this.memoize("blocks", async () => {
       const section = this.getSection(SectionKind.Blocks);
@@ -1368,8 +1876,353 @@ export class SceneCacheReader {
             readVec3F64(view, offset + 32),
             "block base point",
           ),
+          xrefPath:
+            this.header.minor >= 12
+              ? readString(
+                  view.getUint32(offset + 56, true),
+                  view.getUint32(offset + 60, true),
+                )
+              : "",
         }),
       );
+    });
+  }
+
+  async readLayouts() {
+    if (this.header.minor < 16) {
+      return Object.freeze([]);
+    }
+    return this.memoize("layouts", async () => {
+      const layoutSection = this.getSection(SectionKind.Layouts);
+      const viewportSection = this.getSection(SectionKind.Viewports);
+      const frozenSection = this.getSection(
+        SectionKind.ViewportFrozenLayers,
+      );
+      const clipSection = this.getSection(
+        SectionKind.ViewportClipVertices,
+      );
+      const [
+        layoutRows,
+        viewportRows,
+        frozenBuffer,
+        clipBuffer,
+        blocks,
+        layers,
+      ] =
+        await Promise.all([
+          this.readStringTable(
+            layoutSection,
+            LAYOUT_RECORD_SIZE,
+            (view, offset, readString, index) =>
+              Object.freeze({
+                index,
+                handle: view.getBigUint64(offset, true),
+                blockHandle: view.getBigUint64(offset + 8, true),
+                activeViewportHandle: view.getBigUint64(
+                  offset + 16,
+                  true,
+                ),
+                firstViewport: readSafeU64(
+                  view,
+                  offset + 24,
+                  `layout ${index} first viewport`,
+                ),
+                viewportCount: view.getUint32(offset + 32, true),
+                tabOrder: view.getUint16(offset + 36, true),
+                flags: view.getUint16(offset + 38, true),
+                plotFlags: view.getUint32(offset + 40, true),
+                paperUnit: view.getUint16(offset + 44, true),
+                rotation: view.getUint16(offset + 46, true),
+                plotType: view.getUint16(offset + 48, true),
+                standardScaleType: view.getUint16(offset + 50, true),
+                shadePlotType: view.getUint16(offset + 52, true),
+                reserved: view.getUint16(offset + 54, true),
+                standardScaleFactor: view.getFloat64(offset + 56, true),
+                paperUnits: view.getFloat64(offset + 64, true),
+                drawingUnits: view.getFloat64(offset + 72, true),
+                paperWidth: view.getFloat64(offset + 80, true),
+                paperHeight: view.getFloat64(offset + 88, true),
+                margins: Object.freeze([
+                  view.getFloat64(offset + 96, true),
+                  view.getFloat64(offset + 104, true),
+                  view.getFloat64(offset + 112, true),
+                  view.getFloat64(offset + 120, true),
+                ]),
+                plotOrigin: Object.freeze([
+                  view.getFloat64(offset + 128, true),
+                  view.getFloat64(offset + 136, true),
+                ]),
+                limits: Object.freeze({
+                  min: Object.freeze([
+                    view.getFloat64(offset + 144, true),
+                    view.getFloat64(offset + 152, true),
+                  ]),
+                  max: Object.freeze([
+                    view.getFloat64(offset + 160, true),
+                    view.getFloat64(offset + 168, true),
+                  ]),
+                }),
+                extents: Object.freeze({
+                  min: Object.freeze(readVec3F64(view, offset + 176)),
+                  max: Object.freeze(readVec3F64(view, offset + 200)),
+                }),
+                name: readString(
+                  view.getUint32(offset + 224, true),
+                  view.getUint32(offset + 228, true),
+                ),
+                styleSheet: readString(
+                  view.getUint32(offset + 232, true),
+                  view.getUint32(offset + 236, true),
+                ),
+                canonicalMediaName: readString(
+                  view.getUint32(offset + 240, true),
+                  view.getUint32(offset + 244, true),
+                ),
+                printerConfig: readString(
+                  view.getUint32(offset + 248, true),
+                  view.getUint32(offset + 252, true),
+                ),
+              }),
+          ),
+          this.readStringTable(
+            viewportSection,
+            VIEWPORT_RECORD_SIZE,
+            (view, offset, readString, index) =>
+              Object.freeze({
+                index,
+                handle: view.getBigUint64(offset, true),
+                ownerHandle: view.getBigUint64(offset + 8, true),
+                layerIndex: view.getUint32(offset + 16, true),
+                color: view.getUint32(offset + 20, true),
+                firstFrozenLayer: readSafeU64(
+                  view,
+                  offset + 24,
+                  `viewport ${index} first frozen layer`,
+                ),
+                frozenLayerCount: view.getUint32(offset + 32, true),
+                status: view.getUint32(offset + 36, true),
+                on: view.getInt16(offset + 40, true),
+                id: view.getInt16(offset + 42, true),
+                flags: view.getUint32(offset + 44, true),
+                center: Object.freeze(readVec3F64(view, offset + 48)),
+                width: view.getFloat64(offset + 72, true),
+                height: view.getFloat64(offset + 80, true),
+                viewTarget: Object.freeze(readVec3F64(view, offset + 88)),
+                viewDirection: Object.freeze(
+                  readVec3F64(view, offset + 112),
+                ),
+                viewTwist: view.getFloat64(offset + 136, true),
+                viewHeight: view.getFloat64(offset + 144, true),
+                viewCenter: Object.freeze([
+                  view.getFloat64(offset + 152, true),
+                  view.getFloat64(offset + 160, true),
+                ]),
+                lensLength: view.getFloat64(offset + 168, true),
+                frontClip: view.getFloat64(offset + 176, true),
+                backClip: view.getFloat64(offset + 184, true),
+                brightness: view.getFloat64(offset + 192, true),
+                contrast: view.getFloat64(offset + 200, true),
+                ambientColor: view.getUint32(offset + 208, true),
+                renderMode: view.getUint16(offset + 212, true),
+                shadePlotMode: view.getUint16(offset + 214, true),
+                clipBoundaryHandle: view.getBigUint64(
+                  offset + 216,
+                  true,
+                ),
+                visualStyleHandle: view.getBigUint64(
+                  offset + 224,
+                  true,
+                ),
+                backgroundHandle: view.getBigUint64(
+                  offset + 232,
+                  true,
+                ),
+                styleSheet: readString(
+                  view.getUint32(offset + 240, true),
+                  view.getUint32(offset + 244, true),
+                ),
+                firstClipVertex: readSafeU64(
+                  view,
+                  offset + 248,
+                  `viewport ${index} first clip vertex`,
+                ),
+                clipVertexCount: view.getUint32(offset + 256, true),
+                clipFlags: view.getUint32(offset + 260, true),
+                reserved: view.getBigUint64(offset + 264, true),
+              }),
+          ),
+          this.readWholeMetadataSection(frozenSection),
+          this.readWholeMetadataSection(clipSection),
+          this.readBlocks(),
+          this.readLayers(),
+        ]);
+      const blockIndexByHandle = new Map(
+        blocks.map((block) => [block.handle, block.index]),
+      );
+      const frozenView = new DataView(frozenBuffer);
+      const frozenLayers = new Array(frozenSection.recordCount);
+      for (let index = 0; index < frozenLayers.length; index += 1) {
+        const offset =
+          index * VIEWPORT_FROZEN_LAYER_RECORD_SIZE;
+        const layerIndex = frozenView.getUint32(offset, true);
+        if (
+          layerIndex >= layers.length ||
+          frozenView.getUint32(offset + 4, true) !== 0
+        ) {
+          throw new Error(
+            `viewport frozen layer ${index} contains invalid metadata`,
+          );
+        }
+        frozenLayers[index] = layerIndex;
+      }
+
+      const clipView = new DataView(clipBuffer);
+      let expectedFirstFrozenLayer = 0;
+      let expectedFirstClipVertex = 0;
+      const viewports = viewportRows.map((viewport, index) => {
+        const frozenEnd = checkedAdd(
+          viewport.firstFrozenLayer,
+          viewport.frozenLayerCount,
+          `viewport ${index} frozen layer range`,
+        );
+        const clipEnd = checkedAdd(
+          viewport.firstClipVertex,
+          viewport.clipVertexCount,
+          `viewport ${index} clip vertex range`,
+        );
+        if (
+          viewport.ownerHandle === 0n ||
+          viewport.layerIndex >= layers.length ||
+          viewport.firstFrozenLayer !== expectedFirstFrozenLayer ||
+          frozenEnd > frozenLayers.length ||
+          viewport.firstClipVertex !== expectedFirstClipVertex ||
+          clipEnd > clipSection.recordCount ||
+          viewport.clipVertexCount > MAX_VIEWPORT_CLIP_VERTICES_PER_BOUNDARY ||
+          (viewport.clipVertexCount > 0 && viewport.clipVertexCount < 3) ||
+          (viewport.clipVertexCount > 0 &&
+            viewport.clipBoundaryHandle === 0n) ||
+          viewport.flags & ~0xf ||
+          viewport.clipFlags !== 0 ||
+          viewport.reserved !== 0n ||
+          ![
+            ...viewport.center,
+            viewport.width,
+            viewport.height,
+            ...viewport.viewTarget,
+            ...viewport.viewDirection,
+            viewport.viewTwist,
+            viewport.viewHeight,
+            ...viewport.viewCenter,
+            viewport.lensLength,
+            viewport.frontClip,
+            viewport.backClip,
+            viewport.brightness,
+            viewport.contrast,
+          ].every(Number.isFinite) ||
+          viewport.width < 0 ||
+          viewport.height < 0 ||
+          viewport.viewHeight < 0
+        ) {
+          throw new Error(
+            `viewport ${index} contains invalid metadata`,
+          );
+        }
+        const clipBoundaryVertices = new Array(
+          viewport.clipVertexCount,
+        );
+        for (
+          let vertexIndex = viewport.firstClipVertex;
+          vertexIndex < clipEnd;
+          vertexIndex += 1
+        ) {
+          const clipOffset =
+            vertexIndex * VIEWPORT_CLIP_VERTEX_RECORD_SIZE;
+          const point = Object.freeze([
+            clipView.getFloat64(clipOffset, true),
+            clipView.getFloat64(clipOffset + 8, true),
+            0,
+          ]);
+          if (!point.every(Number.isFinite)) {
+            throw new Error(
+              `viewport ${index} contains a non-finite clip vertex`,
+            );
+          }
+          clipBoundaryVertices[
+            vertexIndex - viewport.firstClipVertex
+          ] = point;
+        }
+        expectedFirstFrozenLayer = frozenEnd;
+        expectedFirstClipVertex = clipEnd;
+        return Object.freeze({
+          ...viewport,
+          frozenLayerIndices: Object.freeze(
+            frozenLayers.slice(
+              viewport.firstFrozenLayer,
+              frozenEnd,
+            ),
+          ),
+          clipBoundaryVertices: Object.freeze(
+            clipBoundaryVertices,
+          ),
+        });
+      });
+      if (expectedFirstFrozenLayer !== frozenLayers.length) {
+        throw new Error("viewport frozen layer pool is not fully covered");
+      }
+      if (expectedFirstClipVertex !== clipSection.recordCount) {
+        throw new Error("viewport clip vertex pool is not fully covered");
+      }
+
+      let expectedFirstViewport = 0;
+      const layouts = layoutRows.map((layout, index) => {
+        const viewportEnd = checkedAdd(
+          layout.firstViewport,
+          layout.viewportCount,
+          `layout ${index} viewport range`,
+        );
+        const layoutViewports = viewports.slice(
+          layout.firstViewport,
+          viewportEnd,
+        );
+        const blockIndex = blockIndexByHandle.get(layout.blockHandle);
+        if (
+          layout.handle === 0n ||
+          blockIndex === undefined ||
+          layout.firstViewport !== expectedFirstViewport ||
+          viewportEnd > viewports.length ||
+          layout.reserved !== 0 ||
+          ![
+            layout.standardScaleFactor,
+            layout.paperUnits,
+            layout.drawingUnits,
+            layout.paperWidth,
+            layout.paperHeight,
+            ...layout.margins,
+            ...layout.plotOrigin,
+            ...layout.limits.min,
+            ...layout.limits.max,
+            ...layout.extents.min,
+            ...layout.extents.max,
+          ].every(Number.isFinite) ||
+          layout.paperWidth < 0 ||
+          layout.paperHeight < 0 ||
+          layoutViewports.some(
+            (viewport) => viewport.ownerHandle !== layout.blockHandle,
+          )
+        ) {
+          throw new Error(`layout ${index} contains invalid metadata`);
+        }
+        expectedFirstViewport = viewportEnd;
+        return Object.freeze({
+          ...layout,
+          blockIndex,
+          viewports: Object.freeze(layoutViewports),
+        });
+      });
+      if (expectedFirstViewport !== viewports.length) {
+        throw new Error("layout viewport pool is not fully covered");
+      }
+      return Object.freeze(layouts);
     });
   }
 
@@ -1957,7 +2810,14 @@ export class SceneCacheReader {
       const view = new DataView(buffer);
       for (let index = 0; index < section.recordCount; index += 1) {
         const offset = index * POINT_ENTITY_RECORD_SIZE;
-        validatePrimitiveCommon(view, offset, layerCount, "POINT", index);
+        validatePrimitiveCommon(
+          view,
+          offset,
+          layerCount,
+          "POINT",
+          index,
+          this.header.minor,
+        );
         if (
           view.getUint16(offset + 106, true) !== 0 ||
           view.getUint32(offset + 108, true) !== 0
@@ -1998,7 +2858,14 @@ export class SceneCacheReader {
       const view = new DataView(buffer);
       for (let index = 0; index < section.recordCount; index += 1) {
         const offset = index * SOLID_ENTITY_RECORD_SIZE;
-        validatePrimitiveCommon(view, offset, layerCount, "SOLID", index);
+        validatePrimitiveCommon(
+          view,
+          offset,
+          layerCount,
+          "SOLID",
+          index,
+          this.header.minor,
+        );
         if (
           view.getUint32(offset + 32, true) & ~1 ||
           view.getUint32(offset + 36, true) !== 0
@@ -2044,7 +2911,14 @@ export class SceneCacheReader {
       const view = new DataView(buffer);
       for (let index = 0; index < section.recordCount; index += 1) {
         const offset = index * FACE_ENTITY_RECORD_SIZE;
-        validatePrimitiveCommon(view, offset, layerCount, "3DFACE", index);
+        validatePrimitiveCommon(
+          view,
+          offset,
+          layerCount,
+          "3DFACE",
+          index,
+          this.header.minor,
+        );
         if (
           view.getUint32(offset + 32, true) & ~0xf ||
           view.getUint32(offset + 36, true) !== 0
@@ -2110,6 +2984,7 @@ export class SceneCacheReader {
           layerCount,
           "WIPEOUT",
           index,
+          this.header.minor,
         );
         const displayProperties = entityView.getUint16(offset + 36, true);
         const clipType = entityView.getUint8(offset + 38);
@@ -2197,6 +3072,203 @@ export class SceneCacheReader {
       }
       return new WipeoutSourceTable(
         entityBuffer,
+        entities.recordCount,
+        clipVertexBuffer,
+        clipVertices.recordCount,
+      );
+    });
+  }
+
+  async readImageEntities() {
+    return this.memoize("image-entities", async () => {
+      if (this.header.minor < 18) {
+        return new ImageSourceTable(
+          new ArrayBuffer(STRING_TABLE_HEADER_SIZE),
+          STRING_TABLE_HEADER_SIZE,
+          0,
+          new ArrayBuffer(0),
+          0,
+        );
+      }
+      const entities = this.getSection(SectionKind.ImageEntities);
+      const clipVertices = this.getSection(SectionKind.ImageClipVertices);
+      validateStringTableDirectoryEntry(
+        entities,
+        IMAGE_ENTITY_RECORD_SIZE,
+      );
+      validateRecordSection(
+        clipVertices,
+        IMAGE_CLIP_VERTEX_RECORD_SIZE,
+      );
+      if (entities.recordCount > MAX_IMAGE_SOURCE_RECORDS) {
+        throw new Error(
+          `IMAGE section exceeds the ${MAX_IMAGE_SOURCE_RECORDS}-record limit`,
+        );
+      }
+      if (clipVertices.recordCount > MAX_IMAGE_CLIP_VERTICES) {
+        throw new Error(
+          `IMAGE clip vertices exceed the ${MAX_IMAGE_CLIP_VERTICES}-record limit`,
+        );
+      }
+      const layerCount = this.getSection(SectionKind.Layers).recordCount;
+      const [entityBuffer, clipVertexBuffer] = await Promise.all([
+        this.readWholeMetadataSection(entities),
+        this.readWholeMetadataSection(clipVertices),
+      ]);
+      const entityView = new DataView(entityBuffer);
+      const clipVertexView = new DataView(clipVertexBuffer);
+      const recordCount = entityView.getUint32(0, true);
+      const recordSize = entityView.getUint32(4, true);
+      const stringOffset = readSafeU64(
+        entityView,
+        8,
+        "IMAGE UTF-8 blob offset",
+      );
+      const minimumStringOffset = checkedAdd(
+        STRING_TABLE_HEADER_SIZE,
+        checkedMultiply(
+          entities.recordCount,
+          IMAGE_ENTITY_RECORD_SIZE,
+          "IMAGE record bytes",
+        ),
+        "IMAGE UTF-8 minimum offset",
+      );
+      if (
+        recordCount !== entities.recordCount ||
+        recordSize !== IMAGE_ENTITY_RECORD_SIZE ||
+        stringOffset < minimumStringOffset ||
+        stringOffset > entities.byteLength
+      ) {
+        throw new Error("IMAGE string-table header is inconsistent");
+      }
+      const decoder = new TextDecoder("utf-8", { fatal: true });
+      let expectedFirstVertex = 0;
+      for (let index = 0; index < entities.recordCount; index += 1) {
+        const offset =
+          STRING_TABLE_HEADER_SIZE + index * IMAGE_ENTITY_RECORD_SIZE;
+        validatePrimitiveCommon(
+          entityView,
+          offset,
+          layerCount,
+          "IMAGE",
+          index,
+          this.header.minor,
+        );
+        const relativePathOffset = entityView.getUint32(offset + 32, true);
+        const pathByteLength = entityView.getUint32(offset + 36, true);
+        const pathStart = checkedAdd(
+          stringOffset,
+          relativePathOffset,
+          `IMAGE entity ${index} path offset`,
+        );
+        const pathEnd = checkedAdd(
+          pathStart,
+          pathByteLength,
+          `IMAGE entity ${index} path end`,
+        );
+        if (
+          pathByteLength > MAX_CACHE_STRING_BYTES ||
+          pathStart < stringOffset ||
+          pathEnd > entities.byteLength
+        ) {
+          throw new Error(`IMAGE entity ${index} has an invalid path`);
+        }
+        decoder.decode(
+          new Uint8Array(entityBuffer, pathStart, pathByteLength),
+        );
+        const displayProperties = entityView.getUint16(offset + 44, true);
+        const clipType = entityView.getUint8(offset + 46);
+        const clippingEnabled = entityView.getUint8(offset + 47);
+        const brightness = entityView.getUint8(offset + 48);
+        const contrast = entityView.getUint8(offset + 49);
+        const fade = entityView.getUint8(offset + 50);
+        const clipMode = entityView.getUint8(offset + 51);
+        const firstVertex = readSafeU64(
+          entityView,
+          offset + 56,
+          `IMAGE entity ${index} first clip vertex`,
+        );
+        const vertexCount = entityView.getUint32(offset + 64, true);
+        const validBoundary =
+          vertexCount === 0
+            ? clipType <= 2
+            : (clipType === 1 && vertexCount === 2) ||
+              (clipType === 2 && vertexCount >= 3);
+        if (
+          displayProperties & ~0xf ||
+          clippingEnabled > 1 ||
+          brightness > 100 ||
+          contrast > 100 ||
+          fade > 100 ||
+          clipMode > 1 ||
+          entityView.getUint32(offset + 52, true) !== 0 ||
+          entityView.getUint32(offset + 68, true) !== 0 ||
+          firstVertex !== expectedFirstVertex ||
+          !validBoundary ||
+          (clippingEnabled === 1 &&
+            (displayProperties & 4) !== 0 &&
+            vertexCount === 0)
+        ) {
+          throw new Error(`IMAGE entity ${index} has invalid metadata`);
+        }
+        expectedFirstVertex = checkedAdd(
+          firstVertex,
+          vertexCount,
+          `IMAGE entity ${index} clip-vertex range`,
+        );
+        if (expectedFirstVertex > clipVertices.recordCount) {
+          throw new Error(
+            `IMAGE entity ${index} has an invalid clip-vertex range`,
+          );
+        }
+        for (let valueOffset = 88; valueOffset < 176; valueOffset += 8) {
+          if (
+            !Number.isFinite(entityView.getFloat64(offset + valueOffset, true))
+          ) {
+            throw new Error(
+              `IMAGE entity ${index} contains a non-finite value`,
+            );
+          }
+        }
+        const ux = entityView.getFloat64(offset + 112, true);
+        const uy = entityView.getFloat64(offset + 120, true);
+        const uz = entityView.getFloat64(offset + 128, true);
+        const vx = entityView.getFloat64(offset + 136, true);
+        const vy = entityView.getFloat64(offset + 144, true);
+        const vz = entityView.getFloat64(offset + 152, true);
+        const crossX = uy * vz - uz * vy;
+        const crossY = uz * vx - ux * vz;
+        const crossZ = ux * vy - uy * vx;
+        const basisLengthSquared =
+          crossX * crossX + crossY * crossY + crossZ * crossZ;
+        if (
+          !Number.isFinite(basisLengthSquared) ||
+          basisLengthSquared <= 1e-24 ||
+          entityView.getFloat64(offset + 160, true) <= 0 ||
+          entityView.getFloat64(offset + 168, true) <= 0
+        ) {
+          throw new Error(
+            `IMAGE entity ${index} has an invalid image basis or size`,
+          );
+        }
+      }
+      if (expectedFirstVertex !== clipVertices.recordCount) {
+        throw new Error("IMAGE clip-vertex pool is not fully covered");
+      }
+      for (let index = 0; index < clipVertices.recordCount; index += 1) {
+        const offset = index * IMAGE_CLIP_VERTEX_RECORD_SIZE;
+        if (
+          !Number.isFinite(clipVertexView.getFloat64(offset, true)) ||
+          !Number.isFinite(clipVertexView.getFloat64(offset + 8, true))
+        ) {
+          throw new Error(
+            `IMAGE clip vertex ${index} contains a non-finite coordinate`,
+          );
+        }
+      }
+      return new ImageSourceTable(
+        entityBuffer,
+        stringOffset,
         entities.recordCount,
         clipVertexBuffer,
         clipVertices.recordCount,
@@ -2312,6 +3384,107 @@ export class SceneCacheReader {
     return Object.freeze({ points, solids, faces, wipeouts });
   }
 
+  async readInsertClips() {
+    return this.memoize("insert-clips", async () => {
+      if (this.header.minor < 13) {
+        return Object.freeze([]);
+      }
+      const records = this.getSection(SectionKind.InsertClips);
+      const vertices = this.getSection(SectionKind.InsertClipVertices);
+      validateRecordSection(records, INSERT_CLIP_RECORD_SIZE);
+      validateRecordSection(
+        vertices,
+        INSERT_CLIP_VERTEX_RECORD_SIZE,
+      );
+      if (records.recordCount > MAX_INSERT_CLIPS) {
+        throw new Error(
+          `INSERT XCLIP section exceeds the ${MAX_INSERT_CLIPS}-record limit`,
+        );
+      }
+      if (vertices.recordCount > MAX_INSERT_CLIP_VERTICES) {
+        throw new Error(
+          `INSERT XCLIP vertices exceed the ${MAX_INSERT_CLIP_VERTICES}-record limit`,
+        );
+      }
+      const [recordBuffer, vertexBuffer, inserts] = await Promise.all([
+        this.readWholeMetadataSection(records),
+        this.readWholeMetadataSection(vertices),
+        this.readInserts(),
+      ]);
+      const recordView = new DataView(recordBuffer);
+      const vertexView = new DataView(vertexBuffer);
+      const insertHandles = new Set(inserts.map((insert) => insert.handle));
+      const seenHandles = new Set();
+      const output = new Array(records.recordCount);
+      let expectedFirstVertex = 0;
+      for (let index = 0; index < records.recordCount; index += 1) {
+        const offset = index * INSERT_CLIP_RECORD_SIZE;
+        const insertHandle = recordView.getBigUint64(offset, true);
+        const firstVertex = readSafeU64(
+          recordView,
+          offset + 8,
+          `INSERT XCLIP ${index} first vertex`,
+        );
+        const vertexCount = recordView.getUint32(offset + 16, true);
+        const flags = recordView.getUint32(offset + 20, true);
+        const rectangular =
+          (flags & InsertClipFlags.Rectangular) !== 0;
+        if (
+          !insertHandles.has(insertHandle) ||
+          seenHandles.has(insertHandle) ||
+          firstVertex !== expectedFirstVertex ||
+          vertexCount < 2 ||
+          vertexCount > MAX_INSERT_CLIP_VERTICES_PER_BOUNDARY ||
+          (rectangular && vertexCount !== 2) ||
+          (!rectangular && vertexCount < 3) ||
+          (flags &
+            ~(InsertClipFlags.Rectangular | InsertClipFlags.Inverted)) !==
+            0 ||
+          recordView.getBigUint64(offset + 24, true) !== 0n
+        ) {
+          throw new Error(`INSERT XCLIP ${index} has invalid metadata`);
+        }
+        expectedFirstVertex = checkedAdd(
+          firstVertex,
+          vertexCount,
+          `INSERT XCLIP ${index} vertex range`,
+        );
+        if (expectedFirstVertex > vertices.recordCount) {
+          throw new Error(
+            `INSERT XCLIP ${index} has an invalid vertex range`,
+          );
+        }
+        const points = new Array(vertexCount);
+        for (let vertexIndex = 0; vertexIndex < vertexCount; vertexIndex += 1) {
+          const vertexOffset =
+            (firstVertex + vertexIndex) * INSERT_CLIP_VERTEX_RECORD_SIZE;
+          const x = vertexView.getFloat64(vertexOffset, true);
+          const y = vertexView.getFloat64(vertexOffset + 8, true);
+          if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            throw new Error(
+              `INSERT XCLIP ${index} contains a non-finite vertex`,
+            );
+          }
+          points[vertexIndex] = Object.freeze([x, y, 0]);
+        }
+        seenHandles.add(insertHandle);
+        output[index] = Object.freeze({
+          index,
+          insertHandle,
+          rectangular,
+          inverted: (flags & InsertClipFlags.Inverted) !== 0,
+          vertices: Object.freeze(points),
+        });
+      }
+      if (expectedFirstVertex !== vertices.recordCount) {
+        throw new Error(
+          "INSERT XCLIP vertex pool is not fully covered",
+        );
+      }
+      return Object.freeze(output);
+    });
+  }
+
   async readInserts() {
     return this.memoize("inserts", async () => {
       const section = this.getSection(SectionKind.Inserts);
@@ -2320,6 +3493,13 @@ export class SceneCacheReader {
       const inserts = new Array(section.recordCount);
       for (let index = 0; index < section.recordCount; index += 1) {
         const offset = index * section.recordSize;
+        const linetypeCode =
+          this.header.minor >= 15
+            ? view.getUint32(offset + 28, true)
+            : 0;
+        if (linetypeCode > 2047) {
+          throw new Error(`INSERT ${index} has an invalid linetype code`);
+        }
         inserts[index] = Object.freeze({
           index,
           handle: view.getBigUint64(offset, true),
@@ -2328,6 +3508,7 @@ export class SceneCacheReader {
           color: view.getUint32(offset + 20, true),
           lineWeight: view.getInt16(offset + 24, true),
           flags: view.getUint16(offset + 26, true),
+          linetypeCode,
           blockIndex: view.getUint32(offset + 32, true),
           columnCount: view.getUint16(offset + 36, true),
           rowCount: view.getUint16(offset + 38, true),
@@ -2452,14 +3633,36 @@ export class SceneCacheReader {
   }
 
   async readRenderMetadata() {
-    const [drawing, layers, blocks, inserts, batches] = await Promise.all([
-      this.readDrawing(),
-      this.readLayers(),
-      this.readBlocks(),
-      this.readInserts(),
-      this.readGpuLineBatches(),
-    ]);
-    return Object.freeze({ drawing, layers, blocks, inserts, batches });
+    const [
+      drawing,
+      layers,
+      linetypes,
+      blocks,
+      layouts,
+      inserts,
+      insertClips,
+      batches,
+    ] =
+      await Promise.all([
+        this.readDrawing(),
+        this.readLayers(),
+        this.readLinetypes(),
+        this.readBlocks(),
+        this.readLayouts(),
+        this.readInserts(),
+        this.readInsertClips(),
+        this.readGpuLineBatches(),
+      ]);
+    return Object.freeze({
+      drawing,
+      layers,
+      linetypes,
+      blocks,
+      layouts,
+      inserts,
+      insertClips,
+      batches,
+    });
   }
 
   async readOverviewVertices({ maximumBytes = MAX_OVERVIEW_BYTES } = {}) {
@@ -2468,7 +3671,7 @@ export class SceneCacheReader {
     const vertexCount = batches.overviewVertexCount;
     const byteLength = checkedMultiply(
       vertexCount,
-      GPU_LINE_VERTEX_RECORD_SIZE,
+      section.recordSize,
       "overview vertex bytes",
     );
     if (byteLength > maximumBytes) {
@@ -2481,7 +3684,13 @@ export class SceneCacheReader {
       byteLength,
       "overview GPU vertices",
     );
-    return Object.freeze({ buffer, firstVertex: 0, vertexCount, byteLength });
+    return Object.freeze({
+      buffer,
+      firstVertex: 0,
+      vertexCount,
+      byteLength,
+      recordSize: section.recordSize,
+    });
   }
 
   async readBatchVertices(
@@ -2491,7 +3700,7 @@ export class SceneCacheReader {
     const section = this.getSection(SectionKind.GpuLineVertices);
     const byteLength = checkedMultiply(
       batch.vertexCount,
-      GPU_LINE_VERTEX_RECORD_SIZE,
+      section.recordSize,
       "GPU batch vertex bytes",
     );
     if (byteLength > maximumBytes) {
@@ -2501,7 +3710,7 @@ export class SceneCacheReader {
     }
     const relativeOffset = checkedMultiply(
       batch.firstVertex,
-      GPU_LINE_VERTEX_RECORD_SIZE,
+      section.recordSize,
       "GPU batch vertex offset",
     );
     const offset = checkedAdd(
@@ -2519,6 +3728,7 @@ export class SceneCacheReader {
       firstVertex: batch.firstVertex,
       vertexCount: batch.vertexCount,
       byteLength,
+      recordSize: section.recordSize,
     });
   }
 

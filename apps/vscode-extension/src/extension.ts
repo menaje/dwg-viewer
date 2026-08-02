@@ -22,6 +22,7 @@ import {
   MAX_SHX_FONT_DIRECTORIES,
   ShxFontChannel,
 } from "./shx-font-channel";
+import { CtbPlotStyleChannel } from "./ctb-plot-style";
 import {
   createQualificationReporter,
   type QualificationCloseStage,
@@ -29,6 +30,8 @@ import {
   type QualificationReporter,
 } from "./qualification";
 import { renderWebviewHtml } from "./webview-html";
+import { XrefController } from "./xref-controller";
+import { ImageReferenceChannel } from "./image-reference-channel";
 
 const VIEW_TYPE = "dwgViewer.dwg";
 const ADD_SHX_FONT_FOLDERS_COMMAND = "dwgViewer.addShxFontFolders";
@@ -308,6 +311,9 @@ class DwgEditorProvider
     const rangeChannels = new Map<string, CacheRangeChannel>();
     const previewReleases = new Map<string, () => Promise<void>>();
     let fontChannel: ShxFontChannel | undefined;
+    let plotStyleChannel: CtbPlotStyleChannel | undefined;
+    let xrefController: XrefController | undefined;
+    let imageReferenceChannel: ImageReferenceChannel | undefined;
     let activeCacheId: string | undefined;
     let activeCacheReused = false;
     let activeEngine: SceneEngineDescriptor | undefined;
@@ -381,6 +387,12 @@ class DwgEditorProvider
       previewReleases.clear();
       fontChannel?.dispose();
       fontChannel = undefined;
+      plotStyleChannel?.dispose();
+      plotStyleChannel = undefined;
+      xrefController?.dispose();
+      xrefController = undefined;
+      imageReferenceChannel?.dispose();
+      imageReferenceChannel = undefined;
       await Promise.allSettled(
         channels.map((channel) => channel.dispose()),
       );
@@ -410,6 +422,17 @@ class DwgEditorProvider
         "dwgViewer",
         document.uri,
       );
+      const drawingDirectory = path.dirname(document.uri.fsPath);
+      const workspaceDirectory =
+        vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
+      const packageDirectory = path.dirname(drawingDirectory);
+      const projectDirectories = [
+        ...(workspaceDirectory &&
+        path.relative(workspaceDirectory, packageDirectory).startsWith("..")
+          ? []
+          : [packageDirectory]),
+        ...(workspaceDirectory ? [workspaceDirectory] : []),
+      ];
       const rawDirectories = configuration.get<unknown>(
         "shxFontDirectories",
         [],
@@ -429,9 +452,48 @@ class DwgEditorProvider
       return new ShxFontChannel(
         cacheId,
         {
-          drawingDirectory: path.dirname(document.uri.fsPath),
+          drawingDirectory,
+          projectDirectories,
           fontDirectories,
           fontMappings,
+        },
+        (message) => webviewPanel.webview.postMessage(message),
+      );
+    };
+
+    const createPlotStyleChannel = (
+      cacheId: string,
+    ): CtbPlotStyleChannel => {
+      const configuration = vscode.workspace.getConfiguration(
+        "dwgViewer",
+        document.uri,
+      );
+      const drawingDirectory = path.dirname(document.uri.fsPath);
+      const workspaceDirectory =
+        vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
+      const packageDirectory = path.dirname(drawingDirectory);
+      const projectDirectories = [
+        ...(workspaceDirectory &&
+        path.relative(workspaceDirectory, packageDirectory).startsWith("..")
+          ? []
+          : [packageDirectory]),
+        ...(workspaceDirectory ? [workspaceDirectory] : []),
+      ];
+      const rawDirectories = configuration.get<unknown>(
+        "shxFontDirectories",
+        [],
+      );
+      const resourceDirectories = Array.isArray(rawDirectories)
+        ? rawDirectories.filter(
+            (value): value is string => typeof value === "string",
+          )
+        : [];
+      return new CtbPlotStyleChannel(
+        cacheId,
+        {
+          drawingDirectory,
+          projectDirectories,
+          resourceDirectories,
         },
         (message) => webviewPanel.webview.postMessage(message),
       );
@@ -448,6 +510,10 @@ class DwgEditorProvider
       fontChannel?.dispose();
       fontChannel = activeCacheId
         ? createFontChannel(activeCacheId)
+        : undefined;
+      plotStyleChannel?.dispose();
+      plotStyleChannel = activeCacheId
+        ? createPlotStyleChannel(activeCacheId)
         : undefined;
       if (activeCacheId) {
         void webviewPanel.webview.postMessage({
@@ -633,10 +699,54 @@ class DwgEditorProvider
           return;
         }
         rangeChannels.set(prepared.cacheId, channel);
+        imageReferenceChannel = new ImageReferenceChannel({
+          context: this.context,
+          documentUri: document.uri,
+          output: this.output,
+          postMessage: (message) =>
+            webviewPanel.webview.postMessage(message),
+        });
+        imageReferenceChannel.registerSource(
+          prepared.cacheId,
+          document.uri.fsPath,
+        );
+        xrefController = new XrefController({
+          context: this.context,
+          documentUri: document.uri,
+          manager,
+          output: this.output,
+          postMessage: (message) =>
+            webviewPanel.webview.postMessage(message),
+          publishCache: async (xrefCache, sourcePath) => {
+            imageReferenceChannel?.registerSource(
+              xrefCache.cacheId,
+              sourcePath,
+            );
+            if (rangeChannels.has(xrefCache.cacheId)) {
+              return;
+            }
+            const xrefChannel = await CacheRangeChannel.open(
+              xrefCache.cacheId,
+              xrefCache.cachePath,
+              xrefCache.size,
+              (message) => webviewPanel.webview.postMessage(message),
+            );
+            if (disposed || controller.signal.aborted) {
+              await xrefChannel.dispose();
+              return;
+            }
+            rangeChannels.set(xrefCache.cacheId, xrefChannel);
+          },
+        });
+        xrefController.registerRoot(
+          prepared.cacheId,
+          document.uri.fsPath,
+        );
         activeCacheId = prepared.cacheId;
         activeCacheReused = prepared.reused;
         activeEngine = prepared.engine;
         fontChannel = createFontChannel(prepared.cacheId);
+        plotStyleChannel = createPlotStyleChannel(prepared.cacheId);
         activeCacheReadyMessage = {
           type: "dwg-cache-ready/1",
           cacheId: prepared.cacheId,
@@ -713,6 +823,15 @@ class DwgEditorProvider
           return;
         }
         if (fontChannel?.handleMessage(raw)) {
+          return;
+        }
+        if (plotStyleChannel?.handleMessage(raw)) {
+          return;
+        }
+        if (xrefController?.handleMessage(raw)) {
+          return;
+        }
+        if (imageReferenceChannel?.handleMessage(raw)) {
           return;
         }
         switch (raw?.type) {

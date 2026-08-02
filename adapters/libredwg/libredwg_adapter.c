@@ -953,6 +953,12 @@ json_conversion_coverage (const LibreDwgPrimitiveCounts *counts)
   printf (",\"solids\":%" PRIu64, counts->solids);
   printf (",\"faces\":%" PRIu64, counts->faces);
   printf (",\"wipeouts\":%" PRIu64, counts->wipeouts);
+  printf (",\"images\":%" PRIu64, counts->images);
+  printf (",\"xlines\":%" PRIu64, counts->xlines);
+  printf (",\"multileaders\":%" PRIu64, counts->multileaders);
+  printf (",\"leaders\":%" PRIu64, counts->leaders);
+  printf (",\"ole2frames\":%" PRIu64, counts->ole2frames);
+  printf (",\"viewports\":%" PRIu64, counts->viewports);
   putchar ('}');
 }
 

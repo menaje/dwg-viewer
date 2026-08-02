@@ -6,7 +6,10 @@ import {
   selectVisibleDetailBatches,
 } from "../src/detail-streamer.mjs";
 import { identityMat4 } from "../src/math.mjs";
-import { GpuLineBatchKind } from "../src/scene-cache.mjs";
+import {
+  GPU_LINE_VERTEX_RECORD_SIZE,
+  GpuLineBatchKind,
+} from "../src/scene-cache.mjs";
 
 function detailBatch({
   id,
@@ -63,7 +66,7 @@ test("selects intersecting model and block detail without expanding geometry", (
     [1, 2],
   );
   assert.deepEqual([...selected[1].instanceIndices], [0]);
-  assert.equal(selected.byteLength, 128);
+  assert.equal(selected.byteLength, 4 * GPU_LINE_VERTEX_RECORD_SIZE);
 });
 
 test("streams selected batches into a byte-budgeted renderer cache", async () => {
@@ -88,8 +91,10 @@ test("streams selected batches into a byte-budgeted renderer cache", async () =>
   const reader = {
     async readBatchVertices(batch) {
       return {
-        buffer: new ArrayBuffer(batch.vertexCount * 32),
-        byteLength: batch.vertexCount * 32,
+        buffer: new ArrayBuffer(
+          batch.vertexCount * GPU_LINE_VERTEX_RECORD_SIZE,
+        ),
+        byteLength: batch.vertexCount * GPU_LINE_VERTEX_RECORD_SIZE,
         vertexCount: batch.vertexCount,
       };
     },
@@ -137,8 +142,11 @@ test("does not upload a detail batch after the streamer is disposed", async () =
       return new Promise((resolve) => {
         finishRead = () =>
           resolve({
-            buffer: new ArrayBuffer(batch.vertexCount * 32),
-            byteLength: batch.vertexCount * 32,
+            buffer: new ArrayBuffer(
+              batch.vertexCount * GPU_LINE_VERTEX_RECORD_SIZE,
+            ),
+            byteLength:
+              batch.vertexCount * GPU_LINE_VERTEX_RECORD_SIZE,
             vertexCount: batch.vertexCount,
           });
       });
@@ -163,4 +171,101 @@ test("does not upload a detail batch after the streamer is disposed", async () =
   await streamer.whenIdle();
 
   assert.deepEqual(added, []);
+});
+
+test("can defer the initial redraw while a viewport coordinates sources", () => {
+  let redraws = 0;
+  let updates = 0;
+  const renderer = {
+    addDetailBatch() {},
+    deleteDetailBatch() {},
+    setDetailSelections() {},
+    redraw(camera) {
+      redraws += 1;
+      return { camera };
+    },
+  };
+  const streamer = new DetailStreamer(
+    { readBatchVertices() {} },
+    renderer,
+    [],
+    { instancesByBlock: new Map() },
+    {
+      onUpdate() {
+        updates += 1;
+      },
+    },
+  );
+
+  const snapshot = streamer.update(
+    {
+      origin: [0, 0, 0],
+      worldWidth: 10,
+      worldHeight: 10,
+    },
+    { redraw: false, emit: false },
+  );
+
+  assert.equal(redraws, 0);
+  assert.equal(updates, 0);
+  assert.equal(snapshot.render, null);
+  streamer.dispose();
+});
+
+test("redraws a completed detail batch with the latest interaction camera", async () => {
+  let finishRead;
+  const redraws = [];
+  const renderer = {
+    addDetailBatch(batch) {
+      return { id: batch.id };
+    },
+    deleteDetailBatch() {},
+    setDetailSelections() {},
+    redraw(camera, options) {
+      redraws.push({ camera, options });
+      return { camera };
+    },
+  };
+  const reader = {
+    readBatchVertices(batch) {
+      return new Promise((resolve) => {
+        finishRead = () =>
+          resolve({
+            buffer: new ArrayBuffer(
+              batch.vertexCount * GPU_LINE_VERTEX_RECORD_SIZE,
+            ),
+            byteLength:
+              batch.vertexCount * GPU_LINE_VERTEX_RECORD_SIZE,
+            vertexCount: batch.vertexCount,
+          });
+      });
+    },
+  };
+  const streamer = new DetailStreamer(
+    reader,
+    renderer,
+    [detailBatch({ id: 9 })],
+    { instancesByBlock: new Map() },
+  );
+  const initialCamera = {
+    origin: [0, 0, 0],
+    worldWidth: 10,
+    worldHeight: 10,
+  };
+  const latestCamera = {
+    origin: [20, 10, 0],
+    worldWidth: 40,
+    worldHeight: 20,
+  };
+
+  streamer.update(initialCamera);
+  await Promise.resolve();
+  await Promise.resolve();
+  streamer.setRenderCamera(latestCamera, { interactive: true });
+  finishRead();
+  await streamer.whenIdle();
+
+  assert.equal(redraws.at(-1).camera, latestCamera);
+  assert.deepEqual(redraws.at(-1).options, { interactive: true });
+  streamer.dispose();
 });
