@@ -157,7 +157,6 @@ jobs:
           path: |
             ${{ runner.temp }}/viewer-release/*.tgz
             ${{ runner.temp }}/viewer-release/SHA256SUMS
-          archive: false
           if-no-files-found: error
 
       - name: Publish tagged GitHub release
