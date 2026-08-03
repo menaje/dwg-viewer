@@ -1308,6 +1308,11 @@ export class CanvasTextOverlay {
         approximated: false,
         sourceId: this.sourceId,
         sourceLabel: this.sourceLabel,
+        renderDelta: Boolean(
+          this.textEntities.isRenderDelta?.(
+            occurrence.textIndex,
+          ),
+        ),
       });
     }
     return best;

@@ -6,10 +6,10 @@ import {
   OverviewSnapIndex,
   screenToWorld,
   worldToScreen,
-} from "./measurement.mjs?v=1.18.9";
+} from "./measurement.mjs?v=1.18.10";
 import {
   CompositeFilledObjectSelectionIndex,
-} from "./filled-object-review.mjs";
+} from "./filled-object-review.mjs?v=1.18.1";
 import {
   COMMON_DISPLAY_UNITS,
   calibrationFromKnownDistance,
@@ -177,6 +177,22 @@ function betterCandidate(current, candidate) {
     : current;
 }
 
+function withRenderPick(candidate, resolved) {
+  if (
+    !candidate ||
+    resolved === true ||
+    !resolved ||
+    typeof resolved !== "object" ||
+    Array.isArray(resolved)
+  ) {
+    return candidate;
+  }
+  return Object.freeze({
+    ...candidate,
+    renderPick: resolved,
+  });
+}
+
 function handleText(value) {
   if (typeof value !== "bigint" || value <= 0n) {
     return "—";
@@ -256,6 +272,7 @@ export class ReviewTools {
     getLayerVisibility,
     onFit = () => {},
     findOverlayCandidates = () => [],
+    resolveRenderPick = () => true,
     onIsolateLayer = () => {},
     onRestoreLayers = () => {},
     loadFilledObjects = async () => null,
@@ -265,6 +282,11 @@ export class ReviewTools {
     onSelectionChange = () => {},
     onStatus = () => {},
   }) {
+    if (typeof resolveRenderPick !== "function") {
+      throw new TypeError(
+        "review render pick resolver must be a function",
+      );
+    }
     this.canvas = canvas;
     this.overlay = overlay;
     this.scene = scene;
@@ -273,6 +295,7 @@ export class ReviewTools {
     this.getLayerVisibility = getLayerVisibility;
     this.onFit = onFit;
     this.findOverlayCandidates = findOverlayCandidates;
+    this.resolveRenderPick = resolveRenderPick;
     this.onIsolateLayer = onIsolateLayer;
     this.onRestoreLayers = onRestoreLayers;
     this.loadFilledObjects = loadFilledObjects;
@@ -1086,6 +1109,7 @@ export class ReviewTools {
       {
         layerZeroIndex: this.scene.renderer.layerZeroIndex,
         getLayerVisibility: this.getLayerVisibility,
+        resolveRenderPick: this.resolveRenderPick,
       },
     );
     return entry.index;
@@ -1099,6 +1123,7 @@ export class ReviewTools {
     this.index = new OverviewSnapIndex([...this.sources.values()], {
       layerZeroIndex: this.scene.renderer.layerZeroIndex,
       getLayerVisibility: this.getLayerVisibility,
+      resolveRenderPick: this.resolveRenderPick,
     });
     const snapshot = this.index.snapshot();
     const elapsed = performance.now() - started;
@@ -1178,6 +1203,7 @@ export class ReviewTools {
             truncated: collection.truncated,
             failedSources: collection.failedSources,
             getLayerVisibility: this.getLayerVisibility,
+            resolveRenderPick: this.resolveRenderPick,
           },
         );
         this.filledState = "ready";
@@ -1338,7 +1364,26 @@ export class ReviewTools {
     for (const candidate of Array.isArray(overlayCandidates)
       ? overlayCandidates
       : [overlayCandidates]) {
-      best = betterCandidate(best, candidate);
+      if (!candidate) {
+        continue;
+      }
+      const renderPick =
+        typeof candidate.handle === "bigint"
+          ? this.resolveRenderPick({
+              origin: candidate.renderDelta ? "delta" : "base",
+              sceneId: candidate.sourceId ?? "root",
+              handle: candidate.handle,
+              ownerHandle:
+                candidate.entityRecord?.ownerHandle ?? null,
+            })
+          : true;
+      if (!renderPick) {
+        continue;
+      }
+      best = betterCandidate(
+        best,
+        withRenderPick(candidate, renderPick),
+      );
     }
     if (
       best &&
@@ -1355,6 +1400,23 @@ export class ReviewTools {
           best.approximated ||
           overviewBest.objectMeasurement.approximated,
       });
+    }
+    if (
+      best &&
+      !best.renderPick &&
+      typeof best.handle === "bigint"
+    ) {
+      const renderPick = this.resolveRenderPick({
+        origin: best.renderDelta ? "delta" : "base",
+        sceneId: best.sourceId ?? "root",
+        handle: best.handle,
+        ownerHandle: best.entityRecord?.ownerHandle ?? null,
+        includeIdentity: true,
+      });
+      if (!renderPick) {
+        return null;
+      }
+      best = withRenderPick(best, renderPick);
     }
     return best;
   }

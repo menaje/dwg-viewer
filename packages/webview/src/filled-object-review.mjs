@@ -1065,6 +1065,14 @@ function fillRingIncluded(record, depth) {
   return includedHatchRing(record.hatchStyle, depth);
 }
 
+function renderPickMetadata(resolved) {
+  return resolved && resolved !== true &&
+    typeof resolved === "object" &&
+    !Array.isArray(resolved)
+    ? { renderPick: resolved }
+    : {};
+}
+
 export class FilledObjectSelectionIndex {
   constructor(
     data,
@@ -1073,14 +1081,21 @@ export class FilledObjectSelectionIndex {
       sourceLabel = "현재 도면",
       layers = Object.freeze([]),
       getLayerVisibility = () => [],
+      resolveRenderPick = () => true,
     } = {},
   ) {
+    if (typeof resolveRenderPick !== "function") {
+      throw new TypeError(
+        "filled-object render pick resolver must be a function",
+      );
+    }
     this.data = data;
     this.records = data?.records ?? [];
     this.sourceId = sourceId;
     this.sourceLabel = sourceLabel;
     this.layers = layers;
     this.getLayerVisibility = getLayerVisibility;
+    this.resolveRenderPick = resolveRenderPick;
     this.grid = new ReviewSpatialGrid(this.records);
   }
 
@@ -1119,6 +1134,15 @@ export class FilledObjectSelectionIndex {
           point,
         )
       ) {
+        continue;
+      }
+      const renderPick = this.resolveRenderPick({
+        origin: "base",
+        sceneId: this.sourceId,
+        handle: record.handle,
+        ownerHandle: record.ownerHandle,
+      });
+      if (!renderPick) {
         continue;
       }
       const boundary = nearestBoundary(
@@ -1219,6 +1243,7 @@ export class FilledObjectSelectionIndex {
         approximated: Boolean(record.approximated),
         sourceId: this.sourceId,
         sourceLabel: this.sourceLabel,
+        ...renderPickMetadata(renderPick),
       });
     }
     return best;
@@ -1239,6 +1264,7 @@ export class CompositeFilledObjectSelectionIndex {
     sources,
     {
       getLayerVisibility = () => [],
+      resolveRenderPick = () => true,
       truncated = false,
       failedSources = 0,
     } = {},
@@ -1253,6 +1279,7 @@ export class CompositeFilledObjectSelectionIndex {
               sourceLabel: source.label,
               layers: source.layers,
               getLayerVisibility,
+              resolveRenderPick,
             }),
         ),
     );

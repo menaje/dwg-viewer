@@ -276,6 +276,47 @@ test("transforms, remaps, and clips an external SOLID occurrence", () => {
   );
 });
 
+test("filters filled objects through the revision-bound render pick map", () => {
+  const data = externalSolidData({ parentClip: false });
+  const layers = Array.from({ length: 8 }, (_value, index) => ({
+    name: `Layer ${index}`,
+  }));
+  const contexts = [];
+  const pickIdentity = Object.freeze({
+    status: "base",
+    revisionId: "revision:pick:2",
+    renderId: "dwg:xref-1:384",
+  });
+  const accepted = new FilledObjectSelectionIndex(data, {
+    sourceId: "xref-1",
+    layers,
+    getLayerVisibility: () => layers.map(() => true),
+    resolveRenderPick(context) {
+      contexts.push(context);
+      return pickIdentity;
+    },
+  }).find([102, 22, 0], camera([105, 25, 0]));
+
+  assert.equal(accepted.renderPick, pickIdentity);
+  assert.deepEqual(contexts[0], {
+    origin: "base",
+    sceneId: "xref-1",
+    handle: data.records[0].handle,
+    ownerHandle: data.records[0].ownerHandle,
+  });
+
+  const rejected = new FilledObjectSelectionIndex(data, {
+    sourceId: "xref-1",
+    layers,
+    getLayerVisibility: () => layers.map(() => true),
+    resolveRenderPick: () => null,
+  });
+  assert.equal(
+    rejected.find([102, 22, 0], camera([105, 25, 0])),
+    null,
+  );
+});
+
 test("inherits the parent XREF layer for an external Layer 0 fill", () => {
   const data = externalSolidData({
     entityLayer: 0,

@@ -455,6 +455,117 @@ test("review candidate search includes text and image overlay hits", () => {
   assert.equal(found, overlayCandidate);
 });
 
+test("resolves delta overlay candidates against the active pick revision", () => {
+  const overlayCandidate = {
+    ...candidate({
+      displayPoint: [5, 5, 0],
+      kind: "entity",
+    }),
+    handle: 0x2an,
+    sourceId: "root",
+    renderDelta: true,
+    entityRecord: { ownerHandle: 0x100n },
+  };
+  const pickIdentity = Object.freeze({
+    status: "upsert",
+    revisionId: "revision:pick:2",
+    renderId: "dwg:root:2A",
+  });
+  const contexts = [];
+  const tools = Object.create(ReviewTools.prototype);
+  Object.assign(tools, {
+    camera,
+    getCamera: () => camera,
+    canvas: {
+      getBoundingClientRect: () => ({
+        left: 0,
+        top: 0,
+        width: 1_000,
+        height: 1_000,
+      }),
+    },
+    measurementPoints: [],
+    firstPoint: null,
+    detailEntries: new Map(),
+    ensureIndex: () => ({ find: () => null }),
+    findOverlayCandidates: () => [overlayCandidate],
+    resolveRenderPick(context) {
+      contexts.push(context);
+      return pickIdentity;
+    },
+  });
+
+  const found = tools.find(
+    { clientX: 500, clientY: 500 },
+    ["entity"],
+  );
+
+  assert.equal(found.renderPick, pickIdentity);
+  assert.deepEqual(contexts, [
+    {
+      origin: "delta",
+      sceneId: "root",
+      handle: 0x2an,
+      ownerHandle: 0x100n,
+    },
+  ]);
+});
+
+test("attaches the active revision once after choosing an unchanged base pick", () => {
+  const baseCandidate = {
+    ...candidate({
+      displayPoint: [5, 5, 0],
+      kind: "entity",
+    }),
+    handle: 0x2bn,
+    sourceId: "root",
+  };
+  const pickIdentity = Object.freeze({
+    status: "base",
+    revisionId: "revision:pick:2",
+    renderId: "dwg:root:2B",
+  });
+  const contexts = [];
+  const tools = Object.create(ReviewTools.prototype);
+  Object.assign(tools, {
+    camera,
+    getCamera: () => camera,
+    canvas: {
+      getBoundingClientRect: () => ({
+        left: 0,
+        top: 0,
+        width: 1_000,
+        height: 1_000,
+      }),
+    },
+    measurementPoints: [],
+    firstPoint: null,
+    detailEntries: new Map(),
+    ensureIndex: () => ({ find: () => baseCandidate }),
+    findOverlayCandidates: () => [],
+    resolveRenderPick(context) {
+      contexts.push(context);
+      return context.includeIdentity ? pickIdentity : true;
+    },
+  });
+
+  const found = tools.find(
+    { clientX: 500, clientY: 500 },
+    ["entity"],
+  );
+
+  assert.equal(found.renderPick, pickIdentity);
+  assert.deepEqual(contexts, [
+    {
+      origin: "base",
+      sceneId: "root",
+      handle: 0x2bn,
+      ownerHandle: null,
+      includeIdentity: true,
+    },
+  ]);
+});
+
 test("publishes picked and cleared selection lifecycle changes", () => {
   const changes = [];
   const tools = Object.create(ReviewTools.prototype);

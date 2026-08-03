@@ -891,8 +891,17 @@ function pixelDistance(camera, left, right, width, height) {
   );
 }
 
-function resolvedLayerIndex(sourceLayer, instances, index, layerZeroIndex) {
-  const override = instances.layerIndices?.[index] ?? NO_LAYER_OVERRIDE;
+function resolvedLayerIndex(
+  sourceLayer,
+  instances,
+  index,
+  layerZeroIndex,
+  instanceStyle = null,
+) {
+  const override =
+    instanceStyle?.layerIndex ??
+    instances.layerIndices?.[index] ??
+    NO_LAYER_OVERRIDE;
   return sourceLayer === layerZeroIndex && override !== NO_LAYER_OVERRIDE
     ? override
     : sourceLayer;
@@ -1050,15 +1059,37 @@ function betterSnapCandidate(current, candidate) {
     : current;
 }
 
+function renderPickMetadata(resolved) {
+  return resolved && resolved !== true &&
+    typeof resolved === "object" &&
+    !Array.isArray(resolved)
+    ? { renderPick: resolved }
+    : {};
+}
+
+function relatedRenderPickMetadata(resolved) {
+  return resolved && resolved !== true &&
+    typeof resolved === "object" &&
+    !Array.isArray(resolved)
+    ? { relatedRenderPick: resolved }
+    : {};
+}
+
 export class OverviewSnapIndex {
   constructor(
     sources,
     {
       layerZeroIndex = -1,
       getLayerVisibility = () => [],
+      resolveRenderPick = () => true,
       maximumOccurrences = MAX_OCCURRENCES,
     } = {},
   ) {
+    if (typeof resolveRenderPick !== "function") {
+      throw new TypeError(
+        "overview snap render pick resolver must be a function",
+      );
+    }
     this.sources = [...sources].map((source) =>
       Object.freeze({
         ...source,
@@ -1072,6 +1103,7 @@ export class OverviewSnapIndex {
     );
     this.layerZeroIndex = layerZeroIndex;
     this.getLayerVisibility = getLayerVisibility;
+    this.resolveRenderPick = resolveRenderPick;
     this.maximumOccurrences = maximumOccurrences;
     this.batches = [];
     this.insertions = [];
@@ -1482,6 +1514,7 @@ export class OverviewSnapIndex {
               instanceIndex,
               displayPoint: Object.freeze(displayPoint),
               measurementPoint: Object.freeze(measurementPoint),
+              sourceLayer,
               layerIndex,
               coordinateSpace:
                 instances.coordinateSpaceIds?.[instanceIndex] ?? 1,
@@ -1564,6 +1597,17 @@ export class OverviewSnapIndex {
         ) {
           continue;
         }
+        const renderPick = this.resolveRenderPick({
+          origin: "base",
+          sceneId: record.source.id,
+          handle: record.handle,
+          blockIndex: record.block.index,
+          instances: record.instances,
+          instanceIndex: record.instanceIndex,
+        });
+        if (!renderPick) {
+          continue;
+        }
         const distancePixels = pixelDistance(
           camera,
           point,
@@ -1609,6 +1653,7 @@ export class OverviewSnapIndex {
             approximated: false,
             sourceId: record.source.id,
             sourceLabel: record.source.label ?? "",
+            ...renderPickMetadata(renderPick),
           }),
         );
       }
@@ -1618,10 +1663,32 @@ export class OverviewSnapIndex {
       this.refreshCurveCenters();
       for (const index of this.curveCenterGrid.query(queryBounds)) {
         const record = this.curveCenters[index];
+        if (!record.curveMeasurement) {
+          continue;
+        }
+        const renderPick = this.resolveRenderPick({
+          origin: "base",
+          sceneId: record.source.id,
+          handle: record.curve.handle,
+          ownerHandle: record.curve.ownerHandle,
+          instances: record.instances,
+          instanceIndex: record.instanceIndex,
+          sourceLayerIndex: record.sourceLayer,
+          layerZeroIndex: this.layerZeroIndex,
+        });
+        if (!renderPick) {
+          continue;
+        }
+        const layerIndex = resolvedLayerIndex(
+          record.sourceLayer,
+          record.instances,
+          record.instanceIndex,
+          this.layerZeroIndex,
+          renderPick?.instanceStyle,
+        );
         if (
-          !record.curveMeasurement ||
           !layerIsVisible(
-            record.layerIndex,
+            layerIndex,
             record.instances,
             record.instanceIndex,
             record.source.instanceGraph,
@@ -1659,9 +1726,9 @@ export class OverviewSnapIndex {
             distancePixels,
             coordinateSpace: record.coordinateSpace,
             handle: record.curve.handle,
-            layerIndex: record.layerIndex,
+            layerIndex,
             layerName:
-              record.source.layers?.[record.layerIndex]?.name ?? "",
+              record.source.layers?.[layerIndex]?.name ?? "",
             sourceKind,
             sourceKindName: SOURCE_KIND_NAMES[sourceKind],
             color: record.curve.color,
@@ -1672,6 +1739,7 @@ export class OverviewSnapIndex {
             sourceLabel: record.source.label ?? "",
             curveMeasurement: record.curveMeasurement,
             curveSource: record.curve,
+            ...renderPickMetadata(renderPick),
           }),
         );
       }
@@ -1700,11 +1768,25 @@ export class OverviewSnapIndex {
         if ((details.style & (1 << 16)) !== 0) {
           continue;
         }
+        const renderPick = this.resolveRenderPick({
+          origin: "base",
+          sceneId: source.id,
+          handle: details.handle,
+          batch,
+          instances,
+          instanceIndex,
+          sourceLayerIndex: details.layerIndex,
+          layerZeroIndex: this.layerZeroIndex,
+        });
+        if (!renderPick) {
+          continue;
+        }
         const layerIndex = resolvedLayerIndex(
           details.layerIndex,
           instances,
           instanceIndex,
           this.layerZeroIndex,
+          renderPick?.instanceStyle,
         );
         if (
           !layerIsVisible(
@@ -1760,6 +1842,7 @@ export class OverviewSnapIndex {
             measureLast: Object.freeze([...measureLast]),
             coordinateSpace:
               instances.coordinateSpaceIds?.[instanceIndex] ?? 1,
+            renderPick,
           });
         }
         const exactCurve = source.exactCurves?.get(details.handle);
@@ -1910,6 +1993,7 @@ export class OverviewSnapIndex {
               instanceIndex,
               details.sourceKind,
             ),
+            ...renderPickMetadata(renderPick),
           }));
         }
       }
@@ -2005,6 +2089,8 @@ export class OverviewSnapIndex {
             approximated: false,
             sourceId: first.source.id,
             sourceLabel: first.source.label ?? "",
+            ...renderPickMetadata(first.renderPick),
+            ...relatedRenderPickMetadata(other.renderPick),
           }),
         );
       }

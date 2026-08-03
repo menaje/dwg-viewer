@@ -198,6 +198,16 @@ scene의 base cache를 보수적으로 제외한다. delta overlay는 계속 표
 cache resource를 파괴하거나 다시 쓰지 않으므로 preview rollback은 같은
 atomic state swap으로 즉시 원복되며, DWG 형식이 아닌 알 수 없는 dependency
 ID는 추측하지 않고 관찰 상태로만 보존한다.
+같은 atomic state에는 현재 revision과 native identity pick map도 포함된다.
+root/XREF overview, detail, exact-curve와 filled-object 인덱스는 후보를
+확정하기 전에 renderer의 현재 map을 조회하므로 tombstone, 대체된 base와
+dependency-invalidated base를 다음 후보로 넘긴다. sparse transform이
+적용된 occurrence의 과거 CPU 좌표와 hidden style occurrence는 fail-closed로
+제외한다. Canvas text delta hit는 base hit와 구분되어 upsert identity로
+해결되며, preview rollback은 base pick revision과 후보 허용 상태를 같은
+swap으로 복원한다. 최종 후보만 current revision/Render ID/external
+identity로 투영하고 selection controller가 그 revision으로 이동한 뒤 Host
+event를 발행하므로 후보 순회에는 전체 identity object 할당이 추가되지 않는다.
 `MockRenderDeltaSource`와 공용 conformance는 stale replay 뒤에도
 source/overlay/pick revision이 함께 전진하는지 검증한다.
 `@dwg-viewer/viewer-ui`의 첫 public controller는 review toolbar의 active

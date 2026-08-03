@@ -162,6 +162,50 @@ test("snaps to endpoints, midpoints, and nearest points through a spatial index"
   assert.deepEqual(nearest.measurementPoint, [7, 0, 0]);
 });
 
+test("filters stale base geometry through the active render pick map", () => {
+  const contexts = [];
+  const pickIdentity = Object.freeze({
+    status: "base",
+    revisionId: "revision:pick:2",
+    renderId: "dwg:root:2A",
+  });
+  const index = new OverviewSnapIndex(
+    [
+      source({
+        segments: [
+          { first: [0, 0, 0], last: [10, 0, 0], handle: 41n },
+          { first: [0, 0, 0], last: [10, 0, 0], handle: 42n },
+        ],
+      }),
+    ],
+    {
+      layerZeroIndex: 0,
+      getLayerVisibility: () => [true, true],
+      resolveRenderPick(context) {
+        contexts.push(context);
+        return context.handle === 41n ? null : pickIdentity;
+      },
+    },
+  );
+
+  const selected = index.find([5, 0.01, 0], camera, {
+    snapKinds: ["nearest"],
+  });
+
+  assert.equal(selected.handle, 42n);
+  assert.equal(selected.renderPick, pickIdentity);
+  assert.ok(
+    contexts.some(
+      (context) =>
+        context.origin === "base" &&
+        context.sceneId === "root" &&
+        context.handle === 41n &&
+        context.batch?.id === 0 &&
+        context.instanceIndex === 0,
+    ),
+  );
+});
+
 test("reports whole-object length and area for a closed polyline", () => {
   const index = new OverviewSnapIndex([
     source({

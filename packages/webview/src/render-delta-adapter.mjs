@@ -295,6 +295,7 @@ function identityStatus({
 }) {
   return Object.freeze({
     status,
+    aspect: operation.aspect,
     revisionId,
     layerId: operation.layerId,
     renderId,
@@ -994,8 +995,17 @@ export class DwgRenderDeltaAdapter {
   }
 
   #activate(state) {
+    const pickIdentities = [...state.identities.values()].map(
+      (identity) =>
+        Object.freeze({
+          ...identity,
+          revisionId: state.revisionId,
+        }),
+    );
     return synchronous(
       this.#renderer.activateRenderDelta({
+        revisionId: state.revisionId,
+        pickIdentities,
         lines: activeLines(state),
         fills: activeFills(state),
         points: activePoints(state),
@@ -1504,6 +1514,7 @@ export class DwgRenderDeltaAdapter {
         })
       : Object.freeze({
         status: "base",
+        aspect: null,
         revisionId: state.revisionId,
         layerId: null,
         renderId: null,

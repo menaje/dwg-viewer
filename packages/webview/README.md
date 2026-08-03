@@ -126,7 +126,11 @@ layout tabs on hover, focus or an explicit click.
   SOLID/3DFACE/WIPEOUT primitives and Canvas text without rewriting immutable
   Scene Cache buffers, sparsely replaces root/XREF block occurrence matrices
   and resolved style/visibility metadata across WebGL, Canvas text and raster
-  images, and restores draw and pick state on preview rollback.
+  images, resolves root/XREF review candidates through the same
+  revision-bound native identity/dependency map, and restores draw and pick
+  state on preview rollback. Tombstoned, replaced, dependency-invalidated,
+  transformed-stale and hidden-style base candidates fail closed while native
+  Canvas text delta hits resolve as upserts.
 - Supports anchored wheel/button zoom, pointer pan and fitted-view reset.
 - Keeps byte-budgeted detail streaming active while zooming out so switching
   to the sampled overview cannot abruptly remove visible objects.

@@ -453,6 +453,8 @@ function dependencyDelta() {
 class FakeDeltaRenderer {
   constructor() {
     this.active = Object.freeze({
+      revisionId: null,
+      pickIdentities: Object.freeze([]),
       lines: Object.freeze([]),
       fills: Object.freeze([]),
       points: Object.freeze([]),
@@ -508,6 +510,8 @@ class FakeDeltaRenderer {
   }
 
   activateRenderDelta({
+    revisionId = null,
+    pickIdentities = [],
     lines = [],
     fills = [],
     points = [],
@@ -536,6 +540,8 @@ class FakeDeltaRenderer {
       }
     }
     this.active = Object.freeze({
+      revisionId,
+      pickIdentities: Object.freeze([...pickIdentities]),
       lines: Object.freeze([...lines]),
       fills: Object.freeze([...fills]),
       points: Object.freeze([...points]),
@@ -602,6 +608,25 @@ test("stages a DWG line overlay and restores it on preview rollback", () => {
   assert.equal(preview.previewId, delta.deltaId);
   assert.equal(renderer.active.lines.length, 1);
   assert.equal(renderer.active.baseSuppressions.length, 1);
+  assert.equal(renderer.active.revisionId, REVISION_TWO);
+  assert.deepEqual(
+    renderer.active.pickIdentities.map(
+      ({ status, aspect, revisionId, renderId }) => ({
+        status,
+        aspect,
+        revisionId,
+        renderId,
+      }),
+    ),
+    [
+      {
+        status: "upsert",
+        aspect: RenderDeltaAspect.GEOMETRY,
+        revisionId: REVISION_TWO,
+        renderId: RENDER_ID,
+      },
+    ],
+  );
   assert.equal(renderer.resources.size, 1);
   assert.deepEqual(adapter.snapshot(), {
     revisionId: REVISION_TWO,
@@ -637,6 +662,8 @@ test("stages a DWG line overlay and restores it on preview rollback", () => {
   assert.equal(renderer.active.points.length, 0);
   assert.equal(renderer.active.texts.length, 0);
   assert.equal(renderer.active.baseSuppressions.length, 0);
+  assert.equal(renderer.active.revisionId, REVISION_ONE);
+  assert.deepEqual(renderer.active.pickIdentities, []);
   assert.equal(renderer.resources.size, 0);
   assert.equal(adapter.acceptsBasePick("root", 0x2an), true);
   assert.equal(adapter.snapshot().revisionId, REVISION_ONE);
@@ -1176,6 +1203,13 @@ test("keeps unchanged pick identities on the active renderer revision", () => {
   const identity = adapter.lookupIdentity("root", 0x2an);
   assert.equal(identity.status, "upsert");
   assert.equal(identity.revisionId, REVISION_THREE);
+  assert.equal(renderer.active.revisionId, REVISION_THREE);
+  assert.equal(
+    renderer.active.pickIdentities.find(
+      (entry) => entry.handle === 0x2an,
+    ).revisionId,
+    REVISION_THREE,
+  );
   assert.deepEqual(adapter.snapshot().invalidatedDependencyIds, [
     "block:door",
     "type:wall",

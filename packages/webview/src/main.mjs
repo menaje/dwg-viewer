@@ -59,12 +59,12 @@ import {
   MAX_REVIEW_FILLED_OCCURRENCES,
   MAX_REVIEW_FILLED_RINGS,
   MAX_REVIEW_FILLED_VERTICES,
-} from "./filled-object-review.mjs";
+} from "./filled-object-review.mjs?v=1.18.1";
 import { createMeasurementFormat } from "./measurement-format.mjs";
 import { ComplexLinetypeOverlay } from "./complex-linetype-overlay.mjs?v=1.18.13";
 import { curveRefinementCameraKey } from "./curve-contract.mjs";
-import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.13";
-import { ReviewTools } from "./review-tools.mjs?v=1.18.15";
+import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.14";
+import { ReviewTools } from "./review-tools.mjs?v=1.18.16";
 import {
   isOutlineFontReference,
   isShxFontReference,
@@ -76,7 +76,7 @@ import {
   CompositeTextOverlay,
   registerLocalOutlineFont,
   unregisterLocalOutlineFont,
-} from "./text-overlay.mjs?v=1.18.13";
+} from "./text-overlay.mjs?v=1.18.14";
 import {
   loadExternalFirstFrame,
   loadFirstFrame,
@@ -388,10 +388,27 @@ function projectDwgSelection(candidate) {
     0,
     240,
   );
+  const mappedRenderId =
+    typeof candidate?.renderPick?.renderId === "string"
+      ? candidate.renderPick.renderId.slice(0, 512)
+      : null;
   return Object.freeze({
-    renderId: nativeHandle
-      ? `dwg:${sourceId}:${nativeHandle}`
-      : null,
+    renderId:
+      mappedRenderId ||
+      (nativeHandle ? `dwg:${sourceId}:${nativeHandle}` : null),
+    renderRevisionId:
+      typeof candidate?.renderPick?.revisionId === "string"
+        ? candidate.renderPick.revisionId.slice(0, 512)
+        : null,
+    renderLayerId:
+      typeof candidate?.renderPick?.layerId === "string"
+        ? candidate.renderPick.layerId.slice(0, 512)
+        : null,
+    externalIdentityToken:
+      typeof candidate?.renderPick?.externalIdentityToken ===
+      "string"
+        ? candidate.renderPick.externalIdentityToken.slice(0, 512)
+        : null,
     sourceId,
     nativeReference: nativeHandle
       ? Object.freeze({
@@ -4783,6 +4800,9 @@ function installInteraction(
         }),
       ].filter(Boolean);
     },
+    resolveRenderPick(pick) {
+      return scene.renderer.resolveRenderDeltaPick(pick);
+    },
     onIsolateLayer(layerIndex) {
       const visibility = scene.renderer.getLayerVisibility();
       if (
@@ -4830,6 +4850,17 @@ function installInteraction(
         return;
       }
       if (selection) {
+        const renderRevisionId =
+          selection.renderPick?.revisionId;
+        if (
+          typeof renderRevisionId === "string" &&
+          renderRevisionId !==
+            controller.snapshot().revisionId
+        ) {
+          controller.advanceRevision(renderRevisionId, {
+            reason: "render-delta.revision",
+          });
+        }
         controller.replace(selection, options);
       } else {
         controller.clear(options);

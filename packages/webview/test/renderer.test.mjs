@@ -1082,6 +1082,8 @@ test("atomically overlays delta points and restores base points", () => {
   assert.equal(overlaid.renderDeltaPointGpuBytes, 32);
   assert.equal(overlaid.renderDeltaGpuBytes, 32);
   assert.deepEqual(renderer.renderDeltaSnapshot(), {
+    revisionId: null,
+    pickIdentities: 0,
     lineBatches: 0,
     fillBatches: 0,
     pointBatches: 1,
@@ -1410,7 +1412,19 @@ test("sparsely replaces a shared block occurrence transform", () => {
     transform.buffer.byteLength,
   );
   assert.equal(overlaid.renderDeltaGpuBytes, 0);
+  assert.equal(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x99n,
+      batch: blockBatch,
+      instances,
+      instanceIndex: 0,
+    }),
+    null,
+  );
   assert.deepEqual(renderer.renderDeltaSnapshot(), {
+    revisionId: null,
+    pickIdentities: 0,
     lineBatches: 0,
     fillBatches: 0,
     pointBatches: 0,
@@ -1579,7 +1593,21 @@ test("sparsely replaces and hides shared block occurrence styles", () => {
     overlaid.renderDeltaStyleBytes,
     style.buffer.byteLength,
   );
+  assert.equal(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x99n,
+      batch: blockBatch,
+      instances,
+      instanceIndex: 0,
+      sourceLayerIndex: 0,
+      layerZeroIndex: 0,
+    }).instanceStyle,
+    style.record,
+  );
   assert.deepEqual(renderer.renderDeltaSnapshot(), {
+    revisionId: null,
+    pickIdentities: 0,
     lineBatches: 0,
     fillBatches: 0,
     pointBatches: 0,
@@ -1616,6 +1644,16 @@ test("sparsely replaces and hides shared block occurrence styles", () => {
     hiddenDrawCount,
   );
   assert.equal(hiddenMetrics.submittedInstances, 0);
+  assert.equal(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x99n,
+      batch: blockBatch,
+      instances,
+      instanceIndex: 0,
+    }),
+    null,
+  );
 
   renderer.activateRenderDelta();
   renderer.releaseRenderDeltaResources([hiddenEntry]);
@@ -2208,7 +2246,28 @@ test("atomically invalidates scene-scoped block and type caches", () => {
   );
 
   renderer.activateRenderDelta({
+    revisionId: "revision:dwg-pick:2",
+    pickIdentities: [
+      {
+        status: "upsert",
+        aspect: "geometry",
+        revisionId: "revision:dwg-pick:2",
+        layerId: "layer:dwg-live",
+        renderId: "dwg:root:2A",
+        sceneId: "root",
+        handleLow: 0x2a,
+        handleHigh: 0,
+        externalIdentityToken: "external:dwg:2A",
+      },
+    ],
     lines: [overlay],
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x2a,
+        handleHigh: 0,
+      },
+    ],
     invalidatedDependencyIds: [rootBlockDependency],
   });
   const invalidated = renderer.redraw(external.camera);
@@ -2218,6 +2277,74 @@ test("atomically invalidates scene-scoped block and type caches", () => {
   assert.deepEqual(
     renderer.renderDeltaSnapshot().invalidatedDependencyIds,
     [rootBlockDependency],
+  );
+  assert.deepEqual(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x2an,
+      origin: "delta",
+    }),
+    {
+      status: "upsert",
+      aspect: "geometry",
+      revisionId: "revision:dwg-pick:2",
+      layerId: "layer:dwg-live",
+      renderId: "dwg:root:2A",
+      sceneId: "root",
+      handle: 0x2an,
+      handleLow: 0x2a,
+      handleHigh: 0,
+      externalIdentityToken: "external:dwg:2A",
+      origin: "delta",
+    },
+  );
+  assert.equal(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x2an,
+      origin: "base",
+    }),
+    null,
+  );
+  assert.equal(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x2bn,
+      batch: rootBatch,
+    }),
+    null,
+  );
+  assert.equal(
+    renderer.lookupRenderDeltaPick(
+      "xref:shared",
+      0x2an,
+    ).revisionId,
+    "revision:dwg-pick:2",
+  );
+  assert.throws(
+    () =>
+      renderer.activateRenderDelta({
+        revisionId: "revision:dwg-pick:3",
+        pickIdentities: [
+          {
+            status: "upsert",
+            aspect: "geometry",
+            revisionId: "revision:dwg-pick:2",
+            layerId: "layer:dwg-live",
+            renderId: "dwg:root:2A",
+            sceneId: "root",
+            handleLow: 0x2a,
+            handleHigh: 0,
+            externalIdentityToken: null,
+          },
+        ],
+        lines: [overlay],
+      }),
+    /pick identity revision is invalid/u,
+  );
+  assert.equal(
+    renderer.renderDeltaSnapshot().revisionId,
+    "revision:dwg-pick:2",
   );
   assert.throws(
     () =>
@@ -2241,6 +2368,21 @@ test("atomically invalidates scene-scoped block and type caches", () => {
     renderer.renderDeltaSnapshot().invalidatedDependencyIds,
     [],
   );
+  assert.equal(
+    renderer.lookupRenderDeltaPick(
+      "root",
+      0x2an,
+    ).status,
+    "base",
+  );
+  assert.equal(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x2an,
+      origin: "delta",
+    }),
+    null,
+  );
 
   const xrefTypeDependency = dwgTypeRenderDependencyId(
     "xref:shared",
@@ -2253,6 +2395,49 @@ test("atomically invalidates scene-scoped block and type caches", () => {
   const typeInvalidated = renderer.redraw(external.camera);
   assert.equal(typeInvalidated.drawCalls, 1);
   assert.equal(typeInvalidated.renderDeltaDrawCalls, 0);
+
+  renderer.activateRenderDelta({
+    revisionId: "revision:dwg-pick:3",
+    pickIdentities: [
+      {
+        status: "tombstone",
+        aspect: "entity",
+        revisionId: "revision:dwg-pick:3",
+        layerId: "layer:dwg-live",
+        renderId: "dwg:root:2A",
+        sceneId: "root",
+        handleLow: 0x2a,
+        handleHigh: 0,
+        externalIdentityToken: null,
+      },
+    ],
+    baseSuppressions: [
+      {
+        sceneId: "root",
+        handleLow: 0x2a,
+        handleHigh: 0,
+      },
+    ],
+  });
+  assert.equal(
+    renderer.lookupRenderDeltaPick("root", 0x2an).status,
+    "tombstone",
+  );
+  assert.equal(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x2an,
+    }),
+    null,
+  );
+  assert.equal(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x2an,
+      origin: "delta",
+    }),
+    null,
+  );
 
   renderer.activateRenderDelta();
   renderer.releaseRenderDeltaResources([overlay]);

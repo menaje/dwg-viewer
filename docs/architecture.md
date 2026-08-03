@@ -105,6 +105,18 @@ overlays remain drawable. The resources are retained under their existing
 bounds instead of being destructively rewritten, so preview rollback restores
 them in the same atomic state swap. Unknown non-DWG dependency IDs remain
 observable without being guessed or parsed by the adapter.
+The same renderer activation swaps a bounded native pick map and its revision.
+Root/XREF overview, streamed detail, exact-curve and filled-object review
+indexes resolve each base candidate against that live state, so a tombstoned,
+replaced or dependency-invalidated candidate cannot win while a nearby
+unchanged candidate remains selectable. Stale CPU candidates for a sparsely
+transformed occurrence and hidden styled occurrences fail closed. Canvas text
+marks dynamic hits as delta-origin picks, allowing the upsert identity while
+the suppressed base hit remains unavailable. Rollback restores the committed
+pick revision without rebuilding the immutable indexes. Only the winning
+candidate is projected to its current revision, Render ID and external
+identity; the selection controller advances to that revision before publishing
+the Host event.
 The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
 remain Webview adapters and move incrementally without changing raw DWG
 qualification. `ViewerReviewUiController` now owns review toolbar state,

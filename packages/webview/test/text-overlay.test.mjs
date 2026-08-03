@@ -322,6 +322,7 @@ test("replaces and rolls back a native Canvas text record", async () => {
     tolerancePixels: 20,
   });
   assert.equal(selected?.entityRecord.value, "수정 문자");
+  assert.equal(selected?.renderDelta, true);
 
   overlay.setRenderDeltaState({
     invalidatedDependencyIds: [typeDependency],
@@ -526,6 +527,7 @@ test("selects rendered text by its screen footprint", async () => {
   assert.equal(selected.handle, 300n);
   assert.equal(selected.sourceKindName, "TEXT");
   assert.equal(selected.entityRecord.value, "한글");
+  assert.equal(selected.renderDelta, false);
   assert.equal(insertion.kind, "insertion");
   assert.deepEqual(insertion.displayPoint, [101, 201, 0]);
 });

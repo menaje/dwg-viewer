@@ -50,6 +50,9 @@ import {
 import {
   indexDwgRenderDeltaDependencies,
   isDwgRenderDeltaBatchInvalidated,
+  isDwgRenderDeltaBlockInvalidated,
+  isDwgRenderDeltaOwnerInvalidated,
+  isDwgRenderDeltaSceneInvalidated,
 } from "./render-delta-dependency.mjs";
 
 const VERTEX_STRIDE = 36;
@@ -69,7 +72,23 @@ const MAX_RENDER_DELTA_GPU_BYTES = 64 * 1024 * 1024;
 const MAX_RENDER_DELTA_TEXT_BYTES = 8 * 1024 * 1024;
 const MAX_RENDER_DELTA_TRANSFORM_BYTES = 8 * 1024 * 1024;
 const MAX_RENDER_DELTA_STYLE_BYTES = 8 * 1024 * 1024;
+const MAX_RENDER_DELTA_PICK_IDENTITIES = 131_072;
 const ROOT_RENDER_DELTA_SCENE_ID = "root";
+const RENDER_DELTA_PICK_ORIGINS = new Set(["base", "delta"]);
+const RENDER_DELTA_PICK_STATUSES = new Set([
+  "base",
+  "upsert",
+  "tombstone",
+]);
+const RENDER_DELTA_PICK_ASPECTS = new Set([
+  "entity",
+  "geometry",
+  "text",
+  "transform",
+  "style",
+  "identity",
+  "dependency",
+]);
 const INTERACTIVE_MINIMUM_PIXEL_SPAN = 0.75;
 const EMPTY_INSTANCE_INDICES = new Uint32Array(0);
 const MODEL_INSTANCES = Object.freeze({
@@ -1618,6 +1637,30 @@ function renderDeltaIdentityKey(sceneId, handleLow, handleHigh) {
   return `${sceneId}\u0000${handleHigh}:${handleLow}`;
 }
 
+function boundedRenderDeltaPickValue(value, label, {
+  nullable = false,
+} = {}) {
+  if (nullable && value === null) {
+    return null;
+  }
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 512
+  ) {
+    throw new TypeError(`${label} is invalid`);
+  }
+  return value;
+}
+
+function normalizeRenderDeltaRevisionId(value) {
+  return boundedRenderDeltaPickValue(
+    value,
+    "render delta revision ID",
+    { nullable: true },
+  );
+}
+
 function normalizeRenderDeltaIdentity(value) {
   const sceneId = String(value?.sceneId ?? "");
   const handleLow = value?.handleLow;
@@ -1640,6 +1683,117 @@ function normalizeRenderDeltaIdentity(value) {
     handleHigh,
     key: renderDeltaIdentityKey(sceneId, handleLow, handleHigh),
   });
+}
+
+function normalizeRenderDeltaPickIdentity(value, revisionId) {
+  const identity = normalizeRenderDeltaIdentity(value);
+  const status = value?.status;
+  if (
+    !RENDER_DELTA_PICK_STATUSES.has(status) ||
+    value?.revisionId !== revisionId
+  ) {
+    throw new TypeError(
+      "render delta pick identity revision is invalid",
+    );
+  }
+  const aspect =
+    value?.aspect === null
+      ? null
+      : boundedRenderDeltaPickValue(
+          value?.aspect,
+          "render delta pick aspect",
+        );
+  if (aspect !== null && !RENDER_DELTA_PICK_ASPECTS.has(aspect)) {
+    throw new TypeError("render delta pick aspect is invalid");
+  }
+  const layerId =
+    value?.layerId === null
+      ? null
+      : boundedRenderDeltaPickValue(
+          value?.layerId,
+          "render delta pick layer ID",
+        );
+  const renderId =
+    value?.renderId === null
+      ? null
+      : boundedRenderDeltaPickValue(
+          value?.renderId,
+          "render delta pick Render ID",
+        );
+  const externalIdentityToken =
+    value?.externalIdentityToken === null
+      ? null
+      : boundedRenderDeltaPickValue(
+          value?.externalIdentityToken,
+          "render delta pick external identity token",
+        );
+  return Object.freeze({
+    status,
+    aspect,
+    revisionId,
+    layerId,
+    renderId,
+    sceneId: identity.sceneId,
+    handle:
+      BigInt(identity.handleLow) |
+      (BigInt(identity.handleHigh) << 32n),
+    handleLow: identity.handleLow,
+    handleHigh: identity.handleHigh,
+    externalIdentityToken,
+    key: identity.key,
+  });
+}
+
+function normalizeRenderDeltaPickHandle(value) {
+  let handle;
+  try {
+    handle =
+      typeof value === "bigint"
+        ? value
+        : BigInt(
+            typeof value === "string"
+              ? `0x${value.replace(/^0x/iu, "")}`
+              : value,
+          );
+  } catch {
+    throw new TypeError("render delta pick handle is invalid");
+  }
+  if (handle < 0n || handle > 0xffff_ffff_ffff_ffffn) {
+    throw new RangeError("render delta pick handle exceeds u64");
+  }
+  const handleLow = Number(handle & 0xffff_ffffn);
+  const handleHigh = Number(handle >> 32n);
+  return Object.freeze({
+    handle,
+    handleLow,
+    handleHigh,
+  });
+}
+
+function publicRenderDeltaPickIdentity(identity) {
+  const { key: _key, ...value } = identity;
+  return value;
+}
+
+function baseRenderDeltaPickIdentity(
+  revisionId,
+  sceneId,
+  handle,
+) {
+  return {
+    status: "base",
+    aspect: null,
+    revisionId,
+    layerId: null,
+    renderId:
+      `dwg:${sceneId}:` +
+      handle.handle.toString(16).toUpperCase(),
+    sceneId,
+    handle: handle.handle,
+    handleLow: handle.handleLow,
+    handleHigh: handle.handleHigh,
+    externalIdentityToken: null,
+  };
 }
 
 function cloneRenderDeltaBatch(
@@ -1902,6 +2056,9 @@ export class WebGlLineRenderer {
     this.renderDeltaTransformResourceBytes = 0;
     this.renderDeltaStyleResourceBytes = 0;
     this.renderDeltaState = Object.freeze({
+      revisionId: null,
+      pickIdentities: Object.freeze([]),
+      pickIdentityIndex: new Map(),
       lines: Object.freeze([]),
       fills: Object.freeze([]),
       points: Object.freeze([]),
@@ -1915,6 +2072,7 @@ export class WebGlLineRenderer {
     });
     this.renderDeltaDependencyIndex =
       indexDwgRenderDeltaDependencies([]);
+    this.renderDeltaBlockIndexesByBlocks = new WeakMap();
     this.renderDeltaTransformIndexesByGraph = new WeakMap();
     this.renderDeltaStyleIndexesByGraph = new WeakMap();
     this.renderDeltaRangeCache = new WeakMap();
@@ -3602,7 +3760,224 @@ export class WebGlLineRenderer {
     );
   }
 
+  renderDeltaPickScene(sceneId) {
+    if (sceneId === ROOT_RENDER_DELTA_SCENE_ID) {
+      return this.overviewScene
+        ? {
+            blocks: this.blocks,
+            instanceGraph: this.overviewScene.instanceGraph,
+          }
+        : null;
+    }
+    return this.externalScenes.get(sceneId) ?? null;
+  }
+
+  renderDeltaBlockIndex(blocks) {
+    let index = this.renderDeltaBlockIndexesByBlocks.get(blocks);
+    if (!index) {
+      index = new Map(
+        (blocks ?? []).map((block) => [
+          block.handle,
+          block.index,
+        ]),
+      );
+      this.renderDeltaBlockIndexesByBlocks.set(blocks, index);
+    }
+    return index;
+  }
+
+  lookupRenderDeltaPick(sceneId, handle) {
+    const normalizedSceneId = boundedRenderDeltaPickValue(
+      sceneId,
+      "render delta pick scene ID",
+    );
+    if (!this.renderDeltaPickScene(normalizedSceneId)) {
+      return null;
+    }
+    const normalizedHandle =
+      normalizeRenderDeltaPickHandle(handle);
+    const key = renderDeltaIdentityKey(
+      normalizedSceneId,
+      normalizedHandle.handleLow,
+      normalizedHandle.handleHigh,
+    );
+    const mapped =
+      this.renderDeltaState.pickIdentityIndex.get(key);
+    if (mapped) {
+      return Object.freeze(
+        publicRenderDeltaPickIdentity(mapped),
+      );
+    }
+    return Object.freeze(
+      baseRenderDeltaPickIdentity(
+        this.renderDeltaState.revisionId,
+        normalizedSceneId,
+        normalizedHandle,
+      ),
+    );
+  }
+
+  resolveRenderDeltaPick({
+    sceneId = ROOT_RENDER_DELTA_SCENE_ID,
+    handle,
+    origin = "base",
+    ownerHandle = null,
+    batch = null,
+    blockIndex = null,
+    instances = null,
+    instanceIndex = null,
+    sourceLayerIndex = null,
+    layerZeroIndex = null,
+    includeIdentity = false,
+  } = {}) {
+    if (
+      !RENDER_DELTA_PICK_ORIGINS.has(origin) ||
+      typeof includeIdentity !== "boolean"
+    ) {
+      throw new TypeError("render delta pick origin is invalid");
+    }
+    const normalizedSceneId = boundedRenderDeltaPickValue(
+      sceneId,
+      "render delta pick scene ID",
+    );
+    const scene = this.renderDeltaPickScene(normalizedSceneId);
+    if (!scene) {
+      return null;
+    }
+    const normalizedHandle =
+      normalizeRenderDeltaPickHandle(handle);
+    const key = renderDeltaIdentityKey(
+      normalizedSceneId,
+      normalizedHandle.handleLow,
+      normalizedHandle.handleHigh,
+    );
+    const mapped =
+      this.renderDeltaState.pickIdentityIndex.get(key);
+    if (origin === "delta") {
+      return mapped?.status === "upsert"
+        ? Object.freeze({
+            ...publicRenderDeltaPickIdentity(mapped),
+            origin,
+          })
+        : null;
+    }
+    if (
+      (mapped && mapped.status !== "base") ||
+      this.renderDeltaState.suppressionKeys.has(key)
+    ) {
+      return null;
+    }
+    const graph = scene.instanceGraph;
+    if (
+      isDwgRenderDeltaSceneInvalidated(
+        this.renderDeltaDependencyIndex,
+        normalizedSceneId,
+      ) ||
+      (batch &&
+        isDwgRenderDeltaBatchInvalidated(
+          this.renderDeltaDependencyIndex,
+          normalizedSceneId,
+          batch,
+          graph,
+        )) ||
+      (Number.isSafeInteger(blockIndex) &&
+        isDwgRenderDeltaBlockInvalidated(
+          this.renderDeltaDependencyIndex,
+          normalizedSceneId,
+          blockIndex,
+        ))
+    ) {
+      return null;
+    }
+    if (ownerHandle !== null && ownerHandle !== undefined) {
+      const normalizedOwner =
+        normalizeRenderDeltaPickHandle(ownerHandle);
+      if (
+        isDwgRenderDeltaOwnerInvalidated(
+          this.renderDeltaDependencyIndex,
+          normalizedSceneId,
+          normalizedOwner.handle,
+          {
+            blockIndexByHandle: this.renderDeltaBlockIndex(
+              scene.blocks,
+            ),
+            modelBlockIndices: graph.modelBlockIndices,
+          },
+        )
+      ) {
+        return null;
+      }
+    }
+    if (instances !== null || instanceIndex !== null) {
+      if (
+        !instances ||
+        !Number.isSafeInteger(instanceIndex) ||
+        instanceIndex < 0 ||
+        instanceIndex >= instances.count
+      ) {
+        throw new TypeError(
+          "render delta pick instance target is invalid",
+        );
+      }
+      const transform = renderDeltaInstanceTransform(
+        this.renderDeltaTransformIndexesByGraph.get(graph),
+        instances,
+        instanceIndex,
+      );
+      if (transform) {
+        return null;
+      }
+      const style = renderDeltaInstanceStyle(
+        this.renderDeltaStyleIndexesByGraph.get(graph),
+        instances,
+        instanceIndex,
+      );
+      if (style?.visible === false) {
+        return null;
+      }
+      const effectiveLayerIndex =
+        Number.isSafeInteger(sourceLayerIndex) &&
+        sourceLayerIndex === layerZeroIndex &&
+        Number.isSafeInteger(style?.layerIndex)
+          ? style.layerIndex
+          : sourceLayerIndex;
+      if (
+        Number.isSafeInteger(effectiveLayerIndex) &&
+        effectiveLayerIndex !== 0xffff_ffff &&
+        this.layerVisibility[effectiveLayerIndex] === false
+      ) {
+        return null;
+      }
+      return Object.freeze({
+        ...(mapped
+          ? publicRenderDeltaPickIdentity(mapped)
+          : baseRenderDeltaPickIdentity(
+              this.renderDeltaState.revisionId,
+              normalizedSceneId,
+              normalizedHandle,
+            )),
+        origin,
+        ...(style ? { instanceStyle: style } : {}),
+      });
+    }
+    if (mapped || includeIdentity) {
+      return Object.freeze({
+        ...(mapped
+          ? publicRenderDeltaPickIdentity(mapped)
+          : baseRenderDeltaPickIdentity(
+              this.renderDeltaState.revisionId,
+              normalizedSceneId,
+              normalizedHandle,
+            )),
+        origin,
+      });
+    }
+    return true;
+  }
+
   activateRenderDelta({
+    revisionId = null,
+    pickIdentities = Object.freeze([]),
     lines = Object.freeze([]),
     fills = Object.freeze([]),
     points = Object.freeze([]),
@@ -3616,7 +3991,13 @@ export class WebGlLineRenderer {
     if (!this.overviewScene) {
       throw new Error("cannot activate a render delta before the overview");
     }
+    const normalizedRevisionId =
+      normalizeRenderDeltaRevisionId(revisionId);
     if (
+      !Array.isArray(pickIdentities) ||
+      pickIdentities.length > MAX_RENDER_DELTA_PICK_IDENTITIES ||
+      (pickIdentities.length > 0 &&
+        normalizedRevisionId === null) ||
       !Array.isArray(lines) ||
       !Array.isArray(fills) ||
       !Array.isArray(points) ||
@@ -3632,6 +4013,25 @@ export class WebGlLineRenderer {
       invalidatedDependencyIds,
       { scenes: this.renderDeltaDependencyScenes() },
     );
+    const normalizedPickIdentities = [];
+    const pickIdentityIndex = new Map();
+    for (const value of pickIdentities) {
+      const identity = normalizeRenderDeltaPickIdentity(
+        value,
+        normalizedRevisionId,
+      );
+      if (
+        (identity.sceneId !== ROOT_RENDER_DELTA_SCENE_ID &&
+          !this.externalScenes.has(identity.sceneId)) ||
+        pickIdentityIndex.has(identity.key)
+      ) {
+        throw new TypeError(
+          "render delta pick identity target is invalid",
+        );
+      }
+      pickIdentityIndex.set(identity.key, identity);
+      normalizedPickIdentities.push(identity);
+    }
     const resourceKeys = new Set();
     const normalizedLines = [];
     for (const entry of lines) {
@@ -3746,6 +4146,9 @@ export class WebGlLineRenderer {
       throw new TypeError("render delta affected bounds are invalid");
     }
     const next = Object.freeze({
+      revisionId: normalizedRevisionId,
+      pickIdentities: Object.freeze(normalizedPickIdentities),
+      pickIdentityIndex,
       lines: Object.freeze(normalizedLines),
       fills: Object.freeze(normalizedFills),
       points: Object.freeze(normalizedPoints),
@@ -3881,6 +4284,8 @@ export class WebGlLineRenderer {
       0,
     );
     return Object.freeze({
+      revisionId: this.renderDeltaState.revisionId,
+      pickIdentities: this.renderDeltaState.pickIdentities.length,
       lineBatches: this.renderDeltaState.lines.length,
       fillBatches: this.renderDeltaState.fills.length,
       pointBatches: this.renderDeltaState.points.length,
@@ -6011,6 +6416,9 @@ export class WebGlLineRenderer {
     this.renderDeltaTransformResourceBytes = 0;
     this.renderDeltaStyleResourceBytes = 0;
     this.renderDeltaState = Object.freeze({
+      revisionId: null,
+      pickIdentities: Object.freeze([]),
+      pickIdentityIndex: new Map(),
       lines: Object.freeze([]),
       fills: Object.freeze([]),
       points: Object.freeze([]),
@@ -6024,6 +6432,7 @@ export class WebGlLineRenderer {
     });
     this.renderDeltaDependencyIndex =
       indexDwgRenderDeltaDependencies([]);
+    this.renderDeltaBlockIndexesByBlocks = new WeakMap();
     this.renderDeltaTransformIndexesByGraph = new WeakMap();
     this.renderDeltaStyleIndexesByGraph = new WeakMap();
     this.renderDeltaRangeCache = new WeakMap();
