@@ -32,6 +32,17 @@ const VISUAL_ASPECTS = new Set([
   RenderDeltaAspect.TRANSFORM,
   RenderDeltaAspect.STYLE,
 ]);
+const DIFF_OVERLAY_VISIBILITY_RULE = "intersect-source";
+const MAXIMUM_DIFF_OVERLAY_ENTRIES = 131_072;
+const DIFF_OVERLAY_CHANGED_STATUSES = new Set([
+  "added",
+  "removed",
+  "modified",
+]);
+const DIFF_OVERLAY_STATUSES = Object.freeze([
+  ...DIFF_OVERLAY_CHANGED_STATUSES,
+  "unchanged",
+]);
 
 function invalidState(message) {
   return new DOMException(message, "InvalidStateError");
@@ -95,6 +106,136 @@ function identityKey(identity) {
 
 function logicalKey(layerId, renderId) {
   return `${layerId}\u0000${renderId}`;
+}
+
+function normalizeDiffOverlayStyle(value, status) {
+  const style = plainRecord(value, `${status} DWG diff overlay style`);
+  exactKeys(
+    style,
+    ["color", "opacity", "visible"],
+    `${status} DWG diff overlay style`,
+  );
+  if (
+    style.color !== null &&
+    (typeof style.color !== "string" ||
+      !/^#[0-9a-f]{6}$/u.test(style.color))
+  ) {
+    throw new TypeError(
+      `${status} DWG diff overlay color is invalid`,
+    );
+  }
+  if (
+    !Number.isFinite(style.opacity) ||
+    style.opacity < 0 ||
+    style.opacity > 1
+  ) {
+    throw new RangeError(
+      `${status} DWG diff overlay opacity is invalid`,
+    );
+  }
+  if (typeof style.visible !== "boolean") {
+    throw new TypeError(
+      `${status} DWG diff overlay visibility is invalid`,
+    );
+  }
+  return Object.freeze({
+    color: style.color,
+    opacity: style.opacity,
+    visible: style.visible,
+  });
+}
+
+function diffOverlayBinding(presentation, state, previewId) {
+  const input = plainRecord(
+    presentation,
+    "DWG diff overlay presentation",
+  );
+  if (
+    input.visibilityRule !== DIFF_OVERLAY_VISIBILITY_RULE ||
+    input.revisionId !== state.revisionId ||
+    input.previewId !== previewId ||
+    !Array.isArray(input.changedEntries) ||
+    input.changedEntries.length > MAXIMUM_DIFF_OVERLAY_ENTRIES
+  ) {
+    throw invalidState(
+      "DWG diff overlay presentation does not match the active delta",
+    );
+  }
+  const styles = plainRecord(
+    input.statusStyles,
+    "DWG diff overlay status styles",
+  );
+  exactKeys(
+    styles,
+    DIFF_OVERLAY_STATUSES,
+    "DWG diff overlay status styles",
+  );
+  const statusStyles = Object.freeze(
+    Object.fromEntries(
+      DIFF_OVERLAY_STATUSES.map((status) => [
+        status,
+        normalizeDiffOverlayStyle(styles[status], status),
+      ]),
+    ),
+  );
+  const seen = new Set();
+  const entries = [];
+  for (const value of input.changedEntries) {
+    const entry = plainRecord(value, "DWG diff overlay entry");
+    if (!DIFF_OVERLAY_CHANGED_STATUSES.has(entry.status)) {
+      throw new TypeError("DWG diff overlay status is invalid");
+    }
+    const key = logicalKey(entry.layerId, entry.renderId);
+    if (seen.has(key)) {
+      throw new TypeError(
+        "DWG diff overlay contains a duplicate Render ID",
+      );
+    }
+    seen.add(key);
+    const nativeKey = state.renderIdentityKeys.get(key);
+    const identity =
+      nativeKey === undefined
+        ? null
+        : state.identities.get(nativeKey);
+    const expectedState =
+      entry.status === "removed" ? "tombstone" : "upsert";
+    if (
+      !identity ||
+      identity.status !== expectedState ||
+      identity.operationId !== entry.operationId ||
+      identity.aspect !== entry.aspect ||
+      identity.sourceId !== entry.sourceId
+    ) {
+      throw invalidState(
+        `DWG diff overlay Render ID ${entry.renderId} is stale`,
+      );
+    }
+    const overlay = state.overlays.get(key);
+    entries.push(
+      Object.freeze({
+        status: entry.status,
+        operationId: entry.operationId,
+        aspect: entry.aspect,
+        layerId: entry.layerId,
+        sourceId: entry.sourceId,
+        renderId: entry.renderId,
+        identity,
+        lines: overlay?.lines ?? Object.freeze([]),
+        fills: overlay?.fills ?? Object.freeze([]),
+        points: overlay?.points ?? Object.freeze([]),
+        texts: overlay?.texts ?? Object.freeze([]),
+        transforms: overlay?.transforms ?? Object.freeze([]),
+        styles: overlay?.styles ?? Object.freeze([]),
+      }),
+    );
+  }
+  return Object.freeze({
+    revisionId: input.revisionId,
+    previewId: input.previewId,
+    visibilityRule: DIFF_OVERLAY_VISIBILITY_RULE,
+    statusStyles,
+    entries: Object.freeze(entries),
+  });
 }
 
 function normalizeHandle(value, label = "DWG handle") {
@@ -295,9 +436,11 @@ function identityStatus({
 }) {
   return Object.freeze({
     status,
+    operationId: operation.operationId,
     aspect: operation.aspect,
     revisionId,
     layerId: operation.layerId,
+    sourceId: operation.sourceId,
     renderId,
     sceneId: identity.sceneId,
     handle: identity.handle,
@@ -1421,7 +1564,9 @@ export class DwgRenderDeltaAdapter {
           next.overlays.set(
             key,
             Object.freeze({
+              operationId: operation.operationId,
               layerId: operation.layerId,
+              sourceId: operation.sourceId,
               renderId,
               aspect: operation.aspect,
               lines: Object.freeze(lines),
@@ -1620,6 +1765,43 @@ export class DwgRenderDeltaAdapter {
 
   acceptsBasePick(sceneId, handle) {
     return this.lookupIdentity(sceneId, handle).status === "base";
+  }
+
+  applyDiffOverlay(presentation) {
+    this.#assertOpen();
+    if (
+      typeof this.#renderer.activateRenderDiffOverlay !== "function"
+    ) {
+      throw new TypeError(
+        "DWG renderer must implement activateRenderDiffOverlay()",
+      );
+    }
+    const binding = diffOverlayBinding(
+      presentation,
+      this.#activeState(),
+      this.#preview?.deltaId ?? null,
+    );
+    const result = synchronous(
+      this.#renderer.activateRenderDiffOverlay(binding),
+      "DWG renderer activateRenderDiffOverlay",
+    );
+    return result;
+  }
+
+  clearDiffOverlay() {
+    this.#assertOpen();
+    if (
+      typeof this.#renderer.clearRenderDiffOverlay !== "function"
+    ) {
+      throw new TypeError(
+        "DWG renderer must implement clearRenderDiffOverlay()",
+      );
+    }
+    const result = synchronous(
+      this.#renderer.clearRenderDiffOverlay(),
+      "DWG renderer clearRenderDiffOverlay",
+    );
+    return result;
   }
 
   dispose() {

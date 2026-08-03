@@ -42,7 +42,7 @@
     "serviceIdentity": "revision-bound-core-hook-and-conformance",
     "renderDelta": "atomic-overlay-state-with-dwg-line-fill-point-text-instance-transform-style-upsert-native-base-suppression-scoped-dependency-invalidation-revision-bound-pick-filtering-and-retryable-resource-cleanup",
     "renderDiff": "changed-id-only-added-removed-modified-unchanged-net-summary",
-    "diffOverlay": "bounded-revision-bound-status-style-policy-with-source-intersected-visibility-and-retryable-application",
+    "diffOverlay": "bounded-revision-bound-status-style-policy-with-dwg-line-fill-point-canvas-text-presentation-source-intersected-visibility-and-retryable-application",
     "splitViewCamera": "before-after-logical-camera-sync-with-retryable-rollback-and-independent-renderer-lifecycles",
     "reviewUi": "canonical-dom-lifecycle-with-dwg-result-and-revision-diff-adapters"
   },
@@ -54,6 +54,8 @@
     "viewerDiffOverlay": "packages/viewer-core/test/diff-overlay-controller.test.mjs",
     "viewerSplitView": "packages/viewer-core/test/split-view-camera-controller.test.mjs",
     "dwgRenderDelta": "packages/webview/test/render-delta-adapter.test.mjs",
+    "dwgDiffOverlay": "packages/webview/test/renderer.test.mjs",
+    "dwgTextDiffOverlay": "packages/webview/test/text-overlay.test.mjs",
     "viewerUi": "packages/viewer-ui/test/viewer-ui-boundary.test.mjs",
     "dwgSceneSource": "packages/dwg-scene-source/test/dwg-scene-cache-source.test.mjs",
     "productEntrypoint": "packages/webview/src/main.mjs",

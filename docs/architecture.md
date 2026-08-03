@@ -137,8 +137,13 @@ only changed IDs; unchanged remains a count plus one global style. Status
 visibility is always intersected with source, layer and clip visibility, so a
 diff policy cannot reveal source-hidden geometry. Adapter application is
 synchronous and retryable: failures restore the last stable presentation and
-an incomplete rollback remains observable. Actual WebGL/Canvas styling stays
-behind a product renderer adapter.
+an incomplete rollback remains observable. The DWG product adapter binds each
+changed logical Render ID to its active split GPU resources and native handle.
+WebGL lines, fills and points apply status tint and opacity only after the
+existing layer, viewport and clip tests; removed entities redraw only their
+suppressed base ranges. Canvas text uses the same presentation, including
+removed-base recovery, while preserving source-layer visibility. A revision
+change clears stale product styling before a new presentation is accepted.
 `ViewerSplitViewCameraController` now coordinates the before and after surfaces
 through two distinct synchronous adapters. It sends only a frozen logical 2D
 camera (`origin` and `worldHeight`), leaving each renderer to derive its own

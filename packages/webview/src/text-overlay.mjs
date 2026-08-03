@@ -773,6 +773,64 @@ function renderDeltaTextEntries(entries, sourceId) {
   return Object.freeze(selected);
 }
 
+const NATIVE_TEXT_DIFF_STYLE = Object.freeze({
+  color: null,
+  opacity: 1,
+  visible: true,
+});
+
+function emptyTextDiffOverlay() {
+  return Object.freeze({
+    active: false,
+    statusStyles: Object.freeze({
+      unchanged: NATIVE_TEXT_DIFF_STYLE,
+    }),
+    resourceEntries: new WeakMap(),
+    identityEntries: new Map(),
+  });
+}
+
+function normalizeTextDiffOverlay(value) {
+  if (value === undefined || value === null || value.active === false) {
+    return emptyTextDiffOverlay();
+  }
+  const unchanged = value?.statusStyles?.unchanged;
+  if (
+    value.active !== true ||
+    !unchanged ||
+    typeof unchanged.visible !== "boolean" ||
+    !Number.isFinite(unchanged.opacity) ||
+    unchanged.opacity < 0 ||
+    unchanged.opacity > 1 ||
+    (unchanged.color !== null &&
+      (typeof unchanged.color !== "string" ||
+        !/^#[0-9a-f]{6}$/u.test(unchanged.color))) ||
+    typeof value.resourceEntries?.get !== "function" ||
+    typeof value.identityEntries?.get !== "function"
+  ) {
+    throw new TypeError("text diff overlay state is invalid");
+  }
+  return value;
+}
+
+function textDiffIdentityKey(sourceId, handle) {
+  return (
+    `${sourceId}\u0000` +
+    `${Number(handle >> 32n)}:${Number(handle & 0xffff_ffffn)}`
+  );
+}
+
+function textDiffColor(value) {
+  if (value === null) {
+    return null;
+  }
+  return Object.freeze([
+    Number.parseInt(value.slice(1, 3), 16),
+    Number.parseInt(value.slice(3, 5), 16),
+    Number.parseInt(value.slice(5, 7), 16),
+  ]);
+}
+
 function combinedTextEntities(base, renderDeltaEntries) {
   const baseLength = base.length;
   const dynamicRecord = (index) => {
@@ -806,6 +864,22 @@ function combinedTextEntities(base, renderDeltaEntries) {
     },
     isRenderDelta(index) {
       return index >= baseLength;
+    },
+    renderDeltaEntry(index) {
+      if (index < baseLength) {
+        return null;
+      }
+      const offset = index - baseLength;
+      if (
+        !Number.isInteger(index) ||
+        offset < 0 ||
+        offset >= renderDeltaEntries.length
+      ) {
+        throw new RangeError(
+          `text entity index is out of range: ${index}`,
+        );
+      }
+      return renderDeltaEntries[offset];
     },
     readDisplayRecord(index, target) {
       if (index < baseLength) {
@@ -887,6 +961,7 @@ export class CanvasTextOverlay {
     this.renderDeltaTextEntries = Object.freeze([]);
     this.renderDeltaTransforms = Object.freeze([]);
     this.renderDeltaStyles = Object.freeze([]);
+    this.renderDiffOverlay = emptyTextDiffOverlay();
     this.textEntities = combinedTextEntities(
       this.baseTextEntities,
       this.renderDeltaTextEntries,
@@ -1056,6 +1131,7 @@ export class CanvasTextOverlay {
     transforms = Object.freeze([]),
     styles = Object.freeze([]),
     invalidatedDependencyIds = Object.freeze([]),
+    diffOverlay = null,
   } = {}) {
     const nextSuppressions = renderDeltaSuppressedHandles(
       suppressions,
@@ -1088,6 +1164,7 @@ export class CanvasTextOverlay {
         ignoreUnavailableScenes: true,
       },
     );
+    const nextDiffOverlay = normalizeTextDiffOverlay(diffOverlay);
     this.renderDeltaSuppressedHandles = nextSuppressions;
     this.renderDeltaTextEntries = nextTexts;
     this.renderDeltaTransforms = nextTransforms.entries;
@@ -1097,6 +1174,7 @@ export class CanvasTextOverlay {
     this.renderDeltaInvalidatedDependencyIds =
       nextDependencies.ids;
     this.renderDeltaDependencyIndex = nextDependencies;
+    this.renderDiffOverlay = nextDiffOverlay;
     this.textEntities = combinedTextEntities(
       this.baseTextEntities,
       nextTexts,
@@ -1126,6 +1204,31 @@ export class CanvasTextOverlay {
     return this.hitTestingEnabled;
   }
 
+  renderDiffEntryForText(textIndex, record) {
+    if (!this.renderDiffOverlay.active) {
+      return null;
+    }
+    if (this.textEntities.isRenderDelta(textIndex)) {
+      return (
+        this.renderDiffOverlay.resourceEntries.get(
+          this.textEntities.renderDeltaEntry(textIndex),
+        ) ?? null
+      );
+    }
+    return (
+      this.renderDiffOverlay.identityEntries.get(
+        textDiffIdentityKey(this.sourceId, record.handle),
+      ) ?? null
+    );
+  }
+
+  renderDiffStyleForText(textIndex, record) {
+    return (
+      this.renderDiffEntryForText(textIndex, record)?.style ??
+      this.renderDiffOverlay.statusStyles.unchanged
+    );
+  }
+
   findTextOccurrence(handle) {
     const normalized = String(handle ?? "")
       .trim()
@@ -1144,9 +1247,22 @@ export class CanvasTextOverlay {
               this.displayRecord,
             )
           : this.textEntities.get(textIndex);
+      const renderDiffEntry = this.renderDiffEntryForText(
+        textIndex,
+        record,
+      );
+      if (
+        (
+          renderDiffEntry?.style ??
+          this.renderDiffOverlay.statusStyles.unchanged
+        ).visible === false
+      ) {
+        continue;
+      }
       if (
         !this.textEntities.isRenderDelta(textIndex) &&
-        (this.renderDeltaSuppressedHandles.has(record.handle) ||
+        ((this.renderDeltaSuppressedHandles.has(record.handle) &&
+          renderDiffEntry?.status !== "removed") ||
           isDwgRenderDeltaOwnerInvalidated(
             this.renderDeltaDependencyIndex,
             this.sourceId,
@@ -1393,9 +1509,20 @@ export class CanvasTextOverlay {
             )
           : this.textEntities.get(textIndex);
       metrics.visitedSourceTexts += 1;
+      const renderDiffEntry = this.renderDiffEntryForText(
+        textIndex,
+        record,
+      );
+      const renderDiffStyle =
+        renderDiffEntry?.style ??
+        this.renderDiffOverlay.statusStyles.unchanged;
+      if (renderDiffStyle.visible === false) {
+        continue;
+      }
       if (
         !this.textEntities.isRenderDelta(textIndex) &&
-        (this.renderDeltaSuppressedHandles.has(record.handle) ||
+        ((this.renderDeltaSuppressedHandles.has(record.handle) &&
+          renderDiffEntry?.status !== "removed") ||
           isDwgRenderDeltaOwnerInvalidated(
             this.renderDeltaDependencyIndex,
             this.sourceId,
@@ -1573,6 +1700,7 @@ export class CanvasTextOverlay {
           layerIndex,
           byBlockColor,
           byBlockOpacity,
+          renderDiffStyle,
         );
         if (this.hitTestingEnabled && localBounds) {
           const localPolygon = [
@@ -1896,6 +2024,7 @@ export class CanvasTextOverlay {
     right,
     top,
     bottom,
+    renderDiffStyle,
   ) {
     const flags = Number.isInteger(record.backgroundFlags)
       ? record.backgroundFlags
@@ -1951,15 +2080,20 @@ export class CanvasTextOverlay {
     if (!points.flat().every(Number.isFinite)) {
       return;
     }
+    const diffColor = textDiffColor(renderDiffStyle.color);
     let color = this.#currentDrawingBackground();
-    if ((flags & 2) === 0) {
-      const [red, green, blue] = decodeColor(
-        record.backgroundColor,
-        this.layers[layerIndex],
-        byBlockColor,
-        this.palette,
-      );
-      color = `rgba(${red}, ${green}, ${blue}, 1)`;
+    if (diffColor !== null || (flags & 2) === 0) {
+      const [red, green, blue] =
+        diffColor ??
+        decodeColor(
+          record.backgroundColor,
+          this.layers[layerIndex],
+          byBlockColor,
+          this.palette,
+        );
+      color =
+        `rgba(${red}, ${green}, ${blue}, ` +
+        `${renderDiffStyle.opacity})`;
     }
     const context = this.context;
     context.fillStyle = color;
@@ -1985,12 +2119,17 @@ export class CanvasTextOverlay {
     layerIndex,
     byBlockColor,
     byBlockOpacity,
+    renderDiffStyle,
   ) {
     const context = this.context;
-    const opacity = decodeCadOpacity(record.color, {
-      layer: decodeCadOpacity(this.layers[layerIndex]?.color ?? 0),
-      byBlock: byBlockOpacity,
-    });
+    const opacity =
+      decodeCadOpacity(record.color, {
+        layer: decodeCadOpacity(
+          this.layers[layerIndex]?.color ?? 0,
+        ),
+        byBlock: byBlockOpacity,
+      }) * renderDiffStyle.opacity;
+    const diffColor = textDiffColor(renderDiffStyle.color);
     const colorCache = new Map();
     const colorForFormat = (format) => {
       const encoded =
@@ -1998,12 +2137,14 @@ export class CanvasTextOverlay {
       if (colorCache.has(encoded)) {
         return colorCache.get(encoded);
       }
-      const [red, green, blue] = decodeColor(
-        encoded,
-        this.layers[layerIndex],
-        byBlockColor,
-        this.palette,
-      );
+      const [red, green, blue] =
+        diffColor ??
+        decodeColor(
+          encoded,
+          this.layers[layerIndex],
+          byBlockColor,
+          this.palette,
+        );
       const color = `rgba(${red}, ${green}, ${blue}, ${opacity})`;
       colorCache.set(encoded, color);
       return color;
@@ -2374,6 +2515,7 @@ export class CanvasTextOverlay {
         blockLeft + blockWidth,
         verticalOffset + 1,
         verticalOffset + 1 - blockHeight,
+        renderDiffStyle,
       );
     }
 
@@ -2812,6 +2954,7 @@ export class CanvasTextOverlay {
           ],
         ]),
       });
+    this.renderDiffOverlay = emptyTextDiffOverlay();
     this.textEntities = combinedTextEntities(
       this.baseTextEntities,
       this.renderDeltaTextEntries,
@@ -2832,6 +2975,7 @@ export class CompositeTextOverlay {
     this.renderDeltaTransforms = Object.freeze([]);
     this.renderDeltaStyles = Object.freeze([]);
     this.renderDeltaInvalidatedDependencyIds = Object.freeze([]);
+    this.renderDiffOverlay = emptyTextDiffOverlay();
   }
 
   add(overlay, { first = false } = {}) {
@@ -2849,8 +2993,14 @@ export class CompositeTextOverlay {
         styles: this.renderDeltaStyles,
         invalidatedDependencyIds:
           this.renderDeltaInvalidatedDependencyIds,
+        diffOverlay: this.renderDiffOverlay,
       });
     } else {
+      if (this.renderDiffOverlay.active) {
+        throw new TypeError(
+          "composite text overlay child cannot apply a diff overlay",
+        );
+      }
       overlay.setRenderDeltaSuppressions?.(
         this.renderDeltaSuppressions,
       );
@@ -2973,6 +3123,7 @@ export class CompositeTextOverlay {
     transforms = Object.freeze([]),
     styles = Object.freeze([]),
     invalidatedDependencyIds = Object.freeze([]),
+    diffOverlay = null,
   } = {}) {
     if (
       !Array.isArray(suppressions) ||
@@ -2992,6 +3143,7 @@ export class CompositeTextOverlay {
     const nextDependencies = Object.freeze([
       ...new Set(invalidatedDependencyIds),
     ].sort());
+    const nextDiffOverlay = normalizeTextDiffOverlay(diffOverlay);
     for (const overlay of this.overlays) {
       if (typeof overlay.setRenderDeltaState === "function") {
         overlay.setRenderDeltaState({
@@ -3000,8 +3152,14 @@ export class CompositeTextOverlay {
           transforms: nextTransforms,
           styles: nextStyles,
           invalidatedDependencyIds: nextDependencies,
+          diffOverlay: nextDiffOverlay,
         });
       } else {
+        if (nextDiffOverlay.active) {
+          throw new TypeError(
+            "composite text overlay child cannot apply a diff overlay",
+          );
+        }
         overlay.setRenderDeltaTexts?.(nextTexts);
         overlay.setRenderDeltaTransforms?.(nextTransforms);
         overlay.setRenderDeltaStyles?.(nextStyles);
@@ -3014,6 +3172,7 @@ export class CompositeTextOverlay {
     this.renderDeltaTransforms = nextTransforms;
     this.renderDeltaStyles = nextStyles;
     this.renderDeltaInvalidatedDependencyIds = nextDependencies;
+    this.renderDiffOverlay = nextDiffOverlay;
     return Object.freeze({
       baseSuppressions: nextSuppressions.length,
       textRecords: nextTexts.length,
@@ -3116,6 +3275,7 @@ export class CompositeTextOverlay {
     this.renderDeltaTransforms = Object.freeze([]);
     this.renderDeltaStyles = Object.freeze([]);
     this.renderDeltaInvalidatedDependencyIds = Object.freeze([]);
+    this.renderDiffOverlay = emptyTextDiffOverlay();
   }
 }
 

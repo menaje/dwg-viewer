@@ -473,6 +473,9 @@ class FakeDeltaRenderer {
     this.failStageAt = null;
     this.failActivationAt = null;
     this.failReleaseAt = null;
+    this.diffOverlay = null;
+    this.diffActivationCount = 0;
+    this.failDiffActivationAt = null;
   }
 
   stageRenderDeltaLine(line) {
@@ -565,6 +568,22 @@ class FakeDeltaRenderer {
     return this.active;
   }
 
+  activateRenderDiffOverlay(overlay) {
+    this.diffActivationCount += 1;
+    if (
+      this.diffActivationCount === this.failDiffActivationAt
+    ) {
+      throw new Error("diff activation failed");
+    }
+    this.diffOverlay = overlay;
+    return overlay;
+  }
+
+  clearRenderDiffOverlay() {
+    this.diffOverlay = null;
+    return null;
+  }
+
   releaseRenderDeltaResources(resources) {
     this.releaseCount += 1;
     if (this.releaseCount === this.failReleaseAt) {
@@ -592,6 +611,52 @@ class FakeDeltaRenderer {
     }
     return resources.length;
   }
+}
+
+function diffPresentation({
+  revisionId = REVISION_TWO,
+  previewId = "delta:dwg:1",
+  status = "modified",
+  operationId = "operation:dwg:upsert",
+  aspect = RenderDeltaAspect.GEOMETRY,
+} = {}) {
+  return Object.freeze({
+    revisionId,
+    previewId,
+    visibilityRule: "intersect-source",
+    statusStyles: Object.freeze({
+      added: Object.freeze({
+        color: "#3fb950",
+        opacity: 1,
+        visible: true,
+      }),
+      removed: Object.freeze({
+        color: "#f85149",
+        opacity: 1,
+        visible: true,
+      }),
+      modified: Object.freeze({
+        color: "#d29922",
+        opacity: 0.8,
+        visible: true,
+      }),
+      unchanged: Object.freeze({
+        color: null,
+        opacity: 0.35,
+        visible: true,
+      }),
+    }),
+    changedEntries: Object.freeze([
+      Object.freeze({
+        status,
+        operationId,
+        aspect,
+        layerId: "layer:dwg-live",
+        sourceId: "source:dwg-live",
+        renderId: RENDER_ID,
+      }),
+    ]),
+  });
 }
 
 function makeController(renderer, packet) {
@@ -707,6 +772,66 @@ test("stages a DWG line overlay and restores it on preview rollback", () => {
 
   assert.equal(controller.dispose(), true);
   assert.equal(renderer.active.baseSuppressions.length, 0);
+});
+
+test("binds revision diff styles to active DWG resources and identity", () => {
+  const renderer = new FakeDeltaRenderer();
+  const { delta, packet } = upsertDelta({
+    fills: [fillEntry()],
+    points: [pointEntry()],
+    texts: [textEntry()],
+  });
+  const { adapter, controller } = makeController(renderer, packet);
+  controller.applyPreview(delta);
+
+  const applied = adapter.applyDiffOverlay(diffPresentation());
+  assert.equal(applied.revisionId, REVISION_TWO);
+  assert.equal(applied.visibilityRule, "intersect-source");
+  assert.equal(applied.entries.length, 1);
+  assert.deepEqual(
+    {
+      status: applied.entries[0].status,
+      sceneId: applied.entries[0].identity.sceneId,
+      handleLow: applied.entries[0].identity.handleLow,
+      lineResources: applied.entries[0].lines.length,
+      fillResources: applied.entries[0].fills.length,
+      pointResources: applied.entries[0].points.length,
+      textResources: applied.entries[0].texts.length,
+    },
+    {
+      status: "modified",
+      sceneId: "root",
+      handleLow: 0x2a,
+      lineResources: 1,
+      fillResources: 1,
+      pointResources: 1,
+      textResources: 1,
+    },
+  );
+  assert.equal(
+    applied.entries[0].lines[0],
+    renderer.active.lines[0],
+  );
+
+  renderer.failDiffActivationAt = 2;
+  assert.throws(
+    () => adapter.applyDiffOverlay(diffPresentation()),
+    /diff activation failed/u,
+  );
+  assert.equal(renderer.diffOverlay, applied);
+
+  assert.throws(
+    () =>
+      adapter.applyDiffOverlay(
+        diffPresentation({ revisionId: REVISION_THREE }),
+      ),
+    /does not match the active delta/u,
+  );
+  assert.equal(renderer.diffOverlay, applied);
+
+  assert.equal(adapter.clearDiffOverlay(), null);
+  assert.equal(renderer.diffOverlay, null);
+  controller.dispose();
 });
 
 test("cleans staged GPU resources when an atomic packet fails", () => {

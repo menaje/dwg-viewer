@@ -226,8 +226,11 @@ unchanged는 계속 ID를 열거하지 않고 global style만 전달한다. 상�
 source/layer/clip visibility와 반드시 교집합으로 적용하므로 diff 정책이 숨겨진
 source geometry를 다시 노출하지 않는다. renderer adapter 적용은 동기·원자적
 경계이며 실패하면 직전 정상 presentation을 재적용하고 불완전한 rollback은
-관찰 후 재동기화할 수 있다. 실제 WebGL/Canvas tint 구현은 제품 adapter가
-소유한다.
+관찰 후 재동기화할 수 있다. DWG 제품 adapter는 changed Render ID를 활성
+line/fill/point/text resource와 native handle에 연결한다. WebGL shader는 기존
+layer/viewport/clip 판정 뒤에만 상태 tint와 opacity를 적용하고, removed는
+억제된 base range 중 해당 handle만 다시 그린다. Canvas text도 같은 정책을
+적용하되 source-hidden text를 다시 노출하지 않는다.
 `ViewerSplitViewCameraController`는 서로 다른 before/after surface adapter에
 불변의 논리 2D 카메라만 전달한다. 각 surface의 revision, scene, GPU/detail
 state와 canvas 비율은 공유하지 않으며 renderer가 자신의 `worldWidth`를
@@ -246,8 +249,8 @@ selection/measurement overlay, generic render data model의 물리적 package
 이동은 남아 있다. 일반 Viewer UI도 toolbar/result lifecycle부터 이동했으며
 layer/layout panel composition은 이후 단계다. #30의 실제 cross-repository
 `ConiServiceSource` qualification과 #27의 nested block dependency
-recomputation, DWG diff presentation adapter, 대응 entity highlight, semantic
-panel hook, 실제 split composition 및 대형 도면 qualification은 남아 있다.
+recomputation, nested INSERT transform/style diff highlight, semantic panel
+hook, 실제 split composition 및 대형 도면 qualification은 남아 있다.
 제품 진입점을
 먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
 private message를 Core API로 승격하지 않고 진행한다.

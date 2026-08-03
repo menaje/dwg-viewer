@@ -74,6 +74,22 @@ const MAX_RENDER_DELTA_TRANSFORM_BYTES = 8 * 1024 * 1024;
 const MAX_RENDER_DELTA_STYLE_BYTES = 8 * 1024 * 1024;
 const MAX_RENDER_DELTA_PICK_IDENTITIES = 131_072;
 const ROOT_RENDER_DELTA_SCENE_ID = "root";
+const RENDER_DIFF_VISIBILITY_RULE = "intersect-source";
+const RENDER_DIFF_CHANGED_STATUSES = new Set([
+  "added",
+  "removed",
+  "modified",
+]);
+const RENDER_DIFF_STATUSES = Object.freeze([
+  ...RENDER_DIFF_CHANGED_STATUSES,
+  "unchanged",
+]);
+const NATIVE_RENDER_DIFF_STYLE = Object.freeze({
+  color: null,
+  rgb: null,
+  opacity: 1,
+  visible: true,
+});
 const RENDER_DELTA_PICK_ORIGINS = new Set(["base", "delta"]);
 const RENDER_DELTA_PICK_STATUSES = new Set([
   "base",
@@ -298,6 +314,9 @@ uniform bool u_curveReplacementEnabled;
 uniform float u_lineWeightThreshold;
 uniform float u_globalLinetypeScale;
 uniform float u_worldPerPixel;
+uniform bool u_diffColorEnabled;
+uniform vec3 u_diffColor;
+uniform float u_diffOpacity;
 ${CLIP_FRAGMENT_SOURCE}
 
 out vec4 outColor;
@@ -483,6 +502,8 @@ void main() {
   ) discard;
   outColor = resolveColor();
   outColor.a = resolveOpacity(v_encodedColor);
+  if (u_diffColorEnabled) outColor.rgb = u_diffColor;
+  outColor.a *= u_diffOpacity;
   if (outColor.a <= 0.0) discard;
 }
 `;
@@ -561,6 +582,9 @@ uniform sampler2D u_aciColors;
 uniform usampler2D u_viewportLayerVisibility;
 uniform int u_layerCount;
 uniform int u_layerZeroIndex;
+uniform bool u_diffColorEnabled;
+uniform vec3 u_diffColor;
+uniform float u_diffOpacity;
 ${CLIP_FRAGMENT_SOURCE}
 
 out vec4 outColor;
@@ -643,6 +667,8 @@ void main() {
     resolveOpacity(v_lastColor),
     clamp(v_mix, 0.0, 1.0)
   );
+  if (u_diffColorEnabled) outColor.rgb = u_diffColor;
+  outColor.a *= u_diffOpacity;
   if (outColor.a <= 0.0) discard;
 }
 `;
@@ -733,6 +759,9 @@ uniform sampler2D u_aciColors;
 uniform usampler2D u_viewportLayerVisibility;
 uniform int u_layerCount;
 uniform int u_layerZeroIndex;
+uniform bool u_diffColorEnabled;
+uniform vec3 u_diffColor;
+uniform float u_diffOpacity;
 ${CLIP_FRAGMENT_SOURCE}
 
 out vec4 outColor;
@@ -840,6 +869,8 @@ void main() {
   if (!visible) discard;
   outColor = resolveColor();
   outColor.a = resolveOpacity(v_encodedColor);
+  if (u_diffColorEnabled) outColor.rgb = u_diffColor;
+  outColor.a *= u_diffOpacity;
   if (outColor.a <= 0.0) discard;
 }
 `;
@@ -1685,6 +1716,89 @@ function normalizeRenderDeltaIdentity(value) {
   });
 }
 
+function emptyRenderDiffOverlayState() {
+  return Object.freeze({
+    active: false,
+    revisionId: null,
+    previewId: null,
+    visibilityRule: RENDER_DIFF_VISIBILITY_RULE,
+    statusStyles: Object.freeze(
+      Object.fromEntries(
+        RENDER_DIFF_STATUSES.map((status) => [
+          status,
+          NATIVE_RENDER_DIFF_STYLE,
+        ]),
+      ),
+    ),
+    entries: Object.freeze([]),
+    resourceEntries: new WeakMap(),
+    resources: new Set(),
+    identityEntries: new Map(),
+    removedIdentityKeys: new Set(),
+  });
+}
+
+function normalizeRenderDiffStyle(value, status) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 3 ||
+    !Object.hasOwn(value, "color") ||
+    !Object.hasOwn(value, "opacity") ||
+    !Object.hasOwn(value, "visible") ||
+    typeof value.visible !== "boolean" ||
+    !Number.isFinite(value.opacity) ||
+    value.opacity < 0 ||
+    value.opacity > 1 ||
+    (value.color !== null &&
+      (typeof value.color !== "string" ||
+        !/^#[0-9a-f]{6}$/u.test(value.color)))
+  ) {
+    throw new TypeError(
+      `${status} render diff overlay style is invalid`,
+    );
+  }
+  const rgb =
+    value.color === null
+      ? null
+      : Object.freeze([
+          Number.parseInt(value.color.slice(1, 3), 16) / 255,
+          Number.parseInt(value.color.slice(3, 5), 16) / 255,
+          Number.parseInt(value.color.slice(5, 7), 16) / 255,
+        ]);
+  return Object.freeze({
+    color: value.color,
+    rgb,
+    opacity: value.opacity,
+    visible: value.visible,
+  });
+}
+
+function normalizeRenderDiffStyles(value) {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== RENDER_DIFF_STATUSES.length ||
+    RENDER_DIFF_STATUSES.some(
+      (status) => !Object.hasOwn(value, status),
+    )
+  ) {
+    throw new TypeError(
+      "render diff overlay status styles are invalid",
+    );
+  }
+  return Object.freeze(
+    Object.fromEntries(
+      RENDER_DIFF_STATUSES.map((status) => [
+        status,
+        normalizeRenderDiffStyle(value[status], status),
+      ]),
+    ),
+  );
+}
+
 function normalizeRenderDeltaPickIdentity(value, revisionId) {
   const identity = normalizeRenderDeltaIdentity(value);
   const status = value?.status;
@@ -1970,6 +2084,115 @@ function identityVisibilityRanges(
   return Object.freeze(ranges);
 }
 
+function lineSelectedRanges(
+  vertices,
+  batch,
+  firstBufferVertex,
+  sceneId,
+  selected,
+) {
+  if (selected.size === 0) {
+    return Object.freeze([]);
+  }
+  if (
+    !(vertices?.buffer instanceof ArrayBuffer) ||
+    (vertices.recordSize ?? VERTEX_STRIDE) !== VERTEX_STRIDE ||
+    vertices.buffer.byteLength !== vertices.byteLength ||
+    vertices.byteLength !== vertices.vertexCount * VERTEX_STRIDE ||
+    !Number.isSafeInteger(firstBufferVertex) ||
+    firstBufferVertex < 0
+  ) {
+    throw new TypeError("render diff line selection payload is invalid");
+  }
+  const localFirstVertex = batch.firstVertex - firstBufferVertex;
+  if (
+    localFirstVertex < 0 ||
+    localFirstVertex + batch.vertexCount > vertices.vertexCount
+  ) {
+    throw new RangeError("render diff line selection range is invalid");
+  }
+  const view = new DataView(vertices.buffer);
+  const ranges = [];
+  let firstSelected = -1;
+  for (let local = 0; local < batch.vertexCount; local += 2) {
+    const physical = localFirstVertex + local;
+    const byteOffset = physical * VERTEX_STRIDE;
+    const included = selected.has(
+      renderDeltaIdentityKey(
+        sceneId,
+        view.getUint32(byteOffset + 20, true),
+        view.getUint32(byteOffset + 24, true),
+      ),
+    );
+    if (included && firstSelected < 0) {
+      firstSelected = physical;
+    }
+    if (!included && firstSelected >= 0) {
+      ranges.push(
+        Object.freeze({
+          firstVertex: firstSelected,
+          vertexCount: physical - firstSelected,
+        }),
+      );
+      firstSelected = -1;
+    }
+  }
+  if (firstSelected >= 0) {
+    ranges.push(
+      Object.freeze({
+        firstVertex: firstSelected,
+        vertexCount:
+          localFirstVertex + batch.vertexCount - firstSelected,
+      }),
+    );
+  }
+  return Object.freeze(ranges);
+}
+
+function identitySelectedRanges(
+  identityRanges,
+  batch,
+  sceneId,
+  selected,
+) {
+  if (selected.size === 0) {
+    return Object.freeze([]);
+  }
+  const data = identityRanges.data;
+  const batchEnd = batch.firstVertex + batch.vertexCount;
+  const ranges = [];
+  for (let index = 0; index < identityRanges.count; index += 1) {
+    const offset = index * RENDER_IDENTITY_RANGE_WORDS;
+    const first = data[offset];
+    const end = first + data[offset + 1];
+    if (end <= batch.firstVertex) {
+      continue;
+    }
+    if (first >= batchEnd) {
+      break;
+    }
+    if (
+      selected.has(
+        renderDeltaIdentityKey(
+          sceneId,
+          data[offset + 2],
+          data[offset + 3],
+        ),
+      )
+    ) {
+      ranges.push(
+        Object.freeze({
+          firstVertex: Math.max(first, batch.firstVertex),
+          vertexCount:
+            Math.min(end, batchEnd) -
+            Math.max(first, batch.firstVertex),
+        }),
+      );
+    }
+  }
+  return Object.freeze(ranges);
+}
+
 export class WebGlLineRenderer {
   constructor(
     canvas,
@@ -2076,6 +2299,8 @@ export class WebGlLineRenderer {
     this.renderDeltaTransformIndexesByGraph = new WeakMap();
     this.renderDeltaStyleIndexesByGraph = new WeakMap();
     this.renderDeltaRangeCache = new WeakMap();
+    this.renderDiffOverlayState = emptyRenderDiffOverlayState();
+    this.renderDiffRangeCache = new WeakMap();
     this.overviewScene = null;
     this.combinedBounds = null;
     this.hatchFillScene = null;
@@ -2182,6 +2407,17 @@ export class WebGlLineRenderer {
       this.program,
       "u_viewportLayerVisibility",
     );
+    this.diffLocations = Object.freeze({
+      colorEnabled: gl.getUniformLocation(
+        this.program,
+        "u_diffColorEnabled",
+      ),
+      color: gl.getUniformLocation(this.program, "u_diffColor"),
+      opacity: gl.getUniformLocation(
+        this.program,
+        "u_diffOpacity",
+      ),
+    });
     this.clipLocations = Object.freeze({
       texture: gl.getUniformLocation(this.program, "u_clipData"),
       width: gl.getUniformLocation(this.program, "u_clipTextureWidth"),
@@ -2211,6 +2447,20 @@ export class WebGlLineRenderer {
       this.fillProgram,
       "u_viewportLayerVisibility",
     );
+    this.fillDiffLocations = Object.freeze({
+      colorEnabled: gl.getUniformLocation(
+        this.fillProgram,
+        "u_diffColorEnabled",
+      ),
+      color: gl.getUniformLocation(
+        this.fillProgram,
+        "u_diffColor",
+      ),
+      opacity: gl.getUniformLocation(
+        this.fillProgram,
+        "u_diffOpacity",
+      ),
+    });
     this.fillClipLocations = Object.freeze({
       texture: gl.getUniformLocation(this.fillProgram, "u_clipData"),
       width: gl.getUniformLocation(
@@ -2243,6 +2493,20 @@ export class WebGlLineRenderer {
       this.pointProgram,
       "u_viewportLayerVisibility",
     );
+    this.pointDiffLocations = Object.freeze({
+      colorEnabled: gl.getUniformLocation(
+        this.pointProgram,
+        "u_diffColorEnabled",
+      ),
+      color: gl.getUniformLocation(
+        this.pointProgram,
+        "u_diffColor",
+      ),
+      opacity: gl.getUniformLocation(
+        this.pointProgram,
+        "u_diffOpacity",
+      ),
+    });
     this.pointClipLocations = Object.freeze({
       texture: gl.getUniformLocation(this.pointProgram, "u_clipData"),
       width: gl.getUniformLocation(
@@ -2774,8 +3038,9 @@ export class WebGlLineRenderer {
     if (
       overlay &&
       typeof overlay.setRenderDeltaState !== "function" &&
-      ((this.renderDeltaState.texts.length > 0 &&
-        typeof overlay.setRenderDeltaTexts !== "function") ||
+      (this.renderDiffOverlayState.active ||
+        (this.renderDeltaState.texts.length > 0 &&
+          typeof overlay.setRenderDeltaTexts !== "function") ||
         (this.renderDeltaState.transforms.length > 0 &&
           typeof overlay.setRenderDeltaTransforms !== "function") ||
         (this.renderDeltaState.styles.length > 0 &&
@@ -2802,7 +3067,10 @@ export class WebGlLineRenderer {
     this.applyTextRenderDeltaState(this.renderDeltaState);
   }
 
-  applyTextRenderDeltaState(state) {
+  applyTextRenderDeltaState(
+    state,
+    diffOverlay = this.renderDiffOverlayState,
+  ) {
     if (!this.textOverlay) {
       return;
     }
@@ -2814,8 +3082,14 @@ export class WebGlLineRenderer {
         styles: state.styles,
         invalidatedDependencyIds:
           state.invalidatedDependencyIds,
+        diffOverlay,
       });
       return;
+    }
+    if (diffOverlay.active) {
+      throw new TypeError(
+        "text overlay cannot apply an active render diff overlay",
+      );
     }
     if (
       state.texts.length > 0 &&
@@ -2937,15 +3211,22 @@ export class WebGlLineRenderer {
     );
   }
 
-  applyOverlayRenderDeltaState(state) {
+  applyOverlayRenderDeltaState(
+    state,
+    diffOverlay = this.renderDiffOverlayState,
+  ) {
     const previous = this.renderDeltaState;
+    const previousDiffOverlay = this.renderDiffOverlayState;
     try {
       this.applyImageRenderDeltaState(state);
-      this.applyTextRenderDeltaState(state);
+      this.applyTextRenderDeltaState(state, diffOverlay);
     } catch (error) {
       try {
         this.applyImageRenderDeltaState(previous);
-        this.applyTextRenderDeltaState(previous);
+        this.applyTextRenderDeltaState(
+          previous,
+          previousDiffOverlay,
+        );
       } catch {
         // Preserve the original atomic activation failure.
       }
@@ -4208,15 +4489,234 @@ export class WebGlLineRenderer {
         }),
       );
     }
-    this.applyOverlayRenderDeltaState(next);
+    const nextResources = [
+      ...normalizedLines,
+      ...normalizedFills,
+      ...normalizedPoints,
+      ...normalizedTexts,
+      ...normalizedTransforms,
+      ...normalizedStyles,
+    ];
+    const nextDiffOverlay =
+      this.renderDiffOverlayState.active &&
+      this.renderDiffOverlayState.revisionId ===
+        normalizedRevisionId &&
+      nextResources.length ===
+        this.renderDiffOverlayState.resources.size &&
+      nextResources.every((resource) =>
+        this.renderDiffOverlayState.resources.has(resource),
+      )
+        ? this.renderDiffOverlayState
+        : emptyRenderDiffOverlayState();
+    this.applyOverlayRenderDeltaState(next, nextDiffOverlay);
     this.renderDeltaState = next;
+    this.renderDiffOverlayState = nextDiffOverlay;
     this.renderDeltaTransformIndexesByGraph =
       transformIndexesByGraph;
     this.renderDeltaStyleIndexesByGraph = styleIndexesByGraph;
     this.renderDeltaDependencyIndex = dependencyIndex;
     this.renderDeltaRangeCache = new WeakMap();
+    this.renderDiffRangeCache = new WeakMap();
     this.recalculateCombinedBounds();
     return this.renderDeltaSnapshot();
+  }
+
+  activateRenderDiffOverlay({
+    revisionId,
+    previewId = null,
+    visibilityRule,
+    statusStyles,
+    entries,
+  } = {}) {
+    if (!this.overviewScene) {
+      throw new Error(
+        "cannot activate a render diff overlay before the overview",
+      );
+    }
+    if (
+      visibilityRule !== RENDER_DIFF_VISIBILITY_RULE ||
+      revisionId !== this.renderDeltaState.revisionId ||
+      !Array.isArray(entries) ||
+      entries.length > MAX_RENDER_DELTA_PICK_IDENTITIES
+    ) {
+      throw new DOMException(
+        "render diff overlay does not match the active delta",
+        "InvalidStateError",
+      );
+    }
+    const normalizedPreviewId =
+      previewId === null
+        ? null
+        : boundedRenderDeltaPickValue(
+            previewId,
+            "render diff preview ID",
+          );
+    const normalizedStyles =
+      normalizeRenderDiffStyles(statusStyles);
+    const activeByKind = new Map([
+      ["line", new Set(this.renderDeltaState.lines)],
+      ["fill", new Set(this.renderDeltaState.fills)],
+      ["point", new Set(this.renderDeltaState.points)],
+      ["text", new Set(this.renderDeltaState.texts)],
+      ["transform", new Set(this.renderDeltaState.transforms)],
+      ["style", new Set(this.renderDeltaState.styles)],
+    ]);
+    const resourceEntries = new WeakMap();
+    const resources = new Set();
+    const identityEntries = new Map();
+    const removedIdentityKeys = new Set();
+    const normalizedEntries = [];
+    for (const value of entries) {
+      if (
+        !value ||
+        typeof value !== "object" ||
+        !RENDER_DIFF_CHANGED_STATUSES.has(value.status)
+      ) {
+        throw new TypeError("render diff overlay entry is invalid");
+      }
+      const identity = normalizeRenderDeltaIdentity(value.identity);
+      if (
+        (identity.sceneId !== ROOT_RENDER_DELTA_SCENE_ID &&
+          !this.externalScenes.has(identity.sceneId)) ||
+        identityEntries.has(identity.key)
+      ) {
+        throw new TypeError(
+          "render diff overlay identity target is invalid",
+        );
+      }
+      const normalizedEntry = Object.freeze({
+        status: value.status,
+        identity,
+        style: normalizedStyles[value.status],
+      });
+      identityEntries.set(identity.key, normalizedEntry);
+      if (value.status === "removed") {
+        removedIdentityKeys.add(identity.key);
+      }
+      for (const [property, kind] of [
+        ["lines", "line"],
+        ["fills", "fill"],
+        ["points", "point"],
+        ["texts", "text"],
+        ["transforms", "transform"],
+        ["styles", "style"],
+      ]) {
+        if (!Array.isArray(value[property])) {
+          throw new TypeError(
+            `render diff overlay ${property} are invalid`,
+          );
+        }
+        for (const resource of value[property]) {
+          if (
+            !activeByKind.get(kind).has(resource) ||
+            resourceEntries.has(resource)
+          ) {
+            throw new TypeError(
+              "render diff overlay resource target is invalid",
+            );
+          }
+          resourceEntries.set(resource, normalizedEntry);
+          resources.add(resource);
+        }
+      }
+      normalizedEntries.push(normalizedEntry);
+    }
+    for (const resources of activeByKind.values()) {
+      for (const resource of resources) {
+        if (!resourceEntries.has(resource)) {
+          throw new TypeError(
+            "render diff overlay does not cover every active resource",
+          );
+        }
+      }
+    }
+    const next = Object.freeze({
+      active: true,
+      revisionId,
+      previewId: normalizedPreviewId,
+      visibilityRule: RENDER_DIFF_VISIBILITY_RULE,
+      statusStyles: normalizedStyles,
+      entries: Object.freeze(normalizedEntries),
+      resourceEntries,
+      resources,
+      identityEntries,
+      removedIdentityKeys,
+    });
+    const previous = this.renderDiffOverlayState;
+    try {
+      this.applyTextRenderDeltaState(this.renderDeltaState, next);
+    } catch (error) {
+      try {
+        this.applyTextRenderDeltaState(
+          this.renderDeltaState,
+          previous,
+        );
+      } catch {
+        // Preserve the original atomic activation failure.
+      }
+      throw error;
+    }
+    this.renderDiffOverlayState = next;
+    this.renderDiffRangeCache = new WeakMap();
+    return this.renderDiffOverlaySnapshot();
+  }
+
+  clearRenderDiffOverlay() {
+    const previous = this.renderDiffOverlayState;
+    const next = emptyRenderDiffOverlayState();
+    try {
+      this.applyTextRenderDeltaState(this.renderDeltaState, next);
+    } catch (error) {
+      try {
+        this.applyTextRenderDeltaState(
+          this.renderDeltaState,
+          previous,
+        );
+      } catch {
+        // Preserve the original atomic clear failure.
+      }
+      throw error;
+    }
+    this.renderDiffOverlayState = next;
+    this.renderDiffRangeCache = new WeakMap();
+    return this.renderDiffOverlaySnapshot();
+  }
+
+  renderDiffOverlaySnapshot() {
+    const state = this.renderDiffOverlayState;
+    return Object.freeze({
+      active: state.active,
+      revisionId: state.revisionId,
+      previewId: state.previewId,
+      visibilityRule: state.visibilityRule,
+      entries: state.entries.length,
+      styles: state.statusStyles,
+    });
+  }
+
+  renderDiffBaseStyle() {
+    return this.renderDiffOverlayState.active
+      ? this.renderDiffOverlayState.statusStyles.unchanged
+      : NATIVE_RENDER_DIFF_STYLE;
+  }
+
+  renderDiffResourceStyle(resource) {
+    return (
+      this.renderDiffOverlayState.resourceEntries.get(resource)
+        ?.style ?? this.renderDiffBaseStyle()
+    );
+  }
+
+  bindRenderDiffStyle(locations, style) {
+    const normalized = style ?? NATIVE_RENDER_DIFF_STYLE;
+    this.gl.uniform1i(
+      locations.colorEnabled,
+      normalized.rgb === null ? 0 : 1,
+    );
+    if (normalized.rgb !== null) {
+      this.gl.uniform3f(locations.color, ...normalized.rgb);
+    }
+    this.gl.uniform1f(locations.opacity, normalized.opacity);
   }
 
   releaseRenderDeltaResources(resources) {
@@ -4376,6 +4876,77 @@ export class WebGlLineRenderer {
         batch,
         sceneId,
         this.renderDeltaState.suppressionKeys,
+      );
+      entries.set(key, ranges);
+    }
+    return ranges;
+  }
+
+  renderDiffRemovedLineRanges(
+    sceneId,
+    batch,
+    vertices,
+    firstBufferVertex,
+    resource,
+  ) {
+    if (!this.renderDiffOverlayState.active) {
+      return Object.freeze([]);
+    }
+    const removed = this.renderDiffOverlayState.removedIdentityKeys;
+    if (removed.size === 0) {
+      return Object.freeze([]);
+    }
+    let entries = this.renderDiffRangeCache.get(resource);
+    if (!entries) {
+      entries = new Map();
+      this.renderDiffRangeCache.set(resource, entries);
+    }
+    const key =
+      `removed-line\u0000${sceneId}\u0000${batch.id}` +
+      `\u0000${batch.firstVertex}\u0000${batch.vertexCount}` +
+      `\u0000${firstBufferVertex}`;
+    let ranges = entries.get(key);
+    if (!ranges) {
+      ranges = lineSelectedRanges(
+        vertices,
+        batch,
+        firstBufferVertex,
+        sceneId,
+        removed,
+      );
+      entries.set(key, ranges);
+    }
+    return ranges;
+  }
+
+  renderDiffRemovedIdentityRanges(
+    sceneId,
+    batch,
+    identityRanges,
+    resource,
+  ) {
+    if (!this.renderDiffOverlayState.active) {
+      return Object.freeze([]);
+    }
+    const removed = this.renderDiffOverlayState.removedIdentityKeys;
+    if (removed.size === 0) {
+      return Object.freeze([]);
+    }
+    let entries = this.renderDiffRangeCache.get(resource);
+    if (!entries) {
+      entries = new Map();
+      this.renderDiffRangeCache.set(resource, entries);
+    }
+    const key =
+      `removed-identity\u0000${sceneId}\u0000${batch.id}` +
+      `\u0000${batch.firstVertex}\u0000${batch.vertexCount}`;
+    let ranges = entries.get(key);
+    if (!ranges) {
+      ranges = identitySelectedRanges(
+        identityRanges,
+        batch,
+        sceneId,
+        removed,
       );
       entries.set(key, ranges);
     }
@@ -5193,6 +5764,10 @@ export class WebGlLineRenderer {
       instanceIndices = null,
       primitive = this.gl.LINES,
       vertexRanges = null,
+      diffStyle = null,
+      diffLocations = null,
+      removedVertexRanges = Object.freeze([]),
+      removedDiffStyle = null,
     } = {},
   ) {
     const gl = this.gl;
@@ -5215,7 +5790,41 @@ export class WebGlLineRenderer {
           vertexCount: batch.vertexCount,
         }),
       ]);
-    if (totalInstances === 0 || ranges.length === 0) {
+    const effectiveDiffLocations =
+      diffLocations ??
+      (primitive === gl.POINTS
+        ? this.pointDiffLocations
+        : primitive === gl.TRIANGLES
+          ? this.fillDiffLocations
+          : this.diffLocations);
+    const effectiveDiffStyle =
+      diffStyle ??
+      (renderDelta || renderDeltaFill || renderDeltaPoint
+        ? this.renderDiffResourceStyle(resource)
+        : this.renderDiffBaseStyle());
+    const effectiveRemovedDiffStyle =
+      removedDiffStyle ??
+      (this.renderDiffOverlayState.active
+        ? this.renderDiffOverlayState.statusStyles.removed
+        : NATIVE_RENDER_DIFF_STYLE);
+    const rangeGroups = [];
+    if (effectiveDiffStyle.visible && ranges.length > 0) {
+      rangeGroups.push(
+        Object.freeze({ ranges, style: effectiveDiffStyle }),
+      );
+    }
+    if (
+      effectiveRemovedDiffStyle.visible &&
+      removedVertexRanges.length > 0
+    ) {
+      rangeGroups.push(
+        Object.freeze({
+          ranges: removedVertexRanges,
+          style: effectiveRemovedDiffStyle,
+        }),
+      );
+    }
+    if (totalInstances === 0 || rangeGroups.length === 0) {
       return;
     }
     gl.bindVertexArray(resource.vertexArray);
@@ -5311,71 +5920,79 @@ export class WebGlLineRenderer {
         metrics.maximumInstanceBufferBytes,
         packed.byteLength,
       );
-      for (const range of ranges) {
-        gl.drawArraysInstanced(
-          primitive,
-          range.firstVertex,
-          range.vertexCount,
-          instanceCount,
-        );
-        metrics.drawCalls += 1;
-        metrics.submittedInstances += instanceCount;
-        metrics.submittedVertices +=
-          range.vertexCount * instanceCount;
-        if (detail) {
-          metrics.detailDrawCalls += 1;
-          metrics.detailSubmittedVertices +=
-            range.vertexCount * instanceCount;
+      for (const group of rangeGroups) {
+        if (effectiveDiffLocations) {
+          this.bindRenderDiffStyle(
+            effectiveDiffLocations,
+            group.style,
+          );
         }
-        if (fill) {
-          metrics.hatchFillDrawCalls += 1;
-          metrics.hatchFillSubmittedVertices +=
+        for (const range of group.ranges) {
+          gl.drawArraysInstanced(
+            primitive,
+            range.firstVertex,
+            range.vertexCount,
+            instanceCount,
+          );
+          metrics.drawCalls += 1;
+          metrics.submittedInstances += instanceCount;
+          metrics.submittedVertices +=
             range.vertexCount * instanceCount;
-        }
-        if (pattern) {
-          metrics.hatchPatternDrawCalls += 1;
-          metrics.hatchPatternSubmittedVertices +=
-            range.vertexCount * instanceCount;
-        }
-        if (point) {
-          metrics.pointDrawCalls += 1;
-          metrics.pointSubmittedVertices +=
-            range.vertexCount * instanceCount;
-        }
-        if (solidFill) {
-          metrics.solidFillDrawCalls += 1;
-          metrics.solidFillSubmittedVertices +=
-            range.vertexCount * instanceCount;
-        }
-        if (solidOutline) {
-          metrics.solidOutlineDrawCalls += 1;
-          metrics.solidOutlineSubmittedVertices +=
-            range.vertexCount * instanceCount;
-        }
-        if (wipeoutMask) {
-          metrics.wipeoutMaskDrawCalls += 1;
-          metrics.wipeoutMaskSubmittedVertices +=
-            range.vertexCount * instanceCount;
-        }
-        if (curveRefinement) {
-          metrics.curveRefinementDrawCalls += 1;
-          metrics.curveRefinementSubmittedVertices +=
-            range.vertexCount * instanceCount;
-        }
-        if (renderDelta) {
-          metrics.renderDeltaDrawCalls += 1;
-          metrics.renderDeltaSubmittedVertices +=
-            range.vertexCount * instanceCount;
-        }
-        if (renderDeltaFill) {
-          metrics.renderDeltaFillDrawCalls += 1;
-          metrics.renderDeltaFillSubmittedVertices +=
-            range.vertexCount * instanceCount;
-        }
-        if (renderDeltaPoint) {
-          metrics.renderDeltaPointDrawCalls += 1;
-          metrics.renderDeltaPointSubmittedVertices +=
-            range.vertexCount * instanceCount;
+          if (detail) {
+            metrics.detailDrawCalls += 1;
+            metrics.detailSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
+          if (fill) {
+            metrics.hatchFillDrawCalls += 1;
+            metrics.hatchFillSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
+          if (pattern) {
+            metrics.hatchPatternDrawCalls += 1;
+            metrics.hatchPatternSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
+          if (point) {
+            metrics.pointDrawCalls += 1;
+            metrics.pointSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
+          if (solidFill) {
+            metrics.solidFillDrawCalls += 1;
+            metrics.solidFillSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
+          if (solidOutline) {
+            metrics.solidOutlineDrawCalls += 1;
+            metrics.solidOutlineSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
+          if (wipeoutMask) {
+            metrics.wipeoutMaskDrawCalls += 1;
+            metrics.wipeoutMaskSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
+          if (curveRefinement) {
+            metrics.curveRefinementDrawCalls += 1;
+            metrics.curveRefinementSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
+          if (renderDelta) {
+            metrics.renderDeltaDrawCalls += 1;
+            metrics.renderDeltaSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
+          if (renderDeltaFill) {
+            metrics.renderDeltaFillDrawCalls += 1;
+            metrics.renderDeltaFillSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
+          if (renderDeltaPoint) {
+            metrics.renderDeltaPointDrawCalls += 1;
+            metrics.renderDeltaPointSubmittedVertices +=
+              range.vertexCount * instanceCount;
+          }
         }
       }
     }
@@ -5668,6 +6285,13 @@ export class WebGlLineRenderer {
                 this.solidFillScene.identityRanges,
                 this.solidFillScene.resource,
               ),
+              removedVertexRanges:
+                this.renderDiffRemovedIdentityRanges(
+                  ROOT_RENDER_DELTA_SCENE_ID,
+                  batch,
+                  this.solidFillScene.identityRanges,
+                  this.solidFillScene.resource,
+                ),
             },
           );
         }
@@ -5698,6 +6322,13 @@ export class WebGlLineRenderer {
                 this.hatchFillScene.identityRanges,
                 this.hatchFillScene.resource,
               ),
+              removedVertexRanges:
+                this.renderDiffRemovedIdentityRanges(
+                  ROOT_RENDER_DELTA_SCENE_ID,
+                  batch,
+                  this.hatchFillScene.identityRanges,
+                  this.hatchFillScene.resource,
+                ),
             },
           );
         }
@@ -5723,6 +6354,7 @@ export class WebGlLineRenderer {
           metrics,
           {
             renderDeltaFill: true,
+            diffStyle: this.renderDiffResourceStyle(entry),
             firstVertex: 0,
             instanceIndices: entry.instanceIndices,
             primitive: gl.TRIANGLES,
@@ -5890,6 +6522,13 @@ export class WebGlLineRenderer {
                 this.hatchPatternScene.identityRanges,
                 this.hatchPatternScene.resource,
               ),
+              removedVertexRanges:
+                this.renderDiffRemovedIdentityRanges(
+                  ROOT_RENDER_DELTA_SCENE_ID,
+                  batch,
+                  this.hatchPatternScene.identityRanges,
+                  this.hatchPatternScene.resource,
+                ),
             },
           );
         }
@@ -5919,6 +6558,13 @@ export class WebGlLineRenderer {
                 this.solidOutlineScene.identityRanges,
                 this.solidOutlineScene.resource,
               ),
+              removedVertexRanges:
+                this.renderDiffRemovedIdentityRanges(
+                  ROOT_RENDER_DELTA_SCENE_ID,
+                  batch,
+                  this.solidOutlineScene.identityRanges,
+                  this.solidOutlineScene.resource,
+                ),
             },
           );
         }
@@ -5951,6 +6597,14 @@ export class WebGlLineRenderer {
               0,
               this.overviewScene.resource,
             ),
+            removedVertexRanges:
+              this.renderDiffRemovedLineRanges(
+                ROOT_RENDER_DELTA_SCENE_ID,
+                batch,
+                this.overviewScene.vertices,
+                0,
+                this.overviewScene.resource,
+              ),
           },
         );
       }
@@ -5989,6 +6643,14 @@ export class WebGlLineRenderer {
                 0,
                 scene.resource,
               ),
+              removedVertexRanges:
+                this.renderDiffRemovedLineRanges(
+                  scene.id,
+                  batch,
+                  scene.vertices,
+                  0,
+                  scene.resource,
+                ),
             },
           );
         }
@@ -6023,6 +6685,14 @@ export class WebGlLineRenderer {
                 entry.batch.firstVertex,
                 entry.resource,
               ),
+              removedVertexRanges:
+                this.renderDiffRemovedLineRanges(
+                  scene.id,
+                  entry.batch,
+                  entry.vertices,
+                  entry.batch.firstVertex,
+                  entry.resource,
+                ),
             },
           );
           if (linePassIndex === 0) {
@@ -6066,6 +6736,14 @@ export class WebGlLineRenderer {
               entry.batch.firstVertex,
               entry.resource,
             ),
+            removedVertexRanges:
+              this.renderDiffRemovedLineRanges(
+                ROOT_RENDER_DELTA_SCENE_ID,
+                entry.batch,
+                entry.vertices,
+                entry.batch.firstVertex,
+                entry.resource,
+              ),
           },
         );
         if (linePassIndex === 0) {
@@ -6093,6 +6771,7 @@ export class WebGlLineRenderer {
           metrics,
           {
             renderDelta: true,
+            diffStyle: this.renderDiffResourceStyle(entry),
             firstVertex: 0,
             instanceIndices: entry.instanceIndices,
           },
@@ -6126,6 +6805,14 @@ export class WebGlLineRenderer {
                 0,
                 entry.resource,
               ),
+              removedVertexRanges:
+                this.renderDiffRemovedLineRanges(
+                  ROOT_RENDER_DELTA_SCENE_ID,
+                  entry.batch,
+                  entry.vertices,
+                  0,
+                  entry.resource,
+                ),
             },
           );
         }
@@ -6187,6 +6874,13 @@ export class WebGlLineRenderer {
                 this.pointScene.identityRanges,
                 this.pointScene.resource,
               ),
+              removedVertexRanges:
+                this.renderDiffRemovedIdentityRanges(
+                  ROOT_RENDER_DELTA_SCENE_ID,
+                  batch,
+                  this.pointScene.identityRanges,
+                  this.pointScene.resource,
+                ),
             },
           );
         }
@@ -6212,6 +6906,7 @@ export class WebGlLineRenderer {
           metrics,
           {
             renderDeltaPoint: true,
+            diffStyle: this.renderDiffResourceStyle(entry),
             firstVertex: 0,
             instanceIndices: entry.instanceIndices,
             primitive: gl.POINTS,
@@ -6436,6 +7131,8 @@ export class WebGlLineRenderer {
     this.renderDeltaTransformIndexesByGraph = new WeakMap();
     this.renderDeltaStyleIndexesByGraph = new WeakMap();
     this.renderDeltaRangeCache = new WeakMap();
+    this.renderDiffOverlayState = emptyRenderDiffOverlayState();
+    this.renderDiffRangeCache = new WeakMap();
     this.curveRefinementScene = null;
     this.curveReplacementHandles.clear();
     this.externalScenes.clear();

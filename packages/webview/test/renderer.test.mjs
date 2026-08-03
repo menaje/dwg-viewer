@@ -49,6 +49,9 @@ function makeFakeGl() {
     depthFunc: [],
     pixelStorei: [],
     texImage2D: [],
+    uniform1i: [],
+    uniform1f: [],
+    uniform3f: [],
   };
   const gl = {
     VERTEX_SHADER: 1,
@@ -164,8 +167,18 @@ function makeFakeGl() {
     blendFunc() {},
     useProgram() {},
     uniformMatrix4fv() {},
-    uniform1i() {},
-    uniform1f() {},
+    uniform1i(location, value) {
+      calls.uniform1i.push({ name: location?.name, value });
+    },
+    uniform1f(location, value) {
+      calls.uniform1f.push({ name: location?.name, value });
+    },
+    uniform3f(location, red, green, blue) {
+      calls.uniform3f.push({
+        name: location?.name,
+        value: [red, green, blue],
+      });
+    },
     uniform2f() {},
     drawArraysInstanced(mode, first, count, instances) {
       calls.drawArraysInstanced.push({ mode, first, count, instances });
@@ -263,6 +276,19 @@ function deltaFillVertices() {
     vertexCount,
     recordSize: 32,
   });
+}
+
+function renderDiffStyles() {
+  return {
+    added: { color: "#3fb950", opacity: 1, visible: true },
+    removed: { color: "#f85149", opacity: 1, visible: true },
+    modified: {
+      color: "#d29922",
+      opacity: 0.8,
+      visible: true,
+    },
+    unchanged: { color: null, opacity: 0.35, visible: true },
+  };
 }
 
 function deltaPointVertices(vertexCount = 1) {
@@ -858,6 +884,243 @@ test("atomically overlays delta lines and suppresses matching base handles", () 
     max: [2, 1, 0],
   });
 
+  renderer.dispose();
+});
+
+test("styles unchanged, removed, and modified line ranges atomically", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const overviewBatch = {
+    ...batch({
+      id: 0,
+      kind: GpuLineBatchKind.ModelOverview,
+      lodLevel: 0,
+      firstVertex: 0,
+    }),
+    vertexCount: 6,
+    bounds: { min: [0, 0, 0], max: [3, 1, 0] },
+  };
+  const first = renderer.renderOverview({
+    batches: [overviewBatch],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: { instancesByBlock: new Map() },
+    vertices: lineVerticesForHandles([0x2an, 0x2bn, 0x2cn]),
+  });
+  const staged = renderer.stageRenderDeltaLine({
+    key: "delta:diff\u0000modified",
+    sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+    batch: batch({
+      id: 10,
+      kind: GpuLineBatchKind.ModelDetail,
+      lodLevel: 1,
+      firstVertex: 0,
+    }),
+    vertices: lineVerticesForHandles([0x2bn]),
+  });
+  const revisionId = "revision:diff:2";
+  renderer.activateRenderDelta({
+    revisionId,
+    lines: [staged],
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x2a,
+        handleHigh: 0,
+      },
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x2b,
+        handleHigh: 0,
+      },
+    ],
+  });
+  renderer.activateRenderDiffOverlay({
+    revisionId,
+    previewId: "preview:diff",
+    visibilityRule: "intersect-source",
+    statusStyles: {
+      added: { color: "#3fb950", opacity: 1, visible: true },
+      removed: { color: "#f85149", opacity: 1, visible: true },
+      modified: {
+        color: "#d29922",
+        opacity: 0.8,
+        visible: true,
+      },
+      unchanged: { color: null, opacity: 0.35, visible: true },
+    },
+    entries: [
+      {
+        status: "removed",
+        identity: {
+          sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+          handleLow: 0x2a,
+          handleHigh: 0,
+        },
+        lines: [],
+        fills: [],
+        points: [],
+        texts: [],
+        transforms: [],
+        styles: [],
+      },
+      {
+        status: "modified",
+        identity: {
+          sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+          handleLow: 0x2b,
+          handleHigh: 0,
+        },
+        lines: [staged],
+        fills: [],
+        points: [],
+        texts: [],
+        transforms: [],
+        styles: [],
+      },
+    ],
+  });
+  const callCount = calls.drawArraysInstanced.length;
+  const opacityCount = calls.uniform1f.length;
+  const styled = renderer.redraw(first.camera);
+
+  assert.deepEqual(
+    calls.drawArraysInstanced.slice(callCount),
+    [
+      { mode: gl.LINES, first: 4, count: 2, instances: 1 },
+      { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+      { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+    ],
+  );
+  assert.equal(styled.drawCalls, 3);
+  assert.deepEqual(
+    calls.uniform1f
+      .slice(opacityCount)
+      .filter(({ name }) => name === "u_diffOpacity")
+      .map(({ value }) => value),
+    [0.35, 1, 0.8],
+  );
+  assert.deepEqual(
+    calls.uniform3f.slice(-2).map(({ value }) => value),
+    [
+      [0xf8 / 255, 0x51 / 255, 0x49 / 255],
+      [0xd2 / 255, 0x99 / 255, 0x22 / 255],
+    ],
+  );
+  assert.equal(renderer.renderDiffOverlaySnapshot().entries, 2);
+
+  renderer.activateRenderDelta({
+    revisionId: "revision:diff:3",
+  });
+  assert.equal(renderer.renderDiffOverlaySnapshot().active, false);
+  renderer.releaseRenderDeltaResources([staged]);
+  renderer.dispose();
+});
+
+test("applies one added style to split fill and point resources", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const first = renderer.renderOverview({
+    batches: [
+      batch({
+        id: 0,
+        kind: GpuLineBatchKind.ModelOverview,
+        lodLevel: 0,
+        firstVertex: 0,
+      }),
+    ],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: { instancesByBlock: new Map() },
+    vertices: lineVerticesForHandles([0x10n]),
+  });
+  const fill = renderer.stageRenderDeltaFill({
+    key: "delta:diff\u0000fill",
+    sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+    batch: {
+      ...batch({
+        id: 20,
+        kind: GpuLineBatchKind.ModelDetail,
+        lodLevel: 1,
+        firstVertex: 0,
+      }),
+      vertexCount: 3,
+    },
+    vertices: deltaFillVertices(),
+  });
+  const point = renderer.stageRenderDeltaPoint({
+    key: "delta:diff\u0000point",
+    sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+    batch: {
+      ...batch({
+        id: 21,
+        kind: GpuLineBatchKind.ModelDetail,
+        lodLevel: 1,
+        firstVertex: 0,
+      }),
+      vertexCount: 1,
+    },
+    vertices: deltaPointVertices(),
+  });
+  const revisionId = "revision:diff:added";
+  renderer.activateRenderDelta({
+    revisionId,
+    fills: [fill],
+    points: [point],
+  });
+  renderer.activateRenderDiffOverlay({
+    revisionId,
+    visibilityRule: "intersect-source",
+    statusStyles: renderDiffStyles(),
+    entries: [
+      {
+        status: "added",
+        identity: {
+          sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+          handleLow: 0x20,
+          handleHigh: 0,
+        },
+        lines: [],
+        fills: [fill],
+        points: [point],
+        texts: [],
+        transforms: [],
+        styles: [],
+      },
+    ],
+  });
+  const colorCount = calls.uniform3f.length;
+  renderer.redraw(first.camera);
+
+  assert.deepEqual(
+    calls.uniform3f
+      .slice(colorCount)
+      .filter(({ name }) => name === "u_diffColor")
+      .map(({ value }) => value),
+    [
+      [0x3f / 255, 0xb9 / 255, 0x50 / 255],
+      [0x3f / 255, 0xb9 / 255, 0x50 / 255],
+    ],
+  );
+  renderer.clearRenderDiffOverlay();
+  renderer.activateRenderDelta();
+  renderer.releaseRenderDeltaResources([fill, point]);
   renderer.dispose();
 });
 

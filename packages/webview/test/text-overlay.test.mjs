@@ -346,6 +346,128 @@ test("replaces and rolls back a native Canvas text record", async () => {
   );
 });
 
+test("tints modified text and redraws removed base text without revealing hidden layers", async () => {
+  const scene = await textScene();
+  const canvas = fakeCanvas();
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: scene.textEntities,
+    blocks: scene.metadata.blocks,
+    layers: scene.metadata.layers,
+    instanceGraph: scene.instanceGraph,
+    glyphCache: { getGlyph: () => undefined },
+    maximumSourceTexts: 1,
+    minimumPixelHeight: 0.1,
+    sourceId: "root",
+  });
+  const { record } = normalizedRenderDeltaTextRecord({
+    handle: "12c",
+    ownerHandle: "64",
+    value: "수정 문자",
+    insertionPoint: [102, 201, 0],
+    alignmentPoint: [102, 201, 0],
+    height: 0.5,
+  });
+  const entry = Object.freeze({
+    resourceKind: "text",
+    sceneId: "root",
+    record,
+    byteLength: 1_024,
+  });
+  const unchanged = Object.freeze({
+    color: null,
+    opacity: 0.35,
+    visible: true,
+  });
+  const modified = Object.freeze({
+    color: "#d29922",
+    opacity: 0.5,
+    visible: true,
+  });
+  const removed = Object.freeze({
+    color: "#f85149",
+    opacity: 1,
+    visible: true,
+  });
+  const modifiedEntry = Object.freeze({
+    status: "modified",
+    style: modified,
+  });
+  const modifiedResources = new WeakMap([
+    [entry, modifiedEntry],
+  ]);
+
+  overlay.setRenderDeltaState({
+    suppressions: [
+      {
+        sceneId: "root",
+        handleLow: 300,
+        handleHigh: 0,
+      },
+    ],
+    texts: [entry],
+    diffOverlay: Object.freeze({
+      active: true,
+      statusStyles: Object.freeze({ unchanged }),
+      resourceEntries: modifiedResources,
+      identityEntries: new Map(),
+    }),
+  });
+  const modifiedMetrics = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => true),
+  );
+  assert.equal(modifiedMetrics.visibleOccurrences, 1);
+  assert.ok(
+    canvas.calls.fillStyles.includes(
+      "rgba(210, 153, 34, 0.5)",
+    ),
+  );
+  const beforeHidden = canvas.calls.fillText;
+  const hiddenMetrics = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => false),
+  );
+  assert.equal(hiddenMetrics.visibleOccurrences, 0);
+  assert.equal(canvas.calls.fillText, beforeHidden);
+
+  overlay.setRenderDeltaState({
+    suppressions: [
+      {
+        sceneId: "root",
+        handleLow: 300,
+        handleHigh: 0,
+      },
+    ],
+    diffOverlay: Object.freeze({
+      active: true,
+      statusStyles: Object.freeze({ unchanged }),
+      resourceEntries: new WeakMap(),
+      identityEntries: new Map([
+        [
+          "root\u00000:300",
+          Object.freeze({
+            status: "removed",
+            style: removed,
+          }),
+        ],
+      ]),
+    }),
+  });
+  const removedMetrics = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => true),
+  );
+  assert.equal(removedMetrics.visibleOccurrences, 1);
+  assert.notEqual(overlay.findTextOccurrence("12C"), null);
+  assert.ok(
+    canvas.calls.fillStyles.includes(
+      "rgba(248, 81, 73, 1)",
+    ),
+  );
+
+  overlay.dispose();
+});
+
 test("moves block text through a sparse instance transform", async () => {
   const scene = await textScene();
   const overlay = new CanvasTextOverlay(fakeCanvas(), {

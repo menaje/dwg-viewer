@@ -448,7 +448,7 @@ test("keeps package versions and producer compatibility manifest aligned", async
   );
   assert.equal(
     manifest.components.diffOverlay,
-    "bounded-revision-bound-status-style-policy-with-source-intersected-visibility-and-retryable-application",
+    "bounded-revision-bound-status-style-policy-with-dwg-line-fill-point-canvas-text-presentation-source-intersected-visibility-and-retryable-application",
   );
   assert.equal(
     manifest.components.splitViewCamera,
@@ -469,6 +469,14 @@ test("keeps package versions and producer compatibility manifest aligned", async
   assert.equal(
     manifest.conformance.dwgRenderDelta,
     "packages/webview/test/render-delta-adapter.test.mjs",
+  );
+  assert.equal(
+    manifest.conformance.dwgDiffOverlay,
+    "packages/webview/test/renderer.test.mjs",
+  );
+  assert.equal(
+    manifest.conformance.dwgTextDiffOverlay,
+    "packages/webview/test/text-overlay.test.mjs",
   );
   assert.equal(manifest.viewerCore.package, viewerPackage.name);
   assert.equal(manifest.viewerCore.version, viewerPackage.version);
