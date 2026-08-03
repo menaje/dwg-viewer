@@ -19,6 +19,12 @@ import {
 import {
   dwgBlockRenderDependencyId,
 } from "../src/render-delta-dependency.mjs";
+import {
+  NESTED_INSTANCE_BLOCKS,
+  NESTED_INSTANCE_HANDLES,
+  NESTED_INSTANCE_LAYERS,
+  nestedInstanceGraph,
+} from "./nested-instance-graph-fixture.mjs";
 
 function imageTable(record, path = String.raw`.\image\도면.png`) {
   return {
@@ -585,4 +591,89 @@ test("restyles and hides a block IMAGE occurrence", () => {
   const restoredMetrics = overlay.redraw(camera, [true]);
   assert.equal(restoredMetrics.renderDeltaStyles, 0);
   assert.equal(canvas.calls.drawImage.at(-1).alpha, 0.9);
+});
+
+test("propagates a parent INSERT delta to a nested IMAGE", () => {
+  const canvas = fakeCanvas();
+  const instanceGraph = nestedInstanceGraph();
+  const overlay = new CanvasRasterImageOverlay(canvas, {
+    imageEntities: imageTable({
+      ...visibleRecord,
+      ownerHandle: NESTED_INSTANCE_BLOCKS[3].handle,
+      clippingEnabled: false,
+      clipVertexCount: 0,
+    }),
+    blocks: NESTED_INSTANCE_BLOCKS,
+    layers: NESTED_INSTANCE_LAYERS,
+    instanceGraph,
+    cacheId: "root",
+    sourceId: "root",
+    hitTestingEnabled: true,
+    assetStore: {
+      lookup: () => ({ status: "missing" }),
+      snapshot: () => ({}),
+    },
+  });
+  const transform = normalizedRenderDeltaTransformRecord({
+    blockIndex: 1,
+    handle: NESTED_INSTANCE_HANDLES.outer,
+    matrix: translatedTransformMatrix(20, 30, 0),
+    measurementMatrix: translatedTransformMatrix(110, 220, 0),
+  });
+  const transformEntry = Object.freeze({
+    resourceKind: "transform",
+    sceneId: "root",
+    record: transform.record,
+    byteLength: transform.buffer.byteLength,
+  });
+
+  overlay.setRenderDeltaState({
+    transforms: [transformEntry],
+  });
+  const movedMetrics = overlay.redraw(
+    {
+      origin: [26, 38, 0],
+      worldWidth: 8,
+      worldHeight: 6,
+    },
+    [true, true, true],
+  );
+  const moved = overlay.hitTest(400, 300, {
+    snapKinds: ["insertion"],
+  });
+
+  assert.equal(movedMetrics.visibleOccurrences, 1);
+  assert.deepEqual(moved.displayPoint, [26, 38, 0]);
+  assert.deepEqual(moved.measurementPoint, [116, 228, 0]);
+
+  const hidden = normalizedRenderDeltaStyleRecord({
+    blockIndex: 1,
+    handle: NESTED_INSTANCE_HANDLES.outer,
+    visible: false,
+  });
+  overlay.setRenderDeltaState({
+    styles: [
+      Object.freeze({
+        resourceKind: "style",
+        sceneId: "root",
+        record: hidden.record,
+        byteLength: hidden.buffer.byteLength,
+      }),
+    ],
+  });
+  const hiddenMetrics = overlay.redraw(
+    {
+      origin: [16, 28, 0],
+      worldWidth: 8,
+      worldHeight: 6,
+    },
+    [true, true, true],
+  );
+  assert.equal(hiddenMetrics.visibleOccurrences, 0);
+  assert.equal(
+    overlay.hitTest(400, 300, {
+      snapKinds: ["insertion"],
+    }),
+    null,
+  );
 });

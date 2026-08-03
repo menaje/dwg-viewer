@@ -12,6 +12,10 @@ import {
   dwgRenderDeltaTransformBuffer,
   translatedTransformMatrix,
 } from "./render-delta-transform-fixture.mjs";
+import {
+  NESTED_INSTANCE_HANDLES,
+  nestedInstanceGraph,
+} from "./nested-instance-graph-fixture.mjs";
 
 function instanceGraph({
   handle = 0x2an,
@@ -148,7 +152,7 @@ test("indexes only the matching unclipped base occurrence", () => {
   );
 });
 
-test("requires complete array coverage and no nested dependency", () => {
+test("requires complete repeated occurrence coverage", () => {
   const data = new Float64Array(32);
   data.set(translatedTransformMatrix(), 0);
   data.set(translatedTransformMatrix(2, 0, 0), 16);
@@ -191,15 +195,154 @@ test("requires complete array coverage and no nested dependency", () => {
     }).entries.length,
     2,
   );
+});
+
+test("propagates nested transforms and honors a direct child transform", () => {
+  const graph = nestedInstanceGraph();
+  const outerInstances = graph.instancesByBlock.get(1);
+  const childInstances = graph.instancesByBlock.get(2);
+  const grandchildInstances = graph.instancesByBlock.get(3);
+  const outerBuffer = dwgRenderDeltaTransformBuffer({
+    blockIndex: 1,
+    handle: NESTED_INSTANCE_HANDLES.outer,
+    matrix: translatedTransformMatrix(20, 30, 0),
+    measurementMatrix: translatedTransformMatrix(110, 220, 0),
+  });
+  const outerEntry = Object.freeze({
+    resourceKind: "transform",
+    sceneId: "root",
+    record: decodeDwgRenderDeltaTransform(outerBuffer),
+    byteLength: outerBuffer.byteLength,
+  });
+  const inherited = indexDwgRenderDeltaTransforms([outerEntry], {
+    sourceId: "root",
+    instanceGraph: graph,
+  });
+
+  assert.deepEqual(
+    [...renderDeltaInstanceMatrix(inherited, outerInstances, 0)],
+    translatedTransformMatrix(20, 30, 0),
+  );
+  assert.deepEqual(
+    [...renderDeltaInstanceMatrix(inherited, childInstances, 0)],
+    translatedTransformMatrix(22, 33, 0),
+  );
+  assert.deepEqual(
+    [
+      ...renderDeltaInstanceMatrix(inherited, grandchildInstances, 0, {
+        measurement: true,
+      }),
+    ],
+    translatedTransformMatrix(116, 228, 0),
+  );
+  assert.equal(inherited.derivedCount, 2);
+  assert.equal(inherited.derivedByteLength, 544);
+
+  const childBuffer = dwgRenderDeltaTransformBuffer({
+    blockIndex: 2,
+    handle: NESTED_INSTANCE_HANDLES.child,
+    matrix: translatedTransformMatrix(50, 60, 0),
+    measurementMatrix: translatedTransformMatrix(510, 620, 0),
+  });
+  const directChildEntry = Object.freeze({
+    resourceKind: "transform",
+    sceneId: "root",
+    record: decodeDwgRenderDeltaTransform(childBuffer),
+    byteLength: childBuffer.byteLength,
+  });
+  const overridden = indexDwgRenderDeltaTransforms(
+    [outerEntry, directChildEntry],
+    {
+      sourceId: "root",
+      instanceGraph: graph,
+    },
+  );
+
+  assert.deepEqual(
+    [...renderDeltaInstanceMatrix(overridden, childInstances, 0)],
+    translatedTransformMatrix(50, 60, 0),
+  );
+  assert.deepEqual(
+    [...renderDeltaInstanceMatrix(overridden, grandchildInstances, 0)],
+    translatedTransformMatrix(54, 65, 0),
+  );
+  assert.deepEqual(
+    [
+      ...renderDeltaInstanceMatrix(overridden, grandchildInstances, 0, {
+        measurement: true,
+      }),
+    ],
+    translatedTransformMatrix(514, 625, 0),
+  );
+  assert.equal(overridden.derivedCount, 1);
+});
+
+test("bounds nested transforms and rejects moved XCLIP dependencies", () => {
+  const graph = nestedInstanceGraph();
+  const buffer = dwgRenderDeltaTransformBuffer({
+    blockIndex: 1,
+    handle: NESTED_INSTANCE_HANDLES.outer,
+  });
+  const transformEntry = Object.freeze({
+    resourceKind: "transform",
+    sceneId: "root",
+    record: decodeDwgRenderDeltaTransform(buffer),
+    byteLength: buffer.byteLength,
+  });
+
   assert.throws(
     () =>
-      indexDwgRenderDeltaTransforms(entries, {
+      indexDwgRenderDeltaTransforms([transformEntry], {
         sourceId: "root",
-        instanceGraph: {
-          ...graph,
-          insertsByOwner: new Map([[1, [{}]]]),
-        },
+        instanceGraph: graph,
+        maximumDerivedBytes: 0,
       }),
-    /requires dependency invalidation/u,
+    /derived transform data exceeds/u,
   );
+  assert.throws(
+    () =>
+      indexDwgRenderDeltaTransforms([transformEntry], {
+        sourceId: "root",
+        instanceGraph: nestedInstanceGraph({
+          clippedHandle: NESTED_INSTANCE_HANDLES.child,
+        }),
+      }),
+    /clipped dependency/u,
+  );
+});
+
+test("isolates derived descendants for every covered MINSERT cell", () => {
+  const graph = nestedInstanceGraph({ outerColumns: 2 });
+  const entries = [
+    translatedTransformMatrix(20, 30, 0),
+    translatedTransformMatrix(220, 30, 0),
+  ].map((matrix, instanceIndex) => {
+    const buffer = dwgRenderDeltaTransformBuffer({
+      blockIndex: 1,
+      instanceIndex,
+      handle: NESTED_INSTANCE_HANDLES.outer,
+      matrix,
+    });
+    return Object.freeze({
+      resourceKind: "transform",
+      sceneId: "root",
+      record: decodeDwgRenderDeltaTransform(buffer),
+      byteLength: buffer.byteLength,
+    });
+  });
+  const index = indexDwgRenderDeltaTransforms(entries, {
+    sourceId: "root",
+    instanceGraph: graph,
+  });
+  const grandchildren = graph.instancesByBlock.get(3);
+
+  assert.deepEqual(
+    [...renderDeltaInstanceMatrix(index, grandchildren, 0)],
+    translatedTransformMatrix(26, 38, 0),
+  );
+  assert.deepEqual(
+    [...renderDeltaInstanceMatrix(index, grandchildren, 1)],
+    translatedTransformMatrix(226, 38, 0),
+  );
+  assert.equal(index.derivedCount, 4);
 });

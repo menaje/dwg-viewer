@@ -36,6 +36,11 @@ import {
   dwgBlockRenderDependencyId,
   dwgTypeRenderDependencyId,
 } from "../src/render-delta-dependency.mjs";
+import {
+  NESTED_INSTANCE_HANDLES,
+  NESTED_INSTANCE_LAYERS,
+  nestedInstanceGraph,
+} from "./nested-instance-graph-fixture.mjs";
 
 function makeFakeGl() {
   let nextId = 0;
@@ -2039,6 +2044,125 @@ test("sparsely replaces a shared block occurrence transform", () => {
   assert.equal(restored.renderDeltaTransformRecords, 0);
   assert.equal(restored.renderDeltaAllocatedTransformBytes, 0);
 
+  renderer.dispose();
+});
+
+test("uploads and hides nested occurrences from a parent INSERT delta", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const transform = normalizedRenderDeltaTransformRecord({
+    blockIndex: 1,
+    handle: NESTED_INSTANCE_HANDLES.outer,
+    matrix: translatedTransformMatrix(10.25, 20.25, 0),
+  });
+  const hidden = normalizedRenderDeltaStyleRecord({
+    blockIndex: 1,
+    handle: NESTED_INSTANCE_HANDLES.outer,
+    visible: false,
+  });
+  const renderer = new WebGlLineRenderer(canvas, {
+    maximumRenderDeltaTransformBytes:
+      transform.buffer.byteLength * 2,
+    maximumRenderDeltaStyleBytes:
+      hidden.buffer.byteLength * 2,
+  });
+  const instanceGraph = nestedInstanceGraph();
+  const instances = instanceGraph.instancesByBlock.get(3);
+  const blockBatch = {
+    ...batch({
+      id: 0,
+      kind: GpuLineBatchKind.BlockDefinition,
+      lodLevel: 0,
+      firstVertex: 0,
+    }),
+    blockIndex: 3,
+  };
+  const first = renderer.renderOverview({
+    batches: [blockBatch],
+    layers: NESTED_INSTANCE_LAYERS.map((layer) => ({
+      ...layer,
+      flags: 0,
+    })),
+    instanceGraph,
+    vertices: lineVerticesForHandles([0x99n]),
+  });
+  const stagedTransform = renderer.stageRenderDeltaTransform({
+    key: "delta:nested-transform\u0000dwg:root:2A",
+    record: transform.record,
+    byteLength: transform.buffer.byteLength,
+  });
+
+  renderer.activateRenderDelta({
+    transforms: [stagedTransform],
+  });
+  const uploadCount = calls.bufferData.length;
+  renderer.redraw(first.camera);
+  const transformedUpload = calls.bufferData
+    .slice(uploadCount)
+    .findLast((call) => call.usage === gl.DYNAMIC_DRAW);
+  const transformedMatrix = new Float32Array(
+    transformedUpload.buffer.slice(0, 16 * 4),
+  );
+  assert.ok(
+    Math.abs(
+      transformedMatrix[12] - (16.25 - first.camera.origin[0]),
+    ) < 1e-6,
+  );
+  assert.ok(
+    Math.abs(
+      transformedMatrix[13] - (28.25 - first.camera.origin[1]),
+    ) < 1e-6,
+  );
+  assert.equal(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x99n,
+      batch: blockBatch,
+      instances,
+      instanceIndex: 0,
+    }),
+    null,
+  );
+
+  renderer.activateRenderDelta();
+  renderer.releaseRenderDeltaResources([stagedTransform]);
+  const stagedStyle = renderer.stageRenderDeltaStyle({
+    key: "delta:nested-style\u0000dwg:root:2A",
+    record: hidden.record,
+    byteLength: hidden.buffer.byteLength,
+  });
+  renderer.activateRenderDelta({
+    styles: [stagedStyle],
+  });
+  const drawCount = calls.drawArraysInstanced.length;
+  const hiddenMetrics = renderer.redraw(first.camera);
+
+  assert.deepEqual(
+    calls.drawArraysInstanced.slice(drawCount),
+    [],
+  );
+  assert.equal(hiddenMetrics.submittedInstances, 0);
+  assert.equal(
+    renderer.resolveRenderDeltaPick({
+      sceneId: "root",
+      handle: 0x99n,
+      batch: blockBatch,
+      instances,
+      instanceIndex: 0,
+    }),
+    null,
+  );
+
+  renderer.activateRenderDelta();
+  renderer.releaseRenderDeltaResources([stagedStyle]);
   renderer.dispose();
 });
 

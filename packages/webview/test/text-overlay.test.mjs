@@ -714,6 +714,28 @@ test("moves block text through a sparse instance transform", async () => {
       scene.instanceGraph.instancesByBlock.get(2).data[14],
     ],
   );
+
+  const parentTransform = normalizedRenderDeltaTransformRecord({
+    blockIndex: 1,
+    handle: 0xc9n,
+    matrix: translatedTransformMatrix(200, 300, 0),
+    measurementMatrix: translatedTransformMatrix(400, 500, 0),
+  });
+  overlay.setRenderDeltaState({
+    texts: [textEntry],
+    transforms: [
+      Object.freeze({
+        resourceKind: "transform",
+        sceneId: "root",
+        record: parentTransform.record,
+        byteLength: parentTransform.buffer.byteLength,
+      }),
+    ],
+  });
+  assert.deepEqual(
+    overlay.findTextOccurrence("130").point,
+    [205, 300, 0],
+  );
 });
 
 test("restyles and hides block text through a sparse instance style", async () => {
@@ -800,6 +822,24 @@ test("restyles and hides block text through a sparse instance style", async () =
 
   overlay.setRenderDeltaState({ texts: [textEntry] });
   assert.notEqual(overlay.findTextOccurrence("130"), null);
+
+  const hiddenParentStyle = normalizedRenderDeltaStyleRecord({
+    blockIndex: 1,
+    handle: 0xc9n,
+    visible: false,
+  });
+  overlay.setRenderDeltaState({
+    texts: [textEntry],
+    styles: [
+      Object.freeze({
+        resourceKind: "style",
+        sceneId: "root",
+        record: hiddenParentStyle.record,
+        byteLength: hiddenParentStyle.buffer.byteLength,
+      }),
+    ],
+  });
+  assert.equal(overlay.findTextOccurrence("130"), null);
 });
 
 test("selects rendered text by its screen footprint", async () => {

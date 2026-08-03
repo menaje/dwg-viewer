@@ -330,6 +330,40 @@ export function composeExternalInstanceGraph(
     instancesByBlock.set(blockIndex, composed);
     instanceCount += composed.count;
   }
+  const traversalRoots = [];
+  for (let outerIndex = 0; outerIndex < outer.count; outerIndex += 1) {
+    for (const root of childInstanceGraph.traversalRoots ?? []) {
+      let rootInstanceBlockIndex = root.rootInstanceBlockIndex;
+      let rootInstanceIndex = null;
+      if (root.includeRootBatch) {
+        const inner =
+          childInstanceGraph.instancesByBlock.get(
+            root.rootInstanceBlockIndex,
+          );
+        if (inner) {
+          rootInstanceIndex =
+            outerIndex * inner.count + root.rootInstanceIndex;
+        }
+      } else if (
+        instancesByBlock.has(root.blockIndex)
+      ) {
+        rootInstanceBlockIndex = root.blockIndex;
+        rootInstanceIndex = outerIndex;
+      }
+      traversalRoots.push(
+        Object.freeze({
+          blockIndex: root.blockIndex,
+          includeRootBatch: root.includeRootBatch,
+          rootInstanceBlockIndex:
+            Number.isSafeInteger(rootInstanceBlockIndex)
+              ? rootInstanceBlockIndex
+              : null,
+          rootInstanceIndex,
+          modelInstanceIndex: outerIndex,
+        }),
+      );
+    }
+  }
   const batches = childBatches
     .map((batch) =>
       batch.kind === GpuLineBatchKind.BlockDefinition
@@ -348,6 +382,24 @@ export function composeExternalInstanceGraph(
     batches: Object.freeze(batches),
     instanceGraph: Object.freeze({
       instancesByBlock,
+      insertsByOwner:
+        childInstanceGraph.insertsByOwner ?? new Map(),
+      traversalRoots: Object.freeze(traversalRoots),
+      dependencyBlockIndices: new Set(
+        childInstanceGraph.dependencyBlockIndices ??
+          childInstanceGraph.instancesByBlock.keys(),
+      ),
+      maximumDepth: childInstanceGraph.maximumDepth,
+      layers: parentInstanceGraph.layers ?? Object.freeze([]),
+      layerLinetypeCodes:
+        parentInstanceGraph.layerLinetypeCodes ??
+        new Uint16Array(0),
+      sourceLayerZeroIndex:
+        childInstanceGraph.sourceLayerZeroIndex ?? -1,
+      styleLayerMap:
+        layerMap instanceof Uint32Array ? layerMap : null,
+      styleLinetypeMap:
+        linetypeMap instanceof Uint16Array ? linetypeMap : null,
       modelBlockIndices: new Set(
         childInstanceGraph.modelBlockIndices ?? [],
       ),
@@ -356,6 +408,12 @@ export function composeExternalInstanceGraph(
       layerVisibilityRows:
         parentInstanceGraph.layerVisibilityRows,
       instanceCount,
+      diagnostics: childInstanceGraph.diagnostics,
+      truncated:
+        parentInstanceGraph.truncated === true ||
+        childInstanceGraph.truncated === true,
+      layerZeroIndex:
+        parentInstanceGraph.layerZeroIndex ?? NO_LAYER_OVERRIDE,
     }),
   });
 }

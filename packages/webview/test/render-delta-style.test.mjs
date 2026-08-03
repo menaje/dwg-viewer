@@ -11,6 +11,10 @@ import {
 import {
   dwgRenderDeltaStyleBuffer,
 } from "./render-delta-style-fixture.mjs";
+import {
+  NESTED_INSTANCE_HANDLES,
+  nestedInstanceGraph,
+} from "./nested-instance-graph-fixture.mjs";
 
 function instanceGraph({
   handles = [0x2an],
@@ -184,7 +188,7 @@ test("indexes only the matching direct base occurrence", () => {
   );
 });
 
-test("requires complete repeated coverage and no nested dependency", () => {
+test("requires complete repeated occurrence coverage", () => {
   const { graph } = instanceGraph({ handles: [0x2an, 0x2an] });
   const entries = [0, 1].map((instanceIndex) =>
     entry(
@@ -210,15 +214,105 @@ test("requires complete repeated coverage and no nested dependency", () => {
     }).entries.length,
     2,
   );
+});
+
+test("recomputes nested inheritance and keeps direct child styles", () => {
+  const graph = nestedInstanceGraph();
+  const outerInstances = graph.instancesByBlock.get(1);
+  const childInstances = graph.instancesByBlock.get(2);
+  const grandchildInstances = graph.instancesByBlock.get(3);
+  const outerEntry = entry(
+    dwgRenderDeltaStyleBuffer({
+      blockIndex: 1,
+      handle: NESTED_INSTANCE_HANDLES.outer,
+      color: ((2 << 30) | 5) >>> 0,
+      layerIndex: 2,
+      opacity: 0.25,
+      lineWeight: 50,
+      linetypeCode: 8,
+      visible: false,
+    }),
+  );
+  const childEntry = entry(
+    dwgRenderDeltaStyleBuffer({
+      blockIndex: 2,
+      handle: NESTED_INSTANCE_HANDLES.child,
+      color: ((2 << 30) | 6) >>> 0,
+      opacity: 0.75,
+      visible: true,
+    }),
+  );
+  const index = indexDwgRenderDeltaStyles(
+    [outerEntry, childEntry],
+    {
+      sourceId: "root",
+      instanceGraph: graph,
+    },
+  );
+
+  assert.deepEqual(
+    renderDeltaInstanceStyle(index, outerInstances, 0),
+    outerEntry.record,
+  );
+  assert.deepEqual(
+    {
+      ...renderDeltaInstanceStyle(index, childInstances, 0),
+    },
+    {
+      blockIndex: 2,
+      instanceIndex: 0,
+      handle: NESTED_INSTANCE_HANDLES.child,
+      handleLow: Number(NESTED_INSTANCE_HANDLES.child),
+      handleHigh: 0,
+      color: ((2 << 30) | 6) >>> 0,
+      layerIndex: 2,
+      opacity: 0.75,
+      lineWeight: 50,
+      linetypeCode: 8,
+      visible: false,
+    },
+  );
+  assert.deepEqual(
+    {
+      ...renderDeltaInstanceStyle(index, grandchildInstances, 0),
+    },
+    {
+      blockIndex: null,
+      instanceIndex: 0,
+      handle: NESTED_INSTANCE_HANDLES.grandchild,
+      handleLow: Number(NESTED_INSTANCE_HANDLES.grandchild),
+      handleHigh: 0,
+      color: ((2 << 30) | 6) >>> 0,
+      layerIndex: 2,
+      opacity: 0.75,
+      lineWeight: 50,
+      linetypeCode: 8,
+      visible: false,
+    },
+  );
+  assert.equal(index.derivedCount, 2);
+  assert.equal(index.derivedByteLength, 80);
+  assert.equal(index.hiddenInstances.has(childInstances), true);
+  assert.equal(index.hiddenInstances.has(grandchildInstances), true);
+});
+
+test("bounds derived nested style records", () => {
+  const graph = nestedInstanceGraph();
+  const styleEntry = entry(
+    dwgRenderDeltaStyleBuffer({
+      blockIndex: 1,
+      handle: NESTED_INSTANCE_HANDLES.outer,
+      visible: false,
+    }),
+  );
+
   assert.throws(
     () =>
-      indexDwgRenderDeltaStyles(entries, {
+      indexDwgRenderDeltaStyles([styleEntry], {
         sourceId: "root",
-        instanceGraph: {
-          ...graph,
-          insertsByOwner: new Map([[1, [{}]]]),
-        },
+        instanceGraph: graph,
+        maximumDerivedBytes: 0,
       }),
-    /requires dependency invalidation/u,
+    /derived style data exceeds/u,
   );
 });

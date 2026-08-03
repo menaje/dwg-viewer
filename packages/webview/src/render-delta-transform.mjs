@@ -1,5 +1,14 @@
+import {
+  invertAffineMat4,
+  multiplyMat4,
+} from "./math.mjs";
+import {
+  walkInstanceDependencyOccurrences,
+} from "./instance-dependency.mjs";
+
 const DWG_RENDER_DELTA_TRANSFORM_BYTES = 272;
 const MATRIX_VALUES = 16;
+const DEFAULT_MAXIMUM_DERIVED_TRANSFORM_BYTES = 8 * 1024 * 1024;
 const NORMALIZED_TRANSFORM_RECORDS = new WeakSet();
 const NORMALIZED_TRANSFORM_RECORD_BYTES = new WeakMap();
 
@@ -126,13 +135,19 @@ export function indexDwgRenderDeltaTransforms(
     instanceGraph,
     rejectClipped = true,
     requireComplete = true,
+    deriveDependencies = true,
+    maximumDerivedBytes =
+      DEFAULT_MAXIMUM_DERIVED_TRANSFORM_BYTES,
   } = {},
 ) {
   if (
     !Array.isArray(entries) ||
     typeof sourceId !== "string" ||
     sourceId.length === 0 ||
-    !(instanceGraph?.instancesByBlock instanceof Map)
+    !(instanceGraph?.instancesByBlock instanceof Map) ||
+    typeof deriveDependencies !== "boolean" ||
+    !Number.isSafeInteger(maximumDerivedBytes) ||
+    maximumDerivedBytes < 0
   ) {
     throw new TypeError(
       "DWG render delta transform index input is invalid",
@@ -155,13 +170,9 @@ export function indexDwgRenderDeltaTransforms(
       );
     }
     const { record } = entry;
-    if (
-      !(instanceGraph.insertsByOwner instanceof Map) ||
-      (instanceGraph.insertsByOwner.get(record.blockIndex)?.length ??
-        0) > 0
-    ) {
+    if (!(instanceGraph.insertsByOwner instanceof Map)) {
       throw new TypeError(
-        "DWG render delta transform requires dependency invalidation",
+        "DWG render delta transform dependency graph is unavailable",
       );
     }
     const instances = instanceGraph.instancesByBlock.get(
@@ -219,9 +230,117 @@ export function indexDwgRenderDeltaTransforms(
       }
     }
   }
+  let derivedCount = 0;
+  let derivedByteLength = 0;
+  const hasNestedTarget =
+    deriveDependencies &&
+    selected.some(
+      ({ record }) =>
+        (instanceGraph.insertsByOwner.get(record.blockIndex)
+          ?.length ?? 0) > 0,
+    );
+  if (hasNestedTarget) {
+    walkInstanceDependencyOccurrences(
+      instanceGraph,
+      (
+        instances,
+        instanceIndex,
+        _parentInstances,
+        _parentInstanceIndex,
+        parentState,
+      ) => {
+        const direct =
+          byInstances.get(instances)?.get(instanceIndex) ?? null;
+        if (direct) {
+          const matrixOffset = instanceIndex * MATRIX_VALUES;
+          const displayInverse = invertAffineMat4(
+            instances.data,
+            matrixOffset,
+          );
+          const measurementData =
+            instances.measurementData ?? instances.data;
+          const measurementInverse = invertAffineMat4(
+            measurementData,
+            matrixOffset,
+          );
+          if (!displayInverse || !measurementInverse) {
+            throw new TypeError(
+              "DWG render delta transform dependency is singular",
+            );
+          }
+          return Object.freeze({
+            displayDelta: multiplyMat4(
+              direct.matrix,
+              displayInverse,
+            ),
+            measurementDelta: multiplyMat4(
+              direct.measurementMatrix,
+              measurementInverse,
+            ),
+          });
+        }
+        if (!parentState) {
+          return null;
+        }
+        if ((instances.clipIds?.[instanceIndex] ?? 0) !== 0) {
+          throw new TypeError(
+            "DWG render delta transform cannot move a clipped dependency",
+          );
+        }
+        if (
+          derivedByteLength + DWG_RENDER_DELTA_TRANSFORM_BYTES >
+          maximumDerivedBytes
+        ) {
+          throw new RangeError(
+            `DWG derived transform data exceeds the ${maximumDerivedBytes}-byte limit`,
+          );
+        }
+        const matrixOffset = instanceIndex * MATRIX_VALUES;
+        const matrix = multiplyMat4(
+          parentState.displayDelta,
+          instances.data.subarray(
+            matrixOffset,
+            matrixOffset + MATRIX_VALUES,
+          ),
+        );
+        const measurementData =
+          instances.measurementData ?? instances.data;
+        const measurementMatrix = multiplyMat4(
+          parentState.measurementDelta,
+          measurementData.subarray(
+            matrixOffset,
+            matrixOffset + MATRIX_VALUES,
+          ),
+        );
+        let byIndex = byInstances.get(instances);
+        if (!byIndex) {
+          byIndex = new Map();
+          byInstances.set(instances, byIndex);
+        }
+        byIndex.set(
+          instanceIndex,
+          Object.freeze({
+            blockIndex: null,
+            instanceIndex,
+            handle: instances.handles[instanceIndex],
+            matrix: Object.freeze([...matrix]),
+            measurementMatrix: Object.freeze([
+              ...measurementMatrix,
+            ]),
+            derived: true,
+          }),
+        );
+        derivedCount += 1;
+        derivedByteLength += DWG_RENDER_DELTA_TRANSFORM_BYTES;
+        return parentState;
+      },
+    );
+  }
   return Object.freeze({
     entries: Object.freeze(selected),
     byInstances,
+    derivedCount,
+    derivedByteLength,
   });
 }
 
@@ -261,5 +380,6 @@ export function renderDeltaInstanceTransform(
 
 export {
   DWG_RENDER_DELTA_TRANSFORM_BYTES,
+  DEFAULT_MAXIMUM_DERIVED_TRANSFORM_BYTES,
   MATRIX_VALUES as DWG_RENDER_DELTA_TRANSFORM_MATRIX_VALUES,
 };

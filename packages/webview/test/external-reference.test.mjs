@@ -15,6 +15,24 @@ import {
   identityMat4,
   translationMat4,
 } from "../src/math.mjs";
+import {
+  indexDwgRenderDeltaTransforms,
+  renderDeltaInstanceMatrix,
+} from "../src/render-delta-transform.mjs";
+import {
+  indexDwgRenderDeltaStyles,
+  renderDeltaInstanceStyle,
+} from "../src/render-delta-style.mjs";
+import {
+  normalizedRenderDeltaTransformRecord,
+  translatedTransformMatrix,
+} from "./render-delta-transform-fixture.mjs";
+import {
+  normalizedRenderDeltaStyleRecord,
+} from "./render-delta-style-fixture.mjs";
+import {
+  nestedInstanceGraph,
+} from "./nested-instance-graph-fixture.mjs";
 
 function collection(...matrices) {
   const data = new Float64Array(matrices.length * 16);
@@ -312,4 +330,86 @@ test("combines parent and child XCLIP chains for an external reference", () => {
     20,
     0,
   ]);
+});
+
+test("propagates one sparse XREF root delta through its nested child graph", () => {
+  const outer = {
+    ...collection(
+      translationMat4(100, 200, 0),
+      translationMat4(1_000, 2_000, 0),
+    ),
+    handles: new BigUint64Array([700n, 701n]),
+  };
+  const child = nestedInstanceGraph();
+  const composed = composeExternalInstanceGraph(
+    {
+      instancesByBlock: new Map([[7, outer]]),
+      layers: child.layers,
+      layerLinetypeCodes: child.layerLinetypeCodes,
+    },
+    7,
+    child,
+    [],
+  ).instanceGraph;
+  const transform = normalizedRenderDeltaTransformRecord({
+    blockIndex: 0,
+    instanceIndex: 0,
+    handle: 700n,
+    matrix: translatedTransformMatrix(200, 300, 0),
+  });
+  const transformEntry = Object.freeze({
+    resourceKind: "transform",
+    sceneId: "xref",
+    record: transform.record,
+    byteLength: transform.buffer.byteLength,
+  });
+  const transforms = indexDwgRenderDeltaTransforms(
+    [transformEntry],
+    {
+      sourceId: "xref",
+      instanceGraph: composed,
+    },
+  );
+  const grandchildren = composed.instancesByBlock.get(3);
+
+  assert.deepEqual(
+    [...renderDeltaInstanceMatrix(transforms, grandchildren, 0)],
+    translatedTransformMatrix(216, 328, 0),
+  );
+  assert.deepEqual(
+    [...renderDeltaInstanceMatrix(transforms, grandchildren, 1)],
+    translatedTransformMatrix(1_016, 2_028, 0),
+  );
+  assert.equal(transforms.derivedCount, 3);
+
+  const style = normalizedRenderDeltaStyleRecord({
+    blockIndex: 0,
+    instanceIndex: 0,
+    handle: 700n,
+    visible: false,
+  });
+  const styles = indexDwgRenderDeltaStyles(
+    [
+      Object.freeze({
+        resourceKind: "style",
+        sceneId: "xref",
+        record: style.record,
+        byteLength: style.buffer.byteLength,
+      }),
+    ],
+    {
+      sourceId: "xref",
+      instanceGraph: composed,
+    },
+  );
+
+  assert.equal(
+    renderDeltaInstanceStyle(styles, grandchildren, 0).visible,
+    false,
+  );
+  assert.equal(
+    renderDeltaInstanceStyle(styles, grandchildren, 1),
+    null,
+  );
+  assert.equal(styles.derivedCount, 3);
 });

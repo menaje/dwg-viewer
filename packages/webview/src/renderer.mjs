@@ -4019,6 +4019,7 @@ export class WebGlLineRenderer {
       sourceId: sceneId,
       instanceGraph: scene.instanceGraph,
       requireComplete: false,
+      deriveDependencies: false,
     });
     this.renderDeltaResources.add(entry);
     this.renderDeltaTransformResourceBytes += byteLength;
@@ -4086,6 +4087,7 @@ export class WebGlLineRenderer {
       sourceId: sceneId,
       instanceGraph: scene.instanceGraph,
       requireComplete: false,
+      deriveDependencies: false,
     });
     this.renderDeltaResources.add(entry);
     this.renderDeltaStyleResourceBytes += byteLength;
@@ -4535,6 +4537,8 @@ export class WebGlLineRenderer {
       {
         sourceId: ROOT_RENDER_DELTA_SCENE_ID,
         instanceGraph: this.overviewScene.instanceGraph,
+        maximumDerivedBytes:
+          this.maximumRenderDeltaTransformBytes,
       },
     );
     transformIndexesByGraph.set(
@@ -4547,6 +4551,8 @@ export class WebGlLineRenderer {
         indexDwgRenderDeltaTransforms(normalizedTransforms, {
           sourceId: scene.id,
           instanceGraph: scene.instanceGraph,
+          maximumDerivedBytes:
+            this.maximumRenderDeltaTransformBytes,
         }),
       );
     }
@@ -4556,6 +4562,8 @@ export class WebGlLineRenderer {
       {
         sourceId: ROOT_RENDER_DELTA_SCENE_ID,
         instanceGraph: this.overviewScene.instanceGraph,
+        maximumDerivedBytes:
+          this.maximumRenderDeltaStyleBytes,
       },
     );
     styleIndexesByGraph.set(
@@ -4568,6 +4576,8 @@ export class WebGlLineRenderer {
         indexDwgRenderDeltaStyles(normalizedStyles, {
           sourceId: scene.id,
           instanceGraph: scene.instanceGraph,
+          maximumDerivedBytes:
+            this.maximumRenderDeltaStyleBytes,
         }),
       );
     }

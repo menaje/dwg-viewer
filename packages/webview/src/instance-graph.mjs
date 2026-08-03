@@ -88,6 +88,7 @@ class MatrixCollectionBuilder {
     coordinateSpace = CoordinateSpaceKind.Model,
     handle = 0n,
   ) {
+    const instanceIndex = this.count;
     const chunkIndex = Math.floor(this.count / MATRICES_PER_CHUNK);
     const indexInChunk = this.count % MATRICES_PER_CHUNK;
     if (!this.chunks[chunkIndex]) {
@@ -172,6 +173,7 @@ class MatrixCollectionBuilder {
     this.handleChunks[chunkIndex][indexInChunk] =
       typeof handle === "bigint" && handle >= 0n ? handle : 0n;
     this.count += 1;
+    return instanceIndex;
   }
 
   finish() {
@@ -526,6 +528,7 @@ export function buildInstanceGraph(
   }
 
   const instanceBuilders = new Map();
+  const traversalRoots = [];
   let instanceCount = 0;
   let stopped = false;
 
@@ -554,7 +557,7 @@ export function buildInstanceGraph(
       builder = new MatrixCollectionBuilder(Boolean(maskOrder?.enabled));
       instanceBuilders.set(blockIndex, builder);
     }
-    builder.add(
+    const instanceIndex = builder.add(
       matrix,
       maskBase,
       clipId,
@@ -578,6 +581,7 @@ export function buildInstanceGraph(
       diagnostics.instanceLimit += 1;
       stopped = true;
     }
+    return instanceIndex;
   };
 
   const visitInsert = (
@@ -888,12 +892,23 @@ export function buildInstanceGraph(
       coordinateSpace,
       0n,
     ];
-    if (context.modelSpace) {
-      modelInstanceBuilder.add(...rootValues);
-    }
-    if (context.includeRootBatch) {
-      addInstance(block.index, ...rootValues);
-    }
+    const modelInstanceIndex = context.modelSpace
+      ? modelInstanceBuilder.add(...rootValues)
+      : null;
+    const rootInstanceIndex = context.includeRootBatch
+      ? addInstance(block.index, ...rootValues)
+      : null;
+    traversalRoots.push(
+      Object.freeze({
+        blockIndex: block.index,
+        includeRootBatch: Boolean(context.includeRootBatch),
+        rootInstanceBlockIndex: context.includeRootBatch
+          ? block.index
+          : null,
+        rootInstanceIndex,
+        modelInstanceIndex,
+      }),
+    );
     const roots = insertsByOwner.get(block.index) ?? [];
     for (const insert of roots) {
       visitInsert(
@@ -937,6 +952,14 @@ export function buildInstanceGraph(
   return Object.freeze({
     instancesByBlock,
     insertsByOwner,
+    traversalRoots: Object.freeze(traversalRoots),
+    dependencyBlockIndices: new Set(instancesByBlock.keys()),
+    maximumDepth,
+    layers,
+    layerLinetypeCodes,
+    sourceLayerZeroIndex: layerZeroIndex,
+    styleLayerMap: null,
+    styleLinetypeMap: null,
     modelBlockIndices,
     modelInstances,
     rootInstances: modelInstances,

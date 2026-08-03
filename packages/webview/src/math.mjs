@@ -21,6 +21,95 @@ export function multiplyMat4(left, right) {
   return result;
 }
 
+export function invertAffineMat4(matrix, offset = 0) {
+  if (
+    (!Array.isArray(matrix) && !ArrayBuffer.isView(matrix)) ||
+    !Number.isSafeInteger(offset) ||
+    offset < 0 ||
+    offset + 16 > matrix.length
+  ) {
+    return null;
+  }
+  const a00 = matrix[offset];
+  const a01 = matrix[offset + 4];
+  const a02 = matrix[offset + 8];
+  const a10 = matrix[offset + 1];
+  const a11 = matrix[offset + 5];
+  const a12 = matrix[offset + 9];
+  const a20 = matrix[offset + 2];
+  const a21 = matrix[offset + 6];
+  const a22 = matrix[offset + 10];
+  const translationX = matrix[offset + 12];
+  const translationY = matrix[offset + 13];
+  const translationZ = matrix[offset + 14];
+  if (
+    ![
+      a00,
+      a01,
+      a02,
+      a10,
+      a11,
+      a12,
+      a20,
+      a21,
+      a22,
+      translationX,
+      translationY,
+      translationZ,
+    ].every(Number.isFinite) ||
+    Math.abs(matrix[offset + 3]) > 1e-12 ||
+    Math.abs(matrix[offset + 7]) > 1e-12 ||
+    Math.abs(matrix[offset + 11]) > 1e-12 ||
+    Math.abs(matrix[offset + 15] - 1) > 1e-12
+  ) {
+    return null;
+  }
+  const cofactor00 = a22 * a11 - a12 * a21;
+  const cofactor10 = -a22 * a10 + a12 * a20;
+  const cofactor20 = a21 * a10 - a11 * a20;
+  const determinant =
+    a00 * cofactor00 +
+    a01 * cofactor10 +
+    a02 * cofactor20;
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-18) {
+    return null;
+  }
+  const inverseDeterminant = 1 / determinant;
+  const result = new Float64Array(16);
+  result[0] = cofactor00 * inverseDeterminant;
+  result[4] =
+    (-a22 * a01 + a02 * a21) * inverseDeterminant;
+  result[8] =
+    (a12 * a01 - a02 * a11) * inverseDeterminant;
+  result[1] = cofactor10 * inverseDeterminant;
+  result[5] =
+    (a22 * a00 - a02 * a20) * inverseDeterminant;
+  result[9] =
+    (-a12 * a00 + a02 * a10) * inverseDeterminant;
+  result[2] = cofactor20 * inverseDeterminant;
+  result[6] =
+    (-a21 * a00 + a01 * a20) * inverseDeterminant;
+  result[10] =
+    (a11 * a00 - a01 * a10) * inverseDeterminant;
+  result[12] = -(
+    result[0] * translationX +
+    result[4] * translationY +
+    result[8] * translationZ
+  );
+  result[13] = -(
+    result[1] * translationX +
+    result[5] * translationY +
+    result[9] * translationZ
+  );
+  result[14] = -(
+    result[2] * translationX +
+    result[6] * translationY +
+    result[10] * translationZ
+  );
+  result[15] = 1;
+  return result;
+}
+
 export function translationMat4(x, y, z) {
   const matrix = identityMat4();
   matrix[12] = x;

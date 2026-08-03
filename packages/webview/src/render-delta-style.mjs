@@ -1,4 +1,13 @@
+import {
+  cadOpacityCode,
+  decodeCadOpacity,
+} from "./cad-color.mjs";
+import {
+  walkInstanceDependencyOccurrences,
+} from "./instance-dependency.mjs";
+
 const DWG_RENDER_DELTA_STYLE_BYTES = 40;
+const DEFAULT_MAXIMUM_DERIVED_STYLE_BYTES = 8 * 1024 * 1024;
 
 const DwgRenderDeltaStyleFlag = Object.freeze({
   COLOR: 1 << 0,
@@ -14,6 +23,213 @@ const ALL_STYLE_FLAGS = Object.values(
 const NO_LAYER = 0xffff_ffff;
 const NORMALIZED_STYLE_RECORDS = new WeakSet();
 const NORMALIZED_STYLE_RECORD_BYTES = new WeakMap();
+const DEFAULT_BYBLOCK_COLOR = (2 << 30) | 7;
+
+function mappedStyleLayer(instanceGraph, sourceLayerIndex) {
+  const layerMap = instanceGraph.styleLayerMap;
+  if (!(layerMap instanceof Uint32Array)) {
+    return sourceLayerIndex;
+  }
+  return sourceLayerIndex < layerMap.length
+    ? layerMap[sourceLayerIndex]
+    : layerMap[0] ?? NO_LAYER;
+}
+
+function mappedStyleLinetype(instanceGraph, sourceLinetypeCode) {
+  const linetypeMap = instanceGraph.styleLinetypeMap;
+  if (!(linetypeMap instanceof Uint16Array)) {
+    return sourceLinetypeCode;
+  }
+  return sourceLinetypeCode < linetypeMap.length
+    ? linetypeMap[sourceLinetypeCode]
+    : 2;
+}
+
+function baseInstanceStyle(instances, instanceIndex) {
+  return {
+    color:
+      instances.colors?.[instanceIndex] ?? DEFAULT_BYBLOCK_COLOR,
+    layerIndex:
+      instances.layerIndices?.[instanceIndex] ?? NO_LAYER,
+    opacity: instances.opacities?.[instanceIndex] ?? 1,
+    lineWeight: instances.lineWeights?.[instanceIndex] ?? -3,
+    linetypeCode:
+      instances.linetypeCodes?.[instanceIndex] ?? 2,
+    visible: true,
+    colorInherited:
+      instances.colorInherited?.[instanceIndex] === 1,
+    layerInherited:
+      instances.layerInherited?.[instanceIndex] === 1,
+    opacityInherited:
+      instances.opacityInherited?.[instanceIndex] === 1,
+    lineWeightInherited:
+      instances.lineWeightInherited?.[instanceIndex] === 1,
+    linetypeInherited:
+      instances.linetypeInherited?.[instanceIndex] === 1,
+  };
+}
+
+function resolvedNestedStyle(instanceGraph, insert, parent) {
+  const layers = instanceGraph.layers ?? [];
+  const layerLinetypeCodes =
+    instanceGraph.layerLinetypeCodes ?? [];
+  const sourceLayerZeroIndex =
+    Number.isInteger(instanceGraph.sourceLayerZeroIndex)
+      ? instanceGraph.sourceLayerZeroIndex
+      : -1;
+  const sourceLayerIndex = Number.isInteger(insert.layerIndex)
+    ? insert.layerIndex
+    : sourceLayerZeroIndex >= 0
+      ? sourceLayerZeroIndex
+      : NO_LAYER;
+  const inheritsLayer =
+    sourceLayerZeroIndex >= 0 &&
+    sourceLayerIndex === sourceLayerZeroIndex;
+  const insertLayerIndex = mappedStyleLayer(
+    instanceGraph,
+    sourceLayerIndex,
+  );
+  const layerIndex =
+    inheritsLayer && parent.layerIndex !== NO_LAYER
+      ? parent.layerIndex
+      : insertLayerIndex;
+  const layerInherited = inheritsLayer
+    ? parent.layerInherited
+    : false;
+  const insertColor =
+    Number.isInteger(insert.color) ? insert.color >>> 0 : 0;
+  const colorKind = insertColor >>> 30;
+  const color =
+    colorKind === 0
+      ? layers[layerIndex]?.color ?? DEFAULT_BYBLOCK_COLOR
+      : colorKind === 1
+        ? parent.color
+        : insertColor;
+  const colorInherited =
+    colorKind === 1 ? parent.colorInherited : false;
+  const opacityCode = cadOpacityCode(insertColor);
+  const opacity = Math.fround(
+    decodeCadOpacity(insertColor, {
+      layer: decodeCadOpacity(layers[layerIndex]?.color ?? 0),
+      byBlock: parent.opacity,
+    }),
+  );
+  const opacityInherited =
+    opacityCode === 2 ? parent.opacityInherited : false;
+  const sourceLineWeight =
+    Number.isInteger(insert.lineWeight) ? insert.lineWeight : -1;
+  const layerLineWeight = Number.isInteger(
+    layers[layerIndex]?.lineWeight,
+  )
+    ? layers[layerIndex].lineWeight
+    : -3;
+  const lineWeight =
+    sourceLineWeight === -1
+      ? layerLineWeight >= 0
+        ? layerLineWeight
+        : -3
+      : sourceLineWeight === -2
+        ? parent.lineWeight
+        : sourceLineWeight;
+  const lineWeightInherited =
+    sourceLineWeight === -2
+      ? parent.lineWeightInherited
+      : false;
+  const rawLinetypeCode =
+    Number.isInteger(insert.linetypeCode) &&
+    insert.linetypeCode >= 0 &&
+    insert.linetypeCode <= 2047
+      ? insert.linetypeCode
+      : 0;
+  const layerLinetypeCode =
+    Number.isInteger(layerLinetypeCodes[layerIndex]) &&
+    layerLinetypeCodes[layerIndex] >= 2
+      ? layerLinetypeCodes[layerIndex]
+      : 2;
+  const linetypeCode =
+    rawLinetypeCode === 0
+      ? layerLinetypeCode
+      : rawLinetypeCode === 1
+        ? parent.linetypeCode
+        : mappedStyleLinetype(
+            instanceGraph,
+            rawLinetypeCode,
+          );
+  const linetypeInherited =
+    rawLinetypeCode === 1
+      ? parent.linetypeInherited
+      : false;
+  return {
+    color,
+    layerIndex,
+    opacity,
+    lineWeight,
+    linetypeCode,
+    visible: parent.visible,
+    colorInherited,
+    layerInherited,
+    opacityInherited,
+    lineWeightInherited,
+    linetypeInherited,
+  };
+}
+
+function applyDirectStyle(state, direct) {
+  const next = { ...state };
+  for (const [property, inheritedProperty] of [
+    ["color", "colorInherited"],
+    ["layerIndex", "layerInherited"],
+    ["opacity", "opacityInherited"],
+    ["lineWeight", "lineWeightInherited"],
+    ["linetypeCode", "linetypeInherited"],
+  ]) {
+    if (direct?.[property] !== null && direct?.[property] !== undefined) {
+      next[property] = direct[property];
+      next[inheritedProperty] = false;
+    }
+  }
+  if (direct?.visible !== null && direct?.visible !== undefined) {
+    next.visible = next.visible && direct.visible;
+  }
+  return next;
+}
+
+function replacementStyle(base, effective, direct, instanceIndex, handle) {
+  const replacement = {
+    blockIndex: direct?.blockIndex ?? null,
+    instanceIndex,
+    handle,
+    handleLow: Number(handle & 0xffff_ffffn),
+    handleHigh: Number(handle >> 32n),
+  };
+  let changed = false;
+  for (const property of [
+    "color",
+    "layerIndex",
+    "opacity",
+    "lineWeight",
+    "linetypeCode",
+  ]) {
+    const directValue = direct?.[property];
+    const value =
+      directValue !== null && directValue !== undefined
+        ? effective[property]
+        : effective[property] !== base[property]
+          ? effective[property]
+          : null;
+    replacement[property] = value;
+    changed ||= value !== null;
+  }
+  const directVisibility = direct?.visible;
+  replacement.visible =
+    effective.visible !== true ||
+    (directVisibility !== null &&
+      directVisibility !== undefined)
+      ? effective.visible
+      : null;
+  changed ||= replacement.visible !== null;
+  return changed ? Object.freeze(replacement) : null;
+}
 
 function normalizeHandle(value, label) {
   let handle;
@@ -164,13 +380,19 @@ export function indexDwgRenderDeltaStyles(
     sourceId,
     instanceGraph,
     requireComplete = true,
+    deriveDependencies = true,
+    maximumDerivedBytes =
+      DEFAULT_MAXIMUM_DERIVED_STYLE_BYTES,
   } = {},
 ) {
   if (
     !Array.isArray(entries) ||
     typeof sourceId !== "string" ||
     sourceId.length === 0 ||
-    !(instanceGraph?.instancesByBlock instanceof Map)
+    !(instanceGraph?.instancesByBlock instanceof Map) ||
+    typeof deriveDependencies !== "boolean" ||
+    !Number.isSafeInteger(maximumDerivedBytes) ||
+    maximumDerivedBytes < 0
   ) {
     throw new TypeError(
       "DWG render delta style index input is invalid",
@@ -191,13 +413,9 @@ export function indexDwgRenderDeltaStyles(
       throw new TypeError("DWG render delta style entry is invalid");
     }
     const { record } = entry;
-    if (
-      !(instanceGraph.insertsByOwner instanceof Map) ||
-      (instanceGraph.insertsByOwner.get(record.blockIndex)?.length ??
-        0) > 0
-    ) {
+    if (!(instanceGraph.insertsByOwner instanceof Map)) {
       throw new TypeError(
-        "DWG render delta style requires dependency invalidation",
+        "DWG render delta style dependency graph is unavailable",
       );
     }
     const instances = instanceGraph.instancesByBlock.get(
@@ -248,10 +466,83 @@ export function indexDwgRenderDeltaStyles(
       }
     }
   }
+  let derivedCount = 0;
+  let derivedByteLength = 0;
+  const hasNestedTarget =
+    deriveDependencies &&
+    selected.some(
+      ({ record }) =>
+        (instanceGraph.insertsByOwner.get(record.blockIndex)
+          ?.length ?? 0) > 0,
+    );
+  if (hasNestedTarget) {
+    walkInstanceDependencyOccurrences(
+      instanceGraph,
+      (
+        instances,
+        instanceIndex,
+        _parentInstances,
+        _parentInstanceIndex,
+        parentState,
+        insert,
+      ) => {
+        const direct =
+          byInstances.get(instances)?.get(instanceIndex) ?? null;
+        if (!parentState && !direct) {
+          return null;
+        }
+        const base = baseInstanceStyle(instances, instanceIndex);
+        const inherited =
+          parentState && insert
+            ? resolvedNestedStyle(
+                instanceGraph,
+                insert,
+                parentState,
+              )
+            : base;
+        const effective = applyDirectStyle(inherited, direct);
+        const replacement = replacementStyle(
+          base,
+          effective,
+          direct,
+          instanceIndex,
+          instances.handles[instanceIndex],
+        );
+        if (!parentState && direct) {
+          return Object.freeze(effective);
+        }
+        if (!replacement) {
+          return null;
+        }
+        if (
+          derivedByteLength + DWG_RENDER_DELTA_STYLE_BYTES >
+          maximumDerivedBytes
+        ) {
+          throw new RangeError(
+            `DWG derived style data exceeds the ${maximumDerivedBytes}-byte limit`,
+          );
+        }
+        let byIndex = byInstances.get(instances);
+        if (!byIndex) {
+          byIndex = new Map();
+          byInstances.set(instances, byIndex);
+        }
+        byIndex.set(instanceIndex, replacement);
+        if (replacement.visible === false) {
+          hiddenInstances.add(instances);
+        }
+        derivedCount += 1;
+        derivedByteLength += DWG_RENDER_DELTA_STYLE_BYTES;
+        return Object.freeze(effective);
+      },
+    );
+  }
   return Object.freeze({
     entries: Object.freeze(selected),
     byInstances,
     hiddenInstances,
+    derivedCount,
+    derivedByteLength,
   });
 }
 
@@ -267,6 +558,7 @@ export function renderDeltaInstanceStyle(
 
 export {
   DwgRenderDeltaStyleFlag,
+  DEFAULT_MAXIMUM_DERIVED_STYLE_BYTES,
   DWG_RENDER_DELTA_STYLE_BYTES,
   NO_LAYER as DWG_RENDER_DELTA_NO_LAYER,
 };

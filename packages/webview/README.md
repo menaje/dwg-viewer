@@ -69,10 +69,14 @@ binds `blockIndex`, `instanceIndex` and handle, then uses canonical flag-gated
 fields to partially override resolved color, layer, opacity, line weight,
 linetype and visibility in the same packed occurrence metadata used by WebGL,
 Canvas text and raster IMAGE. Inactive fields and the three reserved tail
-bytes must be zero. Direct clipped transforms and target blocks with nested
-children are rejected until dependency recomputation is available; style-only
-updates remain valid for clipped occurrences. Repeated/MINSERT cells for one
-native handle require complete atomic coverage.
+bytes must be zero. Nested root/XREF changes replay the compact instance
+topology and materialize only affected descendant occurrence matrices or
+resolved style records, without cloning block geometry. Direct clipped
+transforms and parent transforms with an affected XCLIP descendant remain
+fail-closed until clip recomputation is available; style-only updates remain
+valid for clipped occurrences. Derived transforms and styles each have an
+8 MiB bound. Repeated/MINSERT cells for one native handle require complete
+atomic coverage.
 One text record is capped at 256 KiB; staged Canvas text, transforms and styles
 each use separate 8 MiB CPU bounds. Packet
 lookup and digest verification happen before the synchronous Core apply
@@ -129,7 +133,9 @@ layout tabs on hover, focus or an explicit click.
   SOLID/3DFACE/WIPEOUT primitives and Canvas text without rewriting immutable
   Scene Cache buffers, sparsely replaces root/XREF block occurrence matrices
   and resolved style/visibility metadata across WebGL, Canvas text and raster
-  images, resolves root/XREF review candidates through the same
+  images, propagates bounded transform and inherited-style changes through
+  nested shared-block occurrences, resolves root/XREF review candidates
+  through the same
   revision-bound native identity/dependency map, and restores draw and pick
   state on preview rollback. Tombstoned, replaced, dependency-invalidated,
   transformed-stale and hidden-style base candidates fail closed while native
@@ -305,3 +311,7 @@ range, WCS/OCS, clip-boundary, frame-setting, instance-sharing and GPU-budget
 behavior, plus draw-order normalization,
 contiguous ranges, lazy reads, nested/array mask buckets, depth composition,
 HATCH/primitive bucket packing and Canvas text clipping.
+Render Delta coverage additionally includes bounded nested root/XREF transform
+and inherited-style propagation, direct-child precedence, repeated occurrence
+isolation, XCLIP fail-closed behavior and shared WebGL/Canvas text/raster IMAGE
+results.

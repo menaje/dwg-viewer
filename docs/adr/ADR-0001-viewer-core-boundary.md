@@ -186,10 +186,13 @@ direct INSERT style은 같은 occurrence의 resolved color/layer/opacity/
 lineweight/linetype/visibility만 희소 교체한다. WebGL, Canvas text와 raster
 image가 같은 transform/style state를 사용한다. transform은 파생 XCLIP을
 다시 계산해야 하는 occurrence에서 fail-closed하고, style-only 변경은
-XCLIP occurrence에도 적용할 수 있다. 두 sparse record 모두 nested child가
-있는 target은 dependency invalidation 전까지 거부한다. 같은 native
-handle의 MINSERT/repeated occurrence는 모두 한 atomic packet에 포함되어야
-한다.
+XCLIP occurrence에도 적용할 수 있다. root/XREF의 compact instance
+topology를 bounded DFS로 다시 순회해 영향받은 nested child의 matrix와
+상속 style만 파생하며 block geometry는 복제하지 않는다. descendant의
+direct sparse record는 ancestor에서 파생한 상태보다 우선한다. 이동할
+descendant가 XCLIP을 가지면 transform 전체를 거부하고, transform/style
+파생 record는 각각 8 MiB로 제한한다. 같은 native handle의
+MINSERT/repeated occurrence는 모두 한 atomic packet에 포함되어야 한다.
 DWG dependency ID는 Viewer Core에서 계속 opaque로 유지하되 Webview
 adapter에서만 scene과 native handle을 포함한 canonical block/type ID를
 해석한다. block invalidation은 해당 root/XREF block의 immutable WebGL,
@@ -252,9 +255,8 @@ DOM listener disposal을 소유한다. 네 diff 상태와 base/target revision�
 selection/measurement overlay, generic render data model의 물리적 package
 이동은 남아 있다. 일반 Viewer UI도 toolbar/result lifecycle부터 이동했으며
 layer/layout panel composition은 이후 단계다. #30의 실제 cross-repository
-`ConiServiceSource` qualification과 #27의 nested block dependency
-recomputation, semantic panel hook, 실제 split composition 및 대형 도면
-qualification은 남아 있다.
+`ConiServiceSource` qualification과 #27의 semantic panel hook, 실제 split
+composition 및 대형 도면 qualification은 남아 있다.
 제품 진입점을
 먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
 private message를 Core API로 승격하지 않고 진행한다.

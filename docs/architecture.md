@@ -97,11 +97,14 @@ have separate 8 MiB CPU bounds. Transforms sparsely replace only the addressed
 packed display and measurement matrices; styles sparsely replace resolved
 color, layer, opacity, line weight, linetype and visibility metadata. Root and
 XREF WebGL batches, Canvas text and raster images therefore retain one shared
-block definition. The renderer rejects a direct transform for an XCLIP-bound
-occurrence and rejects either sparse record for a target block with nested
-children until its derived dependency can be recomputed atomically. It requires
-complete coverage of every repeated/MINSERT occurrence that shares the native
-handle.
+block definition. A compact, bounded DFS replay derives affected descendant
+matrices and inherited styles for nested root/XREF occurrences; a descendant's
+direct sparse record takes precedence over its ancestor-derived state. The
+renderer rejects a direct transform for an XCLIP-bound occurrence and rejects a
+parent transform when any moved descendant carries XCLIP, while style-only
+changes remain valid. It requires complete coverage of every repeated/MINSERT
+occurrence that shares the native handle and caps derived transform and style
+records at 8 MiB each.
 DWG dependency IDs use a canonical scene plus native-handle scope while
 remaining opaque to Viewer Core. A block invalidation excludes only that
 root/XREF block's immutable base WebGL, Canvas text and raster-image cache; a
