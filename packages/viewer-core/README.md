@@ -57,6 +57,17 @@ membership index와 총 개수만 사용해 현재 delta의 net 상태를 `added
 entity graph로 펼치지 않습니다. preview 적용과 rollback도 같은 delta
 snapshot을 읽어 네 상태와 revision을 함께 전환합니다.
 
+`ViewerDiffOverlayController`는 이 revision-bound summary를 상태별
+`visible`, canonical hex `color`, `opacity` 정책과 결합합니다. 기본값은
+added `#3fb950`, removed `#f85149`, modified `#d29922`, unchanged native
+색상과 35% opacity입니다. unchanged ID는 계속 열거하지 않으며 renderer
+adapter는 상태 visibility를 source/layer/clip visibility와 교집합으로만
+적용해야 합니다. 따라서 diff UI가 숨긴 source geometry를 다시 노출할 수
+없습니다. 정책 적용 실패는 직전 정상 presentation으로 rollback하고,
+불완전한 rollback은 관찰·재동기화할 수 있습니다. controller disposal은
+diff presentation만 clear하며 renderer adapter 자체의 lifecycle은 소유하지
+않습니다.
+
 `createRenderLayerRangeSource()`는 snapshot의 range-backed layer 하나를
 기존 bounded reader가 소비할 수 있는 source로 projection합니다.
 `openViewerRuntime()`은 source session과 최초 snapshot을 연 뒤 제품이

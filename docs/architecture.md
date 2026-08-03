@@ -129,8 +129,16 @@ an added-then-removed ID disappears from the net diff. Unchanged is derived
 from the base count instead of enumerating the immutable entity graph. The
 same snapshot follows preview apply and rollback. Viewer UI projects those
 four counts and the bound base/target revisions through its existing
-text-only result model; renderer color/visibility and split composition remain
-separate follow-on policies.
+text-only result model. `ViewerDiffOverlayController` combines that bounded
+summary with immutable per-status visibility, canonical hex color and opacity
+styles. The default palette is green for added, red for removed, amber for
+modified, and native color at reduced opacity for unchanged. It still sends
+only changed IDs; unchanged remains a count plus one global style. Status
+visibility is always intersected with source, layer and clip visibility, so a
+diff policy cannot reveal source-hidden geometry. Adapter application is
+synchronous and retryable: failures restore the last stable presentation and
+an incomplete rollback remains observable. Actual WebGL/Canvas styling stays
+behind a product renderer adapter.
 `ViewerSplitViewCameraController` now coordinates the before and after surfaces
 through two distinct synchronous adapters. It sends only a frozen logical 2D
 camera (`origin` and `worldHeight`), leaving each renderer to derive its own

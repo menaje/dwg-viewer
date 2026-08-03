@@ -447,12 +447,20 @@ test("keeps package versions and producer compatibility manifest aligned", async
     "changed-id-only-added-removed-modified-unchanged-net-summary",
   );
   assert.equal(
+    manifest.components.diffOverlay,
+    "bounded-revision-bound-status-style-policy-with-source-intersected-visibility-and-retryable-application",
+  );
+  assert.equal(
     manifest.components.splitViewCamera,
     "before-after-logical-camera-sync-with-retryable-rollback-and-independent-renderer-lifecycles",
   );
   assert.equal(
     manifest.conformance.viewerRenderDelta,
     "packages/viewer-core/test/render-delta-controller.test.mjs",
+  );
+  assert.equal(
+    manifest.conformance.viewerDiffOverlay,
+    "packages/viewer-core/test/diff-overlay-controller.test.mjs",
   );
   assert.equal(
     manifest.conformance.viewerSplitView,

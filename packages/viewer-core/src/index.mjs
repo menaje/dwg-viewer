@@ -73,3 +73,9 @@ export {
   ViewerSplitViewCameraController,
   ViewerSplitViewSide,
 } from "./split-view-camera-controller.mjs";
+export {
+  DefaultViewerDiffOverlayPolicy,
+  ViewerDiffOverlayController,
+  ViewerDiffOverlayVisibilityRule,
+  createViewerDiffOverlayPolicy,
+} from "./diff-overlay-controller.mjs";

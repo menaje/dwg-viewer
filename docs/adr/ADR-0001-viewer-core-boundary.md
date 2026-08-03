@@ -220,6 +220,14 @@ membership와 총 개수만 사용해 changed ID를 added/removed/modified로
 분류하고 unchanged는 총계로 계산한다. 따라서 immutable base entity를
 열거하지 않으며 added 뒤 removed된 ID는 net diff에서 제외된다. preview와
 rollback은 같은 revision-bound summary를 사용한다.
+`ViewerDiffOverlayController`는 이 summary에 added/removed/modified/
+unchanged별 visibility, canonical hex color와 opacity 정책을 결합한다.
+unchanged는 계속 ID를 열거하지 않고 global style만 전달한다. 상태 visibility는
+source/layer/clip visibility와 반드시 교집합으로 적용하므로 diff 정책이 숨겨진
+source geometry를 다시 노출하지 않는다. renderer adapter 적용은 동기·원자적
+경계이며 실패하면 직전 정상 presentation을 재적용하고 불완전한 rollback은
+관찰 후 재동기화할 수 있다. 실제 WebGL/Canvas tint 구현은 제품 adapter가
+소유한다.
 `ViewerSplitViewCameraController`는 서로 다른 before/after surface adapter에
 불변의 논리 2D 카메라만 전달한다. 각 surface의 revision, scene, GPU/detail
 state와 canvas 비율은 공유하지 않으며 renderer가 자신의 `worldWidth`를
@@ -238,8 +246,8 @@ selection/measurement overlay, generic render data model의 물리적 package
 이동은 남아 있다. 일반 Viewer UI도 toolbar/result lifecycle부터 이동했으며
 layer/layout panel composition은 이후 단계다. #30의 실제 cross-repository
 `ConiServiceSource` qualification과 #27의 nested block dependency
-recomputation, diff color/visibility, split view 및 대형 도면 qualification은
-남아 있다.
+recomputation, DWG diff presentation adapter, 대응 entity highlight, semantic
+panel hook, 실제 split composition 및 대형 도면 qualification은 남아 있다.
 제품 진입점을
 먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
 private message를 Core API로 승격하지 않고 진행한다.

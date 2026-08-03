@@ -11,6 +11,7 @@
     "./camera": "./src/camera.mjs",
     "./conformance": "./src/conformance.mjs",
     "./detail-streaming": "./src/detail-streaming-controller.mjs",
+    "./diff-overlay": "./src/diff-overlay-controller.mjs",
     "./identity": "./src/identity-controller.mjs",
     "./interaction": "./src/viewport-interaction.mjs",
     "./render-delta": "./src/render-delta-controller.mjs",
