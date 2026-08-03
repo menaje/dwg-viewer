@@ -1,15 +1,29 @@
 {
-  "name": "@dwg-viewer/viewer-ui",
+  "name": "@menaje/viewer-ui",
   "version": "0.1.0",
   "description": "Source-neutral DOM composition for Viewer tools and result panels",
   "license": "MPL-2.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "exports": {
     ".": "./src/index.mjs",
     "./diff": "./src/diff-result-model.mjs",
     "./review": "./src/review-ui-controller.mjs",
     "./split-view": "./src/split-view-ui-controller.mjs"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/menaje/dwg-viewer.git",
+    "directory": "packages/viewer-ui"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
   },
   "engines": {
     "node": ">=24"

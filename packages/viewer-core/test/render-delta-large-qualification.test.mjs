@@ -10,19 +10,19 @@ import {
   ViewerRepresentation,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 import {
   ViewerDiffOverlayController,
-} from "@dwg-viewer/viewer-core/diff-overlay";
+} from "@menaje/viewer-core/diff-overlay";
 import {
   ViewerRenderDeltaController,
-} from "@dwg-viewer/viewer-core/render-delta";
+} from "@menaje/viewer-core/render-delta";
 import {
   ViewerRenderDiffController,
-} from "@dwg-viewer/viewer-core/render-diff";
+} from "@menaje/viewer-core/render-diff";
 import {
   ViewerSplitViewDiffController,
-} from "@dwg-viewer/viewer-core/split-view";
+} from "@menaje/viewer-core/split-view";
 
 const BASE_RENDER_ID_COUNT = 378_400;
 const DELTA_COUNT = 8;
@@ -166,7 +166,7 @@ function delta(sequence, inputOperations = operations(sequence)) {
       sourceId: "source:large-qualification",
       fromRevisionId: revision(sequence - 1),
       toRevisionId: revision(sequence),
-      mediaType: "application/vnd.dwg-viewer.render-delta",
+      mediaType: "application/vnd.menaje.viewer.render-delta",
       byteLength: PAYLOAD_BYTES,
       sha256: hexadecimal.repeat(64),
       expiresAt: null,

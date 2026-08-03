@@ -1,6 +1,6 @@
 import {
   ViewerReviewUiController,
-} from "@dwg-viewer/viewer-ui";
+} from "@menaje/viewer-ui";
 
 import {
   OverviewSnapIndex,

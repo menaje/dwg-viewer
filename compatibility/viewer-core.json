@@ -1,25 +1,49 @@
 {
-  "schema": "dwg-viewer-core-compatibility/1",
-  "status": "experimental",
+  "schema": "menaje-viewer-core-compatibility/1",
+  "status": "public-preview",
   "asOf": "2026-08-04",
   "viewerCore": {
-    "package": "@dwg-viewer/viewer-core",
+    "package": "@menaje/viewer-core",
     "version": "0.1.0",
-    "api": "dwg-viewer-core/0.1"
+    "api": "menaje-viewer-core/0.1"
   },
   "viewerUi": {
-    "package": "@dwg-viewer/viewer-ui",
+    "package": "@menaje/viewer-ui",
     "version": "0.1.0",
-    "api": "dwg-viewer-ui/0.1"
+    "api": "menaje-viewer-ui/0.1"
   },
   "renderProtocol": {
-    "package": "@dwg-viewer/render-protocol",
+    "package": "@menaje/viewer-render-protocol",
     "version": "0.1.0",
-    "protocol": "dwg-viewer-render-protocol/0.1.0"
+    "protocol": "menaje-viewer-render-protocol/0.1.0"
   },
   "distribution": {
-    "kind": "workspace-only",
-    "published": false
+    "kind": "github-release-and-packages",
+    "published": true,
+    "tag": "viewer-core-v0.1.0",
+    "releaseUrl": "https://github.com/menaje/dwg-viewer/releases/tag/viewer-core-v0.1.0",
+    "registry": "https://npm.pkg.github.com",
+    "artifacts": {
+      "viewerCore": {
+        "file": "menaje-viewer-core-0.1.0.tgz",
+        "sha256": "2a04c367b5b2cf5870f5f18f33e2a1d8e545f099f0dd735c7e5d90f8224b698d"
+      },
+      "renderProtocol": {
+        "file": "menaje-viewer-render-protocol-0.1.0.tgz",
+        "sha256": "60e952677c17333fbdb07193ef87cafb1a0be9923573ac5366297a19cfc8b9ed"
+      },
+      "viewerUi": {
+        "file": "menaje-viewer-ui-0.1.0.tgz",
+        "sha256": "9f13c2aa782297929058c298728114fa31c1cc387c82319e27b90ad0f267b8db"
+      }
+    }
+  },
+  "compatibilityWindow": {
+    "viewerCore": "0.1.x",
+    "viewerUi": "0.1.x",
+    "renderProtocol": [
+      "0.1.0"
+    ]
   },
   "sources": {
     "mock": "conformance",
@@ -40,6 +64,8 @@
     "interaction": "canonical-with-dwg-detail-adapter",
     "picking": "core-selection-lifecycle-with-dwg-pick-adapter",
     "serviceIdentity": "revision-bound-core-hook-and-conformance",
+    "serviceEvents": "ordered-revision-and-diagnostic-streams-with-last-successful-snapshot-preservation-and-intent-only-host-events",
+    "layerComposition": "source-neutral-2d-3d-semantic-base-live-diff-diagnostic-ordering-with-atomic-rollback",
     "renderDelta": "atomic-overlay-state-with-dwg-line-fill-point-text-instance-transform-style-upsert-bounded-nested-instance-propagation-native-base-suppression-scoped-and-bounded-dependency-invalidation-revision-bound-pick-filtering-and-retryable-resource-cleanup",
     "renderDiff": "changed-id-only-added-removed-modified-unchanged-net-summary",
     "diffOverlay": "bounded-revision-bound-status-style-policy-with-dwg-line-fill-point-canvas-text-and-shared-insert-occurrence-presentation-source-intersected-visibility-child-precedence-and-retryable-application",
@@ -53,6 +79,8 @@
     "renderProtocol": "packages/render-protocol/test/render-protocol.test.mjs",
     "viewerCore": "packages/viewer-core/test/viewer-core.test.mjs",
     "viewerService": "packages/viewer-core/test/service-render-source.test.mjs",
+    "viewerServiceEvents": "packages/viewer-core/test/service-event-controller.test.mjs",
+    "viewerLayerComposition": "packages/viewer-core/test/layer-composition-controller.test.mjs",
     "viewerRenderDelta": "packages/viewer-core/test/render-delta-controller.test.mjs",
     "viewerRenderDeltaLargeQualification": "packages/viewer-core/test/render-delta-large-qualification.test.mjs",
     "viewerDiffOverlay": "packages/viewer-core/test/diff-overlay-controller.test.mjs",
@@ -66,6 +94,17 @@
     "viewerUi": "packages/viewer-ui/test/viewer-ui-boundary.test.mjs",
     "dwgSceneSource": "packages/dwg-scene-source/test/dwg-scene-cache-source.test.mjs",
     "productEntrypoint": "packages/webview/src/main.mjs",
-    "command": "pnpm run test:viewer-contracts"
+    "command": "pnpm run test:viewer-contracts",
+    "artifactWorkflow": ".github/workflows/viewer-packages.yml"
+  },
+  "consumers": {
+    "bimExplorer": {
+      "repository": "https://github.com/menaje/bim-explorer",
+      "manifest": "compatibility/viewer-core.json"
+    },
+    "coniSpatial": {
+      "repository": "https://github.com/menaje/coni-spatial",
+      "manifest": "compatibility/viewer-core.json"
+    }
   }
 }

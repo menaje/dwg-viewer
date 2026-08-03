@@ -4,13 +4,13 @@ import test from "node:test";
 import {
   ViewerDiffSemanticController,
   ViewerSemanticDiffAspect,
-} from "@dwg-viewer/viewer-core/diff-semantic";
+} from "@menaje/viewer-core/diff-semantic";
 import {
   ViewerDiffStatus,
-} from "@dwg-viewer/viewer-core/render-diff";
+} from "@menaje/viewer-core/render-diff";
 import {
   ViewerHostEventType,
-} from "@dwg-viewer/viewer-core";
+} from "@menaje/viewer-core";
 
 function changedEntry(
   aspect,

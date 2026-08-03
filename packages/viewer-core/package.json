@@ -1,9 +1,9 @@
 {
-  "name": "@dwg-viewer/viewer-core",
+  "name": "@menaje/viewer-core",
   "version": "0.1.0",
-  "description": "Source-neutral lifecycle and host contracts for DWG Viewer renderers",
+  "description": "Source-neutral Viewer lifecycle, rendering, identity, and host contracts",
   "license": "MPL-2.0",
-  "private": true,
+  "private": false,
   "type": "module",
   "exports": {
     ".": "./src/index.mjs",
@@ -15,12 +15,28 @@
     "./diff-semantic": "./src/diff-semantic-controller.mjs",
     "./identity": "./src/identity-controller.mjs",
     "./interaction": "./src/viewport-interaction.mjs",
+    "./layer-composition": "./src/layer-composition-controller.mjs",
     "./render-delta": "./src/render-delta-controller.mjs",
     "./render-diff": "./src/render-diff-controller.mjs",
     "./renderer": "./src/renderer-controller.mjs",
     "./selection": "./src/selection-controller.mjs",
+    "./service-events": "./src/service-event-controller.mjs",
     "./split-view": "./src/split-view.mjs",
     "./testing": "./src/testing.mjs"
+  },
+  "files": [
+    "LICENSE",
+    "README.md",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/menaje/dwg-viewer.git",
+    "directory": "packages/viewer-core"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
   },
   "engines": {
     "node": ">=24"
@@ -30,6 +46,6 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@dwg-viewer/render-protocol": "workspace:^"
+    "@menaje/viewer-render-protocol": "workspace:^"
   }
 }

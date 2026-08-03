@@ -6,7 +6,7 @@ import {
   createRenderLayerRangeSource,
   openViewerRuntime,
   ViewerSelectionController,
-} from "@dwg-viewer/viewer-core";
+} from "@menaje/viewer-core";
 
 import { ViewportInteraction } from "./interaction.mjs?v=1.18.12";
 import {

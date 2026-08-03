@@ -2,7 +2,7 @@ import {
   RenderCapability,
   RenderProtocolDiagnosticCode,
   RenderProtocolError,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 function objectLike(value, label) {
   if (
@@ -42,9 +42,7 @@ const CAPABILITY_METHODS = Object.freeze({
   [RenderCapability.PICK_RESOLVE]: "resolvePick",
   [RenderCapability.CONTEXT_CREATE]: "createContext",
   [RenderCapability.DIAGNOSTICS]: "subscribeDiagnostics",
-  [RenderCapability.DIFF]: "openDiff",
   [RenderCapability.SOURCE_REVEAL]: "resolveSourceReveal",
-  [RenderCapability.HUMAN_ACTION_INTENT]: "requestHumanAction",
 });
 
 export function assertRenderSourceSession(value, descriptor) {

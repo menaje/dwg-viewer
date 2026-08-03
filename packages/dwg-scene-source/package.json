@@ -18,9 +18,9 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@dwg-viewer/render-protocol": "workspace:^"
+    "@menaje/viewer-render-protocol": "workspace:^"
   },
   "devDependencies": {
-    "@dwg-viewer/viewer-core": "workspace:^"
+    "@menaje/viewer-core": "workspace:^"
   }
 }

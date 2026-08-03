@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   ViewerSplitViewOrientation,
   ViewerSplitViewUiController,
-} from "@dwg-viewer/viewer-ui/split-view";
+} from "@menaje/viewer-ui/split-view";
 
 class FakeElement {
   constructor(ownerDocument, tagName = "div") {

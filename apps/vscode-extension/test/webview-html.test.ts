@@ -167,11 +167,11 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   assert.match(template, /id="review-result"/u);
   assert.match(
     template,
-    /"@dwg-viewer\/viewer-core":\s*"\.\.\/viewer-core\/src\/index\.mjs"/u,
+    /"@menaje\/viewer-core":\s*"\.\.\/viewer-core\/src\/index\.mjs"/u,
   );
   assert.match(
     template,
-    /"@dwg-viewer\/viewer-ui":\s*"\.\.\/viewer-ui\/src\/index\.mjs"/u,
+    /"@menaje\/viewer-ui":\s*"\.\.\/viewer-ui\/src\/index\.mjs"/u,
   );
   assert.match(
     template,

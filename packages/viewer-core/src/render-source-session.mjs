@@ -2,17 +2,20 @@ import {
   RenderCapability,
   RenderProtocolDiagnosticCode,
   RenderProtocolError,
+  RenderRevisionEventStatus,
   SupportedRenderProtocolVersions,
   negotiateRenderProtocolVersion,
   parseContextReferenceDescriptor,
   parsePickResolveRequest,
   parseRangeHandleDescriptor,
+  parseRenderDiagnosticBatchDescriptor,
   parseRenderDeltaDescriptor,
   parseRenderIdentityDescriptor,
+  parseRenderRevisionEventDescriptor,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
   parseSourceRevealDescriptor,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 import {
   assertRenderSource,
@@ -84,7 +87,7 @@ function binaryBuffer(value) {
   throw new TypeError("RenderSource range read must return binary bytes");
 }
 
-function subscriptionDisposer(value) {
+function subscriptionDisposer(value, label = "subscription") {
   if (typeof value === "function") {
     return value;
   }
@@ -92,7 +95,7 @@ function subscriptionDisposer(value) {
     return () => value.dispose();
   }
   throw new TypeError(
-    "RenderSource delta subscription must return a disposer",
+    `RenderSource ${label} must return a disposer`,
   );
 }
 
@@ -104,8 +107,13 @@ export class ViewerRenderSourceSession {
   #disposePromise;
   #lastSnapshot;
   #renderRevisionId;
+  #pendingRevisionEvent;
   #renderDeltaSequence = 0;
+  #revisionEventSequence = 0;
+  #diagnosticSequence = 0;
   #deltaSubscription;
+  #revisionSubscription;
+  #diagnosticSubscription;
   #rangeHandles = new Map();
   #remainingRangeBytes = new Map();
 
@@ -132,7 +140,7 @@ export class ViewerRenderSourceSession {
     );
   }
 
-  #activeSnapshot(capability) {
+  #assertCapability(capability) {
     if (this.#disposed) {
       throw disposedError();
     }
@@ -143,6 +151,10 @@ export class ViewerRenderSourceSession {
         { capability },
       );
     }
+  }
+
+  #activeSnapshot(capability) {
+    this.#assertCapability(capability);
     if (!this.#lastSnapshot) {
       outOfOrder(
         `${capability} requires an active render snapshot`,
@@ -150,6 +162,112 @@ export class ViewerRenderSourceSession {
       );
     }
     return this.#lastSnapshot;
+  }
+
+  async #subscribeOrderedEvents({
+    capability,
+    label,
+    listener,
+    signal,
+    onError,
+    getSubscription,
+    setSubscription,
+    subscribe,
+    parse,
+    accept,
+  }) {
+    this.#assertCapability(capability);
+    if (typeof listener !== "function") {
+      throw new TypeError(`${label} listener must be a function`);
+    }
+    if (typeof onError !== "function") {
+      throw new TypeError(
+        `${label} error handler must be a function`,
+      );
+    }
+    if (getSubscription()?.closed === false) {
+      outOfOrder(`only one ${label} subscription may be active`);
+    }
+    throwIfAborted(signal);
+
+    let closed = false;
+    let lastError = null;
+    let rawDispose = () => {};
+    let disposePromise;
+    let queue = Promise.resolve();
+    let abort = () => {};
+    const dispatch = (rawEvent) => {
+      const operation = queue.then(async () => {
+        if (closed || this.#disposed) {
+          throw disposedError();
+        }
+        const event = parse(rawEvent);
+        await listener(event);
+        if (closed || this.#disposed) {
+          throw disposedError();
+        }
+        accept(event);
+        return event;
+      });
+      const observed = operation.catch((error) => {
+        lastError = error;
+        try {
+          onError(error);
+        } catch {
+          // The source error remains the primary subscription failure.
+        }
+        return null;
+      });
+      queue = observed.then(() => undefined);
+      return observed;
+    };
+
+    const subscription = {
+      get closed() {
+        return closed;
+      },
+      get lastError() {
+        return lastError;
+      },
+      async whenIdle() {
+        await queue;
+        return lastError;
+      },
+      dispose: () => {
+        if (!disposePromise) {
+          closed = true;
+          signal?.removeEventListener?.("abort", abort);
+          disposePromise = Promise.resolve()
+            .then(() => rawDispose())
+            .then(() => queue)
+            .then(() => {
+              if (getSubscription() === subscription) {
+                setSubscription(undefined);
+              }
+            });
+        }
+        return disposePromise;
+      },
+    };
+    setSubscription(subscription);
+    abort = () => {
+      void subscription.dispose();
+    };
+    signal?.addEventListener?.("abort", abort, { once: true });
+    try {
+      rawDispose = subscriptionDisposer(
+        await subscribe(dispatch),
+        `${label} subscription`,
+      );
+      if (closed) {
+        await rawDispose();
+      }
+      throwIfAborted(signal);
+      return subscription;
+    } catch (error) {
+      await subscription.dispose();
+      throw error;
+    }
   }
 
   #assertSnapshotStillActive(snapshot, operation) {
@@ -178,9 +296,28 @@ export class ViewerRenderSourceSession {
     if (this.#disposed) {
       throw disposedError();
     }
+    const pendingRevision = this.#pendingRevisionEvent;
     const snapshot = parseRenderSnapshotDescriptor(rawSnapshot, {
       session: this.#descriptor,
+      expectedRevisionId:
+        pendingRevision?.revisionId ??
+        this.#lastSnapshot?.revisionId ??
+        this.#descriptor.lastSuccessfulRevisionId ??
+        this.#descriptor.currentRevisionId,
     });
+    if (
+      pendingRevision &&
+      snapshot.snapshotId !== pendingRevision.snapshotId
+    ) {
+      throw new RenderProtocolError(
+        RenderProtocolDiagnosticCode.SCOPE_MISMATCH,
+        "render snapshot does not match the announced revision event",
+        {
+          expected: pendingRevision.snapshotId,
+          received: snapshot.snapshotId,
+        },
+      );
+    }
     if (this.#lastSnapshot) {
       if (snapshot.sequence < this.#lastSnapshot.sequence) {
         outOfOrder("render snapshot sequence moved backwards", {
@@ -207,6 +344,7 @@ export class ViewerRenderSourceSession {
     }
     await this.#deltaSubscription?.dispose();
     this.#lastSnapshot = snapshot;
+    this.#pendingRevisionEvent = undefined;
     this.#renderRevisionId = snapshot.revisionId;
     this.#renderDeltaSequence = 0;
     this.#rangeHandles.clear();
@@ -450,6 +588,75 @@ export class ViewerRenderSourceSession {
     }
   }
 
+  async subscribeRevisionEvents(
+    listener,
+    { signal, onError = () => {} } = {},
+  ) {
+    return this.#subscribeOrderedEvents({
+      capability: RenderCapability.REVISION_EVENTS,
+      label: "revision event",
+      listener,
+      signal,
+      onError,
+      getSubscription: () => this.#revisionSubscription,
+      setSubscription: (value) => {
+        this.#revisionSubscription = value;
+      },
+      subscribe: (dispatch) =>
+        this.#session.subscribeRevisionEvents(dispatch, {
+          signal,
+        }),
+      parse: (event) =>
+        parseRenderRevisionEventDescriptor(event, {
+          session: this.#descriptor,
+          expectedSequence: this.#revisionEventSequence + 1,
+        }),
+      accept: (event) => {
+        this.#revisionEventSequence = event.sequence;
+        if (event.status === RenderRevisionEventStatus.AVAILABLE) {
+          this.#pendingRevisionEvent = event;
+        } else if (
+          this.#pendingRevisionEvent &&
+          event.lastSuccessfulRevisionId !==
+            this.#pendingRevisionEvent.revisionId
+        ) {
+          this.#pendingRevisionEvent = undefined;
+        }
+      },
+    });
+  }
+
+  async subscribeDiagnostics(
+    listener,
+    { signal, onError = () => {} } = {},
+  ) {
+    this.#activeSnapshot(RenderCapability.DIAGNOSTICS);
+    return this.#subscribeOrderedEvents({
+      capability: RenderCapability.DIAGNOSTICS,
+      label: "diagnostic",
+      listener,
+      signal,
+      onError,
+      getSubscription: () => this.#diagnosticSubscription,
+      setSubscription: (value) => {
+        this.#diagnosticSubscription = value;
+      },
+      subscribe: (dispatch) =>
+        this.#session.subscribeDiagnostics(dispatch, {
+          signal,
+        }),
+      parse: (batch) =>
+        parseRenderDiagnosticBatchDescriptor(batch, {
+          session: this.#descriptor,
+          snapshot: this.#lastSnapshot,
+          expectedSequence: this.#diagnosticSequence + 1,
+        }),
+      accept: (batch) => {
+        this.#diagnosticSequence = batch.sequence;
+      },
+    });
+  }
+
   async resolvePick(request, { signal } = {}) {
     const snapshot = this.#activeSnapshot(
       RenderCapability.PICK_RESOLVE,
@@ -533,11 +740,16 @@ export class ViewerRenderSourceSession {
       this.#disposed = true;
       this.#lastSnapshot = undefined;
       this.#renderRevisionId = undefined;
+      this.#pendingRevisionEvent = undefined;
       this.#renderDeltaSequence = 0;
+      this.#revisionEventSequence = 0;
+      this.#diagnosticSequence = 0;
       this.#rangeHandles.clear();
       this.#remainingRangeBytes.clear();
       this.#disposePromise = settleDisposal(
         this.#deltaSubscription,
+        this.#revisionSubscription,
+        this.#diagnosticSubscription,
         this.#session,
         this.#source,
       );

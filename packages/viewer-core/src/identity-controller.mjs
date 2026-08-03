@@ -2,7 +2,7 @@ import {
   parsePickResolveRequest,
   parseRenderIdentityDescriptor,
   parseRenderSnapshotDescriptor,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 import { ViewerHostEventType } from "./constants.mjs";
 import { assertViewerHost } from "./contracts.mjs";

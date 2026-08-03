@@ -3,9 +3,12 @@
 `viewer-core.json`은 이 저장소가 생산하는 Viewer Core, Viewer UI와 render
 protocol의 호환 기준을 기록한다.
 
-- `experimental`은 package/API가 아직 `0.x` conformance 단계라는 뜻이다.
-- `workspace-only`는 npm 또는 release artifact 배포를 아직 보장하지 않는다는
-  뜻이다.
+- `public-preview`는 package/API가 공개 배포됐지만 아직 `0.x` compatibility
+  window에 있다는 뜻이다.
+- `github-release-and-packages`는 공개 GitHub Release tarball과 GitHub
+  Packages npm package를 함께 배포한다는 뜻이다.
+- consumer는 release tarball의 exact URL과 SHA-256을 pin하거나 GitHub
+  Packages의 exact version을 pin한다.
 - consumer는 이 파일을 복사하지 않고 자신의 manifest에서 package version
   range와 실행한 conformance fixture를 기록한다.
 - `product-runtime`은 해당 Host의 실제 제품 진입점이 Viewer Core runtime을
@@ -21,5 +24,5 @@ protocol의 호환 기준을 기록한다.
 - 제품 version, Spatial Protocol version과 Host–Webview message version으로
   Viewer Core 호환성을 추측하지 않는다.
 
-실제 package version, protocol version 또는 conformance 경로가 바뀌면
-manifest와 package test를 같은 변경에서 갱신한다.
+실제 package version, protocol version, artifact digest 또는 conformance
+경로가 바뀌면 manifest와 package test를 같은 변경에서 갱신한다.

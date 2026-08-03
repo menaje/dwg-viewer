@@ -11,24 +11,24 @@ import {
   ViewerRepresentation,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 import {
   runRenderDeltaConformance,
-} from "@dwg-viewer/viewer-core/conformance";
+} from "@menaje/viewer-core/conformance";
 import {
   MockRenderDeltaSource,
-} from "@dwg-viewer/viewer-core/testing";
+} from "@menaje/viewer-core/testing";
 import {
   ViewerRenderDeltaController,
-} from "@dwg-viewer/viewer-core/render-delta";
+} from "@menaje/viewer-core/render-delta";
 import {
   ViewerDiffStatus,
   ViewerRenderDiffController,
-} from "@dwg-viewer/viewer-core/render-diff";
+} from "@menaje/viewer-core/render-diff";
 import {
   openRenderSource,
-} from "@dwg-viewer/viewer-core";
+} from "@menaje/viewer-core";
 
 const revisionOne = "revision:delta:1";
 const revisionTwo = "revision:delta:2";
@@ -125,7 +125,7 @@ function payload(fromRevisionId, toRevisionId, sequence) {
     sourceId: "source:delta",
     fromRevisionId,
     toRevisionId,
-    mediaType: "application/vnd.dwg-viewer.render-delta",
+    mediaType: "application/vnd.menaje.viewer.render-delta",
     byteLength: 128,
     sha256: `${sequence}`.repeat(64),
     expiresAt: null,

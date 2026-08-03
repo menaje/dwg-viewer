@@ -4,10 +4,10 @@ import test from "node:test";
 import {
   ViewerSplitViewDiffController,
   ViewerSplitViewSide,
-} from "@dwg-viewer/viewer-core/split-view";
+} from "@menaje/viewer-core/split-view";
 import {
   ViewerDiffStatus,
-} from "@dwg-viewer/viewer-core/render-diff";
+} from "@menaje/viewer-core/render-diff";
 
 function changedEntry(status, renderId) {
   return {

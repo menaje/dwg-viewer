@@ -6,10 +6,10 @@ import {
   ViewerDiffOverlayController,
   ViewerDiffOverlayVisibilityRule,
   createViewerDiffOverlayPolicy,
-} from "@dwg-viewer/viewer-core/diff-overlay";
+} from "@menaje/viewer-core/diff-overlay";
 import {
   ViewerDiffStatus,
-} from "@dwg-viewer/viewer-core/render-diff";
+} from "@menaje/viewer-core/render-diff";
 
 function changedEntry(status, renderId) {
   return {

@@ -29,9 +29,11 @@ ACadSharp 3.6.51도 파싱만으로 메모리 하드 한도를 넘어 대형 도
 [`bim-explorer`](https://github.com/menaje/bim-explorer)에서 검증하며,
 Coni Spatial은 호환 package만 bundle하고 두 standalone Viewer 제품
 설치에 의존하지 않습니다.
-초기 `@dwg-viewer/render-protocol`, `@dwg-viewer/viewer-core`와
-`@dwg-viewer/viewer-ui`는 workspace-only experimental contract이며 기존
-VS Code `dwg-*` message를 public protocol로 노출하지 않습니다. standalone
+`@menaje/viewer-render-protocol`, `@menaje/viewer-core`와
+`@menaje/viewer-ui` 0.1.0은
+[Viewer Core release](https://github.com/menaje/dwg-viewer/releases/tag/viewer-core-v0.1.0)와
+GitHub Packages에 배포되는 source-neutral public preview입니다. 기존 VS Code
+`dwg-*` message는 public protocol로 노출하지 않습니다. standalone
 Browser 파일과 VS Code cache channel은 모두 `DwgSceneCacheSource`와 같은
 Viewer Core runtime을 통해 현재 renderer를 mount합니다. Core는
 renderer/detail target 계약, 상한형 상세 스트리밍과 revision-bound

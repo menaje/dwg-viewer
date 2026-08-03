@@ -39,11 +39,11 @@ jobs:
       - name: Check adapter packaging
         run: pnpm run check:adapter-package
       - name: Check render protocol
-        run: pnpm --filter @dwg-viewer/render-protocol check
+        run: pnpm --filter @menaje/viewer-render-protocol check
       - name: Check Viewer Core contracts
-        run: pnpm --filter @dwg-viewer/viewer-core check
+        run: pnpm --filter @menaje/viewer-core check
       - name: Check Viewer UI contracts
-        run: pnpm --filter @dwg-viewer/viewer-ui check
+        run: pnpm --filter @menaje/viewer-ui check
       - name: Check DWG Scene source
         run: pnpm --filter @dwg-viewer/dwg-scene-source check
       - name: Check Webview

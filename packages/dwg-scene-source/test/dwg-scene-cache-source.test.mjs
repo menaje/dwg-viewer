@@ -4,13 +4,13 @@ import test from "node:test";
 import {
   createRenderLayerRangeSource,
   openViewerRuntime,
-} from "@dwg-viewer/viewer-core";
+} from "@menaje/viewer-core";
 import {
   RenderProtocolDiagnosticCode,
   RenderProtocolVersion,
   ViewerLayerKind,
-} from "@dwg-viewer/render-protocol";
-import { runRenderSourceConformance } from "@dwg-viewer/viewer-core/conformance";
+} from "@menaje/viewer-render-protocol";
+import { runRenderSourceConformance } from "@menaje/viewer-core/conformance";
 
 import { makeFixtureCache } from "../../webview/test/cache-fixture.mjs";
 import {

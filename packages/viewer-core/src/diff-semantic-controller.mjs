@@ -1,6 +1,6 @@
 import {
   RenderDeltaAspect,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 import { ViewerHostEventType } from "./constants.mjs";
 import { assertViewerHost } from "./contracts.mjs";

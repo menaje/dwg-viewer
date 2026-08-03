@@ -10,10 +10,10 @@ import {
   ViewerRepresentation,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 import {
   ViewerRenderDeltaController,
-} from "@dwg-viewer/viewer-core";
+} from "@menaje/viewer-core";
 
 import {
   DwgRenderDeltaAdapter,

@@ -2,7 +2,7 @@ import {
   RenderCapability,
   RenderDeltaOperationKind,
   RenderProtocolDiagnosticCode,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 import { openRenderSource } from "./render-source-session.mjs";
 import {
@@ -200,6 +200,116 @@ export async function runServiceRenderSourceConformance(
     await Promise.allSettled([
       Promise.resolve().then(() => session?.dispose()),
       Promise.resolve().then(() => source.dispose()),
+    ]);
+  }
+}
+
+export async function runServiceEventConformance(createHarness) {
+  if (typeof createHarness !== "function") {
+    throw new TypeError(
+      "service event conformance requires a harness factory",
+    );
+  }
+  const lifecycle = await runRenderSourceConformance(async () => {
+    const harness = await createHarness();
+    return harness?.source;
+  });
+  const harness = await createHarness();
+  for (const method of [
+    "publishRevision",
+    "replayRevision",
+    "publishDiagnostics",
+  ]) {
+    if (typeof harness?.[method] !== "function") {
+      throw new TypeError(
+        `service event harness must implement ${method}()`,
+      );
+    }
+  }
+  const source = harness.source;
+  let session;
+  let revisionSubscription;
+  let diagnosticSubscription;
+  try {
+    session = await openRenderSource(source);
+    for (const capability of [
+      RenderCapability.REVISION_EVENTS,
+      RenderCapability.DIAGNOSTICS,
+    ]) {
+      if (!session.descriptor.capabilities.includes(capability)) {
+        throw new Error(
+          `service event source does not declare ${capability}`,
+        );
+      }
+    }
+    const snapshot = await session.getSnapshot();
+    const revisions = [];
+    const diagnostics = [];
+    const errors = [];
+    revisionSubscription = await session.subscribeRevisionEvents(
+      (event) => {
+        revisions.push(event);
+      },
+      {
+        onError(error) {
+          errors.push(error);
+        },
+      },
+    );
+    diagnosticSubscription = await session.subscribeDiagnostics(
+      (batch) => {
+        diagnostics.push(batch);
+      },
+      {
+        onError(error) {
+          errors.push(error);
+        },
+      },
+    );
+
+    await harness.publishRevision({ sourceSession: session, snapshot });
+    await harness.publishDiagnostics({
+      sourceSession: session,
+      snapshot,
+    });
+    await Promise.all([
+      revisionSubscription.whenIdle(),
+      diagnosticSubscription.whenIdle(),
+    ]);
+    if (revisions.length !== 1 || diagnostics.length !== 1) {
+      throw new Error(
+        "service event source did not publish one ordered revision and diagnostic batch",
+      );
+    }
+
+    await harness.replayRevision({
+      sourceSession: session,
+      snapshot,
+    });
+    await revisionSubscription.whenIdle();
+    if (
+      revisions.length !== 1 ||
+      errors.at(-1)?.code !==
+        RenderProtocolDiagnosticCode.OUT_OF_ORDER
+    ) {
+      throw new Error(
+        "service event source did not fail closed on a revision replay",
+      );
+    }
+
+    return Object.freeze({
+      ...lifecycle,
+      revisionEvents: revisions.length,
+      diagnosticBatches: diagnostics.length,
+      diagnostics: diagnostics[0].diagnostics.length,
+      replayRejected: true,
+    });
+  } finally {
+    await Promise.allSettled([
+      Promise.resolve().then(() => revisionSubscription?.dispose()),
+      Promise.resolve().then(() => diagnosticSubscription?.dispose()),
+      Promise.resolve().then(() => session?.dispose()),
+      Promise.resolve().then(() => source?.dispose()),
     ]);
   }
 }

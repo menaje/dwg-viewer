@@ -40,10 +40,10 @@ release를 분리한다. `dwg-viewer`는 다음 versioned package 경계를
 
 | Package | 책임 | 포함하지 않는 것 |
 | --- | --- | --- |
-| `@dwg-viewer/render-protocol` | source/session/snapshot/range의 Viewer-facing 계약과 fail-closed validation | Spatial Workspace, Agent method, Host private message |
-| `@dwg-viewer/viewer-core` | source/host lifecycle, renderer, camera, interaction, picking과 generic layer 합성 | DOM bootstrap, VS Code API, DWG parser, permission 판정 |
+| `@menaje/viewer-render-protocol` | source/session/snapshot/range의 Viewer-facing 계약과 fail-closed validation | Spatial Workspace, Agent method, Host private message |
+| `@menaje/viewer-core` | source/host lifecycle, renderer, camera, interaction, picking과 generic layer 합성 | DOM bootstrap, VS Code API, DWG parser, permission 판정 |
 | `@dwg-viewer/dwg-scene-source` | Scene Cache reader, range/detail streaming과 `DwgSceneCacheSource` | Viewer UI, Spatial revision authority |
-| `@dwg-viewer/viewer-ui` | 일반 toolbar, inspector와 DOM composition | Spatial semantic panel |
+| `@menaje/viewer-ui` | 일반 toolbar, inspector와 DOM composition | Spatial semantic panel |
 | `@dwg-viewer/vscode-bridge` | VS Code resource/range/file association adapter | public Service protocol |
 | `@dwg-viewer/browser-bridge` | Blob/HTTP/mock host adapter | VS Code API |
 
@@ -52,10 +52,12 @@ canonical Scene Cache reader와 `DwgSceneCacheSource`를 두고 기존 Webview
 경로는 compatibility re-export로 유지한다. renderer/camera/interaction
 lifecycle은 Browser/VS Code conformance를 추가한 뒤 Core로 옮긴다.
 
-현재 `@dwg-viewer/*` 이름은 workspace-only experimental package
-namespace다. BIM Explorer 3D consumer conformance를 통과하기 전에 이를
-source-neutral public namespace로 주장하지 않으며, 이름 변경 여부는
-breaking public release 전에 확정한다.
+BIM Explorer의 source/identity/3D consumer conformance 결과 DWG 형식에
+종속되지 않은 공용 package는 `@menaje/viewer-render-protocol`,
+`@menaje/viewer-core`, `@menaje/viewer-ui` namespace로 확정했다.
+`@dwg-viewer/dwg-scene-source`와 제품 bridge는 DWG 제품 전용 이름을
+유지한다. public protocol/API ID도 `menaje-viewer-*`로 분리해 Host의
+private `dwg-*` message와 혼동하지 않는다.
 
 generic 3D renderer와 BIM exploration UI는 `bim-explorer`가 소유한다.
 Coni Spatial은 호환 3D/BIM package 위에 revision-bound base/live/diff
@@ -102,9 +104,11 @@ Viewer package version도 서로 독립적이다.
 - consumer는 package/version range와 실제 conformance 결과를 별도 manifest에
   pin한다.
 
-초기 package는 `workspace-only`와 `experimental`이다. npm 또는 GitHub
-Release artifact 배포 방식이 결정되고 cross-repository fixture가 통과하기
-전에는 외부 제품 호환을 주장하지 않는다.
+초기 public preview package는 0.1.0이며 `viewer-core-v0.1.0` GitHub Release
+tarball과 GitHub Packages에 함께 배포한다. producer manifest는 artifact
+SHA-256과 exact render protocol compatibility window를 기록하고, consumer는
+자신의 lockfile과 compatibility manifest에서 exact artifact를 pin한다.
+0.x 범위를 벗어나는 호환 주장은 cross-repository fixture 없이 하지 않는다.
 
 ## Extraction 순서
 
@@ -252,7 +256,7 @@ rollback한다. `ViewerSplitViewUiController`는 주입된 두 surface의 실제
 접근 가능한 DOM split, bounded divider와 원래 DOM 위치 복원을 소유한다.
 `ViewerDiffSemanticController`는 identity/dependency change와 invalidation만
 revision-bound `diff.open` Host event로 투영한다.
-`@dwg-viewer/viewer-ui`의 review controller는 toolbar의 active
+`@menaje/viewer-ui`의 review controller는 toolbar의 active
 state와 접근성 속성, bounded text-only result row/action composition,
 DOM listener disposal을 소유한다. 네 diff 상태와 base/target revision도
 같은 result model로 투영한다. DWG Webview는 candidate 판독과 CAD 속성,

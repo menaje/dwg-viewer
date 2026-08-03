@@ -1,7 +1,7 @@
 import {
   RenderDeltaAspect,
   RenderDeltaOperationKind,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 import { decodeDwgRenderDeltaText } from "./render-delta-text.mjs";
 import { decodeDwgRenderDeltaStyle } from "./render-delta-style.mjs";

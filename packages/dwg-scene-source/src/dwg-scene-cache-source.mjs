@@ -9,7 +9,7 @@ import {
   parseRangeHandleDescriptor,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 import { validateRange } from "./range-source.mjs";
 import { SceneCacheReader } from "./scene-cache.mjs";

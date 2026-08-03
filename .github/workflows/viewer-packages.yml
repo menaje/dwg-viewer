@@ -1,0 +1,180 @@
+name: Viewer packages
+
+on:
+  push:
+    tags:
+      - "viewer-core-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.12.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: "@menaje"
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate public Viewer contracts
+        run: pnpm run test:viewer-contracts
+
+      - name: Validate release tag and package versions
+        shell: bash
+        run: |
+          protocol_version=$(node -p "require('./packages/render-protocol/package.json').version")
+          core_version=$(node -p "require('./packages/viewer-core/package.json').version")
+          ui_version=$(node -p "require('./packages/viewer-ui/package.json').version")
+          test "$protocol_version" = "$core_version"
+          test "$protocol_version" = "$ui_version"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "viewer-core-v$core_version"
+          fi
+
+      - name: Pack reproducible public artifacts
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/viewer-release" "$RUNNER_TEMP/viewer-repeat"
+          pnpm --dir packages/render-protocol pack \
+            --pack-destination "$RUNNER_TEMP/viewer-release"
+          pnpm --dir packages/viewer-core pack \
+            --pack-destination "$RUNNER_TEMP/viewer-release"
+          pnpm --dir packages/viewer-ui pack \
+            --pack-destination "$RUNNER_TEMP/viewer-release"
+          pnpm --dir packages/render-protocol pack \
+            --pack-destination "$RUNNER_TEMP/viewer-repeat"
+          pnpm --dir packages/viewer-core pack \
+            --pack-destination "$RUNNER_TEMP/viewer-repeat"
+          pnpm --dir packages/viewer-ui pack \
+            --pack-destination "$RUNNER_TEMP/viewer-repeat"
+          for artifact in "$RUNNER_TEMP/viewer-release"/*.tgz; do
+            cmp \
+              "$artifact" \
+              "$RUNNER_TEMP/viewer-repeat/$(basename "$artifact")"
+          done
+          cd "$RUNNER_TEMP/viewer-release"
+          sha256sum *.tgz > SHA256SUMS
+
+      - name: Verify clean artifact-only install and conformance
+        shell: bash
+        run: |
+          consumer="$RUNNER_TEMP/viewer-consumer"
+          mkdir "$consumer"
+          cd "$consumer"
+          npm init --yes
+          npm install --ignore-scripts "$RUNNER_TEMP/viewer-release"/*.tgz
+          node --input-type=module <<'NODE'
+          import {
+            runRenderSourceConformance,
+            runServiceEventConformance,
+            runServiceRenderSourceConformance,
+          } from "@menaje/viewer-core/conformance";
+          import {
+            createMockServiceEventHarness,
+            MockRenderSource,
+            MockServicePickFixture,
+            MockServiceRenderSource,
+          } from "@menaje/viewer-core/testing";
+          import {
+            ViewerCoreApi,
+          } from "@menaje/viewer-core";
+          import {
+            RenderProtocolId,
+          } from "@menaje/viewer-render-protocol";
+          import {
+            ViewerUiApi,
+          } from "@menaje/viewer-ui";
+
+          await runRenderSourceConformance(() => new MockRenderSource());
+          await runServiceRenderSourceConformance(
+            () => new MockServiceRenderSource(),
+            MockServicePickFixture,
+          );
+          await runServiceEventConformance(
+            () => createMockServiceEventHarness(),
+          );
+          if (
+            ViewerCoreApi !== "menaje-viewer-core/0.1" ||
+            RenderProtocolId !==
+              "menaje-viewer-render-protocol/0.1.0" ||
+            ViewerUiApi !== "menaje-viewer-ui/0.1"
+          ) {
+            throw new Error("public Viewer package identity mismatch");
+          }
+          NODE
+
+      - name: Publish GitHub npm packages
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for package_directory in \
+            packages/render-protocol \
+            packages/viewer-core \
+            packages/viewer-ui
+          do
+            package_name=$(node -p "require('./$package_directory/package.json').name")
+            package_version=$(node -p "require('./$package_directory/package.json').version")
+            if npm view \
+              "$package_name@$package_version" \
+              version \
+              --registry=https://npm.pkg.github.com >/dev/null 2>&1
+            then
+              continue
+            fi
+            pnpm --dir "$package_directory" publish \
+              --no-git-checks \
+              --access public \
+              --registry=https://npm.pkg.github.com
+          done
+
+      - name: Attest public package artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ runner.temp }}/viewer-release/*.tgz
+
+      - name: Upload public package artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: viewer-core-packages
+          path: |
+            ${{ runner.temp }}/viewer-release/*.tgz
+            ${{ runner.temp }}/viewer-release/SHA256SUMS
+          archive: false
+          if-no-files-found: error
+
+      - name: Publish tagged GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          core_version=$(node -p "require('./packages/viewer-core/package.json').version")
+          release_notes="$RUNNER_TEMP/viewer-release-notes.md"
+          printf '%s\n\n%s\n' \
+            "Source-neutral Viewer Core, Viewer UI, and render protocol packages." \
+            "Consumers must pin the release artifacts and verify SHA256SUMS." \
+            > "$release_notes"
+          gh release create "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/viewer-release"/*.tgz \
+            "$RUNNER_TEMP/viewer-release/SHA256SUMS" \
+            --verify-tag \
+            --title "Viewer Core v$core_version" \
+            --notes-file "$release_notes"

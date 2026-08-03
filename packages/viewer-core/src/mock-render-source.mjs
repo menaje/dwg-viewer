@@ -9,7 +9,7 @@ import {
   parseRangeHandleDescriptor,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 function throwIfAborted(signal) {
   signal?.throwIfAborted?.();

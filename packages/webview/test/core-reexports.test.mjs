@@ -4,22 +4,22 @@ import test from "node:test";
 import {
   CameraController2D as CoreCameraController2D,
   cameraViewportBounds as coreCameraViewportBounds,
-} from "@dwg-viewer/viewer-core/camera";
+} from "@menaje/viewer-core/camera";
 import {
   GpuBatchCache as CoreGpuBatchCache,
-} from "@dwg-viewer/viewer-core/batch-cache";
+} from "@menaje/viewer-core/batch-cache";
 import {
   ViewportInteraction as CoreViewportInteraction,
-} from "@dwg-viewer/viewer-core/interaction";
+} from "@menaje/viewer-core/interaction";
 import {
   DetailStreamingController,
-} from "@dwg-viewer/viewer-core/detail-streaming";
+} from "@menaje/viewer-core/detail-streaming";
 import {
   ViewerRendererController,
-} from "@dwg-viewer/viewer-core/renderer";
+} from "@menaje/viewer-core/renderer";
 import {
   ViewerSelectionController,
-} from "@dwg-viewer/viewer-core/selection";
+} from "@menaje/viewer-core/selection";
 
 import { GpuBatchCache } from "../src/batch-cache.mjs";
 import {

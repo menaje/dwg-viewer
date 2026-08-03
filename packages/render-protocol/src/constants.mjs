@@ -1,6 +1,6 @@
 export const RenderProtocolVersion = "0.1.0";
 export const RenderProtocolId =
-  `dwg-viewer-render-protocol/${RenderProtocolVersion}`;
+  `menaje-viewer-render-protocol/${RenderProtocolVersion}`;
 export const SupportedRenderProtocolVersions = Object.freeze([
   RenderProtocolVersion,
 ]);
@@ -14,9 +14,7 @@ export const RenderCapability = Object.freeze({
   PICK_RESOLVE: "pick-resolve",
   CONTEXT_CREATE: "context-create",
   DIAGNOSTICS: "diagnostics",
-  DIFF: "diff",
   SOURCE_REVEAL: "source-reveal",
-  HUMAN_ACTION_INTENT: "human-action-intent",
 });
 
 export const AllRenderCapabilities = Object.freeze(
@@ -41,10 +39,30 @@ export const AllViewerLayerKinds = Object.freeze(
 export const ViewerRepresentation = Object.freeze({
   TWO_DIMENSIONAL: "2d",
   THREE_DIMENSIONAL: "3d",
+  SEMANTIC: "semantic",
 });
 
 export const AllViewerRepresentations = Object.freeze(
   Object.values(ViewerRepresentation).sort(),
+);
+
+export const RenderRevisionEventStatus = Object.freeze({
+  AVAILABLE: "available",
+  FAILED: "failed",
+});
+
+export const AllRenderRevisionEventStatuses = Object.freeze(
+  Object.values(RenderRevisionEventStatus).sort(),
+);
+
+export const ViewerDiagnosticSeverity = Object.freeze({
+  INFO: "info",
+  WARNING: "warning",
+  ERROR: "error",
+});
+
+export const AllViewerDiagnosticSeverities = Object.freeze(
+  Object.values(ViewerDiagnosticSeverity).sort(),
 );
 
 export const RenderDeltaOperationKind = Object.freeze({

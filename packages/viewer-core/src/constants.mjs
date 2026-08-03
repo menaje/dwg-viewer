@@ -1,7 +1,8 @@
 export const ViewerCoreVersion = "0.1.0";
-export const ViewerCoreApi = "dwg-viewer-core/0.1";
+export const ViewerCoreApi = "menaje-viewer-core/0.1";
 
 export const ViewerHostEventType = Object.freeze({
+  REVISION_CHANGED: "revision.changed",
   SELECTION_CHANGED: "selection.changed",
   VIEWPORT_CHANGED: "viewport.changed",
   CONTEXT_REQUEST: "context.request",

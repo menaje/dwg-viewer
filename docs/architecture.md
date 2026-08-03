@@ -28,16 +28,17 @@ The first executable package boundary is:
 
 ```text
 RenderSource
-  -> @dwg-viewer/render-protocol
-  -> @dwg-viewer/viewer-core
+  -> @menaje/viewer-render-protocol
+  -> @menaje/viewer-core
        -> ViewerHost
-       -> @dwg-viewer/viewer-ui -> product DOM
+       -> @menaje/viewer-ui -> product DOM
 ```
 
-These packages are currently `0.1.0`, `experimental`, and workspace-only. Their
-producer compatibility record is
-[`compatibility/viewer-core.json`](../compatibility/viewer-core.json). This
-status does not claim npm, release-artifact, or cross-repository compatibility.
+These packages are `0.1.0` public previews distributed as checksum-pinned
+artifacts in the `viewer-core-v0.1.0` GitHub release and through GitHub
+Packages. Their producer compatibility record, exact artifact digests, protocol
+window, and consumer manifests are recorded in
+[`compatibility/viewer-core.json`](../compatibility/viewer-core.json).
 The canonical Scene Cache reader and bounded range sources now live in
 `packages/dwg-scene-source`; the legacy Webview paths are compatibility
 re-exports. `DwgSceneCacheSource` and the Browser mock source pass the common
@@ -59,7 +60,13 @@ events. Service-backed sources can additionally use revision-bound
 descriptors. `ViewerIdentityController` rejects stale in-flight responses and
 publishes only opaque `context.request` and `source.reveal` details to the Host.
 `MockServiceRenderSource` and the reusable service conformance exercise
-base/live layer composition and those hooks without importing Spatial code.
+base/live/diff/diagnostic layer composition and those hooks without importing
+Spatial code. Ordered `revision.changed` and `diagnostics.changed` streams
+preserve the last successful snapshot on build failure and reject replayed
+sequence numbers. `ViewerLayerCompositionController` orders 2D, 3D, and
+semantic layers with atomic visibility rollback. `ViewerServiceEventController`
+forwards revision, diagnostics, viewport, and intent-only human action events
+without granting a capability or owning Host/source lifecycle.
 Render Delta is normalized as an atomic base-snapshot/from-to-revision
 envelope with ordered tombstone/upsert operations, affected bounds and a
 bounded opaque binary payload. `ViewerRenderDeltaController` retains only

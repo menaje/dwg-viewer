@@ -55,6 +55,12 @@ export {
   ViewerIdentityController,
 } from "./identity-controller.mjs";
 export {
+  ViewerServiceEventController,
+} from "./service-event-controller.mjs";
+export {
+  ViewerLayerCompositionController,
+} from "./layer-composition-controller.mjs";
+export {
   DEFAULT_CHECKPOINT_DEPENDENCY_IDS,
   DEFAULT_CHECKPOINT_DELTA_COUNT,
   DEFAULT_CHECKPOINT_OVERLAY_ENTRIES,

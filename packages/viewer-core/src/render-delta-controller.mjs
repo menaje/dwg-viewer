@@ -4,7 +4,7 @@ import {
   RenderProtocolError,
   parseRenderDeltaDescriptor,
   parseRenderSnapshotDescriptor,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 const DEFAULT_CHECKPOINT_DELTA_COUNT = 64;
 const DEFAULT_CHECKPOINT_PAYLOAD_BYTES = 64 * 1024 * 1024;

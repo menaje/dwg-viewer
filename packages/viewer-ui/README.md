@@ -1,8 +1,14 @@
-# `@dwg-viewer/viewer-ui`
+# `@menaje/viewer-ui`
 
 Viewer의 source-neutral DOM composition package입니다. Viewer Core의
 renderer/source lifecycle과 분리되어 있으며 DWG Scene Cache, VS Code API,
 Spatial Workspace 또는 제품별 selection record를 import하지 않습니다.
+0.1.0 public preview는 Viewer Core와 함께 checksum-pinned GitHub Release
+artifact 및 GitHub Packages package로 배포됩니다.
+
+```sh
+npm install https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.0/menaje-viewer-ui-0.1.0.tgz
+```
 
 `ViewerReviewUiController`는 다음을 소유합니다.
 

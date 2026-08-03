@@ -1,7 +1,23 @@
-# `@dwg-viewer/viewer-core`
+# `@menaje/viewer-core`
 
 Viewer renderer와 source/host lifecycle을 VS Code, DWG parser와 Spatial
 Workspace에서 분리하기 위한 최소 public contract입니다.
+
+## 설치
+
+공개 Release tarball의 exact URL과 SHA-256은
+`compatibility/viewer-core.json`에 고정되어 있습니다. clean consumer는
+protocol과 Core를 함께 설치합니다.
+
+```sh
+npm install \
+  https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.0/menaje-viewer-render-protocol-0.1.0.tgz \
+  https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.0/menaje-viewer-core-0.1.0.tgz
+```
+
+GitHub Packages를 사용할 때는 `@menaje` scope를
+`https://npm.pkg.github.com`에 연결하고 두 package의 exact `0.1.0`을
+설치합니다.
 
 ## RenderSource
 
@@ -14,7 +30,8 @@ Source는 다음을 제공합니다.
 열린 session은 `descriptor`, `getSnapshot()`과 `dispose()`를 제공해야
 합니다. capability를 선언하면 해당 method도 반드시 구현해야 합니다.
 예를 들어 `range-read`는 `readRange()`, `revision-events`는
-`subscribeRevisionEvents()`를 요구합니다. Service-backed source는
+`subscribeRevisionEvents()`, `diagnostics`는 `subscribeDiagnostics()`를
+요구합니다. Service-backed source는
 `pick-resolve`, `context-create`, `source-reveal` capability에 맞춰 각각
 `resolvePick()`, `createContext()`, `resolveSourceReveal()`을 구현합니다.
 
@@ -23,6 +40,12 @@ Source는 다음을 제공합니다.
 pick/context/reveal 응답도 요청 전후에 active snapshot을 검사하므로 작업
 도중 snapshot이 바뀌면 늦은 응답을 `STALE_REVISION`으로 거부합니다. 모든
 disposal은 idempotent합니다.
+
+available revision event가 새 snapshot ID를 알리면 다음 `getSnapshot()`은
+그 revision과 snapshot ID가 정확히 일치할 때만 active state를 전환합니다.
+failed event는 마지막 정상 snapshot과 render revision을 유지합니다.
+revision/diagnostic subscription은 각각 monotonic sequence를 검사하고 replay와
+out-of-order delivery를 listener에 노출하기 전에 거부합니다.
 
 ## Render Delta
 
@@ -91,14 +114,16 @@ limit 안입니다. private 도면과 원본 report는 저장소에 커밋하지
 제공한 `mount()`를 실행하고, 반환된 presentation·source·Host의 lifecycle을
 한 번에 소유합니다. mount 실패나 취소에서도 같은 자원을 정리합니다.
 
-`@dwg-viewer/viewer-core/testing`은 브라우저에서도 실행 가능한
+`@menaje/viewer-core/testing`은 브라우저에서도 실행 가능한
 `MockRenderSource`, base/live layer와 identity hook을 갖춘
 `MockServiceRenderSource`, ordered tombstone/upsert fixture를 갖춘
 `MockRenderDeltaSource`를 제공합니다.
-`@dwg-viewer/viewer-core/conformance`의
+`@menaje/viewer-core/conformance`의
 `runRenderSourceConformance()`는 공통 lifecycle/range 계약을,
 `runServiceRenderSourceConformance()`는 pick/external identity/context/reveal
-계약과 stale pick 거부를 검증합니다. `runRenderDeltaConformance()`는
+계약과 stale pick 거부를 검증합니다.
+`runServiceEventConformance()`는 ordered revision/diagnostics와 replay 거부를
+검증합니다. `runRenderDeltaConformance()`는
 두 ordered delta 사이의 stale replay가 source와 overlay revision을
 오염시키지 않는지 검증합니다.
 
@@ -107,7 +132,7 @@ limit 안입니다. private 도면과 원본 report는 저장소에 커밋하지
 Host는 최소 `handleEvent()`와 `dispose()`를 제공합니다. 선택적으로
 host-owned resource를 위한 `openResource()`를 제공할 수 있습니다.
 
-Viewer event vocabulary는 `selection.changed`, `viewport.changed`,
+Viewer event vocabulary는 `revision.changed`, `selection.changed`, `viewport.changed`,
 `context.request`, `source.reveal`, `diagnostics.changed`, `diff.open`,
 `humanAction.request`입니다. `ViewerIdentityController`는 제품의 bounded pick
 projection을 source의 revision-bound external identity로 resolve하고,
@@ -116,6 +141,10 @@ opaque Context Reference와 source reveal을 각각 `context.request`,
 revision/snapshot/layer scope, monotonic sequence, reason, identity와 opaque
 reference를 포함합니다. `humanAction.request`는 intent일 뿐 capability 또는
 approval evidence가 아닙니다.
+`ViewerServiceEventController`는 source revision/diagnostics subscription을
+Host event로 전달하고 revision-bound viewport와 `humanAction.request` intent를
+발행합니다. source에 human-action capability를 요구하거나 권한을 발급하지
+않으며 Host와 source lifecycle도 소유하지 않습니다.
 `ViewerDiffSemanticController.open()`은 시각 diff와 같은 revision에 묶인
 `diff.open` detail을 발행하므로 외부 semantic panel이 source private
 message나 전체 entity graph 없이 non-visual change를 표시할 수 있습니다.
@@ -125,9 +154,9 @@ parser와 Spatial permission code가 없습니다. Browser와 VS Code 제품
 진입점은 이미 같은 runtime과 `DwgSceneCacheSource`를 거칩니다.
 source-neutral
 `CameraController2D`와 viewport bounds는 Core의 canonical 구현이며
-`@dwg-viewer/viewer-core/camera`로도 노출합니다. Renderer가 소유한 GPU
+`@menaje/viewer-core/camera`로도 노출합니다. Renderer가 소유한 GPU
 batch를 byte budget으로 관리하는 `GpuBatchCache`도 source-neutral Core
-모듈이며 `@dwg-viewer/viewer-core/batch-cache`로 노출합니다. Canvas
+모듈이며 `@menaje/viewer-core/batch-cache`로 노출합니다. Canvas
 viewport의 pan/zoom/window-zoom, view commit, redraw와 detail lifecycle은
 `ViewportInteraction`이 소유합니다.
 
@@ -161,10 +190,17 @@ Render Delta를 적용한 adapter는
 `ViewerSelectionController.advanceRevision()`으로 기존 선택을 지우고 다음
 `selection.changed`를 적용된 render revision에 묶습니다.
 
+`ViewerLayerCompositionController`는 snapshot의 base/live/added/modified/
+removed/diagnostic/selection/annotation layer를 `order`와 layer ID로
+결정적으로 정렬합니다. 2D, 3D와 semantic representation을 같은 계약에서
+유지하며 visibility 또는 snapshot 전환을 adapter에 원자 적용합니다. 적용
+실패 시 마지막 정상 presentation을 복원하고, controller disposal은
+composition만 clear하며 renderer adapter 자체를 소유하지 않습니다.
+
 실제 WebGL CAD shader와 CPU DWG candidate decoder, DOM inspector는 아직
 `packages/webview`에 있습니다. Core는 이 구현을 import하지 않으며 이후
 renderer data model과 일반 `viewer-ui` 경계를 별도 단계로 이동합니다.
 
 일반 review toolbar와 result panel의 DOM lifecycle은 별도
-`@dwg-viewer/viewer-ui` package가 소유합니다. Viewer Core는 이 package를
+`@menaje/viewer-ui` package가 소유합니다. Viewer Core는 이 package를
 import하지 않으며 Host event와 rendering lifecycle만 유지합니다.

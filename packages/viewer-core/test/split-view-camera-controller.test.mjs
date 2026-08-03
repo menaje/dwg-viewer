@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   ViewerSplitViewCameraController,
   ViewerSplitViewSide,
-} from "@dwg-viewer/viewer-core/split-view";
+} from "@menaje/viewer-core/split-view";
 
 const initialCamera = Object.freeze({
   origin: Object.freeze([0, 0, 0]),

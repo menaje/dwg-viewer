@@ -3,7 +3,7 @@ import {
   RenderProtocolDiagnosticCode,
   RenderProtocolError,
   parseRenderSnapshotDescriptor,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 function rangeCapabilityError(message, details = {}) {
   return new RenderProtocolError(

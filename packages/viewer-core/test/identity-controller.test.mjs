@@ -40,7 +40,14 @@ test("resolves service identity and publishes opaque context and reveal events",
   assert.equal(identity.externalIdentityToken, "external:service:entity:42");
   assert.deepEqual(
     snapshot.layers.map((layer) => layer.kind),
-    ["base", "live"],
+    [
+      "base",
+      "live",
+      "added",
+      "modified",
+      "removed",
+      "diagnostic",
+    ],
   );
   assert.deepEqual(
     events.map((event) => event.type),

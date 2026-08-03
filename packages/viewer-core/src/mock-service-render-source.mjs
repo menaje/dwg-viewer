@@ -3,16 +3,20 @@ import {
   RenderProtocolDiagnosticCode,
   RenderProtocolError,
   RenderProtocolVersion,
+  RenderRevisionEventStatus,
   SupportedRenderProtocolVersions,
+  ViewerDiagnosticSeverity,
   ViewerLayerKind,
   ViewerRepresentation,
   parseContextReferenceDescriptor,
   parsePickResolveRequest,
+  parseRenderDiagnosticBatchDescriptor,
   parseRenderIdentityDescriptor,
+  parseRenderRevisionEventDescriptor,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
   parseSourceRevealDescriptor,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 function throwIfAborted(signal) {
   signal?.throwIfAborted?.();
@@ -69,6 +73,8 @@ class MockServiceRenderSession {
   #contextId;
   #revealId;
   #revealLabel;
+  #revisionListeners = new Set();
+  #diagnosticListeners = new Set();
   #disposed = false;
 
   constructor({
@@ -193,7 +199,63 @@ class MockServiceRenderSession {
     );
   }
 
+  async subscribeRevisionEvents(listener, { signal } = {}) {
+    this.#assertOpen();
+    throwIfAborted(signal);
+    if (typeof listener !== "function") {
+      throw new TypeError("revision event listener must be a function");
+    }
+    this.#revisionListeners.add(listener);
+    let disposed = false;
+    return () => {
+      if (!disposed) {
+        disposed = true;
+        this.#revisionListeners.delete(listener);
+      }
+    };
+  }
+
+  async subscribeDiagnostics(listener, { signal } = {}) {
+    this.#assertOpen();
+    throwIfAborted(signal);
+    if (typeof listener !== "function") {
+      throw new TypeError("diagnostic listener must be a function");
+    }
+    this.#diagnosticListeners.add(listener);
+    let disposed = false;
+    return () => {
+      if (!disposed) {
+        disposed = true;
+        this.#diagnosticListeners.delete(listener);
+      }
+    };
+  }
+
+  async emitRevisionEvent(value) {
+    this.#assertOpen();
+    const event = parseRenderRevisionEventDescriptor(value, {
+      session: this.descriptor,
+    });
+    await Promise.all(
+      [...this.#revisionListeners].map((listener) => listener(event)),
+    );
+    return event;
+  }
+
+  async emitDiagnosticBatch(value) {
+    this.#assertOpen();
+    const batch = parseRenderDiagnosticBatchDescriptor(value, {
+      session: this.descriptor,
+    });
+    await Promise.all(
+      [...this.#diagnosticListeners].map((listener) => listener(batch)),
+    );
+    return batch;
+  }
+
   async dispose() {
+    this.#revisionListeners.clear();
+    this.#diagnosticListeners.clear();
     this.#disposed = true;
   }
 }
@@ -213,6 +275,10 @@ export class MockServiceRenderSource {
     baseSourceId = "source:service-base",
     liveLayerId = MockServicePickFixture.layerId,
     liveSourceId = "source:service-live",
+    addedLayerId = "layer:service-added",
+    modifiedLayerId = "layer:service-modified",
+    removedLayerId = "layer:service-removed",
+    diagnosticLayerId = "layer:service-diagnostic",
     renderId = MockServicePickFixture.renderId,
     pickId = MockServicePickFixture.pickId,
     externalIdentityToken = "external:service:entity:42",
@@ -230,6 +296,10 @@ export class MockServiceRenderSource {
       baseSourceId,
       liveLayerId,
       liveSourceId,
+      addedLayerId,
+      modifiedLayerId,
+      removedLayerId,
+      diagnosticLayerId,
       renderId,
       pickId,
       externalIdentityToken,
@@ -266,6 +336,8 @@ export class MockServiceRenderSource {
       capabilities: [
         RenderCapability.LAYER_MANIFEST,
         RenderCapability.RENDER_SNAPSHOT,
+        RenderCapability.REVISION_EVENTS,
+        RenderCapability.DIAGNOSTICS,
         RenderCapability.PICK_RESOLVE,
         RenderCapability.CONTEXT_CREATE,
         RenderCapability.SOURCE_REVEAL,
@@ -299,6 +371,42 @@ export class MockServiceRenderSource {
             order: 1,
             visible: true,
           },
+          {
+            layerId: this.#configuration.addedLayerId,
+            sourceId: this.#configuration.liveSourceId,
+            revisionId: descriptor.lastSuccessfulRevisionId,
+            kind: ViewerLayerKind.ADDED,
+            representation: ViewerRepresentation.TWO_DIMENSIONAL,
+            order: 2,
+            visible: true,
+          },
+          {
+            layerId: this.#configuration.modifiedLayerId,
+            sourceId: this.#configuration.liveSourceId,
+            revisionId: descriptor.lastSuccessfulRevisionId,
+            kind: ViewerLayerKind.MODIFIED,
+            representation: ViewerRepresentation.TWO_DIMENSIONAL,
+            order: 3,
+            visible: true,
+          },
+          {
+            layerId: this.#configuration.removedLayerId,
+            sourceId: this.#configuration.baseSourceId,
+            revisionId: descriptor.lastSuccessfulRevisionId,
+            kind: ViewerLayerKind.REMOVED,
+            representation: ViewerRepresentation.TWO_DIMENSIONAL,
+            order: 4,
+            visible: false,
+          },
+          {
+            layerId: this.#configuration.diagnosticLayerId,
+            sourceId: this.#configuration.liveSourceId,
+            revisionId: descriptor.lastSuccessfulRevisionId,
+            kind: ViewerLayerKind.DIAGNOSTIC,
+            representation: ViewerRepresentation.SEMANTIC,
+            order: 5,
+            visible: true,
+          },
         ],
       },
       { session: descriptor },
@@ -321,6 +429,26 @@ export class MockServiceRenderSource {
     return this.#session;
   }
 
+  async emitRevisionEvent(value) {
+    if (!this.#session) {
+      throw new RenderProtocolError(
+        RenderProtocolDiagnosticCode.OUT_OF_ORDER,
+        "mock Service RenderSource must be opened before publishing revisions",
+      );
+    }
+    return this.#session.emitRevisionEvent(value);
+  }
+
+  async emitDiagnosticBatch(value) {
+    if (!this.#session) {
+      throw new RenderProtocolError(
+        RenderProtocolDiagnosticCode.OUT_OF_ORDER,
+        "mock Service RenderSource must be opened before publishing diagnostics",
+      );
+    }
+    return this.#session.emitDiagnosticBatch(value);
+  }
+
   async dispose() {
     if (this.#disposed) {
       return;
@@ -328,4 +456,57 @@ export class MockServiceRenderSource {
     this.#disposed = true;
     await this.#session?.dispose();
   }
+}
+
+export function createMockServiceEventHarness(options = {}) {
+  const source = new MockServiceRenderSource(options);
+  let publishedRevision;
+  return Object.freeze({
+    source,
+    async publishRevision({ sourceSession, snapshot }) {
+      publishedRevision = {
+        protocolVersion: snapshot.protocolVersion,
+        eventId: "revision-event:service-conformance:1",
+        sessionId: sourceSession.descriptor.sessionId,
+        sourceId: sourceSession.descriptor.sourceId,
+        revisionId: snapshot.revisionId,
+        lastSuccessfulRevisionId: snapshot.revisionId,
+        snapshotId: snapshot.snapshotId,
+        sequence: 1,
+        status: RenderRevisionEventStatus.AVAILABLE,
+      };
+      return source.emitRevisionEvent(publishedRevision);
+    },
+    async replayRevision() {
+      if (!publishedRevision) {
+        throw new Error(
+          "mock service revision must be published before replay",
+        );
+      }
+      return source.emitRevisionEvent(publishedRevision);
+    },
+    publishDiagnostics({ sourceSession, snapshot }) {
+      return source.emitDiagnosticBatch({
+        protocolVersion: snapshot.protocolVersion,
+        batchId: "diagnostics:service-conformance:1",
+        sessionId: sourceSession.descriptor.sessionId,
+        sourceId: sourceSession.descriptor.sourceId,
+        revisionId: snapshot.revisionId,
+        lastSuccessfulRevisionId: snapshot.revisionId,
+        snapshotId: snapshot.snapshotId,
+        sequence: 1,
+        diagnostics: [
+          {
+            diagnosticId: "diagnostic:service-conformance:1",
+            severity: ViewerDiagnosticSeverity.INFO,
+            code: "SERVICE_CONFORMANCE_READY",
+            message: "Service event conformance is ready.",
+            layerId: null,
+            renderId: null,
+            worldBounds: null,
+          },
+        ],
+      });
+    },
+  });
 }

@@ -8,15 +8,19 @@ import {
   RenderProtocolDiagnosticCode,
   RenderProtocolError,
   RenderProtocolVersion,
+  RenderRevisionEventStatus,
+  ViewerDiagnosticSeverity,
   ViewerLayerKind,
   ViewerRepresentation,
   negotiateRenderProtocolVersion,
   parseContextReferenceDescriptor,
   parsePickResolveRequest,
   parseRangeHandleDescriptor,
+  parseRenderDiagnosticBatchDescriptor,
   parseRenderDeltaDescriptor,
   parseRenderDeltaPayloadDescriptor,
   parseRenderIdentityDescriptor,
+  parseRenderRevisionEventDescriptor,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
   parseSourceRevealDescriptor,
@@ -171,7 +175,7 @@ function deltaPayload(overrides = {}) {
     sourceId: "source:test",
     fromRevisionId: revisionOne,
     toRevisionId: revisionTwo,
-    mediaType: "application/vnd.dwg-viewer.render-delta",
+    mediaType: "application/vnd.menaje.viewer.render-delta",
     byteLength: 256,
     sha256: "d".repeat(64),
     expiresAt: null,
@@ -196,6 +200,49 @@ function renderDelta(overrides = {}) {
       max: [12, 22, 1],
     },
     payload: deltaPayload(),
+    ...overrides,
+  };
+}
+
+function revisionEvent(overrides = {}) {
+  return {
+    protocolVersion: RenderProtocolVersion,
+    eventId: "revision-event:test:1",
+    sessionId: "session:test",
+    sourceId: "source:test",
+    revisionId: revisionOne,
+    lastSuccessfulRevisionId: revisionOne,
+    snapshotId: "snapshot:test",
+    sequence: 1,
+    status: RenderRevisionEventStatus.AVAILABLE,
+    ...overrides,
+  };
+}
+
+function diagnosticBatch(overrides = {}) {
+  return {
+    protocolVersion: RenderProtocolVersion,
+    batchId: "diagnostics:test:1",
+    sessionId: "session:test",
+    sourceId: "source:test",
+    revisionId: revisionOne,
+    lastSuccessfulRevisionId: revisionOne,
+    snapshotId: "snapshot:test",
+    sequence: 1,
+    diagnostics: [
+      {
+        diagnosticId: "diagnostic:test:1",
+        severity: ViewerDiagnosticSeverity.WARNING,
+        code: "RENDER_PARTIAL",
+        message: "One bounded render item was skipped.",
+        layerId: "layer:base",
+        renderId: "render:entity:42",
+        worldBounds: {
+          min: [9, 19, 0],
+          max: [11, 21, 0],
+        },
+      },
+    ],
     ...overrides,
   };
 }
@@ -302,6 +349,164 @@ test("binds snapshot layers and range handles to one session revision", () => {
       ),
     (error) =>
       error.code === RenderProtocolDiagnosticCode.STALE_REVISION,
+  );
+});
+
+test("accepts source-neutral 2D, 3D, and semantic layer representations", () => {
+  const session = parseRenderSessionDescriptor(sessionInput());
+  const snapshot = parseRenderSnapshotDescriptor(
+    snapshotInput({
+      layers: [
+        snapshotInput().layers[0],
+        {
+          layerId: "layer:three-dimensional",
+          sourceId: "source:three-dimensional",
+          revisionId: revisionOne,
+          kind: ViewerLayerKind.LIVE,
+          representation: ViewerRepresentation.THREE_DIMENSIONAL,
+          order: 1,
+          visible: true,
+        },
+        {
+          layerId: "layer:semantic",
+          sourceId: "source:semantic",
+          revisionId: revisionOne,
+          kind: ViewerLayerKind.DIAGNOSTIC,
+          representation: ViewerRepresentation.SEMANTIC,
+          order: 2,
+          visible: true,
+        },
+      ],
+    }),
+    { session },
+  );
+
+  assert.deepEqual(
+    snapshot.layers.map(({ representation }) => representation),
+    ["2d", "3d", "semantic"],
+  );
+});
+
+test("binds ordered revision events and preserves the last successful snapshot", () => {
+  const session = parseRenderSessionDescriptor(
+    sessionInput({
+      capabilities: [
+        RenderCapability.LAYER_MANIFEST,
+        RenderCapability.RENDER_SNAPSHOT,
+        RenderCapability.REVISION_EVENTS,
+      ],
+    }),
+  );
+  const available = parseRenderRevisionEventDescriptor(
+    revisionEvent(),
+    { session, expectedSequence: 1 },
+  );
+  const failed = parseRenderRevisionEventDescriptor(
+    revisionEvent({
+      eventId: "revision-event:test:2",
+      revisionId: revisionTwo,
+      snapshotId: null,
+      sequence: 2,
+      status: RenderRevisionEventStatus.FAILED,
+    }),
+    { session, expectedSequence: 2 },
+  );
+
+  assert.equal(available.snapshotId, "snapshot:test");
+  assert.equal(failed.lastSuccessfulRevisionId, revisionOne);
+  assert.equal(failed.snapshotId, null);
+  assert(Object.isFrozen(failed));
+
+  assert.throws(
+    () =>
+      parseRenderRevisionEventDescriptor(
+        revisionEvent({ sequence: 3 }),
+        { session, expectedSequence: 2 },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.OUT_OF_ORDER,
+  );
+  assert.throws(
+    () =>
+      parseRenderRevisionEventDescriptor(
+        revisionEvent({
+          status: RenderRevisionEventStatus.FAILED,
+        }),
+        { session },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+  );
+});
+
+test("normalizes bounded diagnostic batches and rejects ambiguous scope", () => {
+  const session = parseRenderSessionDescriptor(
+    sessionInput({
+      capabilities: [
+        RenderCapability.DIAGNOSTICS,
+        RenderCapability.LAYER_MANIFEST,
+        RenderCapability.RENDER_SNAPSHOT,
+      ],
+    }),
+  );
+  const snapshot = parseRenderSnapshotDescriptor(snapshotInput(), {
+    session,
+  });
+  const batch = parseRenderDiagnosticBatchDescriptor(
+    diagnosticBatch(),
+    { session, snapshot, expectedSequence: 1 },
+  );
+
+  assert.equal(batch.diagnostics[0].severity, "warning");
+  assert(Object.isFrozen(batch));
+  assert(Object.isFrozen(batch.diagnostics));
+  assert(Object.isFrozen(batch.diagnostics[0].worldBounds));
+
+  assert.throws(
+    () =>
+      parseRenderDiagnosticBatchDescriptor(
+        diagnosticBatch({
+          diagnostics: [
+            diagnosticBatch().diagnostics[0],
+            diagnosticBatch().diagnostics[0],
+          ],
+        }),
+        { session, snapshot },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+  );
+  assert.throws(
+    () =>
+      parseRenderDiagnosticBatchDescriptor(
+        diagnosticBatch({
+          diagnostics: [
+            {
+              ...diagnosticBatch().diagnostics[0],
+              layerId: null,
+            },
+          ],
+        }),
+        { session, snapshot },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+  );
+  assert.throws(
+    () =>
+      parseRenderDiagnosticBatchDescriptor(
+        diagnosticBatch({
+          diagnostics: [
+            {
+              ...diagnosticBatch().diagnostics[0],
+              layerId: "layer:missing",
+            },
+          ],
+        }),
+        { session, snapshot },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.SCOPE_MISMATCH,
   );
 });
 

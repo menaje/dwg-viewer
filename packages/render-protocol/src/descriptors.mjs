@@ -2,11 +2,14 @@ import {
   AllRenderDeltaAspects,
   AllRenderDeltaOperationKinds,
   AllRenderCapabilities,
+  AllRenderRevisionEventStatuses,
+  AllViewerDiagnosticSeverities,
   AllViewerLayerKinds,
   AllViewerRepresentations,
   RenderCapability,
   RenderDeltaAspect,
   RenderDeltaOperationKind,
+  RenderRevisionEventStatus,
   SupportedRenderProtocolVersions,
 } from "./constants.mjs";
 import {
@@ -62,6 +65,16 @@ function ensureRevision(actual, expected, label) {
       expected,
       actual,
     });
+  }
+}
+
+function ensureSequence(actual, expected, label) {
+  if (expected !== undefined && actual !== expected) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.OUT_OF_ORDER,
+      `${label} is stale or out of order`,
+      { expected, received: actual },
+    );
   }
 }
 
@@ -486,6 +499,347 @@ export function parseRenderSnapshotDescriptor(
     snapshotId: opaqueIdentifier(input.snapshotId, "snapshot ID"),
     sequence: safeInteger(input.sequence, "snapshot sequence"),
     layers: Object.freeze(layers),
+  });
+}
+
+export function parseRenderRevisionEventDescriptor(
+  value,
+  { session, expectedSequence } = {},
+) {
+  const input = plainRecord(value, "render revision event");
+  exactKeys(
+    input,
+    [
+      "protocolVersion",
+      "eventId",
+      "sessionId",
+      "sourceId",
+      "revisionId",
+      "lastSuccessfulRevisionId",
+      "snapshotId",
+      "sequence",
+      "status",
+    ],
+    "render revision event",
+  );
+  const parsedSession = session
+    ? parseRenderSessionDescriptor(session)
+    : null;
+  const protocolVersion = supportedProtocolVersion(
+    input.protocolVersion,
+  );
+  const sessionId = opaqueIdentifier(
+    input.sessionId,
+    "revision event session ID",
+  );
+  const sourceId = opaqueIdentifier(
+    input.sourceId,
+    "revision event source ID",
+  );
+  const revisionId = opaqueIdentifier(
+    input.revisionId,
+    "revision event revision ID",
+  );
+  const lastSuccessfulRevisionId = nullableRevision(
+    input.lastSuccessfulRevisionId,
+    "revision event last successful revision ID",
+  );
+  const snapshotId =
+    input.snapshotId === null
+      ? null
+      : opaqueIdentifier(
+          input.snapshotId,
+          "revision event snapshot ID",
+        );
+  const sequence = safeInteger(
+    input.sequence,
+    "revision event sequence",
+    1,
+  );
+  const status = enumValue(
+    input.status,
+    AllRenderRevisionEventStatuses,
+    "revision event status",
+  );
+  if (parsedSession) {
+    ensureBinding(
+      protocolVersion,
+      parsedSession.protocolVersion,
+      "revision event protocol version",
+    );
+    ensureBinding(
+      sessionId,
+      parsedSession.sessionId,
+      "revision event session ID",
+    );
+    ensureBinding(
+      sourceId,
+      parsedSession.sourceId,
+      "revision event source ID",
+    );
+  }
+  if (expectedSequence !== undefined) {
+    ensureSequence(sequence, expectedSequence, "revision event sequence");
+  }
+  if (
+    status === RenderRevisionEventStatus.AVAILABLE &&
+    (snapshotId === null ||
+      lastSuccessfulRevisionId !== revisionId)
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "an available revision event must identify its successful snapshot",
+    );
+  }
+  if (
+    status === RenderRevisionEventStatus.FAILED &&
+    snapshotId !== null
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "a failed revision event cannot publish a snapshot",
+    );
+  }
+  return Object.freeze({
+    protocolVersion,
+    eventId: opaqueIdentifier(
+      input.eventId,
+      "revision event ID",
+    ),
+    sessionId,
+    sourceId,
+    revisionId,
+    lastSuccessfulRevisionId,
+    snapshotId,
+    sequence,
+    status,
+  });
+}
+
+function nullableOpaqueIdentifier(value, label) {
+  return value === null ? null : opaqueIdentifier(value, label);
+}
+
+function parseViewerDiagnostic(value) {
+  const input = plainRecord(value, "viewer diagnostic");
+  exactKeys(
+    input,
+    [
+      "diagnosticId",
+      "severity",
+      "code",
+      "message",
+      "layerId",
+      "renderId",
+      "worldBounds",
+    ],
+    "viewer diagnostic",
+  );
+  const layerId = nullableOpaqueIdentifier(
+    input.layerId,
+    "diagnostic layer ID",
+  );
+  const renderId = nullableOpaqueIdentifier(
+    input.renderId,
+    "diagnostic Render ID",
+  );
+  if (renderId !== null && layerId === null) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "a Render-scoped diagnostic must identify its layer",
+    );
+  }
+  return Object.freeze({
+    diagnosticId: opaqueIdentifier(
+      input.diagnosticId,
+      "diagnostic ID",
+    ),
+    severity: enumValue(
+      input.severity,
+      AllViewerDiagnosticSeverities,
+      "diagnostic severity",
+    ),
+    code: boundedString(
+      input.code,
+      "diagnostic code",
+      128,
+    ),
+    message: boundedString(
+      input.message,
+      "diagnostic message",
+      2_048,
+    ),
+    layerId,
+    renderId,
+    worldBounds:
+      input.worldBounds === null
+        ? null
+        : worldBounds(
+            input.worldBounds,
+            "diagnostic world bounds",
+          ),
+  });
+}
+
+export function parseRenderDiagnosticBatchDescriptor(
+  value,
+  { session, snapshot, expectedSequence } = {},
+) {
+  const input = plainRecord(
+    value,
+    "render diagnostic batch",
+  );
+  exactKeys(
+    input,
+    [
+      "protocolVersion",
+      "batchId",
+      "sessionId",
+      "sourceId",
+      "revisionId",
+      "lastSuccessfulRevisionId",
+      "snapshotId",
+      "sequence",
+      "diagnostics",
+    ],
+    "render diagnostic batch",
+  );
+  const parsedSession = session
+    ? parseRenderSessionDescriptor(session)
+    : null;
+  const parsedSnapshot = snapshot
+    ? parseRenderSnapshotDescriptor(snapshot, {
+        session: parsedSession ?? undefined,
+        expectedRevisionId: snapshot.revisionId,
+      })
+    : null;
+  const protocolVersion = supportedProtocolVersion(
+    input.protocolVersion,
+  );
+  const sessionId = opaqueIdentifier(
+    input.sessionId,
+    "diagnostic batch session ID",
+  );
+  const sourceId = opaqueIdentifier(
+    input.sourceId,
+    "diagnostic batch source ID",
+  );
+  const sequence = safeInteger(
+    input.sequence,
+    "diagnostic batch sequence",
+    1,
+  );
+  const revisionId = opaqueIdentifier(
+    input.revisionId,
+    "diagnostic batch revision ID",
+  );
+  const lastSuccessfulRevisionId = nullableRevision(
+    input.lastSuccessfulRevisionId,
+    "diagnostic batch last successful revision ID",
+  );
+  const snapshotId = nullableOpaqueIdentifier(
+    input.snapshotId,
+    "diagnostic batch snapshot ID",
+  );
+  if (
+    !Array.isArray(input.diagnostics) ||
+    input.diagnostics.length > 4_096
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "diagnostic batch entries exceed their bounded limit",
+    );
+  }
+  if (parsedSession) {
+    ensureBinding(
+      protocolVersion,
+      parsedSession.protocolVersion,
+      "diagnostic batch protocol version",
+    );
+    ensureBinding(
+      sessionId,
+      parsedSession.sessionId,
+      "diagnostic batch session ID",
+    );
+    ensureBinding(
+      sourceId,
+      parsedSession.sourceId,
+      "diagnostic batch source ID",
+    );
+  }
+  if (expectedSequence !== undefined) {
+    ensureSequence(sequence, expectedSequence, "diagnostic batch sequence");
+  }
+  const diagnostics = input.diagnostics.map(
+    parseViewerDiagnostic,
+  );
+  if (
+    snapshotId === null &&
+    diagnostics.some((diagnostic) => diagnostic.layerId !== null)
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "a layer-scoped diagnostic batch must identify its snapshot",
+    );
+  }
+  if (
+    snapshotId !== null &&
+    lastSuccessfulRevisionId === null
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "a snapshot-bound diagnostic batch must identify its successful revision",
+    );
+  }
+  if (parsedSnapshot) {
+    ensureBinding(
+      snapshotId,
+      parsedSnapshot.snapshotId,
+      "diagnostic batch snapshot ID",
+    );
+    ensureRevision(
+      lastSuccessfulRevisionId,
+      parsedSnapshot.revisionId,
+      "diagnostic batch last successful revision ID",
+    );
+    for (const diagnostic of diagnostics) {
+      if (
+        diagnostic.layerId !== null &&
+        !parsedSnapshot.layers.some(
+          (layer) => layer.layerId === diagnostic.layerId,
+        )
+      ) {
+        scopeMismatch(
+          "diagnostic layer is not part of the active snapshot",
+          { layerId: diagnostic.layerId },
+        );
+      }
+    }
+  }
+  const identifiers = new Set();
+  for (const diagnostic of diagnostics) {
+    if (identifiers.has(diagnostic.diagnosticId)) {
+      throw new RenderProtocolError(
+        RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+        "diagnostic IDs must be unique within one batch",
+        { diagnosticId: diagnostic.diagnosticId },
+      );
+    }
+    identifiers.add(diagnostic.diagnosticId);
+  }
+  return Object.freeze({
+    protocolVersion,
+    batchId: opaqueIdentifier(
+      input.batchId,
+      "diagnostic batch ID",
+    ),
+    sessionId,
+    sourceId,
+    revisionId,
+    lastSuccessfulRevisionId,
+    snapshotId,
+    sequence,
+    diagnostics: Object.freeze(diagnostics),
   });
 }
 

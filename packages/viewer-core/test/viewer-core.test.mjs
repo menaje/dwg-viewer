@@ -8,7 +8,7 @@ import {
   RenderProtocolVersion,
   ViewerLayerKind,
   ViewerRepresentation,
-} from "@dwg-viewer/render-protocol";
+} from "@menaje/viewer-render-protocol";
 
 import {
   ViewerCoreApi,
@@ -431,9 +431,25 @@ test("keeps package versions and producer compatibility manifest aligned", async
     ),
   ]).then((documents) => documents.map(JSON.parse));
 
-  assert.equal(manifest.status, "experimental");
-  assert.equal(manifest.distribution.kind, "workspace-only");
-  assert.equal(manifest.distribution.published, false);
+  assert.equal(manifest.status, "public-preview");
+  assert.equal(
+    manifest.distribution.kind,
+    "github-release-and-packages",
+  );
+  assert.equal(manifest.distribution.published, true);
+  assert.equal(
+    manifest.distribution.tag,
+    `viewer-core-v${ViewerCoreVersion}`,
+  );
+  for (const artifact of Object.values(
+    manifest.distribution.artifacts,
+  )) {
+    assert.match(artifact.file, /^menaje-viewer-.+\.tgz$/u);
+    assert.match(artifact.sha256, /^[a-f0-9]{64}$/u);
+  }
+  assert.deepEqual(manifest.compatibilityWindow.renderProtocol, [
+    RenderProtocolVersion,
+  ]);
   assert.equal(
     manifest.sources.mockRenderDelta,
     "delta-conformance",
@@ -463,6 +479,14 @@ test("keeps package versions and producer compatibility manifest aligned", async
     "shared-changed-id-mapping-and-corresponding-entity-highlight-with-atomic-two-surface-rollback",
   );
   assert.equal(
+    manifest.components.serviceEvents,
+    "ordered-revision-and-diagnostic-streams-with-last-successful-snapshot-preservation-and-intent-only-host-events",
+  );
+  assert.equal(
+    manifest.components.layerComposition,
+    "source-neutral-2d-3d-semantic-base-live-diff-diagnostic-ordering-with-atomic-rollback",
+  );
+  assert.equal(
     manifest.conformance.viewerRenderDelta,
     "packages/viewer-core/test/render-delta-controller.test.mjs",
   );
@@ -473,6 +497,14 @@ test("keeps package versions and producer compatibility manifest aligned", async
   assert.equal(
     manifest.conformance.viewerDiffOverlay,
     "packages/viewer-core/test/diff-overlay-controller.test.mjs",
+  );
+  assert.equal(
+    manifest.conformance.viewerServiceEvents,
+    "packages/viewer-core/test/service-event-controller.test.mjs",
+  );
+  assert.equal(
+    manifest.conformance.viewerLayerComposition,
+    "packages/viewer-core/test/layer-composition-controller.test.mjs",
   );
   assert.equal(
     manifest.conformance.viewerSplitView,
