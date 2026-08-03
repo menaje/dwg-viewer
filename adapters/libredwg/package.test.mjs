@@ -109,6 +109,22 @@ test("forces local GNU tar handling for Windows drive archives", () => {
   );
 });
 
+test("bounds the expanded Windows PE dependency audit", async () => {
+  const packageSource = await readFile(
+    path.join(import.meta.dirname, "package.mjs"),
+    "utf8",
+  );
+  assert.match(
+    packageSource,
+    /const MAX_DEPENDENCY_AUDIT_BYTES = 32 \* 1024 \* 1024;/u,
+  );
+  assert.match(
+    packageSource,
+    /maxBuffer: MAX_DEPENDENCY_AUDIT_BYTES,/u,
+  );
+  assert.match(packageSource, /timeout: 30_000,/u);
+});
+
 test("keeps package and source preparation pins synchronized", async () => {
   const [prepareScript, buildScript, nativeEngineSource] = await Promise.all([
     readFile(path.join(import.meta.dirname, "prepare.sh"), "utf8"),

@@ -24,6 +24,7 @@ const ADAPTER_PROTOCOL = "dwg-engine-adapter/1";
 const CACHE_SCHEMA = "dwg-scene-cache/1.18";
 const MAX_ADAPTER_BYTES = 128 * 1024 * 1024;
 const MAX_SOURCE_BYTES = 128 * 1024 * 1024;
+const MAX_DEPENDENCY_AUDIT_BYTES = 32 * 1024 * 1024;
 const execFileAsync = promisify(execFile);
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = path.resolve(scriptDirectory, "..", "..");
@@ -249,8 +250,11 @@ async function assertNoDynamicLibreDwg(adapterPath, platform) {
   try {
     const result = await execFileAsync(command, args, {
       encoding: "utf8",
-      maxBuffer: 1024 * 1024,
-      timeout: 5_000,
+      // GNU objdump includes the PE base-relocation table in `-p` output.
+      // A statically linked Windows adapter can legitimately exceed Node's
+      // default buffer even though the imported-DLL list is small.
+      maxBuffer: MAX_DEPENDENCY_AUDIT_BYTES,
+      timeout: 30_000,
       windowsHide: true,
     });
     output = `${result.stdout}\n${result.stderr}`;
