@@ -443,6 +443,10 @@ test("keeps package versions and producer compatibility manifest aligned", async
     "atomic-overlay-state-with-dwg-line-fill-point-text-instance-transform-style-upsert-native-base-suppression-scoped-dependency-invalidation-revision-bound-pick-filtering-and-retryable-resource-cleanup",
   );
   assert.equal(
+    manifest.components.renderDiff,
+    "changed-id-only-added-removed-modified-unchanged-net-summary",
+  );
+  assert.equal(
     manifest.conformance.viewerRenderDelta,
     "packages/viewer-core/test/render-delta-controller.test.mjs",
   );

@@ -215,9 +215,15 @@ identity로 투영하고 selection controller가 그 revision으로 이동한 �
 event를 발행하므로 후보 순회에는 전체 identity object 할당이 추가되지 않는다.
 `MockRenderDeltaSource`와 공용 conformance는 stale replay 뒤에도
 source/overlay/pick revision이 함께 전진하는지 검증한다.
+`ViewerRenderDiffController`는 제품이 제공하는 compact base Render ID
+membership와 총 개수만 사용해 changed ID를 added/removed/modified로
+분류하고 unchanged는 총계로 계산한다. 따라서 immutable base entity를
+열거하지 않으며 added 뒤 removed된 ID는 net diff에서 제외된다. preview와
+rollback은 같은 revision-bound summary를 사용한다.
 `@dwg-viewer/viewer-ui`의 첫 public controller는 review toolbar의 active
 state와 접근성 속성, bounded text-only result row/action composition,
-DOM listener disposal을 소유한다. DWG Webview는 candidate 판독과 CAD 속성,
+DOM listener disposal을 소유한다. 네 diff 상태와 base/target revision도
+같은 result model로 투영한다. DWG Webview는 candidate 판독과 CAD 속성,
 측정 결과를 이 source-neutral view model로 투영한다.
 
 아직 `packages/webview`에 있는 실제 WebGL CAD shader, DWG candidate decoder와
@@ -225,8 +231,8 @@ selection/measurement overlay, generic render data model의 물리적 package
 이동은 남아 있다. 일반 Viewer UI도 toolbar/result lifecycle부터 이동했으며
 layer/layout panel composition은 이후 단계다. #30의 실제 cross-repository
 `ConiServiceSource` qualification과 #27의 nested block dependency
-recomputation, split/overlay diff UI 및 대형 도면 qualification은 남아
-있다.
+recomputation, diff color/visibility, split view 및 대형 도면 qualification은
+남아 있다.
 제품 진입점을
 먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
 private message를 Core API로 승격하지 않고 진행한다.

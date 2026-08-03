@@ -9,3 +9,6 @@ export {
   ViewerReviewUiController,
   createViewerResultModel,
 } from "./review-ui-controller.mjs";
+export {
+  createViewerDiffResultModel,
+} from "./diff-result-model.mjs";

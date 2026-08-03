@@ -50,6 +50,13 @@ DWG 36-byte vertex layout이나 Spatial packet 의미는 Core 계약에 포함�
 `runRenderDeltaConformance()`가 ordered apply, stale replay 거부, pick map
 revision과 disposal을 검증합니다.
 
+`ViewerRenderDiffController`는 제품이 제공하는 compact base Render ID
+membership index와 총 개수만 사용해 현재 delta의 net 상태를 `added`,
+`removed`, `modified`, `unchanged`로 분류합니다. changed Render ID만
+열거하고 unchanged는 총계로 계산하므로 immutable base 전체를 JavaScript
+entity graph로 펼치지 않습니다. preview 적용과 rollback도 같은 delta
+snapshot을 읽어 네 상태와 revision을 함께 전환합니다.
+
 `createRenderLayerRangeSource()`는 snapshot의 range-backed layer 하나를
 기존 bounded reader가 소비할 수 있는 source로 projection합니다.
 `openViewerRuntime()`은 source session과 최초 snapshot을 연 뒤 제품이

@@ -122,6 +122,15 @@ pick revision without rebuilding the immutable indexes. Only the winning
 candidate is projected to its current revision, Render ID and external
 identity; the selection controller advances to that revision before publishing
 the Host event.
+`ViewerRenderDiffController` classifies only the bounded changed-ID overlay
+against a product-supplied compact base-membership index. Base upserts become
+modified, non-base upserts become added, base tombstones become removed, and
+an added-then-removed ID disappears from the net diff. Unchanged is derived
+from the base count instead of enumerating the immutable entity graph. The
+same snapshot follows preview apply and rollback. Viewer UI projects those
+four counts and the bound base/target revisions through its existing
+text-only result model; renderer color/visibility and split composition remain
+separate follow-on policies.
 The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
 remain Webview adapters and move incrementally without changing raw DWG
 qualification. `ViewerReviewUiController` now owns review toolbar state,

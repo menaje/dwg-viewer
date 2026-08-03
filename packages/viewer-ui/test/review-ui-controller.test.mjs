@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   MAX_VIEWER_RESULT_ROWS,
   ViewerReviewUiController,
+  createViewerDiffResultModel,
   createViewerResultModel,
 } from "../src/index.mjs";
 
@@ -280,6 +281,65 @@ test("renders text-only rows and generic result actions", () => {
   assert.equal(fixture.actionContainer.hidden, true);
   assert.equal(fixture.isolate.hidden, true);
   assert.equal("layerIndex" in fixture.isolate.dataset, false);
+});
+
+test("projects all four revision diff statuses into the result panel", () => {
+  const fixture = makeFixture();
+  const model = createViewerDiffResultModel(
+    {
+      baseRevisionId: "revision:base",
+      revisionId: "revision:preview",
+      counts: {
+        added: 3,
+        removed: 2,
+        modified: 5,
+        unchanged: 144,
+      },
+    },
+    {
+      title: "변경 비교",
+      labels: {
+        baseRevision: "기준",
+        targetRevision: "변경",
+        added: "추가",
+        removed: "삭제",
+        modified: "수정",
+        unchanged: "미변경",
+      },
+    },
+  );
+
+  fixture.controller.showResult(model);
+  const rows = fixture.content.children[0].children;
+  assert.equal(fixture.result.dataset.reviewView, "revision-diff");
+  assert.deepEqual(
+    rows.map((row) => [
+      row.children[0].textContent,
+      row.children[1].textContent,
+    ]),
+    [
+      ["기준", "revision:base"],
+      ["변경", "revision:preview"],
+      ["추가", "3"],
+      ["삭제", "2"],
+      ["수정", "5"],
+      ["미변경", "144"],
+    ],
+  );
+  assert.throws(
+    () =>
+      createViewerDiffResultModel({
+        baseRevisionId: "",
+        revisionId: "revision:preview",
+        counts: {
+          added: 0,
+          removed: 0,
+          modified: 0,
+          unchanged: 0,
+        },
+      }),
+    /baseRevisionId/u,
+  );
 });
 
 test("supports custom content and disposes listeners idempotently", () => {

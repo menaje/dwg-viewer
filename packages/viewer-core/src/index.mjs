@@ -63,3 +63,8 @@ export {
   DEFAULT_MAXIMUM_PAYLOAD_BYTES,
   ViewerRenderDeltaController,
 } from "./render-delta-controller.mjs";
+export {
+  AllViewerDiffStatuses,
+  ViewerDiffStatus,
+  ViewerRenderDiffController,
+} from "./render-diff-controller.mjs";

@@ -23,6 +23,10 @@ import {
   ViewerRenderDeltaController,
 } from "@dwg-viewer/viewer-core/render-delta";
 import {
+  ViewerDiffStatus,
+  ViewerRenderDiffController,
+} from "@dwg-viewer/viewer-core/render-diff";
+import {
   openRenderSource,
 } from "@dwg-viewer/viewer-core";
 
@@ -211,6 +215,188 @@ test("applies bounded tombstone and aspect upserts atomically", () => {
     controller.externalIdentity("layer:live", "render:geometry"),
     "external:render:geometry",
   );
+});
+
+test("classifies bounded net diff state without enumerating unchanged entities", () => {
+  const descriptor = sessionDescriptor();
+  const controller = new ViewerRenderDeltaController({
+    sourceSession: { descriptor },
+    snapshot: baseSnapshot(descriptor),
+  });
+  const baseRenderIds = new Set([
+    "render:removed",
+    "render:geometry",
+    "render:style",
+    "render:unchanged",
+  ]);
+  const diffController = new ViewerRenderDiffController({
+    renderDeltaController: controller,
+    baseRenderIdCount: baseRenderIds.size,
+    hasBaseRenderId(layerId, renderId) {
+      return (
+        layerId === "layer:live" &&
+        baseRenderIds.has(renderId)
+      );
+    },
+  });
+
+  assert.deepEqual(diffController.snapshot().counts, {
+    added: 0,
+    removed: 0,
+    modified: 0,
+    unchanged: 4,
+  });
+  controller.applyCommitted(
+    delta({
+      operations: [
+        operation("render:removed", {
+          operationId: "operation:remove",
+          kind: RenderDeltaOperationKind.TOMBSTONE,
+          aspect: RenderDeltaAspect.ENTITY,
+          externalIdentityToken: null,
+        }),
+        operation("render:geometry"),
+        operation("render:style", {
+          aspect: RenderDeltaAspect.STYLE,
+        }),
+        operation("render:added", {
+          operationId: "operation:add",
+        }),
+      ],
+    }),
+  );
+
+  const diff = diffController.snapshot();
+  assert.equal(diff.baseRevisionId, revisionOne);
+  assert.equal(diff.revisionId, revisionTwo);
+  assert.deepEqual(diff.counts, {
+    added: 1,
+    removed: 1,
+    modified: 2,
+    unchanged: 1,
+  });
+  assert.deepEqual(
+    diff.changedEntries.map(({ renderId, status }) => ({
+      renderId,
+      status,
+    })),
+    [
+      {
+        renderId: "render:added",
+        status: ViewerDiffStatus.ADDED,
+      },
+      {
+        renderId: "render:geometry",
+        status: ViewerDiffStatus.MODIFIED,
+      },
+      {
+        renderId: "render:removed",
+        status: ViewerDiffStatus.REMOVED,
+      },
+      {
+        renderId: "render:style",
+        status: ViewerDiffStatus.MODIFIED,
+      },
+    ],
+  );
+  assert.equal(
+    diffController.classify("layer:live", "render:unchanged"),
+    ViewerDiffStatus.UNCHANGED,
+  );
+  assert.equal(
+    diffController.classify("layer:live", "render:missing"),
+    null,
+  );
+});
+
+test("collapses an added-then-removed Render ID to an unchanged net diff", () => {
+  const descriptor = sessionDescriptor();
+  const controller = new ViewerRenderDeltaController({
+    sourceSession: { descriptor },
+    snapshot: baseSnapshot(descriptor),
+  });
+  const diffController = new ViewerRenderDiffController({
+    renderDeltaController: controller,
+    baseRenderIdCount: 1,
+    hasBaseRenderId(_layerId, renderId) {
+      return renderId === "render:unchanged";
+    },
+  });
+  controller.applyCommitted(delta());
+  controller.applyCommitted(
+    delta({
+      deltaId: "delta:remove-added",
+      fromRevisionId: revisionTwo,
+      toRevisionId: revisionThree,
+      sequence: 2,
+      operations: [
+        operation("render:new", {
+          operationId: "operation:remove-added",
+          kind: RenderDeltaOperationKind.TOMBSTONE,
+          aspect: RenderDeltaAspect.ENTITY,
+          externalIdentityToken: null,
+        }),
+      ],
+      includePayload: false,
+    }),
+  );
+
+  assert.deepEqual(diffController.snapshot().counts, {
+    added: 0,
+    removed: 0,
+    modified: 0,
+    unchanged: 1,
+  });
+  assert.deepEqual(diffController.snapshot().changedEntries, []);
+  assert.equal(
+    diffController.classify("layer:live", "render:new"),
+    null,
+  );
+});
+
+test("tracks preview diff state and restores the base summary on rollback", () => {
+  const descriptor = sessionDescriptor();
+  const controller = new ViewerRenderDeltaController({
+    sourceSession: { descriptor },
+    snapshot: baseSnapshot(descriptor),
+  });
+  const diffController = new ViewerRenderDiffController({
+    renderDeltaController: controller,
+    baseRenderIdCount: 2,
+    hasBaseRenderId(_layerId, renderId) {
+      return ["render:existing", "render:unchanged"].includes(
+        renderId,
+      );
+    },
+  });
+  const preview = delta({
+    deltaId: "delta:diff-preview",
+    operations: [
+      operation("render:existing"),
+      operation("render:added"),
+    ],
+  });
+
+  controller.applyPreview(preview);
+  assert.equal(
+    diffController.snapshot().previewId,
+    "delta:diff-preview",
+  );
+  assert.deepEqual(diffController.snapshot().counts, {
+    added: 1,
+    removed: 0,
+    modified: 1,
+    unchanged: 1,
+  });
+
+  controller.rollbackPreview(preview.deltaId);
+  assert.equal(diffController.snapshot().previewId, null);
+  assert.deepEqual(diffController.snapshot().counts, {
+    added: 0,
+    removed: 0,
+    modified: 0,
+    unchanged: 2,
+  });
 });
 
 test("leaves committed state untouched after stale or out-of-order input", () => {
