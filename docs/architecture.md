@@ -97,6 +97,14 @@ occurrence and rejects either sparse record for a target block with nested
 children until its derived dependency can be recomputed atomically. It requires
 complete coverage of every repeated/MINSERT occurrence that shares the native
 handle.
+DWG dependency IDs use a canonical scene plus native-handle scope while
+remaining opaque to Viewer Core. A block invalidation excludes only that
+root/XREF block's immutable base WebGL, Canvas text and raster-image cache; a
+type invalidation conservatively excludes the source scene's base cache. Delta
+overlays remain drawable. The resources are retained under their existing
+bounds instead of being destructively rewritten, so preview rollback restores
+them in the same atomic state swap. Unknown non-DWG dependency IDs remain
+observable without being guessed or parsed by the adapter.
 The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
 remain Webview adapters and move incrementally without changing raw DWG
 qualification. `ViewerReviewUiController` now owns review toolbar state,

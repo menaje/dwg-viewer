@@ -32,6 +32,10 @@ import {
   normalizedRenderDeltaTransformRecord,
   translatedTransformMatrix,
 } from "./render-delta-transform-fixture.mjs";
+import {
+  dwgBlockRenderDependencyId,
+  dwgTypeRenderDependencyId,
+} from "../src/render-delta-dependency.mjs";
 
 function makeFakeGl() {
   let nextId = 0;
@@ -1095,6 +1099,7 @@ test("atomically overlays delta points and restores base points", () => {
     allocatedStyleBytes: 0,
     allocatedResourceBytes: 32,
     baseSuppressions: 1,
+    invalidatedDependencyIds: [],
     affectedWorldBounds: null,
   });
 
@@ -1423,6 +1428,7 @@ test("sparsely replaces a shared block occurrence transform", () => {
     allocatedStyleBytes: 0,
     allocatedResourceBytes: transform.buffer.byteLength,
     baseSuppressions: 0,
+    invalidatedDependencyIds: [],
     affectedWorldBounds: null,
   });
   assert.throws(
@@ -1591,6 +1597,7 @@ test("sparsely replaces and hides shared block occurrence styles", () => {
     allocatedStyleBytes: style.buffer.byteLength,
     allocatedResourceBytes: style.buffer.byteLength,
     baseSuppressions: 0,
+    invalidatedDependencyIds: [],
     affectedWorldBounds: null,
   });
 
@@ -2118,6 +2125,137 @@ test("draws independently cached XREF overview and detail geometry", () => {
     externalTransform,
     externalStyle,
   ]);
+  renderer.dispose();
+});
+
+test("atomically invalidates scene-scoped block and type caches", () => {
+  const { gl } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const blocks = [
+    {
+      index: 1,
+      handle: 0x101n,
+      name: "SHARED",
+      basePoint: [0, 0, 0],
+    },
+  ];
+  const matrices = identityMat4();
+  const instanceGraph = {
+    instancesByBlock: new Map([
+      [
+        1,
+        {
+          data: matrices,
+          measurementData: matrices,
+          handles: new BigUint64Array([0x2an]),
+          clipIds: new Uint32Array([0]),
+          count: 1,
+          length: 1,
+        },
+      ],
+    ]),
+    insertsByOwner: new Map(),
+    modelBlockIndices: new Set(),
+  };
+  const rootBatch = {
+    ...batch({
+      id: 0,
+      kind: GpuLineBatchKind.BlockDefinition,
+      lodLevel: 0,
+      firstVertex: 0,
+    }),
+    blockIndex: 1,
+  };
+  const first = renderer.renderOverview({
+    batches: [rootBatch],
+    layers: [{ color: 0, flags: 0 }],
+    blocks,
+    instanceGraph,
+    vertices: lineVerticesForHandles([0x2an]),
+  });
+  const xrefBatch = {
+    ...rootBatch,
+    bounds: { min: [20, 0, 0], max: [21, 1, 0] },
+  };
+  const external = renderer.addExternalOverview({
+    id: "xref:shared",
+    batches: [xrefBatch],
+    blocks,
+    instanceGraph,
+    vertices: lineVerticesForHandles([0x2an]),
+  });
+  const overlay = renderer.stageRenderDeltaLine({
+    key: "delta:dependency\u0000dwg:root:2A",
+    batch: {
+      ...rootBatch,
+      id: 1,
+      lodLevel: 1,
+    },
+    vertices: lineVerticesForHandles([0x2an]),
+  });
+  const rootBlockDependency = dwgBlockRenderDependencyId(
+    "root",
+    0x101n,
+  );
+
+  renderer.activateRenderDelta({
+    lines: [overlay],
+    invalidatedDependencyIds: [rootBlockDependency],
+  });
+  const invalidated = renderer.redraw(external.camera);
+  assert.equal(invalidated.drawCalls, 2);
+  assert.equal(invalidated.renderDeltaDrawCalls, 1);
+  assert.equal(invalidated.renderDeltaInvalidatedDependencies, 1);
+  assert.deepEqual(
+    renderer.renderDeltaSnapshot().invalidatedDependencyIds,
+    [rootBlockDependency],
+  );
+  assert.throws(
+    () =>
+      renderer.activateRenderDelta({
+        lines: [overlay],
+        invalidatedDependencyIds: [
+          dwgBlockRenderDependencyId("root", 0xffffn),
+        ],
+      }),
+    /block ffff is unavailable/u,
+  );
+  assert.deepEqual(
+    renderer.renderDeltaSnapshot().invalidatedDependencyIds,
+    [rootBlockDependency],
+  );
+
+  renderer.activateRenderDelta({ lines: [overlay] });
+  const rolledBack = renderer.redraw(external.camera);
+  assert.equal(rolledBack.drawCalls, 3);
+  assert.deepEqual(
+    renderer.renderDeltaSnapshot().invalidatedDependencyIds,
+    [],
+  );
+
+  const xrefTypeDependency = dwgTypeRenderDependencyId(
+    "xref:shared",
+    "linetype",
+    0x301n,
+  );
+  renderer.activateRenderDelta({
+    invalidatedDependencyIds: [xrefTypeDependency],
+  });
+  const typeInvalidated = renderer.redraw(external.camera);
+  assert.equal(typeInvalidated.drawCalls, 1);
+  assert.equal(typeInvalidated.renderDeltaDrawCalls, 0);
+
+  renderer.activateRenderDelta();
+  renderer.releaseRenderDeltaResources([overlay]);
   renderer.dispose();
 });
 

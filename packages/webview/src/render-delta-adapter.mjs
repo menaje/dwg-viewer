@@ -1003,6 +1003,9 @@ export class DwgRenderDeltaAdapter {
         transforms: activeTransforms(state),
         styles: activeStyles(state),
         baseSuppressions: [...state.suppressions.values()],
+        invalidatedDependencyIds: [
+          ...state.invalidatedDependencyIds,
+        ].sort(),
         affectedWorldBounds: state.affectedWorldBounds,
       }),
       "DWG renderer activateRenderDelta",

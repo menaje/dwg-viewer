@@ -460,6 +460,7 @@ class FakeDeltaRenderer {
       transforms: Object.freeze([]),
       styles: Object.freeze([]),
       baseSuppressions: Object.freeze([]),
+      invalidatedDependencyIds: Object.freeze([]),
       affectedWorldBounds: null,
     });
     this.resources = new Set();
@@ -514,6 +515,7 @@ class FakeDeltaRenderer {
     transforms = [],
     styles = [],
     baseSuppressions = [],
+    invalidatedDependencyIds = [],
     affectedWorldBounds = null,
   } = {}) {
     for (const [resourceKind, entries] of [
@@ -541,6 +543,9 @@ class FakeDeltaRenderer {
       transforms: Object.freeze([...transforms]),
       styles: Object.freeze([...styles]),
       baseSuppressions: Object.freeze([...baseSuppressions]),
+      invalidatedDependencyIds: Object.freeze([
+        ...invalidatedDependencyIds,
+      ]),
       affectedWorldBounds,
     });
     return this.active;
@@ -1157,7 +1162,16 @@ test("keeps unchanged pick identities on the active renderer revision", () => {
     first.packet,
   );
   controller.applyCommitted(first.delta);
-  controller.applyCommitted(dependencyDelta());
+  const dependency = dependencyDelta();
+  controller.applyPreview(dependency);
+  assert.deepEqual(renderer.active.invalidatedDependencyIds, [
+    "block:door",
+    "type:wall",
+  ]);
+  controller.rollbackPreview(dependency.deltaId);
+  assert.deepEqual(renderer.active.invalidatedDependencyIds, []);
+
+  controller.applyCommitted(dependency);
 
   const identity = adapter.lookupIdentity("root", 0x2an);
   assert.equal(identity.status, "upsert");
@@ -1168,6 +1182,10 @@ test("keeps unchanged pick identities on the active renderer revision", () => {
   ]);
   assert.equal(renderer.resources.size, 1);
   assert.equal(renderer.active.lines.length, 1);
+  assert.deepEqual(renderer.active.invalidatedDependencyIds, [
+    "block:door",
+    "type:wall",
+  ]);
 
   controller.dispose();
 });

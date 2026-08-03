@@ -34,6 +34,9 @@ import {
   normalizedRenderDeltaTransformRecord,
   translatedTransformMatrix,
 } from "./render-delta-transform-fixture.mjs";
+import {
+  dwgTypeRenderDependencyId,
+} from "../src/render-delta-dependency.mjs";
 
 function fakeCanvas() {
   const calls = {
@@ -283,6 +286,11 @@ test("replaces and rolls back a native Canvas text record", async () => {
     record,
     byteLength: 1_024,
   });
+  const typeDependency = dwgTypeRenderDependencyId(
+    "root",
+    "text-style",
+    0x401n,
+  );
 
   overlay.setRenderDeltaState({
     suppressions: [
@@ -293,6 +301,7 @@ test("replaces and rolls back a native Canvas text record", async () => {
       },
     ],
     texts: [entry],
+    invalidatedDependencyIds: [typeDependency],
   });
   const overlaid = overlay.redraw(
     camera,
@@ -313,6 +322,16 @@ test("replaces and rolls back a native Canvas text record", async () => {
     tolerancePixels: 20,
   });
   assert.equal(selected?.entityRecord.value, "수정 문자");
+
+  overlay.setRenderDeltaState({
+    invalidatedDependencyIds: [typeDependency],
+  });
+  const invalidated = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => true),
+  );
+  assert.equal(invalidated.visibleOccurrences, 0);
+  assert.equal(overlay.findTextOccurrence("12C"), null);
 
   overlay.setRenderDeltaState();
   const restored = overlay.redraw(

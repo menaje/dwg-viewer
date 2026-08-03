@@ -190,6 +190,14 @@ XCLIP occurrence에도 적용할 수 있다. 두 sparse record 모두 nested chi
 있는 target은 dependency invalidation 전까지 거부한다. 같은 native
 handle의 MINSERT/repeated occurrence는 모두 한 atomic packet에 포함되어야
 한다.
+DWG dependency ID는 Viewer Core에서 계속 opaque로 유지하되 Webview
+adapter에서만 scene과 native handle을 포함한 canonical block/type ID를
+해석한다. block invalidation은 해당 root/XREF block의 immutable WebGL,
+Canvas text, raster image base cache만 제외하고, type invalidation은 해당
+scene의 base cache를 보수적으로 제외한다. delta overlay는 계속 표시한다.
+cache resource를 파괴하거나 다시 쓰지 않으므로 preview rollback은 같은
+atomic state swap으로 즉시 원복되며, DWG 형식이 아닌 알 수 없는 dependency
+ID는 추측하지 않고 관찰 상태로만 보존한다.
 `MockRenderDeltaSource`와 공용 conformance는 stale replay 뒤에도
 source/overlay/pick revision이 함께 전진하는지 검증한다.
 `@dwg-viewer/viewer-ui`의 첫 public controller는 review toolbar의 active
@@ -201,8 +209,9 @@ DOM listener disposal을 소유한다. DWG Webview는 candidate 판독과 CAD �
 selection/measurement overlay, generic render data model의 물리적 package
 이동은 남아 있다. 일반 Viewer UI도 toolbar/result lifecycle부터 이동했으며
 layer/layout panel composition은 이후 단계다. #30의 실제 cross-repository
-`ConiServiceSource` qualification과 #27의 style/block dependency
-invalidation, split/overlay diff UI 및 대형 도면 qualification은 남아 있다.
+`ConiServiceSource` qualification과 #27의 nested block dependency
+recomputation, split/overlay diff UI 및 대형 도면 qualification은 남아
+있다.
 제품 진입점을
 먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
 private message를 Core API로 승격하지 않고 진행한다.

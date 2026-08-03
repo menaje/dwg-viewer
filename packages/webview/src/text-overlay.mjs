@@ -34,6 +34,10 @@ import {
   indexDwgRenderDeltaTransforms,
   renderDeltaInstanceMatrix,
 } from "./render-delta-transform.mjs";
+import {
+  indexDwgRenderDeltaDependencies,
+  isDwgRenderDeltaOwnerInvalidated,
+} from "./render-delta-dependency.mjs";
 
 const DEFAULT_MAXIMUM_SOURCE_TEXTS = 50_000;
 const DEFAULT_MAXIMUM_OCCURRENCES = 10_000;
@@ -929,6 +933,19 @@ export class CanvasTextOverlay {
     this.blockIndexByHandle = new Map(
       blocks.map((block) => [block.handle, block.index]),
     );
+    this.renderDeltaInvalidatedDependencyIds = Object.freeze([]);
+    this.renderDeltaDependencyIndex =
+      indexDwgRenderDeltaDependencies([], {
+        scenes: new Map([
+          [
+            this.sourceId,
+            {
+              blocks: this.blocks,
+              instanceGraph: this.instanceGraph,
+            },
+          ],
+        ]),
+      });
     const discoveredLayerZero = layers.findIndex(
       (layer) =>
         layer.name?.normalize("NFC").toLocaleLowerCase("en-US") === "0",
@@ -1014,11 +1031,31 @@ export class CanvasTextOverlay {
     return next.entries.length;
   }
 
+  setRenderDeltaInvalidations(dependencyIds) {
+    const next = indexDwgRenderDeltaDependencies(dependencyIds, {
+      scenes: new Map([
+        [
+          this.sourceId,
+          {
+            blocks: this.blocks,
+            instanceGraph: this.instanceGraph,
+          },
+        ],
+      ]),
+      ignoreUnavailableScenes: true,
+    });
+    this.renderDeltaInvalidatedDependencyIds = next.ids;
+    this.renderDeltaDependencyIndex = next;
+    this.hitOccurrences = [];
+    return next.ids.length;
+  }
+
   setRenderDeltaState({
     suppressions = Object.freeze([]),
     texts = Object.freeze([]),
     transforms = Object.freeze([]),
     styles = Object.freeze([]),
+    invalidatedDependencyIds = Object.freeze([]),
   } = {}) {
     const nextSuppressions = renderDeltaSuppressedHandles(
       suppressions,
@@ -1036,12 +1073,30 @@ export class CanvasTextOverlay {
       sourceId: this.sourceId,
       instanceGraph: this.instanceGraph,
     });
+    const nextDependencies = indexDwgRenderDeltaDependencies(
+      invalidatedDependencyIds,
+      {
+        scenes: new Map([
+          [
+            this.sourceId,
+            {
+              blocks: this.blocks,
+              instanceGraph: this.instanceGraph,
+            },
+          ],
+        ]),
+        ignoreUnavailableScenes: true,
+      },
+    );
     this.renderDeltaSuppressedHandles = nextSuppressions;
     this.renderDeltaTextEntries = nextTexts;
     this.renderDeltaTransforms = nextTransforms.entries;
     this.renderDeltaTransformIndex = nextTransforms;
     this.renderDeltaStyles = nextStyles.entries;
     this.renderDeltaStyleIndex = nextStyles;
+    this.renderDeltaInvalidatedDependencyIds =
+      nextDependencies.ids;
+    this.renderDeltaDependencyIndex = nextDependencies;
     this.textEntities = combinedTextEntities(
       this.baseTextEntities,
       nextTexts,
@@ -1052,6 +1107,7 @@ export class CanvasTextOverlay {
       textRecords: nextTexts.length,
       transformRecords: nextTransforms.entries.length,
       styleRecords: nextStyles.entries.length,
+      invalidatedDependencies: nextDependencies.ids.length,
     });
   }
 
@@ -1090,7 +1146,17 @@ export class CanvasTextOverlay {
           : this.textEntities.get(textIndex);
       if (
         !this.textEntities.isRenderDelta(textIndex) &&
-        this.renderDeltaSuppressedHandles.has(record.handle)
+        (this.renderDeltaSuppressedHandles.has(record.handle) ||
+          isDwgRenderDeltaOwnerInvalidated(
+            this.renderDeltaDependencyIndex,
+            this.sourceId,
+            record.ownerHandle,
+            {
+              blockIndexByHandle: this.blockIndexByHandle,
+              modelBlockIndices:
+                this.instanceGraph.modelBlockIndices,
+            },
+          ))
       ) {
         continue;
       }
@@ -1324,7 +1390,17 @@ export class CanvasTextOverlay {
       metrics.visitedSourceTexts += 1;
       if (
         !this.textEntities.isRenderDelta(textIndex) &&
-        this.renderDeltaSuppressedHandles.has(record.handle)
+        (this.renderDeltaSuppressedHandles.has(record.handle) ||
+          isDwgRenderDeltaOwnerInvalidated(
+            this.renderDeltaDependencyIndex,
+            this.sourceId,
+            record.ownerHandle,
+            {
+              blockIndexByHandle: this.blockIndexByHandle,
+              modelBlockIndices:
+                this.instanceGraph.modelBlockIndices,
+            },
+          ))
       ) {
         continue;
       }
@@ -2718,6 +2794,19 @@ export class CanvasTextOverlay {
       sourceId: this.sourceId,
       instanceGraph: this.instanceGraph,
     });
+    this.renderDeltaInvalidatedDependencyIds = Object.freeze([]);
+    this.renderDeltaDependencyIndex =
+      indexDwgRenderDeltaDependencies([], {
+        scenes: new Map([
+          [
+            this.sourceId,
+            {
+              blocks: this.blocks,
+              instanceGraph: this.instanceGraph,
+            },
+          ],
+        ]),
+      });
     this.textEntities = combinedTextEntities(
       this.baseTextEntities,
       this.renderDeltaTextEntries,
@@ -2737,6 +2826,7 @@ export class CompositeTextOverlay {
     this.renderDeltaTexts = Object.freeze([]);
     this.renderDeltaTransforms = Object.freeze([]);
     this.renderDeltaStyles = Object.freeze([]);
+    this.renderDeltaInvalidatedDependencyIds = Object.freeze([]);
   }
 
   add(overlay, { first = false } = {}) {
@@ -2752,6 +2842,8 @@ export class CompositeTextOverlay {
         texts: this.renderDeltaTexts,
         transforms: this.renderDeltaTransforms,
         styles: this.renderDeltaStyles,
+        invalidatedDependencyIds:
+          this.renderDeltaInvalidatedDependencyIds,
       });
     } else {
       overlay.setRenderDeltaSuppressions?.(
@@ -2762,6 +2854,9 @@ export class CompositeTextOverlay {
         this.renderDeltaTransforms,
       );
       overlay.setRenderDeltaStyles?.(this.renderDeltaStyles);
+      overlay.setRenderDeltaInvalidations?.(
+        this.renderDeltaInvalidatedDependencyIds,
+      );
     }
     if (first) {
       this.overlays.unshift(overlay);
@@ -2853,17 +2948,33 @@ export class CompositeTextOverlay {
     return next.length;
   }
 
+  setRenderDeltaInvalidations(dependencyIds) {
+    if (!Array.isArray(dependencyIds)) {
+      throw new TypeError(
+        "composite text render delta invalidations must be an array",
+      );
+    }
+    const next = Object.freeze([...new Set(dependencyIds)].sort());
+    for (const overlay of this.overlays) {
+      overlay.setRenderDeltaInvalidations?.(next);
+    }
+    this.renderDeltaInvalidatedDependencyIds = next;
+    return next.length;
+  }
+
   setRenderDeltaState({
     suppressions = Object.freeze([]),
     texts = Object.freeze([]),
     transforms = Object.freeze([]),
     styles = Object.freeze([]),
+    invalidatedDependencyIds = Object.freeze([]),
   } = {}) {
     if (
       !Array.isArray(suppressions) ||
       !Array.isArray(texts) ||
       !Array.isArray(transforms) ||
-      !Array.isArray(styles)
+      !Array.isArray(styles) ||
+      !Array.isArray(invalidatedDependencyIds)
     ) {
       throw new TypeError(
         "composite text render delta state is invalid",
@@ -2873,6 +2984,9 @@ export class CompositeTextOverlay {
     const nextTexts = Object.freeze([...texts]);
     const nextTransforms = Object.freeze([...transforms]);
     const nextStyles = Object.freeze([...styles]);
+    const nextDependencies = Object.freeze([
+      ...new Set(invalidatedDependencyIds),
+    ].sort());
     for (const overlay of this.overlays) {
       if (typeof overlay.setRenderDeltaState === "function") {
         overlay.setRenderDeltaState({
@@ -2880,23 +2994,27 @@ export class CompositeTextOverlay {
           texts: nextTexts,
           transforms: nextTransforms,
           styles: nextStyles,
+          invalidatedDependencyIds: nextDependencies,
         });
       } else {
         overlay.setRenderDeltaTexts?.(nextTexts);
         overlay.setRenderDeltaTransforms?.(nextTransforms);
         overlay.setRenderDeltaStyles?.(nextStyles);
         overlay.setRenderDeltaSuppressions?.(nextSuppressions);
+        overlay.setRenderDeltaInvalidations?.(nextDependencies);
       }
     }
     this.renderDeltaSuppressions = nextSuppressions;
     this.renderDeltaTexts = nextTexts;
     this.renderDeltaTransforms = nextTransforms;
     this.renderDeltaStyles = nextStyles;
+    this.renderDeltaInvalidatedDependencyIds = nextDependencies;
     return Object.freeze({
       baseSuppressions: nextSuppressions.length,
       textRecords: nextTexts.length,
       transformRecords: nextTransforms.length,
       styleRecords: nextStyles.length,
+      invalidatedDependencies: nextDependencies.length,
     });
   }
 
@@ -2992,6 +3110,7 @@ export class CompositeTextOverlay {
     this.renderDeltaTexts = Object.freeze([]);
     this.renderDeltaTransforms = Object.freeze([]);
     this.renderDeltaStyles = Object.freeze([]);
+    this.renderDeltaInvalidatedDependencyIds = Object.freeze([]);
   }
 }
 

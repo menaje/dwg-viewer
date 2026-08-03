@@ -4514,6 +4514,7 @@ async function handleExternalCacheReady(message) {
       lastFit = activeScene.renderer.addExternalOverview({
         id: sceneId,
         batches: composed.batches,
+        blocks: loaded.scene.metadata.blocks,
         instanceGraph: composed.instanceGraph,
         vertices: {
           buffer: overviewBuffer,

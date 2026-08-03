@@ -16,6 +16,9 @@ import {
   normalizedRenderDeltaTransformRecord,
   translatedTransformMatrix,
 } from "./render-delta-transform-fixture.mjs";
+import {
+  dwgBlockRenderDependencyId,
+} from "../src/render-delta-dependency.mjs";
 
 function imageTable(record, path = String.raw`.\image\도면.png`) {
   return {
@@ -346,6 +349,21 @@ test("draws IMAGE placement with clipping and CAD display adjustments", () => {
   assert.deepEqual(drawn.transform, [100, 0, 0, 100, 200, 150]);
   assert.equal(drawn.alpha, 0.9);
   assert.equal(drawn.filter, "brightness(0.8) contrast(1.2)");
+
+  overlay.setRenderDeltaState({
+    invalidatedDependencyIds: [
+      dwgBlockRenderDependencyId("root", 100n),
+    ],
+  });
+  const invalidated = overlay.redraw(camera, [true]);
+  assert.equal(invalidated.visibleOccurrences, 0);
+  assert.equal(invalidated.loadedOccurrences, 0);
+  assert.equal(canvas.calls.drawImage.length, 1);
+
+  overlay.setRenderDeltaState();
+  const restored = overlay.redraw(camera, [true]);
+  assert.equal(restored.loadedOccurrences, 1);
+  assert.equal(canvas.calls.drawImage.length, 2);
 });
 
 test("selects visible IMAGE bounds and exposes its insertion point", () => {

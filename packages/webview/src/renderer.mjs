@@ -47,6 +47,10 @@ import {
   isNormalizedDwgRenderDeltaTransformRecord,
   renderDeltaInstanceTransform,
 } from "./render-delta-transform.mjs";
+import {
+  indexDwgRenderDeltaDependencies,
+  isDwgRenderDeltaBatchInvalidated,
+} from "./render-delta-dependency.mjs";
 
 const VERTEX_STRIDE = 36;
 const FILL_VERTEX_STRIDE = 32;
@@ -1905,9 +1909,12 @@ export class WebGlLineRenderer {
       transforms: Object.freeze([]),
       styles: Object.freeze([]),
       baseSuppressions: Object.freeze([]),
+      invalidatedDependencyIds: Object.freeze([]),
       suppressionKeys: new Set(),
       affectedWorldBounds: null,
     });
+    this.renderDeltaDependencyIndex =
+      indexDwgRenderDeltaDependencies([]);
     this.renderDeltaTransformIndexesByGraph = new WeakMap();
     this.renderDeltaStyleIndexesByGraph = new WeakMap();
     this.renderDeltaRangeCache = new WeakMap();
@@ -2614,7 +2621,10 @@ export class WebGlLineRenderer {
         (this.renderDeltaState.transforms.length > 0 &&
           typeof overlay.setRenderDeltaTransforms !== "function") ||
         (this.renderDeltaState.styles.length > 0 &&
-          typeof overlay.setRenderDeltaStyles !== "function"))
+          typeof overlay.setRenderDeltaStyles !== "function") ||
+        (this.renderDeltaState.invalidatedDependencyIds.length > 0 &&
+          typeof overlay.setRenderDeltaInvalidations !==
+            "function"))
     ) {
       throw new TypeError(
         "text overlay cannot apply active render delta text",
@@ -2644,6 +2654,8 @@ export class WebGlLineRenderer {
         texts: state.texts,
         transforms: state.transforms,
         styles: state.styles,
+        invalidatedDependencyIds:
+          state.invalidatedDependencyIds,
       });
       return;
     }
@@ -2674,6 +2686,18 @@ export class WebGlLineRenderer {
       );
     }
     this.textOverlay.setRenderDeltaStyles?.(state.styles);
+    if (
+      state.invalidatedDependencyIds.length > 0 &&
+      typeof this.textOverlay.setRenderDeltaInvalidations !==
+        "function"
+    ) {
+      throw new TypeError(
+        "text overlay cannot apply render delta invalidations",
+      );
+    }
+    this.textOverlay.setRenderDeltaInvalidations?.(
+      state.invalidatedDependencyIds,
+    );
     this.textOverlay.setRenderDeltaSuppressions?.(
       state.baseSuppressions,
     );
@@ -2686,7 +2710,10 @@ export class WebGlLineRenderer {
       ((this.renderDeltaState.transforms.length > 0 &&
         typeof overlay.setRenderDeltaTransforms !== "function") ||
         (this.renderDeltaState.styles.length > 0 &&
-          typeof overlay.setRenderDeltaStyles !== "function"))
+          typeof overlay.setRenderDeltaStyles !== "function") ||
+        (this.renderDeltaState.invalidatedDependencyIds.length > 0 &&
+          typeof overlay.setRenderDeltaInvalidations !==
+            "function"))
     ) {
       throw new TypeError(
         "image overlay cannot apply active render delta transforms",
@@ -2713,6 +2740,8 @@ export class WebGlLineRenderer {
       this.imageOverlay.setRenderDeltaState({
         transforms: state.transforms,
         styles: state.styles,
+        invalidatedDependencyIds:
+          state.invalidatedDependencyIds,
       });
       return;
     }
@@ -2736,6 +2765,18 @@ export class WebGlLineRenderer {
       );
     }
     this.imageOverlay.setRenderDeltaStyles?.(state.styles);
+    if (
+      state.invalidatedDependencyIds.length > 0 &&
+      typeof this.imageOverlay.setRenderDeltaInvalidations !==
+        "function"
+    ) {
+      throw new TypeError(
+        "image overlay cannot apply render delta invalidations",
+      );
+    }
+    this.imageOverlay.setRenderDeltaInvalidations?.(
+      state.invalidatedDependencyIds,
+    );
   }
 
   applyOverlayRenderDeltaState(state) {
@@ -3530,6 +3571,37 @@ export class WebGlLineRenderer {
     return entry;
   }
 
+  renderDeltaDependencyScenes() {
+    if (!this.overviewScene) {
+      return new Map();
+    }
+    return new Map([
+      [
+        ROOT_RENDER_DELTA_SCENE_ID,
+        {
+          blocks: this.blocks,
+          instanceGraph: this.overviewScene.instanceGraph,
+        },
+      ],
+      ...[...this.externalScenes.values()].map((scene) => [
+        scene.id,
+        {
+          blocks: scene.blocks,
+          instanceGraph: scene.instanceGraph,
+        },
+      ]),
+    ]);
+  }
+
+  isBaseBatchInvalidated(sceneId, batch, instanceGraph) {
+    return isDwgRenderDeltaBatchInvalidated(
+      this.renderDeltaDependencyIndex,
+      sceneId,
+      batch,
+      instanceGraph,
+    );
+  }
+
   activateRenderDelta({
     lines = Object.freeze([]),
     fills = Object.freeze([]),
@@ -3538,6 +3610,7 @@ export class WebGlLineRenderer {
     transforms = Object.freeze([]),
     styles = Object.freeze([]),
     baseSuppressions = Object.freeze([]),
+    invalidatedDependencyIds = Object.freeze([]),
     affectedWorldBounds = null,
   } = {}) {
     if (!this.overviewScene) {
@@ -3550,10 +3623,15 @@ export class WebGlLineRenderer {
       !Array.isArray(texts) ||
       !Array.isArray(transforms) ||
       !Array.isArray(styles) ||
-      !Array.isArray(baseSuppressions)
+      !Array.isArray(baseSuppressions) ||
+      !Array.isArray(invalidatedDependencyIds)
     ) {
       throw new TypeError("render delta state is invalid");
     }
+    const dependencyIndex = indexDwgRenderDeltaDependencies(
+      invalidatedDependencyIds,
+      { scenes: this.renderDeltaDependencyScenes() },
+    );
     const resourceKeys = new Set();
     const normalizedLines = [];
     for (const entry of lines) {
@@ -3675,6 +3753,7 @@ export class WebGlLineRenderer {
       transforms: Object.freeze(normalizedTransforms),
       styles: Object.freeze(normalizedStyles),
       baseSuppressions: Object.freeze(normalizedSuppressions),
+      invalidatedDependencyIds: dependencyIndex.ids,
       suppressionKeys,
       affectedWorldBounds:
         affectedWorldBounds === null
@@ -3731,6 +3810,7 @@ export class WebGlLineRenderer {
     this.renderDeltaTransformIndexesByGraph =
       transformIndexesByGraph;
     this.renderDeltaStyleIndexesByGraph = styleIndexesByGraph;
+    this.renderDeltaDependencyIndex = dependencyIndex;
     this.renderDeltaRangeCache = new WeakMap();
     this.recalculateCombinedBounds();
     return this.renderDeltaSnapshot();
@@ -3828,6 +3908,8 @@ export class WebGlLineRenderer {
         this.renderDeltaStyleResourceBytes,
       baseSuppressions:
         this.renderDeltaState.baseSuppressions.length,
+      invalidatedDependencyIds:
+        this.renderDeltaState.invalidatedDependencyIds,
       affectedWorldBounds:
         this.renderDeltaState.affectedWorldBounds,
     });
@@ -4101,6 +4183,7 @@ export class WebGlLineRenderer {
   addExternalOverview({
     id,
     batches,
+    blocks = Object.freeze([]),
     instanceGraph,
     vertices,
   }) {
@@ -4141,6 +4224,7 @@ export class WebGlLineRenderer {
     const scene = {
       id,
       batches,
+      blocks,
       bounds,
       instanceGraph,
       resource: this.uploadVertices(vertices.buffer),
@@ -5010,6 +5094,8 @@ export class WebGlLineRenderer {
         this.renderDeltaStyleResourceBytes,
       renderDeltaBaseSuppressions:
         this.renderDeltaState.baseSuppressions.length,
+      renderDeltaInvalidatedDependencies:
+        this.renderDeltaState.invalidatedDependencyIds.length,
       hatchFillDrawCalls: 0,
       hatchFillSubmittedVertices: 0,
       hatchFillGpuBytes,
@@ -5069,7 +5155,15 @@ export class WebGlLineRenderer {
     const maskCompositionEnabled =
       this.wipeoutMasksVisible &&
       Boolean(this.maskOrder) &&
-      Boolean(this.wipeoutMaskScene?.resource);
+      Boolean(this.wipeoutMaskScene?.resource) &&
+      this.wipeoutMaskScene.batches.some(
+        (batch) =>
+          !this.isBaseBatchInvalidated(
+            ROOT_RENDER_DELTA_SCENE_ID,
+            batch,
+            this.overviewScene.instanceGraph,
+          ),
+      );
     gl.clearColor(0, 0, 0, 0);
     gl.clearDepth(0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -5113,6 +5207,15 @@ export class WebGlLineRenderer {
       if (maskCompositionEnabled) {
         gl.disable(gl.BLEND);
         for (const batch of this.wipeoutMaskScene.batches) {
+          if (
+            this.isBaseBatchInvalidated(
+              ROOT_RENDER_DELTA_SCENE_ID,
+              batch,
+              this.overviewScene.instanceGraph,
+            )
+          ) {
+            continue;
+          }
           this.drawBatch(
             batch,
             this.wipeoutMaskScene.resource,
@@ -5136,6 +5239,15 @@ export class WebGlLineRenderer {
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
       if (this.solidFillScene?.resource) {
         for (const batch of this.solidFillScene.batches) {
+          if (
+            this.isBaseBatchInvalidated(
+              ROOT_RENDER_DELTA_SCENE_ID,
+              batch,
+              this.overviewScene.instanceGraph,
+            )
+          ) {
+            continue;
+          }
           this.drawBatch(
             batch,
             this.solidFillScene.resource,
@@ -5157,6 +5269,15 @@ export class WebGlLineRenderer {
       }
       if (this.hatchFillScene?.resource) {
         for (const batch of this.hatchFillScene.batches) {
+          if (
+            this.isBaseBatchInvalidated(
+              ROOT_RENDER_DELTA_SCENE_ID,
+              batch,
+              this.overviewScene.instanceGraph,
+            )
+          ) {
+            continue;
+          }
           this.drawBatch(
             batch,
             this.hatchFillScene.resource,
@@ -5340,6 +5461,15 @@ export class WebGlLineRenderer {
       );
       if (this.hatchPatternScene?.resource) {
         for (const batch of this.hatchPatternScene.batches) {
+          if (
+            this.isBaseBatchInvalidated(
+              ROOT_RENDER_DELTA_SCENE_ID,
+              batch,
+              this.overviewScene.instanceGraph,
+            )
+          ) {
+            continue;
+          }
           this.drawBatch(
             batch,
             this.hatchPatternScene.resource,
@@ -5361,6 +5491,15 @@ export class WebGlLineRenderer {
       }
       if (this.solidOutlineScene?.resource) {
         for (const batch of this.solidOutlineScene.batches) {
+          if (
+            this.isBaseBatchInvalidated(
+              ROOT_RENDER_DELTA_SCENE_ID,
+              batch,
+              this.overviewScene.instanceGraph,
+            )
+          ) {
+            continue;
+          }
           this.drawBatch(
             batch,
             this.solidOutlineScene.resource,
@@ -5382,6 +5521,15 @@ export class WebGlLineRenderer {
       for (const batch of this.overviewScene.batches) {
         if (batch.lodLevel !== 0) {
           break;
+        }
+        if (
+          this.isBaseBatchInvalidated(
+            ROOT_RENDER_DELTA_SCENE_ID,
+            batch,
+            this.overviewScene.instanceGraph,
+          )
+        ) {
+          continue;
         }
         this.drawBatch(
           batch,
@@ -5411,6 +5559,15 @@ export class WebGlLineRenderer {
           if (batch.lodLevel !== 0) {
             break;
           }
+          if (
+            this.isBaseBatchInvalidated(
+              scene.id,
+              batch,
+              scene.instanceGraph,
+            )
+          ) {
+            continue;
+          }
           this.drawBatch(
             batch,
             scene.resource,
@@ -5433,6 +5590,15 @@ export class WebGlLineRenderer {
         for (const [batchId, candidate] of scene.detailSelections) {
           const entry = scene.detailResources.get(batchId);
           if (!entry) {
+            continue;
+          }
+          if (
+            this.isBaseBatchInvalidated(
+              scene.id,
+              entry.batch,
+              scene.instanceGraph,
+            )
+          ) {
             continue;
           }
           this.drawBatch(
@@ -5467,6 +5633,15 @@ export class WebGlLineRenderer {
       for (const [batchId, candidate] of this.detailSelections) {
         const entry = this.detailResources.get(batchId);
         if (!entry) {
+          continue;
+        }
+        if (
+          this.isBaseBatchInvalidated(
+            ROOT_RENDER_DELTA_SCENE_ID,
+            entry.batch,
+            this.overviewScene.instanceGraph,
+          )
+        ) {
           continue;
         }
         this.drawBatch(
@@ -5520,6 +5695,15 @@ export class WebGlLineRenderer {
       }
       if (curveRefinementActive) {
         for (const entry of this.curveRefinementScene.entries) {
+          if (
+            this.isBaseBatchInvalidated(
+              ROOT_RENDER_DELTA_SCENE_ID,
+              entry.batch,
+              this.overviewScene.instanceGraph,
+            )
+          ) {
+            continue;
+          }
           this.drawBatch(
             entry.batch,
             entry.resource,
@@ -5574,6 +5758,15 @@ export class WebGlLineRenderer {
           this.pointClipLocations,
         );
         for (const batch of this.pointScene.batches) {
+          if (
+            this.isBaseBatchInvalidated(
+              ROOT_RENDER_DELTA_SCENE_ID,
+              batch,
+              this.overviewScene.instanceGraph,
+            )
+          ) {
+            continue;
+          }
           this.drawBatch(
             batch,
             this.pointScene.resource,
@@ -5825,9 +6018,12 @@ export class WebGlLineRenderer {
       transforms: Object.freeze([]),
       styles: Object.freeze([]),
       baseSuppressions: Object.freeze([]),
+      invalidatedDependencyIds: Object.freeze([]),
       suppressionKeys: new Set(),
       affectedWorldBounds: null,
     });
+    this.renderDeltaDependencyIndex =
+      indexDwgRenderDeltaDependencies([]);
     this.renderDeltaTransformIndexesByGraph = new WeakMap();
     this.renderDeltaStyleIndexesByGraph = new WeakMap();
     this.renderDeltaRangeCache = new WeakMap();
