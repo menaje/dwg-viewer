@@ -440,7 +440,7 @@ test("keeps package versions and producer compatibility manifest aligned", async
   );
   assert.equal(
     manifest.components.renderDelta,
-    "atomic-overlay-state-with-dwg-line-fill-point-text-instance-transform-style-upsert-bounded-nested-instance-propagation-native-base-suppression-scoped-dependency-invalidation-revision-bound-pick-filtering-and-retryable-resource-cleanup",
+    "atomic-overlay-state-with-dwg-line-fill-point-text-instance-transform-style-upsert-bounded-nested-instance-propagation-native-base-suppression-scoped-and-bounded-dependency-invalidation-revision-bound-pick-filtering-and-retryable-resource-cleanup",
   );
   assert.equal(
     manifest.components.renderDiff,
@@ -455,8 +455,20 @@ test("keeps package versions and producer compatibility manifest aligned", async
     "before-after-logical-camera-sync-with-retryable-rollback-and-independent-renderer-lifecycles",
   );
   assert.equal(
+    manifest.components.diffSemantic,
+    "revision-bound-diff-open-host-hook-with-bounded-identity-and-dependency-projection",
+  );
+  assert.equal(
+    manifest.components.splitViewDiff,
+    "shared-changed-id-mapping-and-corresponding-entity-highlight-with-atomic-two-surface-rollback",
+  );
+  assert.equal(
     manifest.conformance.viewerRenderDelta,
     "packages/viewer-core/test/render-delta-controller.test.mjs",
+  );
+  assert.equal(
+    manifest.conformance.viewerRenderDeltaLargeQualification,
+    "packages/viewer-core/test/render-delta-large-qualification.test.mjs",
   );
   assert.equal(
     manifest.conformance.viewerDiffOverlay,
@@ -465,6 +477,10 @@ test("keeps package versions and producer compatibility manifest aligned", async
   assert.equal(
     manifest.conformance.viewerSplitView,
     "packages/viewer-core/test/split-view-camera-controller.test.mjs",
+  );
+  assert.equal(
+    manifest.conformance.viewerSplitViewDiff,
+    "packages/viewer-core/test/split-view-diff-controller.test.mjs",
   );
   assert.equal(
     manifest.conformance.dwgRenderDelta,

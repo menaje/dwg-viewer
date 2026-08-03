@@ -244,8 +244,15 @@ state와 canvas 비율은 공유하지 않으며 renderer가 자신의 `worldWid
 계산한다. 한쪽 interaction에서 온 카메라는 반대쪽에만 적용하고 programmatic
 전환은 양쪽에 적용한다. 실패한 전환은 마지막 정상 카메라로 rollback하며,
 불완전한 rollback은 명시적으로 관찰하고 재동기화할 수 있다. surface disposal과
-split DOM/canvas 배치는 계속 제품 lifecycle의 책임이다.
-`@dwg-viewer/viewer-ui`의 첫 public controller는 review toolbar의 active
+renderer lifecycle은 계속 제품 책임이다.
+`ViewerSplitViewDiffController`는 base/target revision과 동일한 frozen
+changed-ID mapping을 양쪽에 전달하며 선택한 corresponding Render ID도 동일한
+highlight로 적용한다. 한쪽 적용 실패는 양쪽의 마지막 정상 mapping으로
+rollback한다. `ViewerSplitViewUiController`는 주입된 두 surface의 실제
+접근 가능한 DOM split, bounded divider와 원래 DOM 위치 복원을 소유한다.
+`ViewerDiffSemanticController`는 identity/dependency change와 invalidation만
+revision-bound `diff.open` Host event로 투영한다.
+`@dwg-viewer/viewer-ui`의 review controller는 toolbar의 active
 state와 접근성 속성, bounded text-only result row/action composition,
 DOM listener disposal을 소유한다. 네 diff 상태와 base/target revision도
 같은 result model로 투영한다. DWG Webview는 candidate 판독과 CAD 속성,
@@ -253,10 +260,12 @@ DOM listener disposal을 소유한다. 네 diff 상태와 base/target revision�
 
 아직 `packages/webview`에 있는 실제 WebGL CAD shader, DWG candidate decoder와
 selection/measurement overlay, generic render data model의 물리적 package
-이동은 남아 있다. 일반 Viewer UI도 toolbar/result lifecycle부터 이동했으며
-layer/layout panel composition은 이후 단계다. #30의 실제 cross-repository
-`ConiServiceSource` qualification과 #27의 semantic panel hook, 실제 split
-composition 및 대형 도면 qualification은 남아 있다.
+이동은 남아 있다. 일반 Viewer UI의 layer/layout panel composition도 이후
+단계다. #30의 실제 cross-repository `ConiServiceSource` qualification은
+남아 있다. #27은 378,400-base public delta fixture와 2026-08-04의
+24,680,147-byte 제품 재검증으로 완료했다. 실제 제품 결과는 `status: ok`,
+first usable frame 5,220 ms, 증분 물리 메모리 564,907,536 bytes와 완전한
+cleanup이며 각각 8초/800 MB hard gate 안이다.
 제품 진입점을
 먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
 private message를 Core API로 승격하지 않고 진행한다.

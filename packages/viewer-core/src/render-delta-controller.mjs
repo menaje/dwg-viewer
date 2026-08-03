@@ -9,9 +9,11 @@ import {
 const DEFAULT_CHECKPOINT_DELTA_COUNT = 64;
 const DEFAULT_CHECKPOINT_PAYLOAD_BYTES = 64 * 1024 * 1024;
 const DEFAULT_CHECKPOINT_OVERLAY_ENTRIES = 32_768;
+const DEFAULT_CHECKPOINT_DEPENDENCY_IDS = 8_192;
 const DEFAULT_MAXIMUM_DELTA_COUNT = 256;
 const DEFAULT_MAXIMUM_PAYLOAD_BYTES = 256 * 1024 * 1024;
 const DEFAULT_MAXIMUM_OVERLAY_ENTRIES = 131_072;
+const DEFAULT_MAXIMUM_DEPENDENCY_IDS = 32_768;
 
 function positiveSafeInteger(value, label) {
   if (!Number.isSafeInteger(value) || value <= 0) {
@@ -174,9 +176,12 @@ export class ViewerRenderDeltaController {
     checkpointPayloadBytes = DEFAULT_CHECKPOINT_PAYLOAD_BYTES,
     checkpointOverlayEntries =
       DEFAULT_CHECKPOINT_OVERLAY_ENTRIES,
+    checkpointDependencyIds =
+      DEFAULT_CHECKPOINT_DEPENDENCY_IDS,
     maximumDeltaCount = DEFAULT_MAXIMUM_DELTA_COUNT,
     maximumPayloadBytes = DEFAULT_MAXIMUM_PAYLOAD_BYTES,
     maximumOverlayEntries = DEFAULT_MAXIMUM_OVERLAY_ENTRIES,
+    maximumDependencyIds = DEFAULT_MAXIMUM_DEPENDENCY_IDS,
   }) {
     this.#descriptor = sourceSession?.descriptor;
     this.#adapter = assertAdapter(adapter);
@@ -197,6 +202,10 @@ export class ViewerRenderDeltaController {
         checkpointOverlayEntries,
         "checkpoint overlay entries",
       ),
+      checkpointDependencyIds: positiveSafeInteger(
+        checkpointDependencyIds,
+        "checkpoint dependency IDs",
+      ),
       maximumDeltaCount: positiveSafeInteger(
         maximumDeltaCount,
         "maximum delta count",
@@ -209,6 +218,10 @@ export class ViewerRenderDeltaController {
         maximumOverlayEntries,
         "maximum overlay entries",
       ),
+      maximumDependencyIds: positiveSafeInteger(
+        maximumDependencyIds,
+        "maximum dependency IDs",
+      ),
     });
     if (
       this.#limits.checkpointDeltaCount >
@@ -216,7 +229,9 @@ export class ViewerRenderDeltaController {
       this.#limits.checkpointPayloadBytes >
         this.#limits.maximumPayloadBytes ||
       this.#limits.checkpointOverlayEntries >
-        this.#limits.maximumOverlayEntries
+        this.#limits.maximumOverlayEntries ||
+      this.#limits.checkpointDependencyIds >
+        this.#limits.maximumDependencyIds
     ) {
       throw new RangeError(
         "render delta checkpoint thresholds must not exceed hard limits",
@@ -251,10 +266,12 @@ export class ViewerRenderDeltaController {
   #assertWithinLimits(state) {
     const overlayEntries =
       state.tombstones.size + state.upserts.size;
+    const dependencyIds = state.invalidatedDependencyIds.size;
     if (
       state.deltaCount > this.#limits.maximumDeltaCount ||
       state.payloadBytes > this.#limits.maximumPayloadBytes ||
-      overlayEntries > this.#limits.maximumOverlayEntries
+      overlayEntries > this.#limits.maximumOverlayEntries ||
+      dependencyIds > this.#limits.maximumDependencyIds
     ) {
       throw new RenderProtocolError(
         RenderProtocolDiagnosticCode.MESSAGE_INVALID,
@@ -263,6 +280,7 @@ export class ViewerRenderDeltaController {
           deltaCount: state.deltaCount,
           payloadBytes: state.payloadBytes,
           overlayEntries,
+          dependencyIds,
         },
       );
     }
@@ -284,13 +302,17 @@ export class ViewerRenderDeltaController {
       deltaCount: state.deltaCount,
       payloadBytes: state.payloadBytes,
       overlayEntries,
+      invalidatedDependencyCount:
+        state.invalidatedDependencyIds.size,
       checkpointRecommended:
         state.deltaCount >=
           this.#limits.checkpointDeltaCount ||
         state.payloadBytes >=
           this.#limits.checkpointPayloadBytes ||
         overlayEntries >=
-          this.#limits.checkpointOverlayEntries,
+          this.#limits.checkpointOverlayEntries ||
+        state.invalidatedDependencyIds.size >=
+          this.#limits.checkpointDependencyIds,
       affectedWorldBounds: state.affectedWorldBounds,
       tombstones: sortedEntries(state.tombstones),
       upserts: sortedEntries(state.upserts),
@@ -431,9 +453,11 @@ export class ViewerRenderDeltaController {
 }
 
 export {
+  DEFAULT_CHECKPOINT_DEPENDENCY_IDS,
   DEFAULT_CHECKPOINT_DELTA_COUNT,
   DEFAULT_CHECKPOINT_OVERLAY_ENTRIES,
   DEFAULT_CHECKPOINT_PAYLOAD_BYTES,
+  DEFAULT_MAXIMUM_DEPENDENCY_IDS,
   DEFAULT_MAXIMUM_DELTA_COUNT,
   DEFAULT_MAXIMUM_OVERLAY_ENTRIES,
   DEFAULT_MAXIMUM_PAYLOAD_BYTES,

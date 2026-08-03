@@ -12,3 +12,8 @@ export {
 export {
   createViewerDiffResultModel,
 } from "./diff-result-model.mjs";
+export {
+  AllViewerSplitViewOrientations,
+  ViewerSplitViewOrientation,
+  ViewerSplitViewUiController,
+} from "./split-view-ui-controller.mjs";

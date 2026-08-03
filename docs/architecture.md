@@ -160,14 +160,35 @@ canvas-dependent width and retain its own revision, scene, GPU and detail
 state. A source-side interaction updates only its peer, while a programmatic
 change updates both. Failed transitions restore the last stable camera on both
 surfaces; an incomplete rollback is observable and can be retried with an
-explicit synchronization. The controller never disposes either surface, and
-split DOM/canvas composition remains product-owned.
+explicit synchronization. The controller never disposes either surface.
+`ViewerSplitViewDiffController` sends both surfaces the same frozen changed-ID
+mapping and corresponding-entity highlight while binding each side to its own
+base or target revision. A failed update restores the last stable mapping on
+both surfaces. `ViewerSplitViewUiController` owns the actual accessible
+two-surface DOM composition, bounded keyboard/pointer divider and restoration
+of the injected surfaces to their original DOM positions; renderer resources
+remain product-owned.
+`ViewerDiffSemanticController` projects only identity/dependency changes and
+bounded invalidation IDs into the revision-bound `diff.open` Host event, so an
+external semantic panel does not require the visual geometry list or an
+expanded base graph.
 The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
 remain Webview adapters and move incrementally without changing raw DWG
 qualification. `ViewerReviewUiController` now owns review toolbar state,
 accessibility attributes, bounded text-only result composition and DOM listener
 disposal. The Webview adapter still owns Korean/CAD labels, DWG property
 projection, picking and measurement calculations.
+
+The public large-delta qualification models the current 378,400-entity base
+without allocating its entity graph and retains only 768 changed IDs across
+eight deltas. It checks checkpoint recommendation, exact preview rollback,
+last-good state after a staging failure, and identical overlay/split mappings.
+The 24,680,147-byte private reference drawing was requalified on 2026-08-04:
+the packaged product reported `status: ok`, 5,220 ms to first usable frame,
+564,907,536 bytes of incremental physical memory, and complete converter/editor
+cleanup. The frame missed the 5-second target by 220 ms but remained below the
+8-second hard limit; memory remained below its 800 MB hard limit. The private
+drawing and raw report are not committed.
 
 The engine decision is now accepted: LibreDWG 0.14 is the primary parser and
 converter for continued product development. The former acadrust comparison

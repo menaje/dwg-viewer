@@ -40,7 +40,8 @@ Render ID만 보관합니다.
 - entity tombstone filter와 aspect별 upsert overlay
 - affected bounds, dependency invalidation과 external identity map 갱신
 - 하나의 preview 적용, rollback과 promotion
-- delta count/payload bytes/overlay entry 기준 checkpoint 권고 및 hard limit
+- delta count/payload bytes/overlay entry/dependency ID 기준 checkpoint 권고 및
+  hard limit
 - stale/out-of-order 입력 전 상태 보존과 idempotent disposal
 
 선택적 renderer adapter는 동기·원자적인 `applyDelta()`,
@@ -67,6 +68,22 @@ adapter는 상태 visibility를 source/layer/clip visibility와 교집합으로�
 불완전한 rollback은 관찰·재동기화할 수 있습니다. controller disposal은
 diff presentation만 clear하며 renderer adapter 자체의 lifecycle은 소유하지
 않습니다.
+
+`ViewerDiffSemanticController`는 같은 summary에서 `identity`와
+`dependency` aspect만 bounded projection으로 만들고 revision/snapshot,
+monotonic event sequence, 전체 상태 count와 invalidated dependency ID를
+`diff.open` ViewerHost event로 전달합니다. 시각 geometry entry나 unchanged
+Render ID를 외부 semantic panel에 복제하지 않으며 Host lifecycle도 소유하지
+않습니다.
+
+37만 8,400개 base Render ID를 모델링하는 공개 qualification fixture는 base
+entity를 만들거나 열거하지 않고 8개 delta의 768개 changed ID만 유지합니다.
+동일 fixture가 checkpoint 권고, preview rollback, 실패한 staging 뒤 마지막
+정상 revision, overlay/split의 동일 매핑과 bounded retained summary를
+검증합니다. 2026-08-04의 24,680,147-byte 실제 도면 제품 재검증도
+`status: ok`였고, 증분 물리 메모리 564,907,536 bytes와 종료 cleanup은 gate를
+통과했습니다. 첫 usable frame 5,220 ms는 5초 target miss이지만 8초 hard
+limit 안입니다. private 도면과 원본 report는 저장소에 커밋하지 않습니다.
 
 `createRenderLayerRangeSource()`는 snapshot의 range-backed layer 하나를
 기존 bounded reader가 소비할 수 있는 source로 projection합니다.
@@ -99,6 +116,9 @@ opaque Context Reference와 source reveal을 각각 `context.request`,
 revision/snapshot/layer scope, monotonic sequence, reason, identity와 opaque
 reference를 포함합니다. `humanAction.request`는 intent일 뿐 capability 또는
 approval evidence가 아닙니다.
+`ViewerDiffSemanticController.open()`은 시각 diff와 같은 revision에 묶인
+`diff.open` detail을 발행하므로 외부 semantic panel이 source private
+message나 전체 entity graph 없이 non-visual change를 표시할 수 있습니다.
 
 현재 package에는 DOM bootstrap, `vscode`, `acquireVsCodeApi()`, Scene Cache
 parser와 Spatial permission code가 없습니다. Browser와 VS Code 제품
@@ -121,6 +141,11 @@ revision과 canvas 비율을 유지한 채 불변의 논리 카메라(`origin`,
 적용하고, 불완전한 rollback은 `synchronized: false`로 표시해
 `synchronize()`로 재시도할 수 있습니다. 이 컨트롤러는 surface 자원을
 dispose하지 않으므로 두 renderer lifecycle은 계속 독립적입니다.
+`ViewerSplitViewDiffController`는 두 surface에 base/target revision과 정확히
+같은 frozen changed-ID mapping을 전달합니다. 선택한 changed Render ID도
+동일 객체로 양쪽에 전달해 corresponding entity를 강조하며, 한 surface 적용이
+실패하면 둘 다 마지막 정상 mapping/highlight로 rollback합니다. 이 controller
+역시 renderer나 surface 자원을 dispose하지 않고 presentation만 clear합니다.
 `DetailStreamingController`는 selection policy와 byte loader를 주입받아
 동시성, visible/cache budget, stale work, review geometry와 redraw
 coalescing을 소유합니다. 현재 Webview의 `DetailStreamer`는 DWG Scene Cache

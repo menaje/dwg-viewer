@@ -203,6 +203,7 @@ test("applies bounded tombstone and aspect upserts atomically", () => {
     "block:shared-door",
     "type:wall",
   ]);
+  assert.equal(state.invalidatedDependencyCount, 2);
   assert.equal(
     controller.lookup("layer:live", "render:removed").status,
     "tombstone",
@@ -502,9 +503,11 @@ test("recommends a checkpoint before bounded overlay limits are exhausted", () =
     checkpointDeltaCount: 1,
     checkpointPayloadBytes: 128,
     checkpointOverlayEntries: 1,
+    checkpointDependencyIds: 1,
     maximumDeltaCount: 2,
     maximumPayloadBytes: 256,
     maximumOverlayEntries: 2,
+    maximumDependencyIds: 2,
   });
 
   const state = controller.applyCommitted(delta());
@@ -538,6 +541,51 @@ test("recommends a checkpoint before bounded overlay limits are exhausted", () =
   assert.equal(controller.dispose(), true);
   assert.equal(controller.dispose(), false);
   assert.throws(() => controller.snapshot(), /disposed/u);
+});
+
+test("bounds retained dependency invalidations and preserves the last good revision", () => {
+  const descriptor = sessionDescriptor();
+  const controller = new ViewerRenderDeltaController({
+    sourceSession: { descriptor },
+    snapshot: baseSnapshot(descriptor),
+    checkpointDependencyIds: 1,
+    maximumDependencyIds: 2,
+  });
+  const first = controller.applyCommitted(
+    delta({
+      operations: [
+        operation("render:dependency-one", {
+          aspect: RenderDeltaAspect.DEPENDENCY,
+          dependencyIds: ["block:one", "block:two"],
+        }),
+      ],
+    }),
+  );
+  assert.equal(first.checkpointRecommended, true);
+  assert.equal(first.invalidatedDependencyCount, 2);
+
+  assert.throws(
+    () =>
+      controller.applyCommitted(
+        delta({
+          deltaId: "delta:dependency-overflow",
+          fromRevisionId: revisionTwo,
+          toRevisionId: revisionThree,
+          sequence: 2,
+          operations: [
+            operation("render:dependency-three", {
+              aspect: RenderDeltaAspect.DEPENDENCY,
+              dependencyIds: ["block:three"],
+            }),
+          ],
+          includePayload: false,
+        }),
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+  );
+  assert.equal(controller.revisionId, revisionTwo);
+  assert.deepEqual(controller.snapshot(), first);
 });
 
 test("streams ordered deltas and rejects a replay without advancing state", async () => {

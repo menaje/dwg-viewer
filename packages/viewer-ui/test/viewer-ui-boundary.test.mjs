@@ -43,4 +43,12 @@ test("keeps Viewer UI version and compatibility manifest aligned", async () => {
     manifest.components.reviewUi,
     "canonical-dom-lifecycle-with-dwg-result-and-revision-diff-adapters",
   );
+  assert.equal(
+    manifest.components.splitViewUi,
+    "accessible-two-surface-dom-composition-with-bounded-divider-and-restoring-lifecycle",
+  );
+  assert.equal(
+    manifest.conformance.viewerSplitViewUi,
+    "packages/viewer-ui/test/split-view-ui-controller.test.mjs",
+  );
 });

@@ -55,9 +55,11 @@ export {
   ViewerIdentityController,
 } from "./identity-controller.mjs";
 export {
+  DEFAULT_CHECKPOINT_DEPENDENCY_IDS,
   DEFAULT_CHECKPOINT_DELTA_COUNT,
   DEFAULT_CHECKPOINT_OVERLAY_ENTRIES,
   DEFAULT_CHECKPOINT_PAYLOAD_BYTES,
+  DEFAULT_MAXIMUM_DEPENDENCY_IDS,
   DEFAULT_MAXIMUM_DELTA_COUNT,
   DEFAULT_MAXIMUM_OVERLAY_ENTRIES,
   DEFAULT_MAXIMUM_PAYLOAD_BYTES,
@@ -74,8 +76,16 @@ export {
   ViewerSplitViewSide,
 } from "./split-view-camera-controller.mjs";
 export {
+  ViewerSplitViewDiffController,
+} from "./split-view-diff-controller.mjs";
+export {
   DefaultViewerDiffOverlayPolicy,
   ViewerDiffOverlayController,
   ViewerDiffOverlayVisibilityRule,
   createViewerDiffOverlayPolicy,
 } from "./diff-overlay-controller.mjs";
+export {
+  AllViewerSemanticDiffAspects,
+  ViewerDiffSemanticController,
+  ViewerSemanticDiffAspect,
+} from "./diff-semantic-controller.mjs";
