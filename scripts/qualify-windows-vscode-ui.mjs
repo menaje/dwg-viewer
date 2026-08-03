@@ -33,6 +33,12 @@ const {
 } = vscodeTestElectron;
 const REPORT_SCHEMA = "dwg-windows-vscode-ui-qualification/1";
 export const WINDOWS_UI_EXTENSION_ID = "menaje.dwg-viewer-vscode";
+export const WINDOWS_UI_CLEANUP_OPTIONS = Object.freeze({
+  recursive: true,
+  force: true,
+  maxRetries: 20,
+  retryDelay: 250,
+});
 const SCALE_FACTORS = Object.freeze([1, 1.25, 1.5, 2]);
 const WIDTHS = Object.freeze([
   Object.freeze({ label: "normal", editorWidth: 1_050 }),
@@ -643,7 +649,7 @@ async function runScale({
   } finally {
     await browser?.close().catch(() => undefined);
     await terminateProcessTree(child);
-    await rm(userData, { recursive: true, force: true });
+    await rm(userData, WINDOWS_UI_CLEANUP_OPTIONS);
   }
 }
 
@@ -775,7 +781,7 @@ export async function qualifyWindowsVsCodeUi(options) {
     );
     return report;
   } finally {
-    await rm(privateRoot, { recursive: true, force: true });
+    await rm(privateRoot, WINDOWS_UI_CLEANUP_OPTIONS);
   }
 }
 

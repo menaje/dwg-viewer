@@ -8,6 +8,7 @@ import test from "node:test";
 import {
   parseWindowsUiArguments,
   rectIsContained,
+  WINDOWS_UI_CLEANUP_OPTIONS,
   WINDOWS_UI_EXTENSION_ID,
 } from "./qualify-windows-vscode-ui.mjs";
 
@@ -101,4 +102,13 @@ test("uses the packaged extension manifest identity", async () => {
     WINDOWS_UI_EXTENSION_ID,
     `${manifest.publisher}.${manifest.name}`,
   );
+});
+
+test("bounds Windows profile lock cleanup retries", () => {
+  assert.deepEqual(WINDOWS_UI_CLEANUP_OPTIONS, {
+    recursive: true,
+    force: true,
+    maxRetries: 20,
+    retryDelay: 250,
+  });
 });
