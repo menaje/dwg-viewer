@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  canvasPointIsUnobstructed,
   parseWindowsUiArguments,
   rectIsContained,
   WINDOWS_UI_CLEANUP_OPTIONS,
@@ -88,6 +89,37 @@ test("accepts only visible rectangles contained by the CSS viewport", () => {
       viewport,
     ),
     false,
+  );
+});
+
+test("skips measurement points covered by floating viewer tools", () => {
+  const canvas = {
+    getBoundingClientRect() {
+      return { left: 40, top: 60 };
+    },
+  };
+  const toolbar = {};
+  const candidate = { x: 120, y: 80 };
+  let observedPoint;
+  assert.equal(
+    canvasPointIsUnobstructed(
+      canvas,
+      candidate,
+      (x, y) => {
+        observedPoint = { x, y };
+        return toolbar;
+      },
+    ),
+    false,
+  );
+  assert.deepEqual(observedPoint, { x: 160, y: 140 });
+  assert.equal(
+    canvasPointIsUnobstructed(
+      canvas,
+      candidate,
+      () => canvas,
+    ),
+    true,
   );
 });
 

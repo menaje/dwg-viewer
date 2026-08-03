@@ -221,6 +221,18 @@ export function rectIsContained(rect, viewport, tolerance = 1) {
   );
 }
 
+export function canvasPointIsUnobstructed(
+  element,
+  candidate,
+  hitTest = (x, y) => document.elementFromPoint(x, y),
+) {
+  const rect = element.getBoundingClientRect();
+  return (
+    hitTest(rect.left + candidate.x, rect.top + candidate.y) ===
+    element
+  );
+}
+
 async function surfaceSnapshot(frame) {
   return frame.evaluate(() => {
     const snapshot = (selector) => {
@@ -362,6 +374,13 @@ async function findTwoMeasurementPoints(frame) {
   assert.ok(box && box.width > 100 && box.height > 100);
   const points = [];
   for (const position of candidatePositions(box.width, box.height)) {
+    const canvasIsTopmost = await canvas.evaluate(
+      canvasPointIsUnobstructed,
+      position,
+    );
+    if (!canvasIsTopmost) {
+      continue;
+    }
     await canvas.click({ position });
     const result = await resultSnapshot(frame);
     if (
