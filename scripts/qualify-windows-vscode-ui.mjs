@@ -1,0 +1,798 @@
+#!/usr/bin/env node
+// SPDX-License-Identifier: MPL-2.0
+
+import assert from "node:assert/strict";
+import { execFile as execFileCallback, spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import net from "node:net";
+import os from "node:os";
+import path from "node:path";
+import process from "node:process";
+import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
+
+import vscodeTestElectron from "@vscode/test-electron";
+import { chromium } from "playwright-core";
+
+import { writeQualificationDriver } from "../apps/vscode-extension/scripts/qualify-extension-host.mjs";
+
+const execFile = promisify(execFileCallback);
+const {
+  downloadAndUnzipVSCode,
+  runVSCodeCommand,
+} = vscodeTestElectron;
+const REPORT_SCHEMA = "dwg-windows-vscode-ui-qualification/1";
+const SCALE_FACTORS = Object.freeze([1, 1.25, 1.5, 2]);
+const WIDTHS = Object.freeze([
+  Object.freeze({ label: "normal", editorWidth: 1_050 }),
+  Object.freeze({ label: "narrow", editorWidth: 520 }),
+]);
+const FRAME_TIMEOUT_MS = 120_000;
+
+function requireValue(values, index, option) {
+  const value = values[index + 1];
+  if (!value || value.startsWith("--")) {
+    throw new Error(`${option} requires a value`);
+  }
+  return value;
+}
+
+export function parseWindowsUiArguments(values) {
+  const options = {};
+  for (let index = 0; index < values.length; index += 1) {
+    const option = values[index];
+    if (
+      ![
+        "--adapter",
+        "--drawing",
+        "--vsix",
+        "--output-dir",
+      ].includes(option)
+    ) {
+      throw new Error(`unsupported option: ${option}`);
+    }
+    options[
+      {
+        "--adapter": "adapterPath",
+        "--drawing": "drawingPath",
+        "--vsix": "vsixPath",
+        "--output-dir": "outputDirectory",
+      }[option]
+    ] = path.resolve(requireValue(values, index, option));
+    index += 1;
+  }
+  for (const key of [
+    "adapterPath",
+    "drawingPath",
+    "vsixPath",
+    "outputDirectory",
+  ]) {
+    if (!options[key] || !path.isAbsolute(options[key])) {
+      throw new Error(`${key} must be an absolute path`);
+    }
+  }
+  return Object.freeze(options);
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function ensureFile(filePath) {
+  await access(filePath, 4);
+  const metadata = await stat(filePath);
+  if (!metadata.isFile()) {
+    throw new Error("qualification input is not a file");
+  }
+  return metadata;
+}
+
+async function sha256File(filePath) {
+  return createHash("sha256")
+    .update(await readFile(filePath))
+    .digest("hex");
+}
+
+async function writeJsonExclusive(filePath, value) {
+  const handle = await open(filePath, "wx", 0o600);
+  try {
+    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+function qualificationSettings() {
+  return {
+    "extensions.autoCheckUpdates": false,
+    "extensions.autoUpdate": false,
+    "security.workspace.trust.enabled": false,
+    "telemetry.telemetryLevel": "off",
+    "update.mode": "none",
+    "window.restoreWindows": "none",
+    "window.zoomLevel": 0,
+    "workbench.colorTheme": "Default Dark Modern",
+    "workbench.editorAssociations": {
+      "*.dwg": "dwgViewer.dwg",
+      "*.DWG": "dwgViewer.dwg",
+    },
+    "workbench.startupEditor": "none",
+    "workbench.tips.enabled": false,
+  };
+}
+
+async function availablePort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const port = address.port;
+  await new Promise((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
+  return port;
+}
+
+async function waitForDevtools(port, child, output) {
+  const endpoint = `http://127.0.0.1:${port}`;
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(
+        `VS Code exited before DevTools became ready: ${output().slice(-2_000)}`,
+      );
+    }
+    try {
+      const response = await fetch(`${endpoint}/json/version`, {
+        signal: AbortSignal.timeout(1_000),
+      });
+      if (response.ok) {
+        return endpoint;
+      }
+    } catch {
+      // The debugging endpoint is not listening yet.
+    }
+    await delay(200);
+  }
+  throw new Error("VS Code DevTools endpoint did not become ready");
+}
+
+async function findViewerFrame(browser, child) {
+  const deadline = Date.now() + FRAME_TIMEOUT_MS;
+  let lastStatus = "";
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error("VS Code exited before the DWG Webview loaded");
+    }
+    for (const context of browser.contexts()) {
+      for (const page of context.pages()) {
+        for (const frame of page.frames()) {
+          const dropZone = frame.locator("#drop-zone");
+          if ((await dropZone.count()) === 0) {
+            continue;
+          }
+          lastStatus =
+            (await frame.locator("#status").textContent().catch(() => "")) ??
+            "";
+          if (await dropZone.evaluate((element) =>
+            element.classList.contains("loaded"),
+          )) {
+            return { frame, page };
+          }
+        }
+      }
+    }
+    await delay(250);
+  }
+  throw new Error(
+    `DWG Webview did not load before timeout (status=${lastStatus.slice(0, 160)})`,
+  );
+}
+
+export function rectIsContained(rect, viewport, tolerance = 1) {
+  return (
+    rect &&
+    rect.width > 0 &&
+    rect.height > 0 &&
+    rect.left >= -tolerance &&
+    rect.top >= -tolerance &&
+    rect.right <= viewport.width + tolerance &&
+    rect.bottom <= viewport.height + tolerance
+  );
+}
+
+async function surfaceSnapshot(frame) {
+  return frame.evaluate(() => {
+    const snapshot = (selector) => {
+      const element = document.querySelector(selector);
+      if (!(element instanceof HTMLElement)) {
+        return null;
+      }
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height,
+        hidden:
+          element.hidden ||
+          style.display === "none" ||
+          style.visibility === "hidden",
+      };
+    };
+    return {
+      viewport: { width: innerWidth, height: innerHeight },
+      devicePixelRatio,
+      host: document.body.dataset.host ?? "",
+      trigger: snapshot("#viewer-tools-trigger"),
+      toolbar: snapshot("#viewer-toolbar"),
+      reviewToolbar: snapshot("#review-toolbar"),
+      canvas: snapshot("#drawing"),
+    };
+  });
+}
+
+async function setEditorWidth(page, frame, editorWidth) {
+  const session = await page.context().newCDPSession(page);
+  try {
+    const { windowId } = await session.send("Browser.getWindowForTarget");
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const current = await frame.evaluate(() => innerWidth);
+      if (Math.abs(current - editorWidth) <= 16) {
+        break;
+      }
+      const { bounds } = await session.send("Browser.getWindowBounds", {
+        windowId,
+      });
+      const width = Math.max(
+        560,
+        Math.round((bounds.width ?? 1_400) + editorWidth - current),
+      );
+      await session.send("Browser.setWindowBounds", {
+        windowId,
+        bounds: {
+          state: "normal",
+          width,
+          height: Math.max(820, bounds.height ?? 900),
+        },
+      });
+      await delay(350);
+    }
+  } finally {
+    await session.detach();
+  }
+  return frame.evaluate(() => ({
+    width: innerWidth,
+    height: innerHeight,
+  }));
+}
+
+async function openViewerTools(frame) {
+  const trigger = frame.locator("#viewer-tools-trigger");
+  assert.equal(await trigger.isVisible(), true);
+  if ((await trigger.getAttribute("aria-expanded")) !== "true") {
+    await trigger.click();
+  }
+  assert.equal(await trigger.getAttribute("aria-expanded"), "true");
+}
+
+function candidatePositions(width, height) {
+  const marginX = Math.min(24, width * 0.08);
+  const marginY = Math.min(24, height * 0.08);
+  const result = [];
+  const fractions = [
+    0.5, 0.25, 0.75, 0.125, 0.375, 0.625, 0.875, 0.2, 0.4, 0.6,
+    0.8, 0.1, 0.3, 0.7, 0.9,
+  ];
+  for (const fraction of fractions) {
+    result.push({
+      x: marginX + (width - marginX * 2) * fraction,
+      y: height / 2,
+    });
+    result.push({
+      x: width / 2,
+      y: marginY + (height - marginY * 2) * fraction,
+    });
+    result.push({
+      x: marginX + (width - marginX * 2) * fraction,
+      y: marginY + (height - marginY * 2) * fraction,
+    });
+    result.push({
+      x: marginX + (width - marginX * 2) * fraction,
+      y: marginY + (height - marginY * 2) * (1 - fraction),
+    });
+  }
+  return result;
+}
+
+async function activateTool(frame, tool) {
+  const button = frame.locator(`[data-review-tool="${tool}"]`);
+  if ((await button.getAttribute("aria-pressed")) !== "true") {
+    await button.click();
+  }
+  assert.equal(await button.getAttribute("aria-pressed"), "true");
+}
+
+async function clearReview(frame) {
+  await frame.locator('[data-review-action="clear"]').click();
+  assert.equal(await frame.locator("#review-result").isVisible(), false);
+}
+
+async function resultSnapshot(frame) {
+  const result = frame.locator("#review-result");
+  if (!(await result.isVisible())) {
+    return null;
+  }
+  return {
+    title:
+      (await frame.locator("[data-review-title]").textContent())?.trim() ??
+      "",
+    content:
+      (await frame.locator("[data-review-content]").innerText()).trim(),
+  };
+}
+
+async function findTwoMeasurementPoints(frame) {
+  await activateTool(frame, "coordinate");
+  const canvas = frame.locator("#drawing");
+  const box = await canvas.boundingBox();
+  assert.ok(box && box.width > 100 && box.height > 100);
+  const points = [];
+  for (const position of candidatePositions(box.width, box.height)) {
+    await canvas.click({ position });
+    const result = await resultSnapshot(frame);
+    if (
+      result?.title === "점 좌표" &&
+      result.content.includes("스냅") &&
+      !points.some((entry) => entry.content === result.content)
+    ) {
+      points.push({ position, content: result.content });
+      if (points.length === 2) {
+        break;
+      }
+    }
+    await clearReview(frame);
+  }
+  assert.equal(points.length, 2, "two distinct drawing points are required");
+  return points;
+}
+
+async function qualifyReviewInteractions(frame) {
+  const points = await findTwoMeasurementPoints(frame);
+  await clearReview(frame);
+
+  await activateTool(frame, "select");
+  await frame.locator("#drawing").click({ position: points[0].position });
+  const selection = await resultSnapshot(frame);
+  assert.ok(selection && selection.content.includes("종류"));
+  await clearReview(frame);
+
+  await activateTool(frame, "distance");
+  await frame.locator("#drawing").click({ position: points[0].position });
+  assert.match(
+    (await frame.locator("#status").textContent()) ?? "",
+    /첫 점/u,
+  );
+  await frame.locator("#drawing").click({ position: points[1].position });
+  const distance = await resultSnapshot(frame);
+  assert.equal(distance?.title, "두 점 거리");
+  for (const label of ["거리", "ΔX", "ΔY", "ΔZ", "각도"]) {
+    assert.ok(distance.content.includes(label));
+  }
+
+  await frame.locator('[data-review-action="fit"]').click();
+  assert.match(
+    (await frame.locator("#status").textContent()) ?? "",
+    /화면을 맞췄습니다/u,
+  );
+  await clearReview(frame);
+
+  return {
+    status: "pass",
+    selection: true,
+    coordinate: true,
+    distance: true,
+    distanceFields: ["distance", "deltaX", "deltaY", "deltaZ", "angle"],
+    fit: true,
+    clear: true,
+    observedSnapLabels: points.map((point) => {
+      const match = /스냅\s*\n?([^\n]+)/u.exec(point.content);
+      return match?.[1]?.trim().slice(0, 40) ?? "present";
+    }),
+  };
+}
+
+async function qualifyLayoutReset(frame) {
+  const tabs = frame.locator("#layout-tabs button[data-view-id]");
+  const count = await tabs.count();
+  assert.ok(count >= 2, "qualification drawing requires Model/Paper views");
+  let selectedIndex = 0;
+  for (let index = 0; index < count; index += 1) {
+    if ((await tabs.nth(index).getAttribute("aria-selected")) === "true") {
+      selectedIndex = index;
+      break;
+    }
+  }
+  const targetIndex = selectedIndex === 0 ? 1 : 0;
+  await activateTool(frame, "distance");
+  await tabs.nth(targetIndex).click();
+  await frame.waitForFunction(
+    (index) => {
+      const buttons = document.querySelectorAll(
+        "#layout-tabs button[data-view-id]",
+      );
+      return buttons[index]?.getAttribute("aria-selected") === "true";
+    },
+    targetIndex,
+    { timeout: 15_000 },
+  );
+  const pressed = await frame
+    .locator('[data-review-tool][aria-pressed="true"]')
+    .count();
+  assert.equal(pressed, 0);
+  assert.equal(await frame.locator("#review-result").isVisible(), false);
+  await tabs.nth(selectedIndex).click();
+  await frame.waitForFunction(
+    (index) => {
+      const buttons = document.querySelectorAll(
+        "#layout-tabs button[data-view-id]",
+      );
+      return buttons[index]?.getAttribute("aria-selected") === "true";
+    },
+    selectedIndex,
+    { timeout: 15_000 },
+  );
+  return {
+    status: "pass",
+    views: count,
+    pendingReviewStateCleared: true,
+  };
+}
+
+async function captureWidth({
+  frame,
+  page,
+  outputDirectory,
+  scaleFactor,
+  width,
+}) {
+  const editor = await setEditorWidth(
+    page,
+    frame,
+    width.editorWidth,
+  );
+  await openViewerTools(frame);
+  const surfaces = await surfaceSnapshot(frame);
+  assert.ok(
+    Math.abs(surfaces.devicePixelRatio - scaleFactor) <= 0.08,
+    `expected DPR ${scaleFactor}, got ${surfaces.devicePixelRatio}`,
+  );
+  assert.equal(surfaces.host, "vscode");
+  for (const name of [
+    "trigger",
+    "toolbar",
+    "reviewToolbar",
+    "canvas",
+  ]) {
+    assert.equal(surfaces[name]?.hidden, false, `${name} must be visible`);
+    assert.equal(
+      rectIsContained(surfaces[name], surfaces.viewport),
+      true,
+      `${name} must fit in the editor viewport`,
+    );
+  }
+  const reviewCoverage =
+    (surfaces.reviewToolbar.width * surfaces.reviewToolbar.height) /
+    (surfaces.viewport.width * surfaces.viewport.height);
+  assert.ok(reviewCoverage < 0.22);
+
+  const scalePercent = Math.round(scaleFactor * 100);
+  const screenshotName =
+    `windows-vscode-${scalePercent}-${width.label}.png`;
+  const screenshotPath = path.join(outputDirectory, screenshotName);
+  await page.screenshot({ path: screenshotPath });
+  const screenshotMetadata = await stat(screenshotPath);
+  assert.ok(screenshotMetadata.size > 10_000);
+  return {
+    label: width.label,
+    status: "pass",
+    editorCssSize: editor,
+    actualDevicePixelRatio: surfaces.devicePixelRatio,
+    reviewToolbarCoverage: reviewCoverage,
+    screenshot: {
+      file: screenshotName,
+      bytes: screenshotMetadata.size,
+      sha256: await sha256File(screenshotPath),
+    },
+  };
+}
+
+async function terminateProcessTree(child) {
+  if (!child?.pid) {
+    return;
+  }
+  try {
+    await execFile(
+      "taskkill.exe",
+      ["/pid", String(child.pid), "/t", "/f"],
+      {
+        timeout: 15_000,
+        windowsHide: true,
+      },
+    );
+  } catch {
+    // The browser may already have terminated through the CDP connection.
+  }
+}
+
+async function runScale({
+  adapterPath,
+  drawingPath,
+  driverDirectory,
+  extensionsDirectory,
+  outputDirectory,
+  privateRoot,
+  scaleFactor,
+  vscodeExecutablePath,
+}) {
+  const scalePercent = Math.round(scaleFactor * 100);
+  const userData = path.join(privateRoot, `user-data-${scalePercent}`);
+  const settingsDirectory = path.join(userData, "User");
+  await mkdir(settingsDirectory, { recursive: true, mode: 0o700 });
+  await writeFile(
+    path.join(settingsDirectory, "settings.json"),
+    `${JSON.stringify(qualificationSettings(), null, 2)}\n`,
+    { flag: "wx", mode: 0o600 },
+  );
+  const port = await availablePort();
+  const environment = {
+    ...process.env,
+    DWG_VIEWER_LIBREDWG_ADAPTER: adapterPath,
+    DWG_VIEWER_QUALIFICATION_DRAWING: drawingPath,
+    DWG_VIEWER_QUALIFICATION_TOKEN:
+      randomBytes(32).toString("hex"),
+  };
+  delete environment.ELECTRON_RUN_AS_NODE;
+  const child = spawn(
+    vscodeExecutablePath,
+    [
+      "--new-window",
+      "--locale",
+      "en",
+      `--user-data-dir=${userData}`,
+      `--extensions-dir=${extensionsDirectory}`,
+      `--extensionDevelopmentPath=${driverDirectory}`,
+      `--remote-debugging-port=${port}`,
+      "--remote-allow-origins=http://127.0.0.1",
+      `--force-device-scale-factor=${scaleFactor}`,
+      "--window-size=1400,900",
+      "--disable-updates",
+      "--disable-workspace-trust",
+      "--skip-welcome",
+      "--skip-release-notes",
+      "--no-sandbox",
+      "--disable-gpu-sandbox",
+    ],
+    {
+      cwd: privateRoot,
+      env: environment,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    },
+  );
+  const chunks = [];
+  const append = (chunk) => {
+    if (
+      chunks.reduce((total, value) => total + value.length, 0) <
+      128 * 1024
+    ) {
+      chunks.push(Buffer.from(chunk));
+    }
+  };
+  child.stdout.on("data", append);
+  child.stderr.on("data", append);
+  let browser;
+  try {
+    const endpoint = await waitForDevtools(
+      port,
+      child,
+      () => Buffer.concat(chunks).toString("utf8"),
+    );
+    browser = await chromium.connectOverCDP(endpoint);
+    const { frame, page } = await findViewerFrame(browser, child);
+    await page.bringToFront();
+    const interaction = await qualifyReviewInteractions(frame);
+    const layout = await qualifyLayoutReset(frame);
+    const widths = [];
+    for (const width of WIDTHS) {
+      widths.push(
+        await captureWidth({
+          frame,
+          page,
+          outputDirectory,
+          scaleFactor,
+          width,
+        }),
+      );
+    }
+    return {
+      scalePercent,
+      requestedDeviceScaleFactor: scaleFactor,
+      status: "pass",
+      interaction,
+      layout,
+      widths,
+    };
+  } finally {
+    await browser?.close().catch(() => undefined);
+    await terminateProcessTree(child);
+    await rm(userData, { recursive: true, force: true });
+  }
+}
+
+async function productVersion(vscodeExecutablePath) {
+  const packagePath = path.join(
+    path.dirname(vscodeExecutablePath),
+    "resources",
+    "app",
+    "package.json",
+  );
+  const manifest = JSON.parse(await readFile(packagePath, "utf8"));
+  if (
+    typeof manifest.version !== "string" ||
+    !/^\d+\.\d+\.\d+(?:[-+].*)?$/u.test(manifest.version)
+  ) {
+    throw new Error("downloaded VS Code has an invalid product version");
+  }
+  return manifest.version;
+}
+
+export async function qualifyWindowsVsCodeUi(options) {
+  if (process.platform !== "win32" || process.arch !== "x64") {
+    throw new Error("Windows VS Code UI qualification requires win32 x64");
+  }
+  const [adapter, drawing, vsix] = await Promise.all([
+    ensureFile(options.adapterPath),
+    ensureFile(options.drawingPath),
+    ensureFile(options.vsixPath),
+  ]);
+  void adapter;
+  if (
+    path.extname(options.vsixPath).toLocaleLowerCase("en-US") !==
+    ".vsix"
+  ) {
+    throw new Error("qualification requires a packaged VSIX");
+  }
+  await mkdir(path.dirname(options.outputDirectory), {
+    recursive: true,
+    mode: 0o700,
+  });
+  await mkdir(options.outputDirectory, { mode: 0o700 });
+  const privateRoot = await mkdtemp(
+    path.join(os.tmpdir(), "dwg-windows-vscode-ui-"),
+  );
+  const driverDirectory = path.join(privateRoot, "driver");
+  const extensionsDirectory = path.join(privateRoot, "extensions");
+  const installUserData = path.join(privateRoot, "install-user-data");
+  const cachePath = path.join(privateRoot, "vscode-cache");
+  await Promise.all([
+    writeQualificationDriver(driverDirectory),
+    mkdir(extensionsDirectory, { recursive: true, mode: 0o700 }),
+    mkdir(installUserData, { recursive: true, mode: 0o700 }),
+  ]);
+  try {
+    const downloadOptions = {
+      version: "stable",
+      platform: "win32-x64-archive",
+      cachePath,
+    };
+    const vscodeExecutablePath =
+      await downloadAndUnzipVSCode(downloadOptions);
+    await runVSCodeCommand(
+      [
+        `--user-data-dir=${installUserData}`,
+        `--extensions-dir=${extensionsDirectory}`,
+        "--install-extension",
+        options.vsixPath,
+        "--force",
+      ],
+      downloadOptions,
+    );
+    const { stdout: installedExtensions } = await runVSCodeCommand(
+      [
+        `--user-data-dir=${installUserData}`,
+        `--extensions-dir=${extensionsDirectory}`,
+        "--list-extensions",
+        "--show-versions",
+      ],
+      downloadOptions,
+    );
+    assert.match(installedExtensions, /^menaje\.dwg-viewer@/mu);
+
+    const cases = [];
+    for (const scaleFactor of SCALE_FACTORS) {
+      cases.push(
+        await runScale({
+          adapterPath: options.adapterPath,
+          drawingPath: options.drawingPath,
+          driverDirectory,
+          extensionsDirectory,
+          outputDirectory: options.outputDirectory,
+          privateRoot,
+          scaleFactor,
+          vscodeExecutablePath,
+        }),
+      );
+    }
+    const report = {
+      schema: REPORT_SCHEMA,
+      status: "pass",
+      target: {
+        platform: process.platform,
+        architecture: process.arch,
+        os: "windows-2025-runner",
+        vscodeChannel: "stable",
+        vscodeVersion: await productVersion(vscodeExecutablePath),
+        packagedVsixInstalled: true,
+      },
+      input: {
+        drawingBytes: drawing.size,
+        drawingSha256: await sha256File(options.drawingPath),
+        vsixBytes: vsix.size,
+        vsixSha256: await sha256File(options.vsixPath),
+        pathDisclosure: "none",
+      },
+      cases,
+    };
+    await writeJsonExclusive(
+      path.join(options.outputDirectory, "report.json"),
+      report,
+    );
+    return report;
+  } finally {
+    await rm(privateRoot, { recursive: true, force: true });
+  }
+}
+
+async function main() {
+  const options = parseWindowsUiArguments(process.argv.slice(2));
+  const report = await qualifyWindowsVsCodeUi(options);
+  process.stdout.write(
+    `${JSON.stringify({
+      schema: report.schema,
+      status: report.status,
+      target: report.target,
+      scales: report.cases.map((entry) => entry.scalePercent),
+    })}\n`,
+  );
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((error) => {
+    process.stderr.write(
+      `Windows VS Code UI qualification failed: ${
+        error instanceof Error ? error.stack ?? error.message : "unknown error"
+      }\n`,
+    );
+    process.exitCode = 1;
+  });
+}

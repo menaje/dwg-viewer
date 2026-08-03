@@ -10,7 +10,12 @@ on:
       - "apps/vscode-extension/src/scene-cache-manager.ts"
       - "apps/vscode-extension/src/scene-engine.ts"
       - "apps/vscode-extension/test/native-cache.test.ts"
+      - "apps/vscode-extension/scripts/qualify-extension-host.mjs"
+      - "apps/vscode-extension/package.json"
+      - "packages/webview/**"
       - "scripts/qualify-windows-native.mjs"
+      - "scripts/qualify-windows-vscode-ui.mjs"
+      - "scripts/qualify-windows-vscode-ui.test.mjs"
       - ".github/workflows/libredwg-adapter.yml"
       - "LICENSE"
       - "package.json"
@@ -22,7 +27,12 @@ on:
       - "apps/vscode-extension/src/scene-cache-manager.ts"
       - "apps/vscode-extension/src/scene-engine.ts"
       - "apps/vscode-extension/test/native-cache.test.ts"
+      - "apps/vscode-extension/scripts/qualify-extension-host.mjs"
+      - "apps/vscode-extension/package.json"
+      - "packages/webview/**"
       - "scripts/qualify-windows-native.mjs"
+      - "scripts/qualify-windows-vscode-ui.mjs"
+      - "scripts/qualify-windows-vscode-ui.test.mjs"
       - ".github/workflows/libredwg-adapter.yml"
       - "LICENSE"
       - "package.json"
@@ -63,6 +73,7 @@ jobs:
         with:
           msystem: UCRT64
           update: true
+          path-type: inherit
           install: >-
             diffutils
             make
@@ -153,7 +164,7 @@ jobs:
         shell: pwsh
         run: |
           pnpm install --frozen-lockfile
-          pnpm --filter dwg-viewer-vscode compile
+          pnpm --filter dwg-viewer-vscode package:vsix
 
       - name: Create private Windows UNC qualification share
         if: runner.os == 'Windows'
@@ -183,13 +194,42 @@ jobs:
             --unc-root "$env:DWG_VIEWER_UNC_ROOT" `
             --report "$env:RUNNER_TEMP\windows-native-qualification.json"
 
-      - uses: actions/upload-artifact@v7
+      - name: Prepare public Unicode Windows UI drawing
         if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $drawingRoot = Join-Path $env:RUNNER_TEMP "windows-vscode-ui-input"
+          New-Item -ItemType Directory -Path $drawingRoot | Out-Null
+          $drawingPath = Join-Path $drawingRoot "A2-013-공개-대체-검증.dwg"
+          Copy-Item `
+            "$env:RUNNER_TEMP\dwg-libredwg-build\libredwg-0.14\test\test-data\example_2018.dwg" `
+            $drawingPath
+          "DWG_VIEWER_UI_DRAWING=$drawingPath" >> $env:GITHUB_ENV
+
+      - name: Qualify latest stable VS Code UI at Windows display scales
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          node scripts/qualify-windows-vscode-ui.mjs `
+            --adapter "$env:RUNNER_TEMP\libredwg-adapter.exe" `
+            --drawing "$env:DWG_VIEWER_UI_DRAWING" `
+            --vsix "$env:GITHUB_WORKSPACE\apps\vscode-extension\dwg-viewer-vscode-0.1.0.vsix" `
+            --output-dir "$env:RUNNER_TEMP\windows-vscode-ui-qualification"
+
+      - uses: actions/upload-artifact@v7
+        if: always() && runner.os == 'Windows'
         with:
           name: dwg-viewer-windows-native-qualification
           path: ${{ runner.temp }}/windows-native-qualification.json
           archive: false
-          if-no-files-found: error
+          if-no-files-found: warn
+
+      - uses: actions/upload-artifact@v7
+        if: always() && runner.os == 'Windows'
+        with:
+          name: dwg-viewer-windows-vscode-ui-qualification
+          path: ${{ runner.temp }}/windows-vscode-ui-qualification
+          if-no-files-found: warn
 
       - name: Remove private Windows UNC qualification share
         if: always() && runner.os == 'Windows'

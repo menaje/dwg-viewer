@@ -482,7 +482,7 @@ function qualificationSettings(progressivePreview) {
   };
 }
 
-async function writeQualificationDriver(driverDirectory) {
+export async function writeQualificationDriver(driverDirectory) {
   await mkdir(driverDirectory, { recursive: true, mode: 0o700 });
   const manifest = {
     name: "dwg-viewer-qualification-driver",
