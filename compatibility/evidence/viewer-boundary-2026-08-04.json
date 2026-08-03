@@ -1,0 +1,101 @@
+{
+  "schema": "dwg-viewer-boundary-qualification/1",
+  "status": "passed-viewer-owned-boundary",
+  "asOf": "2026-08-04",
+  "scope": {
+    "repository": "menaje/dwg-viewer",
+    "externalConsumerQualification": "consumer-owned-not-executed",
+    "deploymentPerformed": false
+  },
+  "releaseControl": {
+    "stage": "prerelease",
+    "tag": "viewer-core-v0.1.0",
+    "tagPublicationApproved": false,
+    "automaticStablePromotion": false
+  },
+  "publicPackages": {
+    "viewerCore": {
+      "package": "@menaje/viewer-core",
+      "version": "0.1.0",
+      "license": "MPL-2.0",
+      "sourceModules": 27,
+      "externalImports": [
+        "@menaje/viewer-render-protocol"
+      ],
+      "productBootstrapImports": 0
+    },
+    "renderProtocol": {
+      "package": "@menaje/viewer-render-protocol",
+      "version": "0.1.0",
+      "license": "MPL-2.0",
+      "sourceModules": 6,
+      "externalImports": [],
+      "productBootstrapImports": 0
+    },
+    "viewerUi": {
+      "package": "@menaje/viewer-ui",
+      "version": "0.1.0",
+      "license": "MPL-2.0",
+      "sourceModules": 5,
+      "externalImports": [],
+      "productBootstrapImports": 0
+    }
+  },
+  "artifacts": {
+    "viewerCore": {
+      "file": "menaje-viewer-core-0.1.0.tgz",
+      "sha256": "2a04c367b5b2cf5870f5f18f33e2a1d8e545f099f0dd735c7e5d90f8224b698d",
+      "bytes": 44323,
+      "entries": 30
+    },
+    "renderProtocol": {
+      "file": "menaje-viewer-render-protocol-0.1.0.tgz",
+      "sha256": "60e952677c17333fbdb07193ef87cafb1a0be9923573ac5366297a19cfc8b9ed",
+      "bytes": 11158,
+      "entries": 9
+    },
+    "viewerUi": {
+      "file": "menaje-viewer-ui-0.1.0.tgz",
+      "sha256": "9f13c2aa782297929058c298728114fa31c1cc387c82319e27b90ad0f267b8db",
+      "bytes": 8560,
+      "entries": 8
+    }
+  },
+  "artifactOnlyConsumer": {
+    "identities": {
+      "viewerCore": "menaje-viewer-core/0.1",
+      "renderProtocol": "menaje-viewer-render-protocol/0.1.0",
+      "viewerUi": "menaje-viewer-ui/0.1"
+    },
+    "conformance": {
+      "renderSourceProtocol": "0.1.0",
+      "renderSourceDisposed": true,
+      "serviceExternalIdentity": true,
+      "serviceLayerKinds": [
+        "base",
+        "live",
+        "added",
+        "modified",
+        "removed",
+        "diagnostic"
+      ],
+      "serviceRevisionEvents": 1,
+      "serviceDiagnosticBatches": 1,
+      "serviceDiagnostics": 1,
+      "serviceReplayRejected": true
+    },
+    "standalone": {
+      "openedWithoutExternalProduct": true,
+      "optionalIntegrationAbsent": true,
+      "hostDisposals": 1,
+      "presentationDisposals": 1
+    }
+  },
+  "productEntrypoints": {
+    "browser": "packages/webview/src/main.mjs",
+    "vscodeBundle": "packages/webview/src/main.mjs",
+    "runtime": "openViewerRuntime",
+    "source": "DwgSceneCacheSource",
+    "sharedEntrypoint": true
+  }
+}

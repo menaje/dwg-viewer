@@ -437,6 +437,15 @@ test("keeps package versions and producer compatibility manifest aligned", async
     "github-release-and-packages",
   );
   assert.equal(manifest.distribution.published, true);
+  assert.equal(manifest.distribution.releaseStage, "prerelease");
+  assert.equal(
+    manifest.distribution.tagPublicationApproved,
+    false,
+  );
+  assert.equal(
+    manifest.distribution.automaticStablePromotion,
+    false,
+  );
   assert.equal(
     manifest.distribution.tag,
     `viewer-core-v${ViewerCoreVersion}`,
@@ -450,6 +459,13 @@ test("keeps package versions and producer compatibility manifest aligned", async
   assert.deepEqual(manifest.compatibilityWindow.renderProtocol, [
     RenderProtocolVersion,
   ]);
+  assert.deepEqual(manifest.qualification, {
+    viewerOwnedBoundary: "passed",
+    command: "pnpm run qualify:viewer-boundary",
+    evidence:
+      "compatibility/evidence/viewer-boundary-2026-08-04.json",
+    externalConsumers: "consumer-owned",
+  });
   assert.equal(
     manifest.sources.mockRenderDelta,
     "delta-conformance",

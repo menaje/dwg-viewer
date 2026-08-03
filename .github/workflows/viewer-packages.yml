@@ -41,11 +41,21 @@ jobs:
           protocol_version=$(node -p "require('./packages/render-protocol/package.json').version")
           core_version=$(node -p "require('./packages/viewer-core/package.json').version")
           ui_version=$(node -p "require('./packages/viewer-ui/package.json').version")
+          release_stage=$(node -p "require('./compatibility/viewer-core.json').distribution.releaseStage")
+          publish_approved=$(node -p "require('./compatibility/viewer-core.json').distribution.tagPublicationApproved")
           test "$protocol_version" = "$core_version"
           test "$protocol_version" = "$ui_version"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             test "$GITHUB_REF_NAME" = "viewer-core-v$core_version"
+            if [[ "$publish_approved" != "true" ]]; then
+              echo "tag publication requires explicit compatibility manifest approval" >&2
+              exit 1
+            fi
           fi
+          test "$release_stage" = "prerelease" || test "$release_stage" = "stable"
+
+      - name: Qualify Viewer-owned package and standalone boundary
+        run: pnpm run qualify:viewer-boundary
 
       - name: Pack reproducible public artifacts
         shell: bash
@@ -171,9 +181,15 @@ jobs:
             "Source-neutral Viewer Core, Viewer UI, and render protocol packages." \
             "Consumers must pin the release artifacts and verify SHA256SUMS." \
             > "$release_notes"
+          release_stage=$(node -p "require('./compatibility/viewer-core.json').distribution.releaseStage")
+          release_flags=()
+          if [[ "$release_stage" == "prerelease" ]]; then
+            release_flags+=(--prerelease)
+          fi
           gh release create "$GITHUB_REF_NAME" \
             "$RUNNER_TEMP/viewer-release"/*.tgz \
             "$RUNNER_TEMP/viewer-release/SHA256SUMS" \
             --verify-tag \
             --title "Viewer Core v$core_version" \
+            "${release_flags[@]}" \
             --notes-file "$release_notes"

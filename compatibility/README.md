@@ -5,6 +5,9 @@ protocol의 호환 기준을 기록한다.
 
 - `public-preview`는 package/API가 공개 배포됐지만 아직 `0.x` compatibility
   window에 있다는 뜻이다.
+- `releaseStage: prerelease`는 현재 GitHub Release가 최종 승격되지 않았다는
+  뜻이다. `tagPublicationApproved: false`인 commit에서는 태그 workflow가
+  package나 Release를 배포하지 않는다.
 - `github-release-and-packages`는 공개 GitHub Release tarball과 GitHub
   Packages npm package를 함께 배포한다는 뜻이다.
 - consumer는 release tarball의 exact URL과 SHA-256을 pin하거나 GitHub
@@ -26,6 +29,15 @@ protocol의 호환 기준을 기록한다.
 
 실제 package version, protocol version, artifact digest 또는 conformance
 경로가 바뀌면 manifest와 package test를 같은 변경에서 갱신한다.
+
+`pnpm run qualify:viewer-boundary`는 세 public tarball을 두 번 pack해 byte
+동일성과 manifest SHA-256을 확인하고, 빈 임시 consumer에 artifact만 설치해
+RenderSource/Service fixture와 standalone runtime을 실행한다. Browser와
+VS Code가 같은 Webview entrypoint를 bundle하는지도 확인한다. 이 저장소가
+소유하지 않는 BIM/Spatial consumer qualification은 실행하거나 수정하지
+않으며 각 consumer manifest가 책임진다. 고정 evidence는
+[`evidence/viewer-boundary-2026-08-04.json`](evidence/viewer-boundary-2026-08-04.json)에
+있다.
 
 `native-document-adapter.json`은 raw DWG query/change/write backend의
 operation별 admission을 별도로 기록한다. 현재 Native는 bounded packed

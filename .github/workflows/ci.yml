@@ -52,5 +52,7 @@ jobs:
         run: pnpm --filter @dwg-viewer/webview check
       - name: Check VS Code extension
         run: pnpm --filter dwg-viewer-vscode check
+      - name: Qualify Viewer-owned package and standalone boundary
+        run: pnpm run qualify:viewer-boundary
       - name: Package VSIX
         run: pnpm --filter dwg-viewer-vscode package:vsix

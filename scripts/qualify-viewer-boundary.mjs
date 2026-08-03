@@ -1,0 +1,525 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+const manifestPath = path.join(
+  repositoryRoot,
+  "compatibility",
+  "viewer-core.json",
+);
+const evidencePath = path.join(
+  repositoryRoot,
+  "compatibility",
+  "evidence",
+  "viewer-boundary-2026-08-04.json",
+);
+const emitOnly = process.argv.slice(2).includes("--emit");
+const unexpectedArguments = process.argv
+  .slice(2)
+  .filter((argument) => argument !== "--emit");
+if (unexpectedArguments.length > 0) {
+  throw new Error(
+    `unsupported viewer boundary arguments: ${unexpectedArguments.join(", ")}`,
+  );
+}
+
+const packageDefinitions = Object.freeze([
+  Object.freeze({
+    manifestKey: "viewerCore",
+    artifactKey: "viewerCore",
+    directory: "packages/viewer-core",
+    allowedExternalImports: Object.freeze([
+      "@menaje/viewer-render-protocol",
+    ]),
+  }),
+  Object.freeze({
+    manifestKey: "renderProtocol",
+    artifactKey: "renderProtocol",
+    directory: "packages/render-protocol",
+    allowedExternalImports: Object.freeze([]),
+  }),
+  Object.freeze({
+    manifestKey: "viewerUi",
+    artifactKey: "viewerUi",
+    directory: "packages/viewer-ui",
+    allowedExternalImports: Object.freeze([]),
+  }),
+]);
+
+function executable(name) {
+  return process.platform === "win32" ? `${name}.cmd` : name;
+}
+
+function run(command, arguments_, { cwd = repositoryRoot } = {}) {
+  const result = spawnSync(command, arguments_, {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      npm_config_audit: "false",
+      npm_config_fund: "false",
+      npm_config_update_notifier: "false",
+    },
+    maxBuffer: 16 * 1024 * 1024,
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  if (result.status !== 0) {
+    const output = [result.stdout, result.stderr]
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+    throw new Error(
+      `${command} ${arguments_.join(" ")} failed with ${result.status}` +
+        (output ? `\n${output}` : ""),
+    );
+  }
+  return result.stdout.trim();
+}
+
+async function readJson(filePath) {
+  return JSON.parse(await readFile(filePath, "utf8"));
+}
+
+async function sourceFiles(directory) {
+  const files = [];
+  for (const entry of await readdir(directory, {
+    withFileTypes: true,
+  })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await sourceFiles(entryPath)));
+    } else if (entry.isFile() && entry.name.endsWith(".mjs")) {
+      files.push(entryPath);
+    }
+  }
+  return files.sort();
+}
+
+function externalImports(source) {
+  const imports = new Set();
+  const expression =
+    /(?:from\s+|import\s*\(\s*|import\s+)["']([^"']+)["']/gu;
+  for (const match of source.matchAll(expression)) {
+    if (
+      !match[1].startsWith(".") &&
+      !match[1].startsWith("/") &&
+      !match[1].startsWith("#")
+    ) {
+      imports.add(match[1]);
+    }
+  }
+  return [...imports].sort();
+}
+
+async function validatePublicPackageBoundary(
+  definition,
+  manifest,
+) {
+  const packageRoot = path.join(
+    repositoryRoot,
+    definition.directory,
+  );
+  const packageManifest = await readJson(
+    path.join(packageRoot, "package.json"),
+  );
+  const expected = manifest[definition.manifestKey];
+  assert.equal(packageManifest.name, expected.package);
+  assert.equal(packageManifest.version, expected.version);
+  assert.equal(packageManifest.private, false);
+  assert.equal(packageManifest.license, "MPL-2.0");
+  assert.deepEqual(packageManifest.files, [
+    "LICENSE",
+    "README.md",
+    "src",
+  ]);
+
+  const files = await sourceFiles(path.join(packageRoot, "src"));
+  const imports = new Set();
+  for (const file of files) {
+    const source = await readFile(file, "utf8");
+    assert.doesNotMatch(source, /acquireVsCodeApi/u);
+    for (const specifier of externalImports(source)) {
+      imports.add(specifier);
+    }
+  }
+  assert.deepEqual(
+    [...imports].sort(),
+    [...definition.allowedExternalImports],
+  );
+  assert.deepEqual(
+    Object.keys(packageManifest.dependencies ?? {}).sort(),
+    [...definition.allowedExternalImports],
+  );
+
+  return Object.freeze({
+    package: packageManifest.name,
+    version: packageManifest.version,
+    license: packageManifest.license,
+    sourceModules: files.length,
+    externalImports: Object.freeze([...imports].sort()),
+    productBootstrapImports: 0,
+  });
+}
+
+function sha256(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+async function packArtifacts(destination, manifest) {
+  await mkdir(destination, { recursive: true });
+  for (const definition of packageDefinitions) {
+    run(executable("pnpm"), [
+      "--dir",
+      path.join(repositoryRoot, definition.directory),
+      "pack",
+      "--pack-destination",
+      destination,
+    ]);
+  }
+
+  const artifacts = {};
+  for (const definition of packageDefinitions) {
+    const expected =
+      manifest.distribution.artifacts[definition.artifactKey];
+    const artifactPath = path.join(destination, expected.file);
+    const bytes = await readFile(artifactPath);
+    const digest = sha256(bytes);
+    assert.equal(digest, expected.sha256);
+
+    const entries = run("tar", ["-tzf", artifactPath])
+      .split(/\r?\n/u)
+      .filter(Boolean);
+    assert.ok(entries.length > 0);
+    assert.ok(
+      entries.every((entry) => entry.startsWith("package/")),
+    );
+    assert.ok(
+      entries.every(
+        (entry) =>
+          !entry.includes("/test/") &&
+          !entry.includes("/node_modules/") &&
+          !entry.includes("/apps/") &&
+          !entry.includes("/adapters/"),
+      ),
+    );
+
+    artifacts[definition.artifactKey] = Object.freeze({
+      file: expected.file,
+      sha256: digest,
+      bytes: bytes.byteLength,
+      entries: entries.length,
+    });
+  }
+  return Object.freeze(artifacts);
+}
+
+async function assertReproducible(first, second, manifest) {
+  for (const definition of packageDefinitions) {
+    const file =
+      manifest.distribution.artifacts[
+        definition.artifactKey
+      ].file;
+    const [left, right] = await Promise.all([
+      readFile(path.join(first, file)),
+      readFile(path.join(second, file)),
+    ]);
+    assert.equal(Buffer.compare(left, right), 0);
+  }
+}
+
+const consumerProbe = String.raw`
+import {
+  ViewerCoreApi,
+  openViewerRuntime,
+} from "@menaje/viewer-core";
+import {
+  runRenderSourceConformance,
+  runServiceEventConformance,
+  runServiceRenderSourceConformance,
+} from "@menaje/viewer-core/conformance";
+import {
+  createMockServiceEventHarness,
+  MockRenderSource,
+  MockServicePickFixture,
+  MockServiceRenderSource,
+} from "@menaje/viewer-core/testing";
+import {
+  RenderProtocolId,
+} from "@menaje/viewer-render-protocol";
+import {
+  ViewerUiApi,
+} from "@menaje/viewer-ui";
+
+const renderSource = await runRenderSourceConformance(
+  () => new MockRenderSource(),
+);
+const serviceSource = await runServiceRenderSourceConformance(
+  () => new MockServiceRenderSource(),
+  MockServicePickFixture,
+);
+const serviceEvents = await runServiceEventConformance(
+  () => createMockServiceEventHarness(),
+);
+let hostDisposals = 0;
+let presentationDisposals = 0;
+const runtime = await openViewerRuntime(new MockRenderSource(), {
+  host: {
+    handleEvent() {},
+    dispose() {
+      hostDisposals += 1;
+    },
+  },
+  mount() {
+    return {
+      dispose() {
+        presentationDisposals += 1;
+      },
+    };
+  },
+});
+await runtime.dispose();
+await runtime.dispose();
+if (
+  hostDisposals !== 1 ||
+  presentationDisposals !== 1 ||
+  !runtime.disposed
+) {
+  throw new Error("standalone runtime lifecycle did not close exactly once");
+}
+
+console.log(JSON.stringify({
+  identities: {
+    viewerCore: ViewerCoreApi,
+    renderProtocol: RenderProtocolId,
+    viewerUi: ViewerUiApi,
+  },
+  conformance: {
+    renderSourceProtocol: renderSource.protocolVersion,
+    renderSourceDisposed: renderSource.disposed,
+    serviceExternalIdentity: serviceSource.hasExternalIdentity,
+    serviceLayerKinds: serviceSource.layerKinds,
+    serviceRevisionEvents: serviceEvents.revisionEvents,
+    serviceDiagnosticBatches: serviceEvents.diagnosticBatches,
+    serviceDiagnostics: serviceEvents.diagnostics,
+    serviceReplayRejected: serviceEvents.replayRejected,
+  },
+  standalone: {
+    openedWithoutExternalProduct: true,
+    optionalIntegrationAbsent: true,
+    hostDisposals,
+    presentationDisposals,
+  },
+}));
+`;
+
+async function qualifyArtifactConsumer(
+  directory,
+  artifactsDirectory,
+  manifest,
+) {
+  await mkdir(directory, { recursive: true });
+  await writeFile(
+    path.join(directory, "package.json"),
+    `${JSON.stringify({
+      name: "viewer-boundary-qualification-consumer",
+      private: true,
+      type: "module",
+    }, null, 2)}\n`,
+    "utf8",
+  );
+  const artifactPaths = packageDefinitions.map((definition) =>
+    path.join(
+      artifactsDirectory,
+      manifest.distribution.artifacts[
+        definition.artifactKey
+      ].file,
+    ),
+  );
+  run(
+    executable("npm"),
+    [
+      "install",
+      "--ignore-scripts",
+      "--no-audit",
+      "--no-fund",
+      ...artifactPaths,
+    ],
+    { cwd: directory },
+  );
+  return JSON.parse(
+    run(
+      process.execPath,
+      ["--input-type=module", "--eval", consumerProbe],
+      { cwd: directory },
+    ),
+  );
+}
+
+async function validateProductEntrypoints() {
+  const [
+    browserHtml,
+    webviewMain,
+    extensionBuilder,
+    extensionHtml,
+    webviewPackage,
+  ] = await Promise.all([
+    readFile(
+      path.join(repositoryRoot, "packages/webview/index.html"),
+      "utf8",
+    ),
+    readFile(
+      path.join(repositoryRoot, "packages/webview/src/main.mjs"),
+      "utf8",
+    ),
+    readFile(
+      path.join(
+        repositoryRoot,
+        "apps/vscode-extension/scripts/build-webview.mjs",
+      ),
+      "utf8",
+    ),
+    readFile(
+      path.join(
+        repositoryRoot,
+        "apps/vscode-extension/src/extension.ts",
+      ),
+      "utf8",
+    ),
+    readJson(
+      path.join(repositoryRoot, "packages/webview/package.json"),
+    ),
+  ]);
+  assert.match(browserHtml, /src\/main\.mjs/u);
+  assert.match(
+    webviewMain,
+    /DwgSceneCacheSource[\s\S]*@dwg-viewer\/dwg-scene-source/u,
+  );
+  assert.match(
+    webviewMain,
+    /openViewerRuntime[\s\S]*@menaje\/viewer-core/u,
+  );
+  assert.match(
+    extensionBuilder,
+    /packages["'], ["']webview["'][\s\S]*src["'], ["']main\.mjs/u,
+  );
+  assert.match(
+    extensionHtml,
+    /joinPath\(mediaRoot, ["']src["'], ["']main\.mjs["']\)/u,
+  );
+  for (const dependency of [
+    "@dwg-viewer/dwg-scene-source",
+    "@menaje/viewer-render-protocol",
+    "@menaje/viewer-core",
+    "@menaje/viewer-ui",
+  ]) {
+    assert.ok(dependency in webviewPackage.dependencies);
+  }
+  return Object.freeze({
+    browser: "packages/webview/src/main.mjs",
+    vscodeBundle: "packages/webview/src/main.mjs",
+    runtime: "openViewerRuntime",
+    source: "DwgSceneCacheSource",
+    sharedEntrypoint: true,
+  });
+}
+
+const manifest = await readJson(manifestPath);
+assert.equal(manifest.schema, "menaje-viewer-core-compatibility/1");
+assert.equal(manifest.status, "public-preview");
+assert.equal(manifest.distribution.published, true);
+assert.equal(manifest.distribution.releaseStage, "prerelease");
+assert.equal(
+  manifest.distribution.tagPublicationApproved,
+  false,
+);
+assert.equal(
+  manifest.distribution.automaticStablePromotion,
+  false,
+);
+assert.equal(
+  manifest.qualification.viewerOwnedBoundary,
+  "passed",
+);
+assert.equal(
+  manifest.qualification.externalConsumers,
+  "consumer-owned",
+);
+
+const temporaryRoot = await mkdtemp(
+  path.join(tmpdir(), "dwg-viewer-boundary-"),
+);
+try {
+  const firstArtifacts = path.join(temporaryRoot, "artifacts");
+  const repeatedArtifacts = path.join(
+    temporaryRoot,
+    "artifacts-repeat",
+  );
+  const publicPackages = {};
+  for (const definition of packageDefinitions) {
+    publicPackages[definition.manifestKey] =
+      await validatePublicPackageBoundary(definition, manifest);
+  }
+  const artifacts = await packArtifacts(
+    firstArtifacts,
+    manifest,
+  );
+  await packArtifacts(repeatedArtifacts, manifest);
+  await assertReproducible(
+    firstArtifacts,
+    repeatedArtifacts,
+    manifest,
+  );
+  const artifactOnlyConsumer = await qualifyArtifactConsumer(
+    path.join(temporaryRoot, "consumer"),
+    firstArtifacts,
+    manifest,
+  );
+  const productEntrypoints = await validateProductEntrypoints();
+
+  const report = Object.freeze({
+    schema: "dwg-viewer-boundary-qualification/1",
+    status: "passed-viewer-owned-boundary",
+    asOf: manifest.asOf,
+    scope: Object.freeze({
+      repository: "menaje/dwg-viewer",
+      externalConsumerQualification: "consumer-owned-not-executed",
+      deploymentPerformed: false,
+    }),
+    releaseControl: Object.freeze({
+      stage: manifest.distribution.releaseStage,
+      tag: manifest.distribution.tag,
+      tagPublicationApproved:
+        manifest.distribution.tagPublicationApproved,
+      automaticStablePromotion:
+        manifest.distribution.automaticStablePromotion,
+    }),
+    publicPackages: Object.freeze(publicPackages),
+    artifacts: Object.freeze(artifacts),
+    artifactOnlyConsumer: Object.freeze(artifactOnlyConsumer),
+    productEntrypoints,
+  });
+
+  if (!emitOnly) {
+    assert.deepEqual(await readJson(evidencePath), report);
+  }
+  console.log(JSON.stringify(report, null, 2));
+} finally {
+  await rm(temporaryRoot, { recursive: true, force: true });
+}

@@ -20,6 +20,9 @@
   "distribution": {
     "kind": "github-release-and-packages",
     "published": true,
+    "releaseStage": "prerelease",
+    "tagPublicationApproved": false,
+    "automaticStablePromotion": false,
     "tag": "viewer-core-v0.1.0",
     "releaseUrl": "https://github.com/menaje/dwg-viewer/releases/tag/viewer-core-v0.1.0",
     "registry": "https://npm.pkg.github.com",
@@ -96,6 +99,12 @@
     "productEntrypoint": "packages/webview/src/main.mjs",
     "command": "pnpm run test:viewer-contracts",
     "artifactWorkflow": ".github/workflows/viewer-packages.yml"
+  },
+  "qualification": {
+    "viewerOwnedBoundary": "passed",
+    "command": "pnpm run qualify:viewer-boundary",
+    "evidence": "compatibility/evidence/viewer-boundary-2026-08-04.json",
+    "externalConsumers": "consumer-owned"
   },
   "consumers": {
     "bimExplorer": {

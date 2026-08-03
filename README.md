@@ -32,7 +32,9 @@ Coni Spatial은 호환 package만 bundle하고 두 standalone Viewer 제품
 `@menaje/viewer-render-protocol`, `@menaje/viewer-core`와
 `@menaje/viewer-ui` 0.1.0은
 [Viewer Core release](https://github.com/menaje/dwg-viewer/releases/tag/viewer-core-v0.1.0)와
-GitHub Packages에 배포되는 source-neutral public preview입니다. 기존 VS Code
+GitHub Packages에 배포된 source-neutral public preview이며 현재 GitHub
+Release 상태는 prerelease입니다. 이후 태그 배포는 compatibility manifest의
+명시적 승인 없이는 CI가 거부합니다. 기존 VS Code
 `dwg-*` message는 public protocol로 노출하지 않습니다. standalone
 Browser 파일과 VS Code cache channel은 모두 `DwgSceneCacheSource`와 같은
 Viewer Core runtime을 통해 현재 renderer를 mount합니다. Core는
@@ -41,6 +43,14 @@ selection event lifecycle을 소유합니다. Viewer UI는 review toolbar의 DOM
 상태, 접근성 속성, bounded 결과 panel과 event disposal을 소유하며 Webview는
 DWG 배치 가시성·객체 판독, CAD 속성 투영과 WebGL 구현만 어댑터로
 주입합니다.
+
+Viewer 저장소가 소유하는 public package, clean artifact-only consumer,
+standalone runtime과 Browser/VS Code 공용 진입점은 다음 명령으로 한 번에
+검증합니다. 이 명령은 외부 저장소를 실행하거나 배포하지 않습니다.
+
+```bash
+pnpm run qualify:viewer-boundary
+```
 
 ## 도면 엔진 벤치마크
 

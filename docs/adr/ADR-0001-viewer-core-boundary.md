@@ -274,6 +274,22 @@ cleanup이며 각각 8초/800 MB hard gate 안이다.
 먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
 private message를 Core API로 승격하지 않고 진행한다.
 
+2026-08-04에는 Viewer 저장소 소유 경계를
+`pnpm run qualify:viewer-boundary`로 고정했다. 이 Gate는 public package를
+두 번 pack해 manifest digest와 byte 동일성을 확인하고, 빈 임시 consumer에
+tarball만 설치해 source/service conformance와 외부 제품 없는 standalone
+runtime lifecycle을 실행한다. Browser HTML과 VS Code bundle도 같은
+`packages/webview/src/main.mjs`에서 `DwgSceneCacheSource`와
+`openViewerRuntime()`을 사용해야 통과한다. 결과는
+[`viewer-boundary-2026-08-04.json`](../../compatibility/evidence/viewer-boundary-2026-08-04.json)에
+고정한다.
+
+현재 `viewer-core-v0.1.0`은 prerelease로 유지한다. 새 tag publish는
+producer manifest의 `tagPublicationApproved`를 별도 변경하지 않으면
+workflow가 거부하며 stable 자동 승격은 없다. 이 qualification은
+`dwg-viewer`만 실행하고 BIM Explorer와 Coni Spatial 저장소를 수정하거나
+그 consumer-owned 결과를 대신 주장하지 않는다.
+
 `bim-explorer`의 `BimModelSource`와 3D consumer는 아직 구현되지 않았다.
 따라서 current package가 truly source-neutral하거나 3D-compatible하다고
 주장하지 않으며 해당 evidence는
