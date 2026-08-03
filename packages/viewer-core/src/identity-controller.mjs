@@ -72,7 +72,7 @@ function pickRequest(sourceSession, snapshot, value) {
       protocolVersion: snapshot.protocolVersion,
       sessionId: snapshot.sessionId,
       sourceId: layer.sourceId,
-      revisionId: snapshot.revisionId,
+      revisionId: sourceSession.revisionId ?? snapshot.revisionId,
       snapshotId: snapshot.snapshotId,
       layerId: layer.layerId,
       renderId: value.renderId,
@@ -83,6 +83,8 @@ function pickRequest(sourceSession, snapshot, value) {
     {
       session: sourceSession.descriptor,
       snapshot,
+      expectedRevisionId:
+        sourceSession.revisionId ?? snapshot.revisionId,
     },
   );
 }
@@ -119,6 +121,9 @@ export class ViewerIdentityController {
     return parseRenderIdentityDescriptor(value, {
       session: this.#sourceSession.descriptor,
       snapshot: this.#snapshot,
+      expectedRevisionId:
+        this.#sourceSession.revisionId ??
+        this.#snapshot.revisionId,
     });
   }
 
@@ -128,7 +133,9 @@ export class ViewerIdentityController {
       protocolVersion: this.#snapshot.protocolVersion,
       sessionId: this.#snapshot.sessionId,
       sourceId: identity.sourceId,
-      revisionId: this.#snapshot.revisionId,
+      revisionId:
+        this.#sourceSession.revisionId ??
+        this.#snapshot.revisionId,
       snapshotId: this.#snapshot.snapshotId,
       layerId: identity.layerId,
       sequence: this.#sequence,

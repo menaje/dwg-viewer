@@ -77,3 +77,29 @@ test("disposal prevents stale selection publication", () => {
     /disposed/u,
   );
 });
+
+test("clears stale selection while advancing to an applied render revision", () => {
+  const events = [];
+  const controller = new ViewerSelectionController({
+    host: {
+      handleEvent(event) {
+        events.push(event);
+      },
+      dispose() {},
+    },
+    snapshot,
+  });
+  controller.replace({ renderId: "render:before" });
+
+  const advanced = controller.advanceRevision("revision:next");
+  const unchanged = controller.advanceRevision("revision:next");
+
+  assert.equal(advanced.revisionId, "revision:next");
+  assert.equal(advanced.reason, "revision.changed");
+  assert.equal(advanced.selection, null);
+  assert.equal(advanced.sequence, 2);
+  assert.deepEqual(unchanged, advanced);
+  assert.equal(events.length, 2);
+  assert.equal(events[1].detail.revisionId, "revision:next");
+  assert.equal(events[1].detail.selection, null);
+});

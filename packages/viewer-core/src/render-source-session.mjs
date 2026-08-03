@@ -7,6 +7,7 @@ import {
   parseContextReferenceDescriptor,
   parsePickResolveRequest,
   parseRangeHandleDescriptor,
+  parseRenderDeltaDescriptor,
   parseRenderIdentityDescriptor,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
@@ -83,6 +84,18 @@ function binaryBuffer(value) {
   throw new TypeError("RenderSource range read must return binary bytes");
 }
 
+function subscriptionDisposer(value) {
+  if (typeof value === "function") {
+    return value;
+  }
+  if (value && typeof value.dispose === "function") {
+    return () => value.dispose();
+  }
+  throw new TypeError(
+    "RenderSource delta subscription must return a disposer",
+  );
+}
+
 export class ViewerRenderSourceSession {
   #source;
   #session;
@@ -90,6 +103,9 @@ export class ViewerRenderSourceSession {
   #disposed = false;
   #disposePromise;
   #lastSnapshot;
+  #renderRevisionId;
+  #renderDeltaSequence = 0;
+  #deltaSubscription;
   #rangeHandles = new Map();
   #remainingRangeBytes = new Map();
 
@@ -105,6 +121,15 @@ export class ViewerRenderSourceSession {
 
   get disposed() {
     return this.#disposed;
+  }
+
+  get revisionId() {
+    return (
+      this.#renderRevisionId ??
+      this.#lastSnapshot?.revisionId ??
+      this.#descriptor.lastSuccessfulRevisionId ??
+      this.#descriptor.currentRevisionId
+    );
   }
 
   #activeSnapshot(capability) {
@@ -180,7 +205,10 @@ export class ViewerRenderSourceSession {
         return this.#lastSnapshot;
       }
     }
+    await this.#deltaSubscription?.dispose();
     this.#lastSnapshot = snapshot;
+    this.#renderRevisionId = snapshot.revisionId;
+    this.#renderDeltaSequence = 0;
     this.#rangeHandles.clear();
     this.#remainingRangeBytes.clear();
     for (const layer of snapshot.layers) {
@@ -309,6 +337,119 @@ export class ViewerRenderSourceSession {
     return bytes;
   }
 
+  async subscribeRenderDeltas(
+    listener,
+    { signal, onError = () => {} } = {},
+  ) {
+    const snapshot = this.#activeSnapshot(
+      RenderCapability.RENDER_DELTA,
+    );
+    if (typeof listener !== "function") {
+      throw new TypeError("render delta listener must be a function");
+    }
+    if (typeof onError !== "function") {
+      throw new TypeError("render delta error handler must be a function");
+    }
+    if (this.#deltaSubscription?.closed === false) {
+      outOfOrder("only one render delta subscription may be active");
+    }
+    throwIfAborted(signal);
+
+    let closed = false;
+    let lastError = null;
+    let rawDispose = () => {};
+    let disposePromise;
+    let queue = Promise.resolve();
+    let abort = () => {};
+    const dispatch = (rawDelta) => {
+      const operation = queue.then(async () => {
+        if (closed || this.#disposed) {
+          throw disposedError();
+        }
+        this.#assertSnapshotStillActive(
+          snapshot,
+          "render delta delivery",
+        );
+        const delta = parseRenderDeltaDescriptor(rawDelta, {
+          session: this.#descriptor,
+          snapshot,
+          expectedRevisionId: this.revisionId,
+          expectedSequence: this.#renderDeltaSequence + 1,
+        });
+        await listener(delta);
+        if (this.#disposed) {
+          throw disposedError();
+        }
+        this.#assertSnapshotStillActive(
+          snapshot,
+          "render delta application",
+        );
+        this.#renderRevisionId = delta.toRevisionId;
+        this.#renderDeltaSequence = delta.sequence;
+        return delta;
+      });
+      const observed = operation.catch((error) => {
+        lastError = error;
+        try {
+          onError(error);
+        } catch {
+          // The source error remains the primary subscription failure.
+        }
+        return null;
+      });
+      queue = observed.then(() => undefined);
+      return observed;
+    };
+
+    const subscription = {
+      get closed() {
+        return closed;
+      },
+      get lastError() {
+        return lastError;
+      },
+      async whenIdle() {
+        await queue;
+        return lastError;
+      },
+      dispose: () => {
+        if (!disposePromise) {
+          closed = true;
+          signal?.removeEventListener?.("abort", abort);
+          disposePromise = Promise.resolve()
+            .then(() => rawDispose())
+            .then(() => queue)
+            .then(() => {
+              if (this.#deltaSubscription === subscription) {
+                this.#deltaSubscription = undefined;
+              }
+            });
+        }
+        return disposePromise;
+      },
+    };
+    this.#deltaSubscription = subscription;
+    abort = () => {
+      void subscription.dispose();
+    };
+    signal?.addEventListener?.("abort", abort, { once: true });
+    try {
+      rawDispose = subscriptionDisposer(
+        await this.#session.subscribeRenderDeltas(dispatch, {
+          signal,
+        }),
+      );
+      if (closed) {
+        await rawDispose();
+      }
+      throwIfAborted(signal);
+      return subscription;
+    } catch (error) {
+      await subscription.dispose();
+      throw error;
+    }
+  }
+
   async resolvePick(request, { signal } = {}) {
     const snapshot = this.#activeSnapshot(
       RenderCapability.PICK_RESOLVE,
@@ -317,6 +458,7 @@ export class ViewerRenderSourceSession {
     const parsedRequest = parsePickResolveRequest(request, {
       session: this.#descriptor,
       snapshot,
+      expectedRevisionId: this.revisionId,
     });
     const rawIdentity = await this.#session.resolvePick(
       parsedRequest,
@@ -328,6 +470,7 @@ export class ViewerRenderSourceSession {
       session: this.#descriptor,
       snapshot,
       request: parsedRequest,
+      expectedRevisionId: this.revisionId,
     });
   }
 
@@ -339,6 +482,7 @@ export class ViewerRenderSourceSession {
     const parsedIdentity = parseRenderIdentityDescriptor(identity, {
       session: this.#descriptor,
       snapshot,
+      expectedRevisionId: this.revisionId,
     });
     const rawContext = await this.#session.createContext(
       parsedIdentity,
@@ -351,6 +495,7 @@ export class ViewerRenderSourceSession {
         session: this.#descriptor,
         snapshot,
         identity: parsedIdentity,
+        expectedRevisionId: this.revisionId,
       }),
       "context reference",
     );
@@ -364,6 +509,7 @@ export class ViewerRenderSourceSession {
     const parsedIdentity = parseRenderIdentityDescriptor(identity, {
       session: this.#descriptor,
       snapshot,
+      expectedRevisionId: this.revisionId,
     });
     const rawReveal = await this.#session.resolveSourceReveal(
       parsedIdentity,
@@ -376,6 +522,7 @@ export class ViewerRenderSourceSession {
         session: this.#descriptor,
         snapshot,
         identity: parsedIdentity,
+        expectedRevisionId: this.revisionId,
       }),
       "source reveal",
     );
@@ -385,9 +532,15 @@ export class ViewerRenderSourceSession {
     if (!this.#disposePromise) {
       this.#disposed = true;
       this.#lastSnapshot = undefined;
+      this.#renderRevisionId = undefined;
+      this.#renderDeltaSequence = 0;
       this.#rangeHandles.clear();
       this.#remainingRangeBytes.clear();
-      this.#disposePromise = settleDisposal(this.#session, this.#source);
+      this.#disposePromise = settleDisposal(
+        this.#deltaSubscription,
+        this.#session,
+        this.#source,
+      );
     }
     return this.#disposePromise;
   }

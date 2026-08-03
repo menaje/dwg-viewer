@@ -144,6 +144,40 @@ export class ViewerSelectionController {
     });
   }
 
+  advanceRevision(
+    revisionId,
+    { reason = "revision.changed" } = {},
+  ) {
+    if (this.#disposed) {
+      throw new DOMException(
+        "Viewer selection controller is disposed",
+        "InvalidStateError",
+      );
+    }
+    const nextRevisionId = boundedIdentifier(
+      revisionId,
+      "selection revision ID",
+    );
+    if (nextRevisionId === this.#scope.revisionId) {
+      return this.snapshot();
+    }
+    this.#scope = Object.freeze({
+      ...this.#scope,
+      revisionId: nextRevisionId,
+    });
+    this.#selection = null;
+    this.#sequence += 1;
+    this.#reason = reasonText(reason);
+    const detail = this.snapshot();
+    this.#host.handleEvent(
+      Object.freeze({
+        type: ViewerHostEventType.SELECTION_CHANGED,
+        detail,
+      }),
+    );
+    return detail;
+  }
+
   dispose() {
     if (this.#disposed) {
       return false;

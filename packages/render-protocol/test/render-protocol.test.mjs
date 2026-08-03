@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   RenderCapability,
+  RenderDeltaAspect,
+  RenderDeltaOperationKind,
   RenderProtocolDiagnosticCode,
   RenderProtocolError,
   RenderProtocolVersion,
@@ -12,6 +14,8 @@ import {
   parseContextReferenceDescriptor,
   parsePickResolveRequest,
   parseRangeHandleDescriptor,
+  parseRenderDeltaDescriptor,
+  parseRenderDeltaPayloadDescriptor,
   parseRenderIdentityDescriptor,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
@@ -137,6 +141,61 @@ function sourceReveal(overrides = {}) {
     label: "원본에서 보기",
     expiresAt: null,
     disposeWithSession: true,
+    ...overrides,
+  };
+}
+
+function deltaOperation(overrides = {}) {
+  return {
+    operationId: "operation:geometry:42",
+    kind: RenderDeltaOperationKind.UPSERT,
+    aspect: RenderDeltaAspect.GEOMETRY,
+    layerId: "layer:base",
+    sourceId: "source:base",
+    renderIds: ["render:entity:42"],
+    affectedWorldBounds: {
+      min: [9, 19, 0],
+      max: [12, 22, 1],
+    },
+    dependencyIds: [],
+    externalIdentityToken: "external:entity:42",
+    ...overrides,
+  };
+}
+
+function deltaPayload(overrides = {}) {
+  return {
+    protocolVersion: RenderProtocolVersion,
+    payloadId: "payload:delta:1",
+    sessionId: "session:test",
+    sourceId: "source:test",
+    fromRevisionId: revisionOne,
+    toRevisionId: revisionTwo,
+    mediaType: "application/vnd.dwg-viewer.render-delta",
+    byteLength: 256,
+    sha256: "d".repeat(64),
+    expiresAt: null,
+    disposeWithSession: true,
+    ...overrides,
+  };
+}
+
+function renderDelta(overrides = {}) {
+  return {
+    protocolVersion: RenderProtocolVersion,
+    deltaId: "delta:test:1",
+    sessionId: "session:test",
+    sourceId: "source:test",
+    baseSnapshotId: "snapshot:test",
+    fromRevisionId: revisionOne,
+    toRevisionId: revisionTwo,
+    sequence: 1,
+    operations: [deltaOperation()],
+    affectedWorldBounds: {
+      min: [9, 19, 0],
+      max: [12, 22, 1],
+    },
+    payload: deltaPayload(),
     ...overrides,
   };
 }
@@ -392,4 +451,224 @@ test("keeps context and source reveal references opaque and disposable", () => {
     (error) =>
       error.code === RenderProtocolDiagnosticCode.SCOPE_MISMATCH,
   );
+});
+
+test("normalizes atomic tombstone and bounded upsert delta operations", () => {
+  const session = parseRenderSessionDescriptor(
+    sessionInput({
+      capabilities: [
+        RenderCapability.LAYER_MANIFEST,
+        RenderCapability.RENDER_DELTA,
+        RenderCapability.RENDER_SNAPSHOT,
+      ],
+    }),
+  );
+  const snapshot = parseRenderSnapshotDescriptor(snapshotInput(), {
+    session,
+  });
+  const delta = parseRenderDeltaDescriptor(
+    renderDelta({
+      operations: [
+        deltaOperation(),
+        deltaOperation({
+          operationId: "operation:style:43",
+          aspect: RenderDeltaAspect.STYLE,
+          renderIds: ["render:entity:43"],
+          externalIdentityToken: null,
+        }),
+      ],
+    }),
+    {
+      session,
+      snapshot,
+      expectedRevisionId: revisionOne,
+      expectedSequence: 1,
+    },
+  );
+
+  assert.equal(delta.fromRevisionId, revisionOne);
+  assert.equal(delta.toRevisionId, revisionTwo);
+  assert.equal(delta.operations.length, 2);
+  assert.equal(delta.payload.byteLength, 256);
+  assert(Object.isFrozen(delta));
+  assert(Object.isFrozen(delta.operations));
+
+  const tombstone = parseRenderDeltaDescriptor(
+    renderDelta({
+      deltaId: "delta:test:tombstone",
+      operations: [
+        deltaOperation({
+          operationId: "operation:tombstone:42",
+          kind: RenderDeltaOperationKind.TOMBSTONE,
+          aspect: RenderDeltaAspect.ENTITY,
+          externalIdentityToken: null,
+        }),
+      ],
+      payload: null,
+    }),
+    { session, snapshot },
+  );
+  assert.equal(
+    tombstone.operations[0].kind,
+    RenderDeltaOperationKind.TOMBSTONE,
+  );
+});
+
+test("rejects stale, out-of-order, duplicate, and unbounded render deltas", () => {
+  const session = parseRenderSessionDescriptor(
+    sessionInput({
+      capabilities: [
+        RenderCapability.LAYER_MANIFEST,
+        RenderCapability.RENDER_DELTA,
+        RenderCapability.RENDER_SNAPSHOT,
+      ],
+    }),
+  );
+  const snapshot = parseRenderSnapshotDescriptor(snapshotInput(), {
+    session,
+  });
+
+  assert.throws(
+    () =>
+      parseRenderDeltaDescriptor(renderDelta(), {
+        session,
+        snapshot,
+        expectedRevisionId: revisionTwo,
+        expectedSequence: 1,
+      }),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.STALE_REVISION,
+  );
+  assert.throws(
+    () =>
+      parseRenderDeltaDescriptor(
+        renderDelta({ sequence: 2 }),
+        {
+          session,
+          snapshot,
+          expectedRevisionId: revisionOne,
+          expectedSequence: 1,
+        },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.OUT_OF_ORDER,
+  );
+  assert.throws(
+    () =>
+      parseRenderDeltaDescriptor(
+        renderDelta({
+          operations: [
+            deltaOperation(),
+            deltaOperation({
+              operationId: "operation:duplicate:42",
+              aspect: RenderDeltaAspect.TRANSFORM,
+            }),
+          ],
+        }),
+        { session, snapshot },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+  );
+  assert.throws(
+    () =>
+      parseRenderDeltaDescriptor(
+        renderDelta({
+          affectedWorldBounds: {
+            min: [10, 20, 0],
+            max: [11, 21, 0],
+          },
+        }),
+        { session, snapshot },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+  );
+  assert.throws(
+    () =>
+      parseRenderDeltaDescriptor(
+        renderDelta({
+          operations: [
+            deltaOperation({
+              renderIds: Array.from(
+                { length: 4097 },
+                (_, index) => `render:bounded:${index}`,
+              ),
+            }),
+          ],
+        }),
+        { session, snapshot },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+  );
+});
+
+test("binds delta payloads to session revisions without exposing paths", () => {
+  const session = parseRenderSessionDescriptor(
+    sessionInput({ resourceBudgetBytes: 512 }),
+  );
+  const payload = parseRenderDeltaPayloadDescriptor(deltaPayload(), {
+    session,
+    sourceId: "source:test",
+    fromRevisionId: revisionOne,
+    toRevisionId: revisionTwo,
+  });
+  assert.equal(payload.payloadId, "payload:delta:1");
+
+  assert.throws(
+    () =>
+      parseRenderDeltaPayloadDescriptor(
+        deltaPayload({ payloadId: "/tmp/render-delta.bin" }),
+        {
+          session,
+          sourceId: "source:test",
+          fromRevisionId: revisionOne,
+          toRevisionId: revisionTwo,
+        },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+  );
+  assert.throws(
+    () =>
+      parseRenderDeltaPayloadDescriptor(
+        deltaPayload({ byteLength: 1024 }),
+        {
+          session,
+          sourceId: "source:test",
+          fromRevisionId: revisionOne,
+          toRevisionId: revisionTwo,
+        },
+      ),
+    (error) =>
+      error.code === RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+  );
+});
+
+test("allows pick identity to follow an applied delta over its base snapshot", () => {
+  const session = parseRenderSessionDescriptor(sessionInput());
+  const snapshot = parseRenderSnapshotDescriptor(snapshotInput(), {
+    session,
+  });
+  const request = parsePickResolveRequest(
+    pickRequest({ revisionId: revisionTwo }),
+    {
+      session,
+      snapshot,
+      expectedRevisionId: revisionTwo,
+    },
+  );
+  const identity = parseRenderIdentityDescriptor(
+    renderIdentity({ revisionId: revisionTwo }),
+    {
+      session,
+      snapshot,
+      request,
+      expectedRevisionId: revisionTwo,
+    },
+  );
+
+  assert.equal(request.revisionId, revisionTwo);
+  assert.equal(identity.revisionId, revisionTwo);
 });

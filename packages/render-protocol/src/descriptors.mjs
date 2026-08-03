@@ -1,8 +1,12 @@
 import {
+  AllRenderDeltaAspects,
+  AllRenderDeltaOperationKinds,
   AllRenderCapabilities,
   AllViewerLayerKinds,
   AllViewerRepresentations,
   RenderCapability,
+  RenderDeltaAspect,
+  RenderDeltaOperationKind,
   SupportedRenderProtocolVersions,
 } from "./constants.mjs";
 import {
@@ -95,7 +99,7 @@ function worldBounds(value, label) {
 function snapshotScope(
   input,
   label,
-  { session, snapshot } = {},
+  { session, snapshot, expectedRevisionId } = {},
 ) {
   const parsedSession = session
     ? parseRenderSessionDescriptor(session)
@@ -151,7 +155,7 @@ function snapshotScope(
     );
     ensureRevision(
       revisionId,
-      parsedSnapshot.revisionId,
+      expectedRevisionId ?? parsedSnapshot.revisionId,
       `${label} revision ID`,
     );
     const layer = parsedSnapshot.layers.find(
@@ -163,11 +167,13 @@ function snapshotScope(
       });
     }
     ensureBinding(sourceId, layer.sourceId, `${label} source ID`);
-    ensureRevision(
-      revisionId,
-      layer.revisionId,
-      `${label} layer revision ID`,
-    );
+    if (expectedRevisionId === undefined) {
+      ensureRevision(
+        revisionId,
+        layer.revisionId,
+        `${label} layer revision ID`,
+      );
+    }
   }
   return {
     protocolVersion,
@@ -485,7 +491,7 @@ export function parseRenderSnapshotDescriptor(
 
 export function parsePickResolveRequest(
   value,
-  { session, snapshot } = {},
+  { session, snapshot, expectedRevisionId } = {},
 ) {
   const input = plainRecord(value, "pick resolve request");
   exactKeys(
@@ -508,13 +514,14 @@ export function parsePickResolveRequest(
     identityFields(input, "pick resolve request", {
       session,
       snapshot,
+      expectedRevisionId,
     }),
   );
 }
 
 export function parseRenderIdentityDescriptor(
   value,
-  { session, snapshot, request } = {},
+  { session, snapshot, request, expectedRevisionId } = {},
 ) {
   const input = plainRecord(value, "render identity");
   exactKeys(
@@ -537,11 +544,13 @@ export function parseRenderIdentityDescriptor(
   const fields = identityFields(input, "render identity", {
     session,
     snapshot,
+    expectedRevisionId,
   });
   if (request) {
     const parsedRequest = parsePickResolveRequest(request, {
       session,
       snapshot,
+      expectedRevisionId,
     });
     for (const key of [
       "sessionId",
@@ -573,7 +582,7 @@ export function parseRenderIdentityDescriptor(
 
 export function parseContextReferenceDescriptor(
   value,
-  { session, snapshot, identity } = {},
+  { session, snapshot, identity, expectedRevisionId } = {},
 ) {
   const input = plainRecord(value, "context reference");
   exactKeys(
@@ -597,6 +606,7 @@ export function parseContextReferenceDescriptor(
   const scope = snapshotScope(input, "context reference", {
     session,
     snapshot,
+    expectedRevisionId,
   });
   const context = {
     ...scope,
@@ -632,6 +642,7 @@ export function parseContextReferenceDescriptor(
     const parsedIdentity = parseRenderIdentityDescriptor(identity, {
       session,
       snapshot,
+      expectedRevisionId,
     });
     for (const key of [
       "sessionId",
@@ -655,7 +666,7 @@ export function parseContextReferenceDescriptor(
 
 export function parseSourceRevealDescriptor(
   value,
-  { session, snapshot, identity } = {},
+  { session, snapshot, identity, expectedRevisionId } = {},
 ) {
   const input = plainRecord(value, "source reveal");
   exactKeys(
@@ -680,6 +691,7 @@ export function parseSourceRevealDescriptor(
   const scope = snapshotScope(input, "source reveal", {
     session,
     snapshot,
+    expectedRevisionId,
   });
   const reveal = {
     ...scope,
@@ -722,6 +734,7 @@ export function parseSourceRevealDescriptor(
     const parsedIdentity = parseRenderIdentityDescriptor(identity, {
       session,
       snapshot,
+      expectedRevisionId,
     });
     for (const key of [
       "sessionId",
@@ -741,4 +754,503 @@ export function parseSourceRevealDescriptor(
     }
   }
   return Object.freeze(reveal);
+}
+
+function uniqueOpaqueIdentifiers(
+  value,
+  label,
+  maximumLength,
+) {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > maximumLength
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      `${label} must be a bounded non-empty array`,
+    );
+  }
+  const identifiers = [];
+  const seen = new Set();
+  for (const entry of value) {
+    const identifier = opaqueIdentifier(entry, `${label} entry`);
+    if (seen.has(identifier)) {
+      throw new RenderProtocolError(
+        RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+        `${label} must not contain duplicates`,
+        { identifier },
+      );
+    }
+    seen.add(identifier);
+    identifiers.push(identifier);
+  }
+  return Object.freeze(identifiers);
+}
+
+function optionalOpaqueIdentifiers(
+  value,
+  label,
+  maximumLength,
+) {
+  if (!Array.isArray(value) || value.length > maximumLength) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      `${label} must be a bounded array`,
+    );
+  }
+  if (value.length === 0) {
+    return Object.freeze([]);
+  }
+  return uniqueOpaqueIdentifiers(value, label, maximumLength);
+}
+
+function boundsContain(container, child) {
+  return container.min.every(
+    (minimum, axis) =>
+      minimum <= child.min[axis] &&
+      container.max[axis] >= child.max[axis],
+  );
+}
+
+function parseRenderDeltaOperation(value, { snapshot }) {
+  const input = plainRecord(value, "render delta operation");
+  exactKeys(
+    input,
+    [
+      "operationId",
+      "kind",
+      "aspect",
+      "layerId",
+      "sourceId",
+      "renderIds",
+      "affectedWorldBounds",
+      "dependencyIds",
+      "externalIdentityToken",
+    ],
+    "render delta operation",
+  );
+  const kind = enumValue(
+    input.kind,
+    AllRenderDeltaOperationKinds,
+    "render delta operation kind",
+  );
+  const aspect = enumValue(
+    input.aspect,
+    AllRenderDeltaAspects,
+    "render delta operation aspect",
+  );
+  const layerId = opaqueIdentifier(
+    input.layerId,
+    "render delta layer ID",
+  );
+  const sourceId = opaqueIdentifier(
+    input.sourceId,
+    "render delta operation source ID",
+  );
+  const layer = snapshot.layers.find(
+    (candidate) => candidate.layerId === layerId,
+  );
+  if (!layer) {
+    scopeMismatch(
+      "render delta operation layer is not in the base snapshot",
+      { layerId },
+    );
+  }
+  ensureBinding(
+    sourceId,
+    layer.sourceId,
+    "render delta operation source ID",
+  );
+  const dependencyIds = optionalOpaqueIdentifiers(
+    input.dependencyIds,
+    "render delta dependency IDs",
+    1024,
+  );
+  const externalIdentityToken =
+    input.externalIdentityToken === null
+      ? null
+      : opaqueIdentifier(
+          input.externalIdentityToken,
+          "render delta external identity token",
+        );
+  if (
+    kind === RenderDeltaOperationKind.TOMBSTONE &&
+    (aspect !== RenderDeltaAspect.ENTITY ||
+      dependencyIds.length > 0 ||
+      externalIdentityToken !== null)
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "a tombstone must remove one entity identity without payload metadata",
+    );
+  }
+  if (
+    aspect === RenderDeltaAspect.DEPENDENCY &&
+    dependencyIds.length === 0
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "a dependency upsert must identify invalidated dependencies",
+    );
+  }
+  return Object.freeze({
+    operationId: opaqueIdentifier(
+      input.operationId,
+      "render delta operation ID",
+    ),
+    kind,
+    aspect,
+    layerId,
+    sourceId,
+    renderIds: uniqueOpaqueIdentifiers(
+      input.renderIds,
+      "render delta Render IDs",
+      4096,
+    ),
+    affectedWorldBounds: worldBounds(
+      input.affectedWorldBounds,
+      "render delta operation affected world bounds",
+    ),
+    dependencyIds,
+    externalIdentityToken,
+  });
+}
+
+export function parseRenderDeltaPayloadDescriptor(
+  value,
+  {
+    session,
+    sourceId,
+    fromRevisionId,
+    toRevisionId,
+  } = {},
+) {
+  const input = plainRecord(value, "render delta payload");
+  exactKeys(
+    input,
+    [
+      "protocolVersion",
+      "payloadId",
+      "sessionId",
+      "sourceId",
+      "fromRevisionId",
+      "toRevisionId",
+      "mediaType",
+      "byteLength",
+      "sha256",
+      "expiresAt",
+      "disposeWithSession",
+    ],
+    "render delta payload",
+  );
+  const parsedSession = session
+    ? parseRenderSessionDescriptor(session)
+    : null;
+  const protocolVersion = supportedProtocolVersion(input.protocolVersion);
+  const sessionId = opaqueIdentifier(
+    input.sessionId,
+    "render delta payload session ID",
+  );
+  const parsedSourceId = opaqueIdentifier(
+    input.sourceId,
+    "render delta payload source ID",
+  );
+  const parsedFromRevisionId = opaqueIdentifier(
+    input.fromRevisionId,
+    "render delta payload source revision ID",
+  );
+  const parsedToRevisionId = opaqueIdentifier(
+    input.toRevisionId,
+    "render delta payload target revision ID",
+  );
+  const byteLength = positiveSafeInteger(
+    input.byteLength,
+    "render delta payload byte length",
+  );
+  const expiresAt = nullableTimestamp(
+    input.expiresAt,
+    "render delta payload expiration",
+  );
+  const disposeWithSession = boolean(
+    input.disposeWithSession,
+    "render delta payload session disposal flag",
+  );
+  if (expiresAt === null && !disposeWithSession) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "a render delta payload must expire or be disposed with its session",
+    );
+  }
+  if (
+    typeof input.sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/u.test(input.sha256)
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "render delta payload digest must be lowercase SHA-256",
+    );
+  }
+  if (parsedSession) {
+    ensureBinding(
+      protocolVersion,
+      parsedSession.protocolVersion,
+      "render delta payload protocol version",
+    );
+    ensureBinding(
+      sessionId,
+      parsedSession.sessionId,
+      "render delta payload session ID",
+    );
+    ensureBinding(
+      parsedSourceId,
+      parsedSession.sourceId,
+      "render delta payload source ID",
+    );
+    if (byteLength > parsedSession.resourceBudgetBytes) {
+      throw new RenderProtocolError(
+        RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+        "render delta payload exceeds the session resource budget",
+      );
+    }
+  }
+  ensureBinding(
+    parsedSourceId,
+    sourceId,
+    "render delta payload source ID",
+  );
+  ensureRevision(
+    parsedFromRevisionId,
+    fromRevisionId,
+    "render delta payload source revision ID",
+  );
+  ensureRevision(
+    parsedToRevisionId,
+    toRevisionId,
+    "render delta payload target revision ID",
+  );
+  return Object.freeze({
+    protocolVersion,
+    payloadId: opaqueIdentifier(
+      input.payloadId,
+      "render delta payload ID",
+    ),
+    sessionId,
+    sourceId: parsedSourceId,
+    fromRevisionId: parsedFromRevisionId,
+    toRevisionId: parsedToRevisionId,
+    mediaType: boundedString(
+      input.mediaType,
+      "render delta payload media type",
+      128,
+    ),
+    byteLength,
+    sha256: input.sha256,
+    expiresAt,
+    disposeWithSession,
+  });
+}
+
+export function parseRenderDeltaDescriptor(
+  value,
+  {
+    session,
+    snapshot,
+    expectedRevisionId,
+    expectedSequence,
+  } = {},
+) {
+  const input = plainRecord(value, "render delta");
+  exactKeys(
+    input,
+    [
+      "protocolVersion",
+      "deltaId",
+      "sessionId",
+      "sourceId",
+      "baseSnapshotId",
+      "fromRevisionId",
+      "toRevisionId",
+      "sequence",
+      "operations",
+      "affectedWorldBounds",
+      "payload",
+    ],
+    "render delta",
+  );
+  const parsedSession = session
+    ? parseRenderSessionDescriptor(session)
+    : null;
+  const parsedSnapshot = snapshot
+    ? parseRenderSnapshotDescriptor(snapshot, {
+        session: parsedSession ?? undefined,
+      })
+    : null;
+  if (!parsedSnapshot) {
+    throw new TypeError(
+      "render delta validation requires a base snapshot",
+    );
+  }
+  const protocolVersion = supportedProtocolVersion(input.protocolVersion);
+  const sessionId = opaqueIdentifier(
+    input.sessionId,
+    "render delta session ID",
+  );
+  const sourceId = opaqueIdentifier(
+    input.sourceId,
+    "render delta source ID",
+  );
+  const baseSnapshotId = opaqueIdentifier(
+    input.baseSnapshotId,
+    "render delta base snapshot ID",
+  );
+  const fromRevisionId = opaqueIdentifier(
+    input.fromRevisionId,
+    "render delta source revision ID",
+  );
+  const toRevisionId = opaqueIdentifier(
+    input.toRevisionId,
+    "render delta target revision ID",
+  );
+  const sequence = positiveSafeInteger(
+    input.sequence,
+    "render delta sequence",
+  );
+  ensureBinding(
+    protocolVersion,
+    parsedSnapshot.protocolVersion,
+    "render delta protocol version",
+  );
+  ensureBinding(
+    sessionId,
+    parsedSnapshot.sessionId,
+    "render delta session ID",
+  );
+  ensureBinding(
+    sourceId,
+    parsedSnapshot.sourceId,
+    "render delta source ID",
+  );
+  ensureBinding(
+    baseSnapshotId,
+    parsedSnapshot.snapshotId,
+    "render delta base snapshot ID",
+  );
+  ensureRevision(
+    fromRevisionId,
+    expectedRevisionId ?? parsedSnapshot.revisionId,
+    "render delta source revision ID",
+  );
+  if (fromRevisionId === toRevisionId) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "render delta must advance to a different revision",
+    );
+  }
+  if (
+    expectedSequence !== undefined &&
+    sequence !== expectedSequence
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.OUT_OF_ORDER,
+      "render delta sequence is stale or out of order",
+      { expected: expectedSequence, received: sequence },
+    );
+  }
+  if (
+    !Array.isArray(input.operations) ||
+    input.operations.length === 0 ||
+    input.operations.length > 4096
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "render delta operations must be a bounded non-empty array",
+    );
+  }
+  const operations = [];
+  let totalRenderIds = 0;
+  let totalDependencyIds = 0;
+  for (const operation of input.operations) {
+    const parsed = parseRenderDeltaOperation(operation, {
+      snapshot: parsedSnapshot,
+    });
+    totalRenderIds += parsed.renderIds.length;
+    totalDependencyIds += parsed.dependencyIds.length;
+    if (totalRenderIds > 65_536 || totalDependencyIds > 65_536) {
+      throw new RenderProtocolError(
+        RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+        "render delta identity lists exceed their atomic bounds",
+        { totalRenderIds, totalDependencyIds },
+      );
+    }
+    operations.push(parsed);
+  }
+  const changedRenderIds = new Set();
+  for (const operation of operations) {
+    for (const renderId of operation.renderIds) {
+      const identity = `${operation.layerId}\u0000${renderId}`;
+      if (changedRenderIds.has(identity)) {
+        throw new RenderProtocolError(
+          RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+          "a Render ID may change only once in an atomic delta",
+          { layerId: operation.layerId, renderId },
+        );
+      }
+      changedRenderIds.add(identity);
+    }
+  }
+  const affectedWorldBounds = worldBounds(
+    input.affectedWorldBounds,
+    "render delta affected world bounds",
+  );
+  for (const operation of operations) {
+    if (
+      !boundsContain(
+        affectedWorldBounds,
+        operation.affectedWorldBounds,
+      )
+    ) {
+      throw new RenderProtocolError(
+        RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+        "render delta bounds must contain every operation",
+        { operationId: operation.operationId },
+      );
+    }
+  }
+  const payload =
+    input.payload === null
+      ? null
+      : parseRenderDeltaPayloadDescriptor(input.payload, {
+          session: parsedSession ?? undefined,
+          sourceId,
+          fromRevisionId,
+          toRevisionId,
+        });
+  const requiresPayload = operations.some(
+    (operation) =>
+      operation.kind === RenderDeltaOperationKind.UPSERT &&
+      ![
+        RenderDeltaAspect.IDENTITY,
+        RenderDeltaAspect.DEPENDENCY,
+      ].includes(operation.aspect),
+  );
+  if (requiresPayload && payload === null) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      "render upserts require a bounded binary payload",
+    );
+  }
+  return Object.freeze({
+    protocolVersion,
+    deltaId: opaqueIdentifier(input.deltaId, "render delta ID"),
+    sessionId,
+    sourceId,
+    baseSnapshotId,
+    fromRevisionId,
+    toRevisionId,
+    sequence,
+    operations: Object.freeze(operations),
+    affectedWorldBounds,
+    payload,
+  });
 }

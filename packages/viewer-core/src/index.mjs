@@ -54,3 +54,12 @@ export {
 export {
   ViewerIdentityController,
 } from "./identity-controller.mjs";
+export {
+  DEFAULT_CHECKPOINT_DELTA_COUNT,
+  DEFAULT_CHECKPOINT_OVERLAY_ENTRIES,
+  DEFAULT_CHECKPOINT_PAYLOAD_BYTES,
+  DEFAULT_MAXIMUM_DELTA_COUNT,
+  DEFAULT_MAXIMUM_OVERLAY_ENTRIES,
+  DEFAULT_MAXIMUM_PAYLOAD_BYTES,
+  ViewerRenderDeltaController,
+} from "./render-delta-controller.mjs";

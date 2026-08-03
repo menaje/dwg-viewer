@@ -24,6 +24,32 @@ pick/context/reveal 응답도 요청 전후에 active snapshot을 검사하므�
 도중 snapshot이 바뀌면 늦은 응답을 `STALE_REVISION`으로 거부합니다. 모든
 disposal은 idempotent합니다.
 
+## Render Delta
+
+`render-delta` capability를 선언한 session은
+`subscribeRenderDeltas(listener)`를 구현합니다.
+`ViewerRenderSourceSession.subscribeRenderDeltas()`는 base snapshot,
+from/to revision과 직전 sequence를 검증하고, listener가 전체 delta를
+성공적으로 원자 적용한 뒤에만 session의 `revisionId`를 전진시킵니다. 실패한
+delta 일부는 노출되지 않으며 subscription의 `lastError`, `whenIdle()`과
+`onError`로 관찰할 수 있습니다.
+
+`ViewerRenderDeltaController`는 immutable base를 다시 읽지 않고 변경된
+Render ID만 보관합니다.
+
+- entity tombstone filter와 aspect별 upsert overlay
+- affected bounds, dependency invalidation과 external identity map 갱신
+- 하나의 preview 적용, rollback과 promotion
+- delta count/payload bytes/overlay entry 기준 checkpoint 권고 및 hard limit
+- stale/out-of-order 입력 전 상태 보존과 idempotent disposal
+
+선택적 renderer adapter는 동기·원자적인 `applyDelta()`,
+`rollbackPreview()`, `promotePreview()`, `dispose()` 경계만 구현합니다.
+DWG 36-byte vertex layout이나 Spatial packet 의미는 Core 계약에 포함되지
+않습니다. `MockRenderDeltaSource`와
+`runRenderDeltaConformance()`가 ordered apply, stale replay 거부, pick map
+revision과 disposal을 검증합니다.
+
 `createRenderLayerRangeSource()`는 snapshot의 range-backed layer 하나를
 기존 bounded reader가 소비할 수 있는 source로 projection합니다.
 `openViewerRuntime()`은 source session과 최초 snapshot을 연 뒤 제품이
@@ -32,11 +58,14 @@ disposal은 idempotent합니다.
 
 `@dwg-viewer/viewer-core/testing`은 브라우저에서도 실행 가능한
 `MockRenderSource`, base/live layer와 identity hook을 갖춘
-`MockServiceRenderSource`를 제공합니다.
+`MockServiceRenderSource`, ordered tombstone/upsert fixture를 갖춘
+`MockRenderDeltaSource`를 제공합니다.
 `@dwg-viewer/viewer-core/conformance`의
 `runRenderSourceConformance()`는 공통 lifecycle/range 계약을,
 `runServiceRenderSourceConformance()`는 pick/external identity/context/reveal
-계약과 stale pick 거부를 검증합니다.
+계약과 stale pick 거부를 검증합니다. `runRenderDeltaConformance()`는
+두 ordered delta 사이의 stale replay가 source와 overlay revision을
+오염시키지 않는지 검증합니다.
 
 ## ViewerHost
 
@@ -77,6 +106,9 @@ batch selection과 reader/renderer mapping만 담당하는 얇은 adapter입니�
 handle, source, layer와 point만 투영합니다. Service source는
 `ViewerIdentityController.resolvePick()` 결과를 같은 selection projection에
 사용해 external identity token과 world bounds를 유지할 수 있습니다.
+Render Delta를 적용한 adapter는
+`ViewerSelectionController.advanceRevision()`으로 기존 선택을 지우고 다음
+`selection.changed`를 적용된 render revision에 묶습니다.
 
 실제 WebGL CAD shader와 CPU DWG candidate decoder, DOM inspector는 아직
 `packages/webview`에 있습니다. Core는 이 구현을 import하지 않으며 이후

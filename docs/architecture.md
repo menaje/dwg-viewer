@@ -58,6 +58,15 @@ descriptors. `ViewerIdentityController` rejects stale in-flight responses and
 publishes only opaque `context.request` and `source.reveal` details to the Host.
 `MockServiceRenderSource` and the reusable service conformance exercise
 base/live layer composition and those hooks without importing Spatial code.
+Render Delta is normalized as an atomic base-snapshot/from-to-revision
+envelope with ordered tombstone/upsert operations, affected bounds and a
+bounded opaque binary payload. `ViewerRenderDeltaController` retains only
+changed Render IDs, dependency invalidations and identity updates, supports
+preview rollback/promotion without rereading the immutable base, and exposes a
+source-neutral renderer adapter hook. `MockRenderDeltaSource` verifies that a
+stale replay cannot advance either source or overlay revision and that picking
+tracks the applied revision. The existing 36-byte DWG WebGL vertex layout
+remains private to the Webview adapter.
 The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
 remain Webview adapters and move incrementally without changing raw DWG
 qualification. `ViewerReviewUiController` now owns review toolbar state,

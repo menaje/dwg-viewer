@@ -143,6 +143,15 @@ reveal descriptor도 같은 snapshot layer와 revision에 묶여 검증된다.
 base/live layer 합성, stale pick 거부와 disposal을 실행한다. 실제
 `ConiServiceSource`, Canonical ID authority와 Context 저장소는 계속
 `coni-spatial`의 책임이다.
+`Render Delta`는 base snapshot, exact from/to revision, monotonic sequence,
+affected bounds와 bounded opaque payload에 묶인다.
+`ViewerRenderDeltaController`는 전체 entity graph 대신 변경된 Render ID의
+tombstone/upsert, dependency/identity map과 preview만 보관하고 rollback 시
+immutable base를 다시 읽지 않는다. renderer adapter hook은 원자적인 apply,
+preview rollback/promotion만 요구하며 현재 Webview의 36-byte DWG GPU
+format은 public protocol로 승격하지 않는다. `MockRenderDeltaSource`와 공용
+conformance는 stale replay 뒤에도 source/overlay/pick revision이 함께
+전진하는지 검증한다.
 `@dwg-viewer/viewer-ui`의 첫 public controller는 review toolbar의 active
 state와 접근성 속성, bounded text-only result row/action composition,
 DOM listener disposal을 소유한다. DWG Webview는 candidate 판독과 CAD 속성,
@@ -152,10 +161,10 @@ DOM listener disposal을 소유한다. DWG Webview는 candidate 판독과 CAD �
 selection/measurement overlay, generic render data model의 물리적 package
 이동은 남아 있다. 일반 Viewer UI도 toolbar/result lifecycle부터 이동했으며
 layer/layout panel composition은 이후 단계다. #30의 실제 cross-repository
-`ConiServiceSource` qualification과 #27의 Render Snapshot/Delta packet은
-남아 있다. 제품 진입점을 먼저 runtime 계약에 연결했으므로 이후 이동은 raw
-range transport나 VS Code private message를 Core API로 승격하지 않고
-진행한다.
+`ConiServiceSource` qualification과 #27의 실제 WebGL delta packet adapter,
+split/overlay diff UI 및 대형 도면 qualification은 남아 있다. 제품 진입점을
+먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
+private message를 Core API로 승격하지 않고 진행한다.
 
 ## Revisit
 

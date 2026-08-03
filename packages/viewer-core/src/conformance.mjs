@@ -1,9 +1,13 @@
 import {
   RenderCapability,
+  RenderDeltaOperationKind,
   RenderProtocolDiagnosticCode,
 } from "@dwg-viewer/render-protocol";
 
 import { openRenderSource } from "./render-source-session.mjs";
+import {
+  ViewerRenderDeltaController,
+} from "./render-delta-controller.mjs";
 
 async function expectProtocolError(promise, code, label) {
   try {
@@ -194,6 +198,158 @@ export async function runServiceRenderSourceConformance(
     });
   } finally {
     await Promise.allSettled([
+      Promise.resolve().then(() => session?.dispose()),
+      Promise.resolve().then(() => source.dispose()),
+    ]);
+  }
+}
+
+export async function runRenderDeltaConformance(createHarness) {
+  if (typeof createHarness !== "function") {
+    throw new TypeError(
+      "render delta conformance requires a harness factory",
+    );
+  }
+  const lifecycle = await runRenderSourceConformance(async () => {
+    const harness = await createHarness();
+    return harness?.source;
+  });
+  const harness = await createHarness();
+  if (
+    !harness ||
+    !harness.source ||
+    typeof harness.emitNext !== "function" ||
+    typeof harness.emit !== "function"
+  ) {
+    throw new TypeError(
+      "render delta harness requires source, emitNext(), and emit()",
+    );
+  }
+
+  const source = harness.source;
+  let session;
+  let subscription;
+  let controller;
+  try {
+    session = await openRenderSource(source);
+    if (
+      !session.descriptor.capabilities.includes(
+        RenderCapability.RENDER_DELTA,
+      )
+    ) {
+      throw new Error(
+        "delta RenderSource does not declare render-delta",
+      );
+    }
+    const snapshot = await session.getSnapshot();
+    controller = new ViewerRenderDeltaController({
+      sourceSession: session,
+      snapshot,
+    });
+    const received = [];
+    const errors = [];
+    subscription = await session.subscribeRenderDeltas(
+      (delta) => {
+        const state = controller.applyCommitted(delta);
+        received.push(delta);
+        return state;
+      },
+      {
+        onError(error) {
+          errors.push(error);
+        },
+      },
+    );
+
+    await harness.emitNext();
+    await subscription.whenIdle();
+    if (received.length !== 1 || errors.length !== 0) {
+      throw new Error(
+        "first render delta was not applied atomically",
+      );
+    }
+    const first = received[0];
+    if (
+      !first.operations.some(
+        (operation) =>
+          operation.kind === RenderDeltaOperationKind.UPSERT,
+      )
+    ) {
+      throw new Error(
+        "first render delta fixture must include an upsert",
+      );
+    }
+    const firstState = controller.snapshot();
+    if (
+      session.revisionId !== first.toRevisionId ||
+      firstState.revisionId !== first.toRevisionId
+    ) {
+      throw new Error(
+        "render delta did not advance source and overlay together",
+      );
+    }
+
+    await harness.emit(first);
+    await subscription.whenIdle();
+    if (
+      errors.at(-1)?.code !==
+        RenderProtocolDiagnosticCode.STALE_REVISION ||
+      session.revisionId !== first.toRevisionId ||
+      controller.revisionId !== first.toRevisionId
+    ) {
+      throw new Error(
+        "replayed render delta did not fail closed",
+      );
+    }
+
+    await harness.emitNext();
+    await subscription.whenIdle();
+    if (received.length !== 2) {
+      throw new Error(
+        "ordered render delta did not recover after stale input",
+      );
+    }
+    const second = received[1];
+    if (
+      !second.operations.some(
+        (operation) =>
+          operation.kind === RenderDeltaOperationKind.TOMBSTONE,
+      )
+    ) {
+      throw new Error(
+        "second render delta fixture must include a tombstone",
+      );
+    }
+    if (
+      session.revisionId !== second.toRevisionId ||
+      controller.revisionId !== second.toRevisionId
+    ) {
+      throw new Error(
+        "second render delta did not advance atomically",
+      );
+    }
+
+    await subscription.dispose();
+    controller.dispose();
+    await session.dispose();
+    await source.dispose();
+
+    return Object.freeze({
+      ...lifecycle,
+      baseSnapshotId: snapshot.snapshotId,
+      revisionId: second.toRevisionId,
+      deltaCount: received.length,
+      staleRejected: true,
+      operations: received.reduce(
+        (total, delta) => total + delta.operations.length,
+        0,
+      ),
+      disposed: session.disposed,
+    });
+  } finally {
+    await Promise.allSettled([
+      Promise.resolve().then(() => subscription?.dispose()),
+      Promise.resolve().then(() => controller?.dispose()),
       Promise.resolve().then(() => session?.dispose()),
       Promise.resolve().then(() => source.dispose()),
     ]);

@@ -416,6 +416,8 @@ test("keeps Viewer Core free of product bootstrap and DWG readers", async () => 
   assert.doesNotMatch(combined, /SceneCacheReader/u);
   assert.doesNotMatch(combined, /@dwg-viewer\/dwg-scene-source/u);
   assert.doesNotMatch(combined, /detail-streamer\.mjs/u);
+  assert.doesNotMatch(combined, /VERTEX_STRIDE/u);
+  assert.doesNotMatch(combined, /GpuLineBatchKind/u);
 });
 
 test("keeps package versions and producer compatibility manifest aligned", async () => {
@@ -432,6 +434,18 @@ test("keeps package versions and producer compatibility manifest aligned", async
   assert.equal(manifest.status, "experimental");
   assert.equal(manifest.distribution.kind, "workspace-only");
   assert.equal(manifest.distribution.published, false);
+  assert.equal(
+    manifest.sources.mockRenderDelta,
+    "delta-conformance",
+  );
+  assert.equal(
+    manifest.components.renderDelta,
+    "atomic-overlay-state-with-renderer-adapter-hook",
+  );
+  assert.equal(
+    manifest.conformance.viewerRenderDelta,
+    "packages/viewer-core/test/render-delta-controller.test.mjs",
+  );
   assert.equal(manifest.viewerCore.package, viewerPackage.name);
   assert.equal(manifest.viewerCore.version, viewerPackage.version);
   assert.equal(manifest.viewerCore.version, ViewerCoreVersion);

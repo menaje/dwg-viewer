@@ -46,3 +46,26 @@ export const ViewerRepresentation = Object.freeze({
 export const AllViewerRepresentations = Object.freeze(
   Object.values(ViewerRepresentation).sort(),
 );
+
+export const RenderDeltaOperationKind = Object.freeze({
+  TOMBSTONE: "tombstone",
+  UPSERT: "upsert",
+});
+
+export const AllRenderDeltaOperationKinds = Object.freeze(
+  Object.values(RenderDeltaOperationKind).sort(),
+);
+
+export const RenderDeltaAspect = Object.freeze({
+  ENTITY: "entity",
+  GEOMETRY: "geometry",
+  TEXT: "text",
+  TRANSFORM: "transform",
+  STYLE: "style",
+  IDENTITY: "identity",
+  DEPENDENCY: "dependency",
+});
+
+export const AllRenderDeltaAspects = Object.freeze(
+  Object.values(RenderDeltaAspect).sort(),
+);
