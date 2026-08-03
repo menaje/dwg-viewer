@@ -171,6 +171,10 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   );
   assert.match(
     template,
+    /"@dwg-viewer\/viewer-ui":\s*"\.\.\/viewer-ui\/src\/index\.mjs"/u,
+  );
+  assert.match(
+    template,
     /"@dwg-viewer\/dwg-scene-source":\s*"\.\.\/dwg-scene-source\/src\/index\.mjs"/u,
   );
   assert.match(

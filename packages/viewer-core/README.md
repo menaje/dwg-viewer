@@ -68,3 +68,7 @@ handle, source, layer와 point만 투영합니다. 외부 identity 및
 실제 WebGL CAD shader와 CPU DWG candidate decoder, DOM inspector는 아직
 `packages/webview`에 있습니다. Core는 이 구현을 import하지 않으며 이후
 renderer data model과 일반 `viewer-ui` 경계를 별도 단계로 이동합니다.
+
+일반 review toolbar와 result panel의 DOM lifecycle은 별도
+`@dwg-viewer/viewer-ui` package가 소유합니다. Viewer Core는 이 package를
+import하지 않으며 Host event와 rendering lifecycle만 유지합니다.

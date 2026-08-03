@@ -44,6 +44,8 @@ importers:
         specifier: workspace:^
         version: link:../render-protocol
 
+  packages/viewer-ui: {}
+
   packages/webview:
     dependencies:
       '@dwg-viewer/dwg-scene-source':
@@ -52,6 +54,9 @@ importers:
       '@dwg-viewer/viewer-core':
         specifier: workspace:^
         version: link:../viewer-core
+      '@dwg-viewer/viewer-ui':
+        specifier: workspace:^
+        version: link:../viewer-ui
       '@mlightcad/shx-parser':
         specifier: 1.4.5
         version: 1.4.5

@@ -42,6 +42,8 @@ jobs:
         run: pnpm --filter @dwg-viewer/render-protocol check
       - name: Check Viewer Core contracts
         run: pnpm --filter @dwg-viewer/viewer-core check
+      - name: Check Viewer UI contracts
+        run: pnpm --filter @dwg-viewer/viewer-ui check
       - name: Check DWG Scene source
         run: pnpm --filter @dwg-viewer/dwg-scene-source check
       - name: Check Webview

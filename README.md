@@ -25,14 +25,16 @@ ACadSharp 3.6.51도 파싱만으로 메모리 하드 한도를 넘어 대형 도
 독립 DWG Viewer와 공용 Viewer Core의 package 경계, version 규칙과 단계적
 추출 순서는
 [`ADR-0001`](docs/adr/ADR-0001-viewer-core-boundary.md)에 있습니다.
-초기 `@dwg-viewer/render-protocol`과 `@dwg-viewer/viewer-core`는
-workspace-only experimental contract이며 기존 VS Code `dwg-*` message를
-public protocol로 노출하지 않습니다. standalone Browser 파일과 VS Code
-cache channel은 모두 `DwgSceneCacheSource`와 같은 Viewer Core runtime을
-통해 현재 renderer를 mount합니다. Core는 renderer/detail target 계약,
-상한형 상세 스트리밍과 revision-bound selection event lifecycle도
-소유하고, Webview는 DWG 배치 가시성·객체 판독과 WebGL 구현만
-어댑터로 주입합니다.
+초기 `@dwg-viewer/render-protocol`, `@dwg-viewer/viewer-core`와
+`@dwg-viewer/viewer-ui`는 workspace-only experimental contract이며 기존
+VS Code `dwg-*` message를 public protocol로 노출하지 않습니다. standalone
+Browser 파일과 VS Code cache channel은 모두 `DwgSceneCacheSource`와 같은
+Viewer Core runtime을 통해 현재 renderer를 mount합니다. Core는
+renderer/detail target 계약, 상한형 상세 스트리밍과 revision-bound
+selection event lifecycle을 소유합니다. Viewer UI는 review toolbar의 DOM
+상태, 접근성 속성, bounded 결과 panel과 event disposal을 소유하며 Webview는
+DWG 배치 가시성·객체 판독, CAD 속성 투영과 WebGL 구현만 어댑터로
+주입합니다.
 
 ## 도면 엔진 벤치마크
 

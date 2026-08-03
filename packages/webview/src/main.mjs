@@ -64,7 +64,7 @@ import { createMeasurementFormat } from "./measurement-format.mjs";
 import { ComplexLinetypeOverlay } from "./complex-linetype-overlay.mjs?v=1.18.13";
 import { curveRefinementCameraKey } from "./curve-contract.mjs";
 import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.13";
-import { ReviewTools } from "./review-tools.mjs?v=1.18.14";
+import { ReviewTools } from "./review-tools.mjs?v=1.18.15";
 import {
   isOutlineFontReference,
   isShxFontReference,

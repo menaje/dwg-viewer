@@ -1,4 +1,8 @@
 import {
+  ViewerReviewUiController,
+} from "@dwg-viewer/viewer-ui";
+
+import {
   OverviewSnapIndex,
   screenToWorld,
   worldToScreen,
@@ -116,20 +120,6 @@ function angleAtVertex(first, vertex, last) {
       firstVector[2] * lastVector[2]) /
     (firstLength * lastLength);
   return (Math.acos(Math.max(-1, Math.min(1, cosine))) * 180) / Math.PI;
-}
-
-function resultRows(rows) {
-  const fragment = document.createDocumentFragment();
-  for (const [label, value] of rows) {
-    const row = document.createElement("div");
-    const term = document.createElement("span");
-    const description = document.createElement("strong");
-    term.textContent = label;
-    description.textContent = value;
-    row.append(term, description);
-    fragment.append(row);
-  }
-  return fragment;
 }
 
 function pointerPosition(event, canvas) {
@@ -277,8 +267,6 @@ export class ReviewTools {
   }) {
     this.canvas = canvas;
     this.overlay = overlay;
-    this.toolbar = toolbar;
-    this.result = result;
     this.scene = scene;
     this.instanceGraph = instanceGraph;
     this.getCamera = getCamera;
@@ -293,6 +281,14 @@ export class ReviewTools {
     this.onReviewModeChange = onReviewModeChange;
     this.onSelectionChange = onSelectionChange;
     this.onStatus = onStatus;
+    this.reviewUi = new ViewerReviewUiController({
+      canvas,
+      toolbar,
+      result,
+      onToolRequest: (tool) => this.activate(tool),
+      onAction: (action, context) =>
+        this.handleUiAction(action, context),
+    });
     const normalizedPreferences =
       normalizeMeasurementPreferences(measurementPreferences);
     const initialMeasurementFormat = createMeasurementFormat(
@@ -354,103 +350,63 @@ export class ReviewTools {
   }
 
   resetToolControls() {
-    this.canvas.classList.remove("reviewing");
-    for (const button of this.toolbar.querySelectorAll(
-      "[data-review-tool]",
-    )) {
-      button.setAttribute("aria-pressed", "false");
+    return this.reviewUi.resetTools();
+  }
+
+  handleUiAction(action, { button } = {}) {
+    if (action === "finish") {
+      this.finishMeasurement();
+      this.redraw();
+      return true;
     }
-    const finishButton = this.toolbar.querySelector(
-      "[data-review-action='finish']",
-    );
-    if (finishButton) {
-      finishButton.hidden = true;
+    if (action === "settings") {
+      this.showMeasurementSettings();
+      return true;
     }
+    if (action === "fit") {
+      this.onFit();
+      this.onStatus("도면 전체가 보이도록 화면을 맞췄습니다.");
+      return true;
+    }
+    if (action === "clear") {
+      this.clear();
+      return true;
+    }
+    if (action === "close") {
+      this.reviewUi.hideResult();
+      this.clear({ keepResult: true });
+      return true;
+    }
+    if (action === "isolate-layer") {
+      const layerIndex = Number.parseInt(
+        button?.dataset?.layerIndex ?? "",
+        10,
+      );
+      if (!Number.isSafeInteger(layerIndex) || layerIndex < 0) {
+        return false;
+      }
+      const changed = this.onIsolateLayer(layerIndex);
+      this.onStatus(
+        changed === false
+          ? "이미 선택한 레이어만 표시 중입니다."
+          : "선택한 객체의 레이어만 표시했습니다.",
+      );
+      return true;
+    }
+    if (action === "restore-layers") {
+      const restored = this.onRestoreLayers();
+      this.onStatus(
+        restored === false
+          ? "복원할 이전 레이어 상태가 없습니다."
+          : "이전 레이어 표시 상태로 복원했습니다.",
+      );
+      return true;
+    }
+    return false;
   }
 
   bind() {
     const signal = this.abortController.signal;
-    for (const button of this.toolbar.querySelectorAll("[data-review-tool]")) {
-      button.addEventListener(
-        "click",
-        () => this.activate(button.dataset.reviewTool),
-        { signal },
-      );
-    }
-    this.toolbar
-      .querySelector("[data-review-action='finish']")
-      ?.addEventListener(
-        "click",
-        () => {
-          this.finishMeasurement();
-          this.redraw();
-        },
-        { signal },
-      );
-    this.toolbar
-      .querySelector("[data-review-action='settings']")
-      ?.addEventListener(
-        "click",
-        () => this.showMeasurementSettings(),
-        { signal },
-      );
-    this.toolbar
-      .querySelector("[data-review-action='fit']")
-      ?.addEventListener(
-        "click",
-        () => {
-          this.onFit();
-          this.onStatus("도면 전체가 보이도록 화면을 맞췄습니다.");
-        },
-        { signal },
-      );
-    this.toolbar
-      .querySelector("[data-review-action='clear']")
-      ?.addEventListener("click", () => this.clear(), { signal });
-    this.result
-      .querySelector("[data-review-action='close']")
-      ?.addEventListener(
-        "click",
-        () => {
-          this.result.hidden = true;
-          this.clear({ keepResult: true });
-        },
-        { signal },
-      );
-    this.result
-      .querySelector("[data-review-action='isolate-layer']")
-      ?.addEventListener(
-        "click",
-        (event) => {
-          const layerIndex = Number.parseInt(
-            event.currentTarget.dataset.layerIndex ?? "",
-            10,
-          );
-          if (Number.isSafeInteger(layerIndex) && layerIndex >= 0) {
-            const changed = this.onIsolateLayer(layerIndex);
-            this.onStatus(
-              changed === false
-                ? "이미 선택한 레이어만 표시 중입니다."
-                : "선택한 객체의 레이어만 표시했습니다.",
-            );
-          }
-        },
-        { signal },
-      );
-    this.result
-      .querySelector("[data-review-action='restore-layers']")
-      ?.addEventListener(
-        "click",
-        () => {
-          const restored = this.onRestoreLayers();
-          this.onStatus(
-            restored === false
-              ? "복원할 이전 레이어 상태가 없습니다."
-              : "이전 레이어 표시 상태로 복원했습니다.",
-          );
-        },
-        { signal },
-      );
     this.canvas.addEventListener(
       "pointermove",
       (event) => this.handlePointerMove(event),
@@ -520,10 +476,7 @@ export class ReviewTools {
   }
 
   setEnabled(enabled) {
-    this.toolbar.hidden = !enabled;
-    for (const button of this.toolbar.querySelectorAll("button")) {
-      button.disabled = !enabled;
-    }
+    return this.reviewUi.setEnabled(enabled);
   }
 
   replaceSelection(selection, { reason = "pick" } = {}) {
@@ -812,19 +765,11 @@ export class ReviewTools {
       form.append(calibration);
     }
 
-    this.result.querySelector("[data-review-title]").textContent =
-      "측정 설정";
-    this.result
-      .querySelector("[data-review-content]")
-      .replaceChildren(form);
-    const resultActions = this.result.querySelector(
-      "[data-review-result-actions]",
-    );
-    if (resultActions) {
-      resultActions.hidden = true;
-    }
-    this.result.dataset.reviewView = "measurement-settings";
-    this.result.hidden = false;
+    this.reviewUi.showContent({
+      title: "측정 설정",
+      content: form,
+      view: "measurement-settings",
+    });
   }
 
   startMeasurementCalibration() {
@@ -836,7 +781,7 @@ export class ReviewTools {
     this.measurementGuide = null;
     this.measurementPath = null;
     this.clearSelection("measurement.start");
-    this.result.hidden = true;
+    this.reviewUi.hideResult();
     if (this.activeTool === "calibrate") {
       this.firstPoint = null;
       this.hover = null;
@@ -1285,17 +1230,7 @@ export class ReviewTools {
     this.measurementPoints = [];
     this.textMatch = null;
     this.hover = null;
-    const finishButton = this.toolbar.querySelector(
-      "[data-review-action='finish']",
-    );
-    if (finishButton) {
-      finishButton.hidden = next !== "path" && next !== "area";
-    }
-    this.canvas.classList.toggle("reviewing", Boolean(next));
-    for (const button of this.toolbar.querySelectorAll("[data-review-tool]")) {
-      const pressed = button.dataset.reviewTool === next;
-      button.setAttribute("aria-pressed", String(pressed));
-    }
+    this.reviewUi.setActiveTool(next);
     this.onReviewModeChange(Boolean(next));
     if (next) {
       this.loadExactCurves();
@@ -1340,7 +1275,7 @@ export class ReviewTools {
     this.textMatch = null;
     this.clearSelection("clear");
     if (!keepResult) {
-      this.result.hidden = true;
+      this.reviewUi.hideResult();
     }
     this.redraw();
   }
@@ -1961,25 +1896,20 @@ export class ReviewTools {
       layerIndex = null,
     } = {},
   ) {
-    delete this.result.dataset.reviewView;
-    this.result.querySelector("[data-review-title]").textContent = title;
-    const content = this.result.querySelector("[data-review-content]");
-    content.replaceChildren(resultRows(rows));
-    const actions = this.result.querySelector(
-      "[data-review-result-actions]",
-    );
-    if (actions) {
-      actions.hidden = !layerActions;
-      const isolate = actions.querySelector(
-        "[data-review-action='isolate-layer']",
-      );
-      if (isolate) {
-        isolate.dataset.layerIndex = Number.isSafeInteger(layerIndex)
-          ? String(layerIndex)
-          : "";
-      }
-    }
-    this.result.hidden = false;
+    return this.reviewUi.showResult({
+      title,
+      rows,
+      actions:
+        layerActions && Number.isSafeInteger(layerIndex)
+          ? [
+              {
+                id: "isolate-layer",
+                data: { layerIndex },
+              },
+              { id: "restore-layers" },
+            ]
+          : [],
+    });
   }
 
   showTextMatch({
@@ -2369,9 +2299,7 @@ export class ReviewTools {
     this.detailSelections.clear();
     this.detailEntries.clear();
     this.detailBytes = 0;
-    this.resetToolControls();
-    this.toolbar.hidden = true;
-    this.result.hidden = true;
+    this.reviewUi.dispose();
     const context = this.overlay.getContext("2d", { alpha: true });
     context?.clearRect(0, 0, this.overlay.width, this.overlay.height);
   }

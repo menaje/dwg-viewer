@@ -487,51 +487,20 @@ test("publishes picked and cleared selection lifecycle changes", () => {
   ]);
 });
 
-test("resets stale review button state across view remounts", () => {
-  const pressed = [];
-  const finishButton = { hidden: false };
+test("delegates stale review state reset to Viewer UI", () => {
+  let resets = 0;
   const tools = Object.create(ReviewTools.prototype);
   Object.assign(tools, {
-    canvas: {
-      classList: {
-        remove(value) {
-          assert.equal(value, "reviewing");
-        },
-      },
-    },
-    toolbar: {
-      querySelectorAll(selector) {
-        assert.equal(selector, "[data-review-tool]");
-        return [
-          {
-            setAttribute(name, value) {
-              pressed.push([name, value]);
-            },
-          },
-          {
-            setAttribute(name, value) {
-              pressed.push([name, value]);
-            },
-          },
-        ];
-      },
-      querySelector(selector) {
-        assert.equal(
-          selector,
-          "[data-review-action='finish']",
-        );
-        return finishButton;
+    reviewUi: {
+      resetTools() {
+        resets += 1;
+        return true;
       },
     },
   });
 
-  tools.resetToolControls();
-
-  assert.deepEqual(pressed, [
-    ["aria-pressed", "false"],
-    ["aria-pressed", "false"],
-  ]);
-  assert.equal(finishButton.hidden, true);
+  assert.equal(tools.resetToolControls(), true);
+  assert.equal(resets, 1);
 });
 
 test("refreshes a composite filled-object index when an XREF mounts", async () => {
@@ -594,6 +563,7 @@ test("refreshes a composite filled-object index when an XREF mounts", async () =
 
 test("clearing review results also clears the completed distance guide", () => {
   let redraws = 0;
+  let resultHidden = false;
   const tools = Object.create(ReviewTools.prototype);
   Object.assign(tools, {
     firstPoint: candidate({ displayPoint: [1, 2, 0] }),
@@ -615,7 +585,11 @@ test("clearing review results also clears the completed distance guide", () => {
       handle: "ABC",
     },
     selection: candidate({ displayPoint: [4, 6, 0] }),
-    result: { hidden: false },
+    reviewUi: {
+      hideResult() {
+        resultHidden = true;
+      },
+    },
     redraw: () => {
       redraws += 1;
     },
@@ -630,7 +604,7 @@ test("clearing review results also clears the completed distance guide", () => {
   assert.equal(tools.measurementPath, null);
   assert.equal(tools.textMatch, null);
   assert.equal(tools.selection, null);
-  assert.equal(tools.result.hidden, true);
+  assert.equal(resultHidden, true);
   assert.equal(redraws, 1);
 });
 

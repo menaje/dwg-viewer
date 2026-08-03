@@ -16,6 +16,10 @@ import path는 re-export입니다. Viewport interaction lifecycle도 Core
 reader/WebGL mapping만 주입합니다. 객체 선택은 DWG candidate decoder에
 남지만 선택 상태는 active snapshot에 묶인 Core controller를 통해
 `selection.changed` Host event로 전달됩니다.
+Review toolbar의 활성 상태, `aria-pressed`, generic result row/action
+composition과 DOM listener disposal은 `@dwg-viewer/viewer-ui`가 소유합니다.
+이 package는 CAD candidate를 알지 않으며 Webview의 `ReviewTools`가 DWG
+속성과 측정 결과를 bounded view model로 투영합니다.
 
 The standalone page is the development and qualification shell: it keeps the
 framed canvas, diagnostics and full memory/performance dashboard. When hosted

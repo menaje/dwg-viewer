@@ -28,10 +28,11 @@ The first executable package boundary is:
 RenderSource
   -> @dwg-viewer/render-protocol
   -> @dwg-viewer/viewer-core
-  -> ViewerHost
+       -> ViewerHost
+       -> @dwg-viewer/viewer-ui -> product DOM
 ```
 
-Both packages are currently `0.1.0`, `experimental`, and workspace-only. Their
+These packages are currently `0.1.0`, `experimental`, and workspace-only. Their
 producer compatibility record is
 [`compatibility/viewer-core.json`](../compatibility/viewer-core.json). This
 status does not claim npm, release-artifact, or cross-repository compatibility.
@@ -53,7 +54,10 @@ stale-work rejection, review geometry publication and redraw coalescing.
 session/revision/snapshot and publishes monotonic `selection.changed` Host
 events. The WebGL CAD renderer, viewport batch selection and DWG candidate
 decoder remain Webview adapters and move incrementally without changing raw
-DWG qualification.
+DWG qualification. `ViewerReviewUiController` now owns review toolbar state,
+accessibility attributes, bounded text-only result composition and DOM listener
+disposal. The Webview adapter still owns Korean/CAD labels, DWG property
+projection, picking and measurement calculations.
 
 The engine decision is now accepted: LibreDWG 0.14 is the primary parser and
 converter for continued product development. The former acadrust comparison
