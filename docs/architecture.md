@@ -16,10 +16,12 @@ DWG
 
 ## Viewer product and package boundary
 
-The raw DWG Viewer remains an independently installed product. Renderer reuse
-by another product is through versioned Viewer Core packages rather than the
-installed extension, its process, or its private `dwg-*` Host–Webview messages.
-The accepted boundary and extraction order are recorded in
+The raw DWG Viewer remains an independently installed product. The independent
+`bim-explorer` is the second, 3D consumer, while Coni Spatial owns
+revision/change authority and embeds only compatible packages. Renderer reuse
+is through versioned Viewer Core packages rather than an installed extension,
+its process, or its private `dwg-*` Host–Webview messages. The accepted
+three-product boundary and extraction order are recorded in
 [`ADR-0001`](adr/ADR-0001-viewer-core-boundary.md).
 
 The first executable package boundary is:

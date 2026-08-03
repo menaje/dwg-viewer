@@ -20,7 +20,9 @@ camera, interaction, picking과 Scene Cache streaming 구현은
 `packages/webview`에 함께 있다. 이 구현은 독립 DWG Viewer에서 계속
 동작해야 하지만, Coni Spatial도 renderer 코드를 복사하거나 설치된
 DWG Viewer extension을 제어하지 않고 같은 Viewer Core를 사용할 수 있어야
-한다.
+한다. raw BIM을 read/index/render하는 독립 `bim-explorer`도 세 번째
+consumer로 추가됐으며 source-neutral lifecycle, identity와 selection
+계약을 공유해야 한다.
 
 현재 `dwg-*` Host–Webview message와 `acquireVsCodeApi()` 호출은 제품 shell의
 private transport다. 이를 public Viewer–Service protocol로 사용하면 VS Code,
@@ -32,8 +34,9 @@ Render Snapshot/Delta와 Service integration을 구현할 때 다시 경계를
 
 ## Decision
 
-독립 DWG Viewer 제품과 Coni Spatial 제품은 저장소, 설치물과 release를
-분리한다. `dwg-viewer`는 다음 versioned package 경계를 소유한다.
+독립 DWG Viewer, BIM Explorer와 Coni Spatial 제품은 저장소, 설치물과
+release를 분리한다. `dwg-viewer`는 다음 versioned package 경계를
+소유한다.
 
 | Package | 책임 | 포함하지 않는 것 |
 | --- | --- | --- |
@@ -48,6 +51,16 @@ Render Snapshot/Delta와 Service integration을 구현할 때 다시 경계를
 canonical Scene Cache reader와 `DwgSceneCacheSource`를 두고 기존 Webview
 경로는 compatibility re-export로 유지한다. renderer/camera/interaction
 lifecycle은 Browser/VS Code conformance를 추가한 뒤 Core로 옮긴다.
+
+현재 `@dwg-viewer/*` 이름은 workspace-only experimental package
+namespace다. BIM Explorer 3D consumer conformance를 통과하기 전에 이를
+source-neutral public namespace로 주장하지 않으며, 이름 변경 여부는
+breaking public release 전에 확정한다.
+
+generic 3D renderer와 BIM exploration UI는 `bim-explorer`가 소유한다.
+Coni Spatial은 호환 3D/BIM package 위에 revision-bound base/live/diff
+overlay와 Context Reference integration을 추가한다. 현재 2D renderer를
+범용 3D engine으로 확장하거나 구현을 저장소 사이에 복사하지 않는다.
 
 ## Public contract 원칙
 
@@ -69,13 +82,14 @@ human capability를 발급하지 않는다.
 - `dwg-cache-*`, font/XREF/image와 export를 포함한 기존 Host–Webview message
 - `acquireVsCodeApi()`와 Custom Editor lifecycle
 - LibreDWG process, native pointer와 실제 source/export path
+- IFC parser object, Express ID pointer와 BIM engine 내부 graph
 - Coni Spatial의 Agent–Service method, credential와 acceptance/publish 권한
 
 ## Version과 compatibility
 
 Viewer Core package, render protocol과 DWG Viewer 제품은 각각 semantic
-version을 가진다. Spatial Protocol version과 Viewer package version도
-독립적이다.
+version을 가진다. BIM Explorer product/source package, Spatial Protocol과
+Viewer package version도 서로 독립적이다.
 
 - `0.x`에서 breaking contract change는 minor version을 올린다.
 - compatible validation/diagnostic 수정은 patch version을 올린다.
@@ -100,6 +114,8 @@ Release artifact 배포 방식이 결정되고 cross-repository fixture가 통�
 4. 같은 Core를 사용하는 Browser와 VS Code qualification
 5. Service RenderSource, external identity/context event
 6. ordered Render Delta와 revision diff
+7. BIM Explorer의 source-neutral 3D consumer conformance
+8. Spatial의 BIM base/Canonical identity/live-diff integration conformance
 
 각 단계는 raw DWG open, selection, measurement, Korean text, first-frame와
 memory qualification을 유지해야 한다. 파일 이동 자체를 완료 조건으로
@@ -111,10 +127,12 @@ memory qualification을 유지해야 한다. 파일 이동 자체를 완료 조�
 - 초기에는 adapter code가 얇게 중복 연결될 수 있지만 renderer 구현을
   복사하지 않는다.
 - public contract는 현재 VS Code message보다 작고 source-neutral하다.
+- BIM Explorer는 standalone DWG Viewer 설치 없이 `BimModelSource`와
+  generic 3D surface를 제공할 수 있다.
 - Coni Spatial은 standalone DWG Viewer 설치 없이 호환 package를 bundle할
-  수 있다.
-- 3D surface는 같은 revision/identity/event 계약을 사용할 수 있지만 현재
-  2D renderer를 범용 3D engine으로 재작성하지 않는다.
+  수 있으며 BIM Explorer extension 설치에도 의존하지 않는다.
+- 2D와 3D surface는 같은 lifecycle/identity/selection 계약을 사용하지만
+  서로 다른 renderer backend와 제품 package를 가질 수 있다.
 
 ## Implementation status
 
@@ -170,9 +188,18 @@ split/overlay diff UI 및 대형 도면 qualification은 남아 있다. 제품 �
 먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
 private message를 Core API로 승격하지 않고 진행한다.
 
+`bim-explorer`의 `BimModelSource`와 3D consumer는 아직 구현되지 않았다.
+따라서 current package가 truly source-neutral하거나 3D-compatible하다고
+주장하지 않으며 해당 evidence는
+[bim-explorer #3](https://github.com/menaje/bim-explorer/issues/3)에서
+추적한다. Spatial BIM identity/overlay integration은
+[bim-explorer #9](https://github.com/menaje/bim-explorer/issues/9)가
+추적한다.
+
 ## Revisit
 
-실제 `DwgSceneCacheSource` 또는 `ConiServiceSource` conformance가 현재
-session/snapshot 경계로 구현되지 않거나, 독립 제품 qualification이 반복해서
-깨질 때 이 결정을 재검토한다. public contract 변경은 기존 version의 의미를
-바꾸지 않고 새 version과 migration fixture로 수행한다.
+실제 `DwgSceneCacheSource`, `BimModelSource` 또는 `ConiServiceSource`
+conformance가 현재 session/snapshot 경계로 구현되지 않거나, 독립 제품
+qualification이 반복해서 깨질 때 이 결정을 재검토한다. public contract
+변경은 기존 version의 의미를 바꾸지 않고 새 version과 migration fixture로
+수행한다.

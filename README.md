@@ -25,6 +25,10 @@ ACadSharp 3.6.51도 파싱만으로 메모리 하드 한도를 넘어 대형 도
 독립 DWG Viewer와 공용 Viewer Core의 package 경계, version 규칙과 단계적
 추출 순서는
 [`ADR-0001`](docs/adr/ADR-0001-viewer-core-boundary.md)에 있습니다.
+같은 Core의 두 번째 3D consumer는 독립
+[`bim-explorer`](https://github.com/menaje/bim-explorer)에서 검증하며,
+Coni Spatial은 호환 package만 bundle하고 두 standalone Viewer 제품
+설치에 의존하지 않습니다.
 초기 `@dwg-viewer/render-protocol`, `@dwg-viewer/viewer-core`와
 `@dwg-viewer/viewer-ui`는 workspace-only experimental contract이며 기존
 VS Code `dwg-*` message를 public protocol로 노출하지 않습니다. standalone
