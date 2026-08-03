@@ -228,19 +228,28 @@ test("downloads exact pins into a new owner-only deterministic corpus", async (c
     { name: "notice.txt", data: Buffer.from("public") },
   ]);
   const manifest = validateAssetManifest(rawManifest(zip));
-  let request;
+  const requests = [];
   const provenance = await fetchPublicCorpus(
     manifest,
     outputPath,
     {
       async fetch(url, options) {
-        request = { url, options };
-        return binaryResponse(zip);
+        requests.push({ url, options });
+        return new URL(url).pathname.startsWith("/data/")
+          ? binaryResponse(
+              Buffer.from(
+                "이용허락범위 공공저작물 : 출처표시 (제 1유형)",
+                "utf8",
+              ),
+            )
+          : binaryResponse(zip);
       },
     },
   );
-  assert.match(request.url, /^https:\/\/www\.data\.go\.kr\//u);
-  assert.equal(request.options.redirect, "error");
+  assert.equal(requests.length, 2);
+  assert.match(requests[0].url, /\/data\/15032398\//u);
+  assert.match(requests[1].url, /\/cmm\/cmm\/fileDownload\.do/u);
+  assert.equal(requests[1].options.redirect, "error");
   assert.deepEqual(
     await readFile(
       path.join(outputPath, "public-fixture-001-001.dwg"),
@@ -248,6 +257,10 @@ test("downloads exact pins into a new owner-only deterministic corpus", async (c
     drawing,
   );
   assert.equal(provenance.summary.dwgFiles, 1);
+  assert.equal(
+    provenance.sources[0].catalogLicenseVerified,
+    true,
+  );
   assert.equal(provenance.sources[0].extracted.dwgBytesModified, false);
   assert.deepEqual(
     provenance.sources[0].extracted.files,
@@ -269,4 +282,20 @@ test("downloads exact pins into a new owner-only deterministic corpus", async (c
     }),
     /EEXIST/u,
   );
+
+  const rejectedPath = path.join(root, "rejected");
+  await assert.rejects(
+    () =>
+      fetchPublicCorpus(manifest, rejectedPath, {
+        fetch: async () =>
+          binaryResponse(
+            Buffer.from(
+              "공공저작물 : 출처표시, 상업적 이용금지 (제 2유형)",
+              "utf8",
+            ),
+          ),
+      }),
+    /no longer declares KOGL Type 1/u,
+  );
+  await assert.rejects(stat(rejectedPath), /ENOENT/u);
 });

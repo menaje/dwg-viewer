@@ -20,7 +20,13 @@
     "archiveEntryNamesPublished": false
   },
   "execution": {
-    "target": "darwin-arm64",
+    "target": "github-actions-ubuntu-24.04-x64",
+    "workflowRun": "https://github.com/menaje/dwg-viewer/actions/runs/30862448141",
+    "evidenceArtifact": {
+      "name": "dwg-viewer-public-korean-corpus-evidence",
+      "sizeBytes": 5066,
+      "sha256": "4dc35a6e53af761536de1c639c0c4e819edfca29aef64b36bb9a9d603fe29645"
+    },
     "engine": {
       "id": "libredwg",
       "version": "0.14",
@@ -37,39 +43,39 @@
     "passed": 30,
     "targetMisses": 0,
     "failed": 0,
-    "hangulCharacters": 12607,
+    "hangulCharacters": 12547,
     "replacementCharacters": 0,
     "nullCharacters": 0,
     "questionMarksAtPinnedBaseline": 1,
     "questionMarkIncrease": 0,
-    "entities": 404479,
-    "serializedEntities": 404479,
+    "entities": 408245,
+    "serializedEntities": 408245,
     "deferredEntities": 0,
-    "maximumWallMs": 690,
-    "maximumPeakRssBytes": 115294208
+    "maximumWallMs": 672,
+    "maximumPeakRssBytes": 118943744
   },
   "observedCoverage": {
     "versions": {
-      "AC1018": 12,
-      "AC1021": 13,
-      "AC1032": 5
+      "AC1018": 10,
+      "AC1021": 14,
+      "AC1032": 6
     },
     "disciplines": {
       "architecture": 30
     },
     "sizeClasses": {
-      "small": 16,
-      "medium": 8,
+      "small": 15,
+      "medium": 9,
       "large": 6
     },
     "encodings": {
-      "cp949": 12,
-      "unicode": 18
+      "cp949": 10,
+      "unicode": 20
     },
     "fontKinds": {
       "shx": 3,
       "bigfont": 3,
-      "ttf": 25
+      "ttf": 24
     }
   },
   "declaredCoverageGaps": {

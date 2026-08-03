@@ -16,11 +16,14 @@ const PROVENANCE_SCHEMA = "dwg-public-korean-corpus-provenance/1";
 const DATA_PORTAL_HOST = "www.data.go.kr";
 const DOWNLOAD_PATH = "/cmm/cmm/fileDownload.do";
 const MAX_SOURCES = 16;
+const MAX_CATALOG_BYTES = 4 * 1024 * 1024;
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES = 512;
 const MAX_ENTRY_BYTES = 64 * 1024 * 1024;
 const MAX_EXPANDED_BYTES = 256 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 60_000;
+const KOGL_TYPE_1_PATTERN =
+  /공공저작물\s*:\s*출처표시\s*\(\s*제\s*1유형\s*\)/u;
 const ZIP_LOCAL_SIGNATURE = 0x04034b50;
 const ZIP_CENTRAL_SIGNATURE = 0x02014b50;
 const ZIP_EOCD_SIGNATURE = 0x06054b50;
@@ -369,6 +372,56 @@ async function readBoundedResponse(response, expectedBytes) {
   return Buffer.concat(chunks, total);
 }
 
+async function verifyCatalogLicense(source, fetchImplementation) {
+  const response = await fetchImplementation(source.catalogUrl, {
+    headers: {
+      Accept: "text/html",
+      "User-Agent":
+        "dwg-viewer-public-corpus/1 (+https://github.com/menaje/dwg-viewer)",
+    },
+    redirect: "error",
+    signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+  });
+  if (!response || response.ok !== true) {
+    throw new Error(
+      `${source.id} catalog returned HTTP ${
+        response?.status ?? "unknown"
+      }`,
+    );
+  }
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    throw new Error(`${source.id} catalog has no readable body`);
+  }
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) {
+      break;
+    }
+    if (!(value instanceof Uint8Array)) {
+      throw new Error(
+        `${source.id} catalog returned a non-binary body`,
+      );
+    }
+    total += value.byteLength;
+    if (total > MAX_CATALOG_BYTES) {
+      await reader.cancel();
+      throw new Error(
+        `${source.id} catalog exceeds the response limit`,
+      );
+    }
+    chunks.push(Buffer.from(value));
+  }
+  const text = Buffer.concat(chunks, total).toString("utf8");
+  if (!KOGL_TYPE_1_PATTERN.test(text)) {
+    throw new Error(
+      `${source.id} catalog no longer declares KOGL Type 1`,
+    );
+  }
+}
+
 async function downloadArchive(source, fetchImplementation) {
   const response = await fetchImplementation(buildDownloadUrl(source), {
     headers: {
@@ -607,6 +660,7 @@ async function writeSource(outputPath, source, archive) {
     publisher: source.publisher,
     catalogUrl: source.catalogUrl,
     license: source.license,
+    catalogLicenseVerified: true,
     discipline: source.expected.discipline,
     archive: Object.freeze({
       sizeBytes: source.download.sizeBytes,
@@ -639,6 +693,7 @@ export async function fetchPublicCorpus(
   try {
     const sources = [];
     for (const source of manifest.sources) {
+      await verifyCatalogLicense(source, fetchImplementation);
       const archive = await downloadArchive(
         source,
         fetchImplementation,
