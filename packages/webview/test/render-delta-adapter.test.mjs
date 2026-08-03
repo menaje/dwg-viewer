@@ -24,8 +24,12 @@ import {
   DWG_RENDER_DELTA_MEDIA_TYPE_V1,
   DWG_RENDER_DELTA_MEDIA_TYPE_V2,
   DWG_RENDER_DELTA_MEDIA_TYPE_V3,
+  DWG_RENDER_DELTA_MEDIA_TYPE_V4,
 } from "../src/render-delta-adapter.mjs";
 import { GpuLineBatchKind } from "../src/scene-cache.mjs";
+import {
+  dwgRenderDeltaTransformBuffer,
+} from "./render-delta-transform-fixture.mjs";
 
 const REVISION_ONE = "revision:dwg-delta:1";
 const REVISION_TWO = "revision:dwg-delta:2";
@@ -260,6 +264,16 @@ function textEntry(buffer = textBuffer()) {
   };
 }
 
+function transformEntry(
+  buffer = dwgRenderDeltaTransformBuffer(),
+) {
+  return {
+    renderId: RENDER_ID,
+    sceneId: "root",
+    buffer,
+  };
+}
+
 function upsertDelta({
   deltaId = "delta:dwg:1",
   operationId = "operation:dwg:upsert",
@@ -272,6 +286,8 @@ function upsertDelta({
   fills = [],
   points = [],
   texts = [],
+  transforms = [],
+  aspect = RenderDeltaAspect.GEOMETRY,
 } = {}) {
   const sha256 = "a".repeat(64);
   const lines = [
@@ -294,6 +310,10 @@ function upsertDelta({
       0,
     ) +
     texts.reduce(
+      (total, entry) => total + entry.buffer.byteLength,
+      0,
+    ) +
+    transforms.reduce(
       (total, entry) => total + entry.buffer.byteLength,
       0,
     );
@@ -324,7 +344,7 @@ function upsertDelta({
         {
           operationId,
           kind: RenderDeltaOperationKind.UPSERT,
-          aspect: RenderDeltaAspect.GEOMETRY,
+          aspect,
           layerId: "layer:dwg-live",
           sourceId: "source:dwg-live",
           renderIds: [RENDER_ID],
@@ -347,6 +367,7 @@ function upsertDelta({
           fills,
           points,
           texts,
+          transforms,
         },
       ],
     },
@@ -416,6 +437,7 @@ class FakeDeltaRenderer {
       fills: Object.freeze([]),
       points: Object.freeze([]),
       texts: Object.freeze([]),
+      transforms: Object.freeze([]),
       baseSuppressions: Object.freeze([]),
       affectedWorldBounds: null,
     });
@@ -441,6 +463,10 @@ class FakeDeltaRenderer {
     return this.stage("text", text);
   }
 
+  stageRenderDeltaTransform(transform) {
+    return this.stage("transform", transform);
+  }
+
   stage(resourceKind, value) {
     this.stageCount += 1;
     if (this.stageCount === this.failStageAt) {
@@ -460,6 +486,7 @@ class FakeDeltaRenderer {
     fills = [],
     points = [],
     texts = [],
+    transforms = [],
     baseSuppressions = [],
     affectedWorldBounds = null,
   } = {}) {
@@ -468,6 +495,7 @@ class FakeDeltaRenderer {
       ["fill", fills],
       ["point", points],
       ["text", texts],
+      ["transform", transforms],
     ]) {
       for (const entry of entries) {
         if (
@@ -483,6 +511,7 @@ class FakeDeltaRenderer {
       fills: Object.freeze([...fills]),
       points: Object.freeze([...points]),
       texts: Object.freeze([...texts]),
+      transforms: Object.freeze([...transforms]),
       baseSuppressions: Object.freeze([...baseSuppressions]),
       affectedWorldBounds,
     });
@@ -495,6 +524,7 @@ class FakeDeltaRenderer {
       ...this.active.fills,
       ...this.active.points,
       ...this.active.texts,
+      ...this.active.transforms,
     ]);
     for (const resource of resources) {
       if (
@@ -549,6 +579,8 @@ test("stages a DWG line overlay and restores it on preview rollback", () => {
     pointBatches: 0,
     textRecords: 0,
     textBytes: 0,
+    transformRecords: 0,
+    transformBytes: 0,
     baseSuppressions: 1,
     affectedWorldBounds: bounds(),
     invalidatedDependencyIds: [],
@@ -707,13 +739,43 @@ test("stages a text-only upsert and restores it on preview rollback", () => {
   controller.dispose();
 });
 
-test("accepts the line-only v1 private packet during the v4 transition", () => {
+test("stages an instance-transform upsert and restores it on rollback", () => {
+  const renderer = new FakeDeltaRenderer();
+  const transform = transformEntry();
+  const { delta, packet } = upsertDelta({
+    includeLine: false,
+    transforms: [transform],
+    aspect: RenderDeltaAspect.TRANSFORM,
+  });
+  const { adapter, controller } = makeController(renderer, packet);
+
+  controller.applyPreview(delta);
+  assert.equal(renderer.active.lines.length, 0);
+  assert.equal(renderer.active.transforms.length, 1);
+  assert.equal(renderer.resources.size, 1);
+  assert.equal(adapter.snapshot().transformRecords, 1);
+  assert.equal(
+    adapter.snapshot().transformBytes,
+    transform.buffer.byteLength,
+  );
+  assert.equal(adapter.lookupIdentity("root", 0x2an).status, "upsert");
+
+  controller.rollbackPreview(delta.deltaId);
+  assert.equal(renderer.active.transforms.length, 0);
+  assert.equal(renderer.resources.size, 0);
+  assert.equal(adapter.acceptsBasePick("root", 0x2an), true);
+
+  controller.dispose();
+});
+
+test("accepts the line-only v1 private packet during the v5 transition", () => {
   const renderer = new FakeDeltaRenderer();
   const { delta, packet } = upsertDelta();
   delta.payload.mediaType = DWG_RENDER_DELTA_MEDIA_TYPE_V1;
   delete packet.operations[0].fills;
   delete packet.operations[0].points;
   delete packet.operations[0].texts;
+  delete packet.operations[0].transforms;
   const { adapter, controller } = makeController(renderer, packet);
 
   controller.applyCommitted(delta);
@@ -727,7 +789,7 @@ test("accepts the line-only v1 private packet during the v4 transition", () => {
   controller.dispose();
 });
 
-test("accepts the line/fill v2 private packet during the v4 transition", () => {
+test("accepts the line/fill v2 private packet during the v5 transition", () => {
   const renderer = new FakeDeltaRenderer();
   const { delta, packet } = upsertDelta({
     fills: [fillEntry()],
@@ -735,6 +797,7 @@ test("accepts the line/fill v2 private packet during the v4 transition", () => {
   delta.payload.mediaType = DWG_RENDER_DELTA_MEDIA_TYPE_V2;
   delete packet.operations[0].points;
   delete packet.operations[0].texts;
+  delete packet.operations[0].transforms;
   const { adapter, controller } = makeController(renderer, packet);
 
   controller.applyCommitted(delta);
@@ -748,7 +811,7 @@ test("accepts the line/fill v2 private packet during the v4 transition", () => {
   controller.dispose();
 });
 
-test("accepts the line/fill/point v3 packet during the v4 transition", () => {
+test("accepts the line/fill/point v3 packet during the v5 transition", () => {
   const renderer = new FakeDeltaRenderer();
   const { delta, packet } = upsertDelta({
     fills: [fillEntry()],
@@ -756,6 +819,7 @@ test("accepts the line/fill/point v3 packet during the v4 transition", () => {
   });
   delta.payload.mediaType = DWG_RENDER_DELTA_MEDIA_TYPE_V3;
   delete packet.operations[0].texts;
+  delete packet.operations[0].transforms;
   const { adapter, controller } = makeController(renderer, packet);
 
   controller.applyCommitted(delta);
@@ -766,6 +830,26 @@ test("accepts the line/fill/point v3 packet during the v4 transition", () => {
   assert.equal(renderer.active.texts.length, 0);
   assert.equal(adapter.snapshot().pointBatches, 1);
   assert.equal(adapter.snapshot().textRecords, 0);
+  controller.dispose();
+});
+
+test("accepts the v4 text packet during the v5 transition", () => {
+  const renderer = new FakeDeltaRenderer();
+  const { delta, packet } = upsertDelta({
+    includeLine: false,
+    texts: [textEntry()],
+  });
+  delta.payload.mediaType = DWG_RENDER_DELTA_MEDIA_TYPE_V4;
+  delete packet.operations[0].transforms;
+  const { adapter, controller } = makeController(renderer, packet);
+
+  controller.applyCommitted(delta);
+
+  assert.equal(renderer.active.lines.length, 0);
+  assert.equal(renderer.active.texts.length, 1);
+  assert.equal(renderer.active.transforms.length, 0);
+  assert.equal(adapter.snapshot().textRecords, 1);
+  assert.equal(adapter.snapshot().transformRecords, 0);
   controller.dispose();
 });
 
@@ -820,6 +904,29 @@ test("rejects a text packet whose native handle crosses Render ID scope", () => 
   assert.throws(
     () => controller.applyCommitted(delta),
     /invalid DWG text payload/u,
+  );
+  assert.equal(renderer.stageCount, 0);
+  assert.equal(renderer.resources.size, 0);
+  assert.equal(adapter.snapshot().revisionId, null);
+  controller.dispose();
+});
+
+test("rejects a transform packet outside its Render ID scope", () => {
+  const renderer = new FakeDeltaRenderer();
+  const { delta, packet } = upsertDelta({
+    includeLine: false,
+    transforms: [
+      transformEntry(
+        dwgRenderDeltaTransformBuffer({ handle: 0x2bn }),
+      ),
+    ],
+    aspect: RenderDeltaAspect.TRANSFORM,
+  });
+  const { adapter, controller } = makeController(renderer, packet);
+
+  assert.throws(
+    () => controller.applyCommitted(delta),
+    /invalid DWG transform payload/u,
   );
   assert.equal(renderer.stageCount, 0);
   assert.equal(renderer.resources.size, 0);

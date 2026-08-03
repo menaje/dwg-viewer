@@ -22,10 +22,11 @@ composition과 DOM listener disposal은 `@dwg-viewer/viewer-ui`가 소유합니�
 속성과 측정 결과를 bounded view model로 투영합니다.
 
 `DwgRenderDeltaAdapter`는 Core의 source-neutral atomic delta hook과 이
-package의 private line/triangle-fill/POINT/Canvas-text packet을 연결합니다.
+package의 private line/triangle-fill/POINT/Canvas-text/instance-transform
+packet을 연결합니다.
 payload resolver가
 descriptor의 digest와 byte bound를 검증한 decoded packet을 동기적으로
-제공하면 adapter는 모든 WebGL resource를 먼저 stage한 뒤 한 번에
+제공하면 adapter는 모든 WebGL/Canvas/instance resource를 먼저 stage한 뒤 한 번에
 활성화합니다. base Scene Cache buffer는 수정하지 않고 line vertex의 DWG
 handle과 fill·pattern·POINT·surface·WIPEOUT의 압축 identity-range sidecar로
 draw range만 제외합니다. Canvas text도 같은 source/handle suppression을
@@ -34,7 +35,7 @@ draw range만 제외합니다. Canvas text도 같은 source/handle suppression�
 제공하며, source switch와 disposal은 staged 및 committed delta resource를
 모두 회수합니다.
 
-The current decoded v4 packet is private to this package:
+The current decoded v5 packet is private to this package:
 
 ```text
 {
@@ -44,22 +45,31 @@ The current decoded v4 packet is private to this package:
     lines: [{ renderId, sceneId, batch, vertices, instanceIndices }],
     fills: [{ renderId, sceneId, batch, vertices, instanceIndices }],
     points: [{ renderId, sceneId, batch, vertices, instanceIndices }],
-    texts: [{ renderId, sceneId, buffer }]
+    texts: [{ renderId, sceneId, buffer }],
+    transforms: [{ renderId, sceneId, buffer }]
   }]
 }
 ```
 
 `byteLength` is the exact sum of the non-shared 36-byte line, 32-byte
-triangle-fill, 32-byte POINT and UTF-8 JSON text buffers. Every line vertex or
-text record handle must match its operation's `dwg:<sceneId>:<handle>` Render
-ID. Each fill, POINT or text entry belongs to exactly one Render ID, and every
-visual upsert Render ID must be covered across the four streams. One text
-record is capped at 256 KiB and staged Canvas text is capped at 8 MiB. Packet
+triangle-fill, 32-byte POINT, UTF-8 JSON text and fixed 272-byte instance
+transform buffers. Every line vertex, text record or transform occurrence
+handle must match its operation's `dwg:<sceneId>:<handle>` Render ID. Each
+fill, POINT, text or transform entry belongs to exactly one Render ID, and
+every visual upsert Render ID must be covered across the five streams. A
+transform record binds one existing block/index occurrence to separate
+display and measurement affine matrices. It replaces only that packed matrix,
+so the shared block geometry is neither copied nor re-uploaded. Direct clipped
+occurrences and target blocks with nested children are rejected until
+dependency recomputation is available, and repeated/MINSERT cells for one
+native handle require complete atomic coverage.
+One text record is capped at 256 KiB; staged Canvas text and transforms each
+use separate 8 MiB CPU bounds. Packet
 lookup and digest verification happen before the synchronous Core apply
 boundary; the adapter rechecks descriptor binding, operation coverage, byte
 bounds and native identity before allocating renderer resources. The v1
-line-only, v2 line/fill and v3 line/fill/POINT media types remain readable
-while producers move to v4.
+line-only, v2 line/fill, v3 line/fill/POINT and v4 Canvas-text media types
+remain readable while producers move to v5.
 
 The standalone page is the development and qualification shell: it keeps the
 framed canvas, diagnostics and full memory/performance dashboard. When hosted
@@ -100,12 +110,15 @@ layout tabs on hover, focus or an explicit click.
 - Stores instance transforms in packed `Float64Array` collections.
 - Rebases world coordinates around the camera before WebGL2 `f32` upload.
 - Renders overview lines with batched, instanced draw calls.
-- Stages bounded DWG Render Delta line/triangle-fill/POINT/Canvas-text packets
+- Stages bounded DWG Render Delta
+  line/triangle-fill/POINT/Canvas-text/instance-transform packets
   before one
   atomic state swap under one 64 MiB GPU budget,
   suppresses replaced/tombstoned base lines, HATCH fills/patterns, POINTs,
   SOLID/3DFACE/WIPEOUT primitives and Canvas text without rewriting immutable
-  Scene Cache buffers, and restores draw and pick state on preview rollback.
+  Scene Cache buffers, sparsely replaces root/XREF block occurrence matrices
+  across WebGL, Canvas text and raster images, and restores draw and pick state
+  on preview rollback.
 - Supports anchored wheel/button zoom, pointer pan and fitted-view reset.
 - Keeps byte-budgeted detail streaming active while zooming out so switching
   to the sampled overview cannot abruptly remove visible objects.

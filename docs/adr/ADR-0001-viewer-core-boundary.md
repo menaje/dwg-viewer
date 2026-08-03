@@ -168,16 +168,24 @@ tombstone/upsert, dependency/identity map과 preview만 보관하고 rollback �
 immutable base를 다시 읽지 않는다. renderer adapter hook은 원자적인 apply,
 preview rollback/promotion만 요구하며 현재 Webview의 private DWG GPU
 vertex format은 public protocol로 승격하지 않는다. Webview의
-`DwgRenderDeltaAdapter`는 검증된 decoded v4
-line/triangle-fill/POINT/Canvas-text packet의 resource를 먼저 stage하고
+`DwgRenderDeltaAdapter`는 검증된 decoded v5
+line/triangle-fill/POINT/Canvas-text/direct-instance-transform packet의
+resource를 먼저 stage하고
 renderer state를 한 번에 교체한다. WebGL payload는 공용 64 MiB, native
-text는 8 MiB 한도를 사용한다. private v1 line-only, v2 line/fill 및 v3
-line/fill/POINT packet은 producer 전환 기간에 계속 읽는다.
+text와 transform은 각각 8 MiB 한도를 사용한다. private v1 line-only, v2
+line/fill, v3 line/fill/POINT 및 v4 Canvas-text packet은 producer 전환
+기간에 계속 읽는다.
 base tombstone/upsert는 line
 vertex handle, HATCH/POINT/SOLID/3DFACE/WIPEOUT의 압축 identity-range
 sidecar와 Canvas text의 source-scoped handle filter를 통해 cached draw
 range로 적용한다. 따라서 Scene Cache buffer를 수정하지 않으며 preview
 rollback과 promotion은 같은 native identity/pick map을 사용한다.
+direct INSERT transform은 block geometry를 복제하지 않고 root/XREF의
+addressed packed occurrence display/measurement matrix만 희소 교체한다.
+WebGL, Canvas text와 raster image가 같은 transform state를 사용하며,
+파생 XCLIP이나 target block의 nested child를 다시 계산해야 하는 occurrence는
+현재 fail-closed한다. 같은 native handle의 MINSERT/repeated occurrence는
+모두 한 atomic packet에 포함되어야 한다.
 `MockRenderDeltaSource`와 공용 conformance는 stale replay 뒤에도
 source/overlay/pick revision이 함께 전진하는지 검증한다.
 `@dwg-viewer/viewer-ui`의 첫 public controller는 review toolbar의 active
@@ -189,8 +197,9 @@ DOM listener disposal을 소유한다. DWG Webview는 candidate 판독과 CAD �
 selection/measurement overlay, generic render data model의 물리적 package
 이동은 남아 있다. 일반 Viewer UI도 toolbar/result lifecycle부터 이동했으며
 layer/layout panel composition은 이후 단계다. #30의 실제 cross-repository
-`ConiServiceSource` qualification과 #27의 fill/text/primitive delta packet,
-split/overlay diff UI 및 대형 도면 qualification은 남아 있다. 제품 진입점을
+`ConiServiceSource` qualification과 #27의 style/block dependency
+invalidation, split/overlay diff UI 및 대형 도면 qualification은 남아 있다.
+제품 진입점을
 먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
 private message를 Core API로 승격하지 않고 진행한다.
 

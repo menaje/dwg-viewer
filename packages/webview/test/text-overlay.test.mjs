@@ -27,6 +27,10 @@ import { makeFixtureCache } from "./cache-fixture.mjs";
 import {
   normalizedRenderDeltaTextRecord,
 } from "./render-delta-text-fixture.mjs";
+import {
+  normalizedRenderDeltaTransformRecord,
+  translatedTransformMatrix,
+} from "./render-delta-transform-fixture.mjs";
 
 function fakeCanvas() {
   const calls = {
@@ -316,6 +320,72 @@ test("replaces and rolls back a native Canvas text record", async () => {
   assert.deepEqual(
     overlay.findTextOccurrence("12C").point,
     [101, 201, 0],
+  );
+});
+
+test("moves block text through a sparse instance transform", async () => {
+  const scene = await textScene();
+  const overlay = new CanvasTextOverlay(fakeCanvas(), {
+    textEntities: scene.textEntities,
+    blocks: scene.metadata.blocks,
+    layers: scene.metadata.layers,
+    instanceGraph: scene.instanceGraph,
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+    sourceId: "root",
+  });
+  const text = normalizedRenderDeltaTextRecord({
+    handle: "130",
+    ownerHandle: "66",
+    value: "블록 문자",
+    insertionPoint: [0, 0, 0],
+    alignmentPoint: [0, 0, 0],
+    height: 0.5,
+  });
+  const transform = normalizedRenderDeltaTransformRecord({
+    blockIndex: 2,
+    handle: 0xcan,
+    matrix: translatedTransformMatrix(110, 210, 0),
+    measurementMatrix: translatedTransformMatrix(120, 220, 0),
+  });
+  const textEntry = Object.freeze({
+    resourceKind: "text",
+    sceneId: "root",
+    record: text.record,
+    byteLength: text.buffer.byteLength,
+  });
+  const transformEntry = Object.freeze({
+    resourceKind: "transform",
+    sceneId: "root",
+    record: transform.record,
+    byteLength: transform.buffer.byteLength,
+  });
+
+  overlay.setRenderDeltaState({
+    texts: [textEntry],
+    transforms: [transformEntry],
+  });
+  const moved = overlay.findTextOccurrence("130");
+  const metrics = overlay.redraw(
+    {
+      origin: [110, 210, 0],
+      worldWidth: 20,
+      worldHeight: 15,
+    },
+    scene.metadata.layers.map(() => true),
+  );
+
+  assert.deepEqual(moved.point, [110, 210, 0]);
+  assert.equal(metrics.renderDeltaTransforms, 1);
+
+  overlay.setRenderDeltaState({ texts: [textEntry] });
+  assert.deepEqual(
+    overlay.findTextOccurrence("130").point,
+    [
+      scene.instanceGraph.instancesByBlock.get(2).data[12],
+      scene.instanceGraph.instancesByBlock.get(2).data[13],
+      scene.instanceGraph.instancesByBlock.get(2).data[14],
+    ],
   );
 });
 

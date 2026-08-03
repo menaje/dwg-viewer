@@ -69,12 +69,13 @@ source-neutral renderer adapter hook. `MockRenderDeltaSource` verifies that a
 stale replay cannot advance either source or overlay revision and that picking
 tracks the applied revision. The existing DWG WebGL vertex layouts remain
 private to the Webview adapter. `DwgRenderDeltaAdapter` now consumes a
-digest/byte-bound decoded v4 packet containing 36-byte lines, 32-byte triangle
-fills, 32-byte POINT records and bounded UTF-8 JSON native-text records. It
-stages every WebGL or Canvas resource before an atomic renderer state swap and
-keeps the committed resources alive while a preview is active. The v1
-line-only, v2 line/fill and v3 line/fill/POINT media types remain accepted
-during the private producer transition.
+digest/byte-bound decoded v5 packet containing 36-byte lines, 32-byte triangle
+fills, 32-byte POINT records, bounded UTF-8 JSON native-text records and
+272-byte direct block-occurrence transforms. It stages every WebGL, Canvas or
+instance resource before an atomic renderer state swap and keeps the committed
+resources alive while a preview is active. The v1 line-only, v2 line/fill, v3
+line/fill/POINT and v4 Canvas-text media types remain accepted during the
+private producer transition.
 The renderer suppresses replaced or tombstoned base line
 handles from vertex identity and HATCH fill/pattern, POINT,
 SOLID/3DFACE/WIPEOUT handles from compact vertex-range sidecars. Canvas text
@@ -85,7 +86,14 @@ snapshot. Promotion and disposal release superseded resources under a
 dedicated shared 64 MiB GPU bound. Native Canvas text shares the same
 source-scoped handle suppression, font/layout/XCLIP and hit-test path, with a
 separate 8 MiB staged text bound. These DWG record kinds remain private adapter
-details rather than public protocol fields.
+details rather than public protocol fields. Instance transforms have their own
+8 MiB CPU bound and sparsely replace only the addressed packed display and
+measurement matrices. Root and XREF WebGL batches, Canvas text and raster
+images therefore retain one shared block definition. The renderer rejects a
+direct transform for an XCLIP-bound occurrence or a target block with nested
+children until its derived dependency can be recomputed atomically, and
+requires complete coverage of every repeated/MINSERT occurrence that shares
+the native handle.
 The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
 remain Webview adapters and move incrementally without changing raw DWG
 qualification. `ViewerReviewUiController` now owns review toolbar state,

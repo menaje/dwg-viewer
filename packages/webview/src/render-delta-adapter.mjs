@@ -4,6 +4,9 @@ import {
 } from "@dwg-viewer/render-protocol";
 
 import { decodeDwgRenderDeltaText } from "./render-delta-text.mjs";
+import {
+  decodeDwgRenderDeltaTransform,
+} from "./render-delta-transform.mjs";
 import { ROOT_RENDER_DELTA_SCENE_ID } from "./renderer.mjs";
 
 const DWG_RENDER_DELTA_MEDIA_TYPE_V1 =
@@ -12,8 +15,10 @@ const DWG_RENDER_DELTA_MEDIA_TYPE_V2 =
   "application/vnd.dwg-viewer.dwg-render-delta.v2";
 const DWG_RENDER_DELTA_MEDIA_TYPE_V3 =
   "application/vnd.dwg-viewer.dwg-render-delta.v3";
-const DWG_RENDER_DELTA_MEDIA_TYPE =
+const DWG_RENDER_DELTA_MEDIA_TYPE_V4 =
   "application/vnd.dwg-viewer.dwg-render-delta.v4";
+const DWG_RENDER_DELTA_MEDIA_TYPE =
+  "application/vnd.dwg-viewer.dwg-render-delta.v5";
 const DWG_LINE_VERTEX_STRIDE = 36;
 const DWG_FILL_VERTEX_STRIDE = 32;
 const DWG_POINT_VERTEX_STRIDE = 32;
@@ -64,6 +69,7 @@ function assertRenderer(renderer) {
     "stageRenderDeltaFill",
     "stageRenderDeltaPoint",
     "stageRenderDeltaText",
+    "stageRenderDeltaTransform",
     "activateRenderDelta",
     "releaseRenderDeltaResources",
   ]) {
@@ -230,6 +236,9 @@ function resourcesForState(state) {
     for (const text of overlay.texts) {
       resources.add(text);
     }
+    for (const transform of overlay.transforms) {
+      resources.add(transform);
+    }
   }
   return resources;
 }
@@ -255,6 +264,12 @@ function activePoints(state) {
 function activeTexts(state) {
   return [...state.overlays.values()].flatMap(
     (overlay) => overlay.texts,
+  );
+}
+
+function activeTransforms(state) {
+  return [...state.overlays.values()].flatMap(
+    (overlay) => overlay.transforms,
   );
 }
 
@@ -357,6 +372,27 @@ function validateTextIdentity(text, identity, label) {
   }
 }
 
+function validateTransformIdentity(transform, identity, label) {
+  if (
+    transform.sceneId !== identity.sceneId ||
+    !(transform.buffer instanceof ArrayBuffer)
+  ) {
+    throw new TypeError(
+      `${label} has an invalid DWG transform payload`,
+    );
+  }
+  try {
+    return decodeDwgRenderDeltaTransform(transform.buffer, {
+      expectedHandle: identity.handle,
+    });
+  } catch (error) {
+    throw new TypeError(
+      `${label} has an invalid DWG transform payload`,
+      { cause: error },
+    );
+  }
+}
+
 function parsePacket(
   value,
   payload,
@@ -380,10 +416,13 @@ function parsePacket(
     payload.mediaType === DWG_RENDER_DELTA_MEDIA_TYPE_V2;
   const lineFillPointPacket =
     payload.mediaType === DWG_RENDER_DELTA_MEDIA_TYPE_V3;
+  const lineFillPointTextPacket =
+    payload.mediaType === DWG_RENDER_DELTA_MEDIA_TYPE_V4;
   if (
     (!legacyLinePacket &&
       !lineFillPacket &&
       !lineFillPointPacket &&
+      !lineFillPointTextPacket &&
       payload.mediaType !== DWG_RENDER_DELTA_MEDIA_TYPE) ||
     packet.payloadId !== payload.payloadId ||
     packet.sha256 !== payload.sha256 ||
@@ -426,12 +465,21 @@ function parsePacket(
           ? ["operationId", "lines", "fills"]
           : lineFillPointPacket
             ? ["operationId", "lines", "fills", "points"]
-            : [
+            : lineFillPointTextPacket
+              ? [
+                  "operationId",
+                  "lines",
+                  "fills",
+                  "points",
+                  "texts",
+                ]
+              : [
                 "operationId",
                 "lines",
                 "fills",
                 "points",
                 "texts",
+                "transforms",
               ],
       "DWG render delta packet operation",
     );
@@ -449,12 +497,20 @@ function parsePacket(
       lineFillPointPacket
         ? []
         : packetOperation.texts;
+    const packetTransforms =
+      legacyLinePacket ||
+      lineFillPacket ||
+      lineFillPointPacket ||
+      lineFillPointTextPacket
+        ? []
+        : packetOperation.transforms;
     const operation = expected.get(packetOperation.operationId);
     const resourceCount =
       packetLines?.length +
       packetFills?.length +
       packetPoints?.length +
-      packetTexts?.length;
+      packetTexts?.length +
+      packetTransforms?.length;
     if (
       !operation ||
       parsed.has(operation.operationId) ||
@@ -462,6 +518,7 @@ function parsePacket(
       !Array.isArray(packetFills) ||
       !Array.isArray(packetPoints) ||
       !Array.isArray(packetTexts) ||
+      !Array.isArray(packetTransforms) ||
       resourceCount === 0 ||
       resourceCount > 4_096
     ) {
@@ -475,7 +532,9 @@ function parsePacket(
     const fills = [];
     const points = [];
     const texts = [];
+    const transforms = [];
     const textRenderIds = new Set();
+    const replacementRenderIds = new Set();
     for (const [index, rawLine] of packetLines.entries()) {
       const line = plainRecord(
         rawLine,
@@ -512,6 +571,7 @@ function parsePacket(
       );
       buffers.add(line.vertices.buffer);
       covered.add(line.renderId);
+      replacementRenderIds.add(line.renderId);
       byteLength += line.vertices.byteLength;
       if (
         !Number.isSafeInteger(byteLength) ||
@@ -567,6 +627,7 @@ function parsePacket(
       );
       buffers.add(fill.vertices.buffer);
       covered.add(fill.renderId);
+      replacementRenderIds.add(fill.renderId);
       byteLength += fill.vertices.byteLength;
       if (
         !Number.isSafeInteger(byteLength) ||
@@ -622,6 +683,7 @@ function parsePacket(
       );
       buffers.add(point.vertices.buffer);
       covered.add(point.renderId);
+      replacementRenderIds.add(point.renderId);
       byteLength += point.vertices.byteLength;
       if (
         !Number.isSafeInteger(byteLength) ||
@@ -671,6 +733,7 @@ function parsePacket(
       buffers.add(text.buffer);
       textRenderIds.add(text.renderId);
       covered.add(text.renderId);
+      replacementRenderIds.add(text.renderId);
       byteLength += text.buffer.byteLength;
       if (
         !Number.isSafeInteger(byteLength) ||
@@ -686,6 +749,64 @@ function parsePacket(
           sceneId: text.sceneId,
           record,
           byteLength: text.buffer.byteLength,
+        }),
+      );
+    }
+    const transformTargets = new Set();
+    for (const [index, rawTransform] of packetTransforms.entries()) {
+      const transform = plainRecord(
+        rawTransform,
+        "DWG render delta packet transform",
+      );
+      exactKeys(
+        transform,
+        ["renderId", "sceneId", "buffer"],
+        "DWG render delta packet transform",
+      );
+      if (
+        operation.aspect !== RenderDeltaAspect.TRANSFORM ||
+        !renderIds.has(transform.renderId) ||
+        buffers.has(transform.buffer) ||
+        replacementRenderIds.has(transform.renderId)
+      ) {
+        throw new TypeError(
+          "DWG render delta packet transform scope is invalid",
+        );
+      }
+      const identity = identities.get(
+        logicalKey(operation.layerId, transform.renderId),
+      );
+      const record = validateTransformIdentity(
+        transform,
+        identity,
+        `DWG render delta packet transform ${index}`,
+      );
+      const target =
+        `${transform.sceneId}\u0000${record.blockIndex}` +
+        `\u0000${record.instanceIndex}`;
+      if (transformTargets.has(target)) {
+        throw new TypeError(
+          "DWG render delta packet transform target is duplicated",
+        );
+      }
+      transformTargets.add(target);
+      buffers.add(transform.buffer);
+      covered.add(transform.renderId);
+      byteLength += transform.buffer.byteLength;
+      if (
+        !Number.isSafeInteger(byteLength) ||
+        byteLength > payload.byteLength
+      ) {
+        throw new RangeError(
+          "DWG render delta packet exceeds its byte bound",
+        );
+      }
+      transforms.push(
+        Object.freeze({
+          renderId: transform.renderId,
+          sceneId: transform.sceneId,
+          record,
+          byteLength: transform.buffer.byteLength,
         }),
       );
     }
@@ -705,6 +826,7 @@ function parsePacket(
         fills: Object.freeze(fills),
         points: Object.freeze(points),
         texts: Object.freeze(texts),
+        transforms: Object.freeze(transforms),
       }),
     );
   }
@@ -761,6 +883,7 @@ export class DwgRenderDeltaAdapter {
         fills: activeFills(state),
         points: activePoints(state),
         texts: activeTexts(state),
+        transforms: activeTransforms(state),
         baseSuppressions: [...state.suppressions.values()],
         affectedWorldBounds: state.affectedWorldBounds,
       }),
@@ -841,6 +964,7 @@ export class DwgRenderDeltaAdapter {
     const fillsByOperation = new Map();
     const pointsByOperation = new Map();
     const textsByOperation = new Map();
+    const transformsByOperation = new Map();
     try {
       for (const [
         operationId,
@@ -948,6 +1072,39 @@ export class DwgRenderDeltaAdapter {
           textsByRenderId.set(text.renderId, entries);
         }
         textsByOperation.set(operationId, textsByRenderId);
+        const transformsByRenderId = new Map();
+        for (const [index, transform] of
+          packetOperation.transforms.entries()) {
+          const entry = synchronous(
+            this.#renderer.stageRenderDeltaTransform({
+              key:
+                `${delta.deltaId}\u0000${operationId}` +
+                `\u0000${transform.renderId}` +
+                `\u0000transform:${index}`,
+              sceneId: transform.sceneId,
+              record: transform.record,
+              byteLength: transform.byteLength,
+            }),
+            "DWG renderer stageRenderDeltaTransform",
+          );
+          if (!entry || typeof entry !== "object") {
+            throw new TypeError(
+              "DWG renderer returned an invalid staged transform",
+            );
+          }
+          staged.push(entry);
+          const entries =
+            transformsByRenderId.get(transform.renderId) ?? [];
+          entries.push(entry);
+          transformsByRenderId.set(
+            transform.renderId,
+            entries,
+          );
+        }
+        transformsByOperation.set(
+          operationId,
+          transformsByRenderId,
+        );
       }
     } catch (error) {
       this.#release(staged);
@@ -959,6 +1116,7 @@ export class DwgRenderDeltaAdapter {
       fillsByOperation,
       pointsByOperation,
       textsByOperation,
+      transformsByOperation,
       staged,
     };
   }
@@ -1022,6 +1180,10 @@ export class DwgRenderDeltaAdapter {
             prepared.textsByOperation
               .get(operation.operationId)
               ?.get(renderId) ?? [];
+          const transforms =
+            prepared.transformsByOperation
+              .get(operation.operationId)
+              ?.get(renderId) ?? [];
           next.overlays.set(
             key,
             Object.freeze({
@@ -1032,6 +1194,7 @@ export class DwgRenderDeltaAdapter {
               fills: Object.freeze(fills),
               points: Object.freeze(points),
               texts: Object.freeze(texts),
+              transforms: Object.freeze(transforms),
             }),
           );
           next.suppressions.set(key, identity);
@@ -1141,6 +1304,11 @@ export class DwgRenderDeltaAdapter {
         (total, entry) => total + entry.byteLength,
         0,
       ),
+      transformRecords: activeTransforms(state).length,
+      transformBytes: activeTransforms(state).reduce(
+        (total, entry) => total + entry.byteLength,
+        0,
+      ),
       baseSuppressions: state.suppressions.size,
       affectedWorldBounds: state.affectedWorldBounds,
       invalidatedDependencyIds: Object.freeze(
@@ -1209,4 +1377,5 @@ export {
   DWG_RENDER_DELTA_MEDIA_TYPE_V1,
   DWG_RENDER_DELTA_MEDIA_TYPE_V2,
   DWG_RENDER_DELTA_MEDIA_TYPE_V3,
+  DWG_RENDER_DELTA_MEDIA_TYPE_V4,
 };

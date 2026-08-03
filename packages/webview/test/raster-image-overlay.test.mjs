@@ -9,6 +9,10 @@ import {
   RasterImageAssetStore,
   requestedBitmapTargetSize,
 } from "../src/raster-image-overlay.mjs";
+import {
+  normalizedRenderDeltaTransformRecord,
+  translatedTransformMatrix,
+} from "./render-delta-transform-fixture.mjs";
 
 function imageTable(record, path = String.raw`.\image\도면.png`) {
   return {
@@ -379,4 +383,91 @@ test("selects visible IMAGE bounds and exposes its insertion point", () => {
   ]);
   assert.equal(insertion.kind, "insertion");
   assert.deepEqual(insertion.displayPoint, [0, 0, 0]);
+});
+
+test("moves and rolls back a block IMAGE instance transform", () => {
+  const canvas = fakeCanvas();
+  const instances = Object.freeze({
+    data: identityMat4(),
+    measurementData: identityMat4(),
+    handles: new BigUint64Array([0xc9n]),
+    clipIds: new Uint32Array([0]),
+    layerIndices: new Uint32Array([0xffffffff]),
+    opacities: new Float32Array([1]),
+    visibilityRows: new Uint32Array([0]),
+    count: 1,
+  });
+  const instanceGraph = {
+    rootInstances: modelGraph().rootInstances,
+    instancesByBlock: new Map([[1, instances]]),
+    insertsByOwner: new Map(),
+    modelBlockIndices: new Set([0]),
+    clipNodes: [],
+  };
+  const transform = normalizedRenderDeltaTransformRecord({
+    blockIndex: 1,
+    handle: 0xc9n,
+    matrix: translatedTransformMatrix(10, 20, 0),
+    measurementMatrix: translatedTransformMatrix(30, 40, 0),
+  });
+  const overlay = new CanvasRasterImageOverlay(canvas, {
+    imageEntities: imageTable({
+      ...visibleRecord,
+      ownerHandle: 101n,
+      clippingEnabled: false,
+      clipVertexCount: 0,
+    }),
+    blocks: [
+      { index: 0, handle: 100n },
+      { index: 1, handle: 101n },
+    ],
+    layers: [{ name: "0" }],
+    instanceGraph,
+    cacheId: "root",
+    sourceId: "root",
+    hitTestingEnabled: true,
+    assetStore: {
+      lookup: () => ({ status: "missing" }),
+      snapshot: () => ({}),
+    },
+  });
+  const entry = Object.freeze({
+    resourceKind: "transform",
+    sceneId: "root",
+    record: transform.record,
+    byteLength: transform.buffer.byteLength,
+  });
+
+  overlay.setRenderDeltaTransforms([entry]);
+  const movedMetrics = overlay.redraw(
+    {
+      origin: [10, 20, 0],
+      worldWidth: 8,
+      worldHeight: 6,
+    },
+    [true],
+  );
+  const moved = overlay.hitTest(400, 300, {
+    snapKinds: ["insertion"],
+  });
+
+  assert.equal(movedMetrics.renderDeltaTransforms, 1);
+  assert.deepEqual(moved.displayPoint, [10, 20, 0]);
+  assert.deepEqual(moved.measurementPoint, [30, 40, 0]);
+
+  overlay.setRenderDeltaTransforms([]);
+  const restoredMetrics = overlay.redraw(
+    {
+      origin: [0, 0, 0],
+      worldWidth: 8,
+      worldHeight: 6,
+    },
+    [true],
+  );
+  const restored = overlay.hitTest(400, 300, {
+    snapKinds: ["insertion"],
+  });
+  assert.equal(restoredMetrics.renderDeltaTransforms, 0);
+  assert.deepEqual(restored.displayPoint, [0, 0, 0]);
+  assert.deepEqual(restored.measurementPoint, [0, 0, 0]);
 });

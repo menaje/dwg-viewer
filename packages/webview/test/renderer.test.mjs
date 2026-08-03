@@ -25,6 +25,10 @@ import { identityMat4 } from "../src/math.mjs";
 import {
   normalizedRenderDeltaTextRecord,
 } from "./render-delta-text-fixture.mjs";
+import {
+  normalizedRenderDeltaTransformRecord,
+  translatedTransformMatrix,
+} from "./render-delta-transform-fixture.mjs";
 
 function makeFakeGl() {
   let nextId = 0;
@@ -1077,9 +1081,12 @@ test("atomically overlays delta points and restores base points", () => {
     activeGpuBytes: 32,
     textRecords: 0,
     activeTextBytes: 0,
+    transformRecords: 0,
+    activeTransformBytes: 0,
     activeResourceBytes: 32,
     allocatedGpuBytes: 32,
     allocatedTextBytes: 0,
+    allocatedTransformBytes: 0,
     allocatedResourceBytes: 32,
     baseSuppressions: 1,
     affectedWorldBounds: null,
@@ -1282,6 +1289,155 @@ test("bounds, activates, rolls back, and releases Canvas text deltas", () => {
     renderer.renderDeltaSnapshot().allocatedResourceBytes,
     0,
   );
+  renderer.dispose();
+});
+
+test("sparsely replaces a shared block occurrence transform", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const transform = normalizedRenderDeltaTransformRecord({
+    matrix: translatedTransformMatrix(0.25, 0.25, 0),
+    measurementMatrix: translatedTransformMatrix(
+      0.5,
+      0.5,
+      0,
+    ),
+  });
+  const renderer = new WebGlLineRenderer(canvas, {
+    maximumRenderDeltaTransformBytes:
+      transform.buffer.byteLength,
+  });
+  const instances = Object.freeze({
+    data: identityMat4(),
+    measurementData: identityMat4(),
+    handles: new BigUint64Array([0x2an]),
+    clipIds: new Uint32Array([0]),
+    count: 1,
+    length: 1,
+  });
+  const blockBatch = {
+    ...batch({
+      id: 0,
+      kind: GpuLineBatchKind.BlockDefinition,
+      lodLevel: 0,
+      firstVertex: 0,
+    }),
+    blockIndex: 1,
+  };
+  const first = renderer.renderOverview({
+    batches: [blockBatch],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: {
+      instancesByBlock: new Map([[1, instances]]),
+      insertsByOwner: new Map(),
+    },
+    vertices: lineVerticesForHandles([0x99n]),
+  });
+  const textStates = [];
+  const imageStates = [];
+  renderer.setTextOverlay({
+    setRenderDeltaState(state) {
+      textStates.push(state);
+    },
+    redraw() {
+      return {};
+    },
+    dispose() {},
+  });
+  renderer.setImageOverlay({
+    setRenderDeltaTransforms(entries) {
+      imageStates.push(entries);
+    },
+    redraw() {
+      return {};
+    },
+    dispose() {},
+  });
+  const staged = renderer.stageRenderDeltaTransform({
+    key: "delta:transform\u0000dwg:root:2A",
+    record: transform.record,
+    byteLength: transform.buffer.byteLength,
+  });
+
+  assert.throws(
+    () =>
+      renderer.stageRenderDeltaTransform({
+        key: "delta:transform\u0000second",
+        record: transform.record,
+        byteLength: transform.buffer.byteLength,
+      }),
+    new RegExp(
+      `exceeds the ${transform.buffer.byteLength}-byte limit`,
+      "u",
+    ),
+  );
+  renderer.activateRenderDelta({ transforms: [staged] });
+  const callCount = calls.bufferData.length;
+  const overlaid = renderer.redraw(first.camera);
+  const transformedUpload = calls.bufferData
+    .slice(callCount)
+    .findLast((call) => call.usage === gl.DYNAMIC_DRAW);
+  const transformedMatrix = new Float32Array(
+    transformedUpload.buffer.slice(0, 16 * 4),
+  );
+
+  assert.equal(textStates.at(-1).transforms[0], staged);
+  assert.equal(imageStates.at(-1)[0], staged);
+  assert.ok(Math.abs(transformedMatrix[12] + 0.25) < 1e-6);
+  assert.ok(Math.abs(transformedMatrix[13] + 0.25) < 1e-6);
+  assert.equal(overlaid.renderDeltaTransformRecords, 1);
+  assert.equal(
+    overlaid.renderDeltaTransformBytes,
+    transform.buffer.byteLength,
+  );
+  assert.equal(overlaid.renderDeltaGpuBytes, 0);
+  assert.deepEqual(renderer.renderDeltaSnapshot(), {
+    lineBatches: 0,
+    fillBatches: 0,
+    pointBatches: 0,
+    activeGpuBytes: 0,
+    textRecords: 0,
+    activeTextBytes: 0,
+    transformRecords: 1,
+    activeTransformBytes: transform.buffer.byteLength,
+    activeResourceBytes: transform.buffer.byteLength,
+    allocatedGpuBytes: 0,
+    allocatedTextBytes: 0,
+    allocatedTransformBytes: transform.buffer.byteLength,
+    allocatedResourceBytes: transform.buffer.byteLength,
+    baseSuppressions: 0,
+    affectedWorldBounds: null,
+  });
+  assert.throws(
+    () => renderer.releaseRenderDeltaResources([staged]),
+    /cannot release an active/u,
+  );
+
+  renderer.activateRenderDelta();
+  assert.equal(textStates.at(-1).transforms.length, 0);
+  assert.equal(imageStates.at(-1).length, 0);
+  renderer.releaseRenderDeltaResources([staged]);
+  const restoredCallCount = calls.bufferData.length;
+  const restored = renderer.redraw(first.camera);
+  const restoredUpload = calls.bufferData
+    .slice(restoredCallCount)
+    .findLast((call) => call.usage === gl.DYNAMIC_DRAW);
+  const restoredMatrix = new Float32Array(
+    restoredUpload.buffer.slice(0, 16 * 4),
+  );
+  assert.ok(Math.abs(restoredMatrix[12] + 0.5) < 1e-6);
+  assert.ok(Math.abs(restoredMatrix[13] + 0.5) < 1e-6);
+  assert.equal(restored.renderDeltaTransformRecords, 0);
+  assert.equal(restored.renderDeltaAllocatedTransformBytes, 0);
+
   renderer.dispose();
 });
 
@@ -1611,8 +1767,19 @@ test("draws independently cached XREF overview and detail geometry", () => {
   matrices[15] = 1;
   const instanceGraph = {
     instancesByBlock: new Map([
-      [9, { data: matrices, count: 1, length: 1 }],
+      [
+        9,
+        {
+          data: matrices,
+          measurementData: matrices,
+          handles: new BigUint64Array([0x2cn]),
+          clipIds: new Uint32Array([0]),
+          count: 1,
+          length: 1,
+        },
+      ],
     ]),
+    insertsByOwner: new Map(),
   };
   const external = renderer.addExternalOverview({
     id: "xref-1",
@@ -1694,10 +1861,24 @@ test("draws independently cached XREF overview and detail geometry", () => {
     record: externalTextFixture.record,
     byteLength: externalTextFixture.buffer.byteLength,
   });
+  const externalTransformFixture =
+    normalizedRenderDeltaTransformRecord({
+      blockIndex: 9,
+      handle: 0x2cn,
+      matrix: translatedTransformMatrix(0.25, 0, 0),
+      measurementMatrix: translatedTransformMatrix(0.25, 0, 0),
+    });
+  const externalTransform = renderer.stageRenderDeltaTransform({
+    key: "delta:xref-transform\u0000dwg:xref-1:2C",
+    sceneId: "xref-1",
+    record: externalTransformFixture.record,
+    byteLength: externalTransformFixture.buffer.byteLength,
+  });
   renderer.activateRenderDelta({
     fills: [externalFill],
     points: [externalPoint],
     texts: [externalText],
+    transforms: [externalTransform],
   });
 
   const redrawn = renderer.redraw(external.camera);
@@ -1710,6 +1891,7 @@ test("draws independently cached XREF overview and detail geometry", () => {
   assert.equal(redrawn.renderDeltaFillDrawCalls, 1);
   assert.equal(redrawn.renderDeltaPointDrawCalls, 1);
   assert.equal(redrawn.renderDeltaTextRecords, 1);
+  assert.equal(redrawn.renderDeltaTransformRecords, 1);
   assert.equal(
     redrawn.renderDeltaTextBytes,
     externalTextFixture.buffer.byteLength,
@@ -1727,6 +1909,7 @@ test("draws independently cached XREF overview and detail geometry", () => {
     externalFill,
     externalPoint,
     externalText,
+    externalTransform,
   ]);
   renderer.dispose();
 });
