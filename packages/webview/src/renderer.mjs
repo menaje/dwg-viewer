@@ -41,6 +41,8 @@ const MAX_INSTANCES_PER_DRAW = 16_384;
 const MAX_PRIMITIVE_GPU_BYTES = 40 * 1024 * 1024;
 const MAX_EXTERNAL_OVERVIEW_GPU_BYTES = 32 * 1024 * 1024;
 const MAX_EXTERNAL_DETAIL_GPU_BYTES = 32 * 1024 * 1024;
+const MAX_RENDER_DELTA_GPU_BYTES = 64 * 1024 * 1024;
+const ROOT_RENDER_DELTA_SCENE_ID = "root";
 const INTERACTIVE_MINIMUM_PIXEL_SPAN = 0.75;
 const EMPTY_INSTANCE_INDICES = new Uint32Array(0);
 const MODEL_INSTANCES = Object.freeze({
@@ -1533,21 +1535,152 @@ function validatePackedScene(
   }
 }
 
+function renderDeltaIdentityKey(sceneId, handleLow, handleHigh) {
+  return `${sceneId}\u0000${handleHigh}:${handleLow}`;
+}
+
+function normalizeRenderDeltaIdentity(value) {
+  const sceneId = String(value?.sceneId ?? "");
+  const handleLow = value?.handleLow;
+  const handleHigh = value?.handleHigh;
+  if (
+    sceneId.length === 0 ||
+    sceneId.length > 512 ||
+    !Number.isInteger(handleLow) ||
+    handleLow < 0 ||
+    handleLow > 0xffff_ffff ||
+    !Number.isInteger(handleHigh) ||
+    handleHigh < 0 ||
+    handleHigh > 0xffff_ffff
+  ) {
+    throw new TypeError("render delta identity is invalid");
+  }
+  return Object.freeze({
+    sceneId,
+    handleLow,
+    handleHigh,
+    key: renderDeltaIdentityKey(sceneId, handleLow, handleHigh),
+  });
+}
+
+function cloneRenderDeltaBatch(batch) {
+  if (
+    !batch ||
+    !Number.isSafeInteger(batch.id) ||
+    batch.id < 0 ||
+    !Object.values(GpuLineBatchKind).includes(batch.kind) ||
+    !Number.isSafeInteger(batch.lodLevel) ||
+    batch.lodLevel < 0 ||
+    batch.lodLevel > 1 ||
+    batch.firstVertex !== 0 ||
+    !Number.isSafeInteger(batch.vertexCount) ||
+    batch.vertexCount <= 0 ||
+    batch.vertexCount % 2 !== 0 ||
+    !Number.isSafeInteger(batch.blockIndex ?? 0) ||
+    (batch.blockIndex ?? 0) < 0 ||
+    (batch.kind === GpuLineBatchKind.BlockDefinition
+      ? !Number.isSafeInteger(batch.blockIndex) ||
+        batch.blockIndex < 0
+      : batch.blockIndex !== null &&
+        batch.blockIndex !== undefined) ||
+    !Array.isArray(batch.origin) ||
+    batch.origin.length !== 3 ||
+    !batch.origin.every(Number.isFinite) ||
+    !boundsAreFinite(batch.bounds)
+  ) {
+    throw new TypeError("render delta line batch is invalid");
+  }
+  return Object.freeze({
+    ...batch,
+    origin: Object.freeze([...batch.origin]),
+    bounds: Object.freeze({
+      min: Object.freeze([...batch.bounds.min]),
+      max: Object.freeze([...batch.bounds.max]),
+    }),
+  });
+}
+
+function lineVisibilityRanges(
+  vertices,
+  batch,
+  firstBufferVertex,
+  sceneId,
+  suppressions,
+) {
+  if (suppressions.size === 0) {
+    return null;
+  }
+  if (
+    !(vertices?.buffer instanceof ArrayBuffer) ||
+    (vertices.recordSize ?? VERTEX_STRIDE) !== VERTEX_STRIDE ||
+    vertices.buffer.byteLength !== vertices.byteLength ||
+    vertices.byteLength !== vertices.vertexCount * VERTEX_STRIDE ||
+    !Number.isSafeInteger(firstBufferVertex) ||
+    firstBufferVertex < 0
+  ) {
+    throw new TypeError("render delta line visibility payload is invalid");
+  }
+  const localFirstVertex = batch.firstVertex - firstBufferVertex;
+  if (
+    localFirstVertex < 0 ||
+    localFirstVertex + batch.vertexCount > vertices.vertexCount
+  ) {
+    throw new RangeError("render delta line visibility range is invalid");
+  }
+  const view = new DataView(vertices.buffer);
+  const ranges = [];
+  let firstVisible = -1;
+  for (let local = 0; local < batch.vertexCount; local += 2) {
+    const physical = localFirstVertex + local;
+    const byteOffset = physical * VERTEX_STRIDE;
+    const handleLow = view.getUint32(byteOffset + 20, true);
+    const handleHigh = view.getUint32(byteOffset + 24, true);
+    const hidden = suppressions.has(
+      renderDeltaIdentityKey(sceneId, handleLow, handleHigh),
+    );
+    if (!hidden && firstVisible < 0) {
+      firstVisible = physical;
+    }
+    if (hidden && firstVisible >= 0) {
+      ranges.push(
+        Object.freeze({
+          firstVertex: firstVisible,
+          vertexCount: physical - firstVisible,
+        }),
+      );
+      firstVisible = -1;
+    }
+  }
+  if (firstVisible >= 0) {
+    ranges.push(
+      Object.freeze({
+        firstVertex: firstVisible,
+        vertexCount:
+          localFirstVertex + batch.vertexCount - firstVisible,
+      }),
+    );
+  }
+  return Object.freeze(ranges);
+}
+
 export class WebGlLineRenderer {
   constructor(
     canvas,
     {
       maximumExternalOverviewBytes = MAX_EXTERNAL_OVERVIEW_GPU_BYTES,
       maximumExternalDetailBytes = MAX_EXTERNAL_DETAIL_GPU_BYTES,
+      maximumRenderDeltaBytes = MAX_RENDER_DELTA_GPU_BYTES,
     } = {},
   ) {
     if (
       !Number.isSafeInteger(maximumExternalOverviewBytes) ||
       maximumExternalOverviewBytes <= 0 ||
       !Number.isSafeInteger(maximumExternalDetailBytes) ||
-      maximumExternalDetailBytes <= 0
+      maximumExternalDetailBytes <= 0 ||
+      !Number.isSafeInteger(maximumRenderDeltaBytes) ||
+      maximumRenderDeltaBytes <= 0
     ) {
-      throw new RangeError("external GPU byte budgets must be positive");
+      throw new RangeError("renderer GPU byte budgets must be positive");
     }
     const gl = canvas.getContext("webgl2", {
       alpha: true,
@@ -1592,6 +1725,16 @@ export class WebGlLineRenderer {
     this.supplementalBounds = new Map();
     this.maximumExternalOverviewBytes = maximumExternalOverviewBytes;
     this.maximumExternalDetailBytes = maximumExternalDetailBytes;
+    this.maximumRenderDeltaBytes = maximumRenderDeltaBytes;
+    this.renderDeltaResources = new Set();
+    this.renderDeltaResourceBytes = 0;
+    this.renderDeltaState = Object.freeze({
+      lines: Object.freeze([]),
+      baseSuppressions: Object.freeze([]),
+      suppressionKeys: new Set(),
+      affectedWorldBounds: null,
+    });
+    this.renderDeltaRangeCache = new WeakMap();
     this.overviewScene = null;
     this.combinedBounds = null;
     this.hatchFillScene = null;
@@ -2668,6 +2811,221 @@ export class WebGlLineRenderer {
     this.gl.deleteBuffer(resource.vertexBuffer);
   }
 
+  stageRenderDeltaLine({
+    key,
+    sceneId = ROOT_RENDER_DELTA_SCENE_ID,
+    batch,
+    vertices,
+    instanceIndices = null,
+  }) {
+    if (!this.overviewScene) {
+      throw new Error("cannot stage a render delta before the overview");
+    }
+    if (
+      typeof key !== "string" ||
+      key.length === 0 ||
+      key.length > 1_024 ||
+      typeof sceneId !== "string" ||
+      sceneId.length === 0 ||
+      sceneId.length > 512 ||
+      (sceneId !== ROOT_RENDER_DELTA_SCENE_ID &&
+        !this.externalScenes.has(sceneId))
+    ) {
+      throw new TypeError("render delta line target is invalid");
+    }
+    const normalizedBatch = cloneRenderDeltaBatch(batch);
+    const instanceGraph =
+      sceneId === ROOT_RENDER_DELTA_SCENE_ID
+        ? this.overviewScene.instanceGraph
+        : this.externalScenes.get(sceneId).instanceGraph;
+    if (
+      !(vertices?.buffer instanceof ArrayBuffer) ||
+      (vertices.recordSize ?? VERTEX_STRIDE) !== VERTEX_STRIDE ||
+      vertices.vertexCount !== normalizedBatch.vertexCount ||
+      vertices.byteLength !==
+        normalizedBatch.vertexCount * VERTEX_STRIDE ||
+      vertices.buffer.byteLength !== vertices.byteLength ||
+      (instanceIndices !== null &&
+        !(instanceIndices instanceof Uint32Array))
+    ) {
+      throw new TypeError("render delta line vertex payload is invalid");
+    }
+    const instanceCount = instancesForBatch(
+      normalizedBatch,
+      instanceGraph,
+    ).count;
+    if (
+      instanceIndices !== null &&
+      instanceIndices.some((index) => index >= instanceCount)
+    ) {
+      throw new RangeError(
+        "render delta line references an invalid instance",
+      );
+    }
+    if (
+      vertices.byteLength >
+      this.maximumRenderDeltaBytes - this.renderDeltaResourceBytes
+    ) {
+      throw new RangeError(
+        `render delta GPU data exceeds the ${this.maximumRenderDeltaBytes}-byte limit`,
+      );
+    }
+    const resource = this.uploadVertices(vertices.buffer);
+    const entry = Object.freeze({
+      key,
+      sceneId,
+      batch: normalizedBatch,
+      resource,
+      byteLength: vertices.byteLength,
+      instanceIndices:
+        instanceIndices === null
+          ? null
+          : new Uint32Array(instanceIndices),
+    });
+    this.renderDeltaResources.add(entry);
+    this.renderDeltaResourceBytes += entry.byteLength;
+    return entry;
+  }
+
+  activateRenderDelta({
+    lines = Object.freeze([]),
+    baseSuppressions = Object.freeze([]),
+    affectedWorldBounds = null,
+  } = {}) {
+    if (!this.overviewScene) {
+      throw new Error("cannot activate a render delta before the overview");
+    }
+    if (!Array.isArray(lines) || !Array.isArray(baseSuppressions)) {
+      throw new TypeError("render delta state is invalid");
+    }
+    const lineKeys = new Set();
+    const normalizedLines = [];
+    for (const entry of lines) {
+      if (
+        !this.renderDeltaResources.has(entry) ||
+        lineKeys.has(entry.key) ||
+        (entry.sceneId !== ROOT_RENDER_DELTA_SCENE_ID &&
+          !this.externalScenes.has(entry.sceneId))
+      ) {
+        throw new TypeError("render delta line resource is invalid");
+      }
+      lineKeys.add(entry.key);
+      normalizedLines.push(entry);
+    }
+    const normalizedSuppressions = [];
+    const suppressionKeys = new Set();
+    for (const value of baseSuppressions) {
+      const identity = normalizeRenderDeltaIdentity(value);
+      if (
+        identity.sceneId !== ROOT_RENDER_DELTA_SCENE_ID &&
+        !this.externalScenes.has(identity.sceneId)
+      ) {
+        throw new TypeError(
+          "render delta suppression target is unavailable",
+        );
+      }
+      if (suppressionKeys.has(identity.key)) {
+        continue;
+      }
+      suppressionKeys.add(identity.key);
+      normalizedSuppressions.push(identity);
+    }
+    if (
+      affectedWorldBounds !== null &&
+      !boundsAreFinite(affectedWorldBounds)
+    ) {
+      throw new TypeError("render delta affected bounds are invalid");
+    }
+    const next = Object.freeze({
+      lines: Object.freeze(normalizedLines),
+      baseSuppressions: Object.freeze(normalizedSuppressions),
+      suppressionKeys,
+      affectedWorldBounds:
+        affectedWorldBounds === null
+          ? null
+          : Object.freeze({
+              min: Object.freeze([...affectedWorldBounds.min]),
+              max: Object.freeze([...affectedWorldBounds.max]),
+            }),
+    });
+    this.renderDeltaState = next;
+    this.renderDeltaRangeCache = new WeakMap();
+    this.recalculateCombinedBounds();
+    return this.renderDeltaSnapshot();
+  }
+
+  releaseRenderDeltaLines(lines) {
+    if (!Array.isArray(lines)) {
+      throw new TypeError("render delta line disposal requires an array");
+    }
+    const active = new Set(this.renderDeltaState.lines);
+    const unique = [...new Set(lines)];
+    for (const entry of unique) {
+      if (
+        !this.renderDeltaResources.has(entry) ||
+        active.has(entry)
+      ) {
+        throw new TypeError(
+          "cannot release an active or unknown render delta line",
+        );
+      }
+    }
+    for (const entry of unique) {
+      this.renderDeltaResources.delete(entry);
+      this.renderDeltaResourceBytes -= entry.byteLength;
+      this.deleteVertices(entry.resource);
+    }
+    return unique.length;
+  }
+
+  renderDeltaSnapshot() {
+    const activeBytes = this.renderDeltaState.lines.reduce(
+      (total, entry) => total + entry.byteLength,
+      0,
+    );
+    return Object.freeze({
+      lineBatches: this.renderDeltaState.lines.length,
+      activeGpuBytes: activeBytes,
+      allocatedGpuBytes: this.renderDeltaResourceBytes,
+      baseSuppressions:
+        this.renderDeltaState.baseSuppressions.length,
+      affectedWorldBounds:
+        this.renderDeltaState.affectedWorldBounds,
+    });
+  }
+
+  renderDeltaLineRanges(
+    sceneId,
+    batch,
+    vertices,
+    firstBufferVertex,
+    resource,
+  ) {
+    if (this.renderDeltaState.suppressionKeys.size === 0) {
+      return null;
+    }
+    let entries = this.renderDeltaRangeCache.get(resource);
+    if (!entries) {
+      entries = new Map();
+      this.renderDeltaRangeCache.set(resource, entries);
+    }
+    const key =
+      `${sceneId}\u0000${batch.id}\u0000${batch.firstVertex}` +
+      `\u0000${batch.vertexCount}\u0000${firstBufferVertex}`;
+    let ranges = entries.get(key);
+    if (!ranges) {
+      ranges = lineVisibilityRanges(
+        vertices,
+        batch,
+        firstBufferVertex,
+        sceneId,
+        this.renderDeltaState.suppressionKeys,
+      );
+      entries.set(key, ranges);
+    }
+    return ranges;
+  }
+
   resize(targetSize = null) {
     const ratio = Math.min(globalThis.devicePixelRatio ?? 1, 2);
     const width = targetSize
@@ -2917,6 +3275,7 @@ export class WebGlLineRenderer {
       bounds,
       instanceGraph,
       resource: this.uploadVertices(vertices.buffer),
+      vertices,
       detailResources: new Map(),
       detailSelections: new Map(),
     };
@@ -2979,6 +3338,10 @@ export class WebGlLineRenderer {
     for (const bounds of this.supplementalBounds.values()) {
       includeFiniteBounds(combined, bounds);
     }
+    includeFiniteBounds(
+      combined,
+      this.renderDeltaState.affectedWorldBounds,
+    );
     this.combinedBounds = combined;
   }
 
@@ -3045,6 +3408,7 @@ export class WebGlLineRenderer {
       batch,
       resource: this.uploadVertices(vertices.buffer),
       byteLength: vertices.byteLength,
+      vertices,
     });
     scene.detailResources.set(batch.id, entry);
     return entry;
@@ -3399,6 +3763,7 @@ export class WebGlLineRenderer {
         batch: entry.batch,
         resource: this.uploadVertices(entry.vertices.buffer),
         byteLength: entry.vertices.byteLength,
+        vertices: entry.vertices,
       }),
     );
     this.curveRefinementScene = Object.freeze({
@@ -3437,15 +3802,25 @@ export class WebGlLineRenderer {
       solidOutline = false,
       wipeoutMask = false,
       curveRefinement = false,
+      renderDelta = false,
       firstVertex = batch.firstVertex,
       instanceIndices = null,
       primitive = this.gl.LINES,
+      vertexRanges = null,
     } = {},
   ) {
     const gl = this.gl;
     const instances = instancesForBatch(batch, instanceGraph);
     const totalInstances = instanceIndices?.length ?? instances.count;
-    if (totalInstances === 0) {
+    const ranges =
+      vertexRanges ??
+      Object.freeze([
+        Object.freeze({
+          firstVertex,
+          vertexCount: batch.vertexCount,
+        }),
+      ]);
+    if (totalInstances === 0 || ranges.length === 0) {
       return;
     }
     gl.bindVertexArray(resource.vertexArray);
@@ -3515,57 +3890,67 @@ export class WebGlLineRenderer {
         this.peakInstanceBufferBytes,
         packed.byteLength,
       );
-      gl.drawArraysInstanced(
-        primitive,
-        firstVertex,
-        batch.vertexCount,
-        instanceCount,
-      );
-      metrics.drawCalls += 1;
-      metrics.submittedInstances += instanceCount;
-      metrics.submittedVertices += batch.vertexCount * instanceCount;
       metrics.instanceUploadBytes += packed.byteLength;
       metrics.maximumInstanceBufferBytes = Math.max(
         metrics.maximumInstanceBufferBytes,
         packed.byteLength,
       );
-      if (detail) {
-        metrics.detailDrawCalls += 1;
-        metrics.detailSubmittedVertices += batch.vertexCount * instanceCount;
-      }
-      if (fill) {
-        metrics.hatchFillDrawCalls += 1;
-        metrics.hatchFillSubmittedVertices +=
-          batch.vertexCount * instanceCount;
-      }
-      if (pattern) {
-        metrics.hatchPatternDrawCalls += 1;
-        metrics.hatchPatternSubmittedVertices +=
-          batch.vertexCount * instanceCount;
-      }
-      if (point) {
-        metrics.pointDrawCalls += 1;
-        metrics.pointSubmittedVertices += batch.vertexCount * instanceCount;
-      }
-      if (solidFill) {
-        metrics.solidFillDrawCalls += 1;
-        metrics.solidFillSubmittedVertices +=
-          batch.vertexCount * instanceCount;
-      }
-      if (solidOutline) {
-        metrics.solidOutlineDrawCalls += 1;
-        metrics.solidOutlineSubmittedVertices +=
-          batch.vertexCount * instanceCount;
-      }
-      if (wipeoutMask) {
-        metrics.wipeoutMaskDrawCalls += 1;
-        metrics.wipeoutMaskSubmittedVertices +=
-          batch.vertexCount * instanceCount;
-      }
-      if (curveRefinement) {
-        metrics.curveRefinementDrawCalls += 1;
-        metrics.curveRefinementSubmittedVertices +=
-          batch.vertexCount * instanceCount;
+      for (const range of ranges) {
+        gl.drawArraysInstanced(
+          primitive,
+          range.firstVertex,
+          range.vertexCount,
+          instanceCount,
+        );
+        metrics.drawCalls += 1;
+        metrics.submittedInstances += instanceCount;
+        metrics.submittedVertices +=
+          range.vertexCount * instanceCount;
+        if (detail) {
+          metrics.detailDrawCalls += 1;
+          metrics.detailSubmittedVertices +=
+            range.vertexCount * instanceCount;
+        }
+        if (fill) {
+          metrics.hatchFillDrawCalls += 1;
+          metrics.hatchFillSubmittedVertices +=
+            range.vertexCount * instanceCount;
+        }
+        if (pattern) {
+          metrics.hatchPatternDrawCalls += 1;
+          metrics.hatchPatternSubmittedVertices +=
+            range.vertexCount * instanceCount;
+        }
+        if (point) {
+          metrics.pointDrawCalls += 1;
+          metrics.pointSubmittedVertices +=
+            range.vertexCount * instanceCount;
+        }
+        if (solidFill) {
+          metrics.solidFillDrawCalls += 1;
+          metrics.solidFillSubmittedVertices +=
+            range.vertexCount * instanceCount;
+        }
+        if (solidOutline) {
+          metrics.solidOutlineDrawCalls += 1;
+          metrics.solidOutlineSubmittedVertices +=
+            range.vertexCount * instanceCount;
+        }
+        if (wipeoutMask) {
+          metrics.wipeoutMaskDrawCalls += 1;
+          metrics.wipeoutMaskSubmittedVertices +=
+            range.vertexCount * instanceCount;
+        }
+        if (curveRefinement) {
+          metrics.curveRefinementDrawCalls += 1;
+          metrics.curveRefinementSubmittedVertices +=
+            range.vertexCount * instanceCount;
+        }
+        if (renderDelta) {
+          metrics.renderDeltaDrawCalls += 1;
+          metrics.renderDeltaSubmittedVertices +=
+            range.vertexCount * instanceCount;
+        }
       }
     }
   }
@@ -3614,10 +3999,23 @@ export class WebGlLineRenderer {
         curveRefinementCameraKey(camera);
     const curveRefinementGpuBytes =
       this.curveRefinementScene?.byteLength ?? 0;
+    const renderDeltaGpuBytes =
+      this.renderDeltaState.lines.reduce(
+        (total, entry) => total + entry.byteLength,
+        0,
+      );
     const metrics = {
       drawCalls: 0,
       detailDrawCalls: 0,
       detailBatches: 0,
+      renderDeltaDrawCalls: 0,
+      renderDeltaSubmittedVertices: 0,
+      renderDeltaBatches: this.renderDeltaState.lines.length,
+      renderDeltaGpuBytes,
+      renderDeltaAllocatedGpuBytes:
+        this.renderDeltaResourceBytes,
+      renderDeltaBaseSuppressions:
+        this.renderDeltaState.baseSuppressions.length,
       hatchFillDrawCalls: 0,
       hatchFillSubmittedVertices: 0,
       hatchFillGpuBytes,
@@ -3662,7 +4060,8 @@ export class WebGlLineRenderer {
         solidFillGpuBytes +
         solidOutlineGpuBytes +
         wipeoutMaskGpuBytes +
-        curveRefinementGpuBytes,
+        curveRefinementGpuBytes +
+        this.renderDeltaResourceBytes,
       cachedDetailGpuBytes,
       cachedDetailBatches: this.detailResources.size,
       externalScenes: this.externalScenes.size,
@@ -3915,7 +4314,16 @@ export class WebGlLineRenderer {
           this.overviewScene.instanceGraph,
           camera,
           metrics,
-          { instanceIndices: overviewInstanceIndices.get(batch) },
+          {
+            instanceIndices: overviewInstanceIndices.get(batch),
+            vertexRanges: this.renderDeltaLineRanges(
+              ROOT_RENDER_DELTA_SCENE_ID,
+              batch,
+              this.overviewScene.vertices,
+              0,
+              this.overviewScene.resource,
+            ),
+          },
         );
       }
       for (const scene of this.externalScenes.values()) {
@@ -3937,6 +4345,13 @@ export class WebGlLineRenderer {
             {
               instanceIndices:
                 externalInstanceIndices.get(scene)?.get(batch) ?? null,
+              vertexRanges: this.renderDeltaLineRanges(
+                scene.id,
+                batch,
+                scene.vertices,
+                0,
+                scene.resource,
+              ),
             },
           );
         }
@@ -3955,6 +4370,13 @@ export class WebGlLineRenderer {
               detail: true,
               firstVertex: 0,
               instanceIndices: candidate.instanceIndices,
+              vertexRanges: this.renderDeltaLineRanges(
+                scene.id,
+                entry.batch,
+                entry.vertices,
+                entry.batch.firstVertex,
+                entry.resource,
+              ),
             },
           );
           if (linePassIndex === 0) {
@@ -3982,11 +4404,44 @@ export class WebGlLineRenderer {
             detail: true,
             firstVertex: 0,
             instanceIndices: candidate.instanceIndices,
+            vertexRanges: this.renderDeltaLineRanges(
+              ROOT_RENDER_DELTA_SCENE_ID,
+              entry.batch,
+              entry.vertices,
+              entry.batch.firstVertex,
+              entry.resource,
+            ),
           },
         );
         if (linePassIndex === 0) {
           metrics.detailBatches += 1;
         }
+      }
+      for (const entry of this.renderDeltaState.lines) {
+        const scene =
+          entry.sceneId === ROOT_RENDER_DELTA_SCENE_ID
+            ? this.overviewScene
+            : this.externalScenes.get(entry.sceneId);
+        if (!scene) {
+          continue;
+        }
+        this.bindClipTexture(
+          scene.instanceGraph,
+          camera,
+          this.clipLocations,
+        );
+        this.drawBatch(
+          entry.batch,
+          entry.resource,
+          scene.instanceGraph,
+          camera,
+          metrics,
+          {
+            renderDelta: true,
+            firstVertex: 0,
+            instanceIndices: entry.instanceIndices,
+          },
+        );
       }
       if (curveRefinementActive) {
         for (const entry of this.curveRefinementScene.entries) {
@@ -4000,6 +4455,13 @@ export class WebGlLineRenderer {
               curveRefinement: true,
               firstVertex: 0,
               instanceIndices: entry.batch.instanceIndices,
+              vertexRanges: this.renderDeltaLineRanges(
+                ROOT_RENDER_DELTA_SCENE_ID,
+                entry.batch,
+                entry.vertices,
+                0,
+                entry.resource,
+              ),
             },
           );
         }
@@ -4237,6 +4699,15 @@ export class WebGlLineRenderer {
     this.gl.deleteProgram(this.pointProgram);
     this.detailResources.clear();
     this.detailSelections.clear();
+    this.renderDeltaResources.clear();
+    this.renderDeltaResourceBytes = 0;
+    this.renderDeltaState = Object.freeze({
+      lines: Object.freeze([]),
+      baseSuppressions: Object.freeze([]),
+      suppressionKeys: new Set(),
+      affectedWorldBounds: null,
+    });
+    this.renderDeltaRangeCache = new WeakMap();
     this.curveRefinementScene = null;
     this.curveReplacementHandles.clear();
     this.externalScenes.clear();
@@ -4283,7 +4754,9 @@ export class WebGlLineRenderer {
 export {
   MAX_EXTERNAL_DETAIL_GPU_BYTES,
   MAX_EXTERNAL_OVERVIEW_GPU_BYTES,
+  MAX_RENDER_DELTA_GPU_BYTES,
   MAX_INSTANCES_PER_DRAW,
+  ROOT_RENDER_DELTA_SCENE_ID,
   INTERACTIVE_MINIMUM_PIXEL_SPAN,
   calculateOverviewBounds,
   instancesForBatch,

@@ -440,11 +440,15 @@ test("keeps package versions and producer compatibility manifest aligned", async
   );
   assert.equal(
     manifest.components.renderDelta,
-    "atomic-overlay-state-with-renderer-adapter-hook",
+    "atomic-overlay-state-with-dwg-webgl-line-adapter",
   );
   assert.equal(
     manifest.conformance.viewerRenderDelta,
     "packages/viewer-core/test/render-delta-controller.test.mjs",
+  );
+  assert.equal(
+    manifest.conformance.dwgRenderDelta,
+    "packages/webview/test/render-delta-adapter.test.mjs",
   );
   assert.equal(manifest.viewerCore.package, viewerPackage.name);
   assert.equal(manifest.viewerCore.version, viewerPackage.version);

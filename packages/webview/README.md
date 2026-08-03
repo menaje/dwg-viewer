@@ -21,6 +21,35 @@ composition과 DOM listener disposal은 `@dwg-viewer/viewer-ui`가 소유합니�
 이 package는 CAD candidate를 알지 않으며 Webview의 `ReviewTools`가 DWG
 속성과 측정 결과를 bounded view model로 투영합니다.
 
+`DwgRenderDeltaAdapter`는 Core의 source-neutral atomic delta hook과 이
+package의 private 36-byte line packet을 연결합니다. payload resolver가
+descriptor의 digest와 byte bound를 검증한 decoded packet을 동기적으로
+제공하면 adapter는 모든 WebGL line resource를 먼저 stage한 뒤 한 번에
+활성화합니다. base Scene Cache buffer는 수정하지 않고 vertex에 보존된 DWG
+handle로 draw range만 제외하므로 preview rollback은 base를 다시 읽거나
+GPU buffer를 복원하지 않습니다. 같은 state가 native identity별
+upsert/tombstone pick 상태도 제공하며, source switch와 disposal은 staged 및
+committed delta resource를 모두 회수합니다.
+
+The decoded packet is private to this package:
+
+```text
+{
+  payloadId, sha256, byteLength,
+  operations: [{
+    operationId,
+    lines: [{ renderId, sceneId, batch, vertices, instanceIndices }]
+  }]
+}
+```
+
+`byteLength` is the exact sum of the non-shared 36-byte line buffers. Every
+vertex handle must match its operation's `dwg:<sceneId>:<handle>` Render ID,
+and every visual upsert Render ID must be covered. Packet lookup and digest
+verification happen before the synchronous Core apply boundary; the adapter
+rechecks descriptor binding, operation coverage, byte bounds and native
+identity before allocating GPU resources.
+
 The standalone page is the development and qualification shell: it keeps the
 framed canvas, diagnostics and full memory/performance dashboard. When hosted
 by VS Code, the same renderer switches to an immersive shell that fills the
@@ -60,6 +89,9 @@ layout tabs on hover, focus or an explicit click.
 - Stores instance transforms in packed `Float64Array` collections.
 - Rebases world coordinates around the camera before WebGL2 `f32` upload.
 - Renders overview lines with batched, instanced draw calls.
+- Stages bounded DWG Render Delta line packets before one atomic state swap,
+  suppresses replaced/tombstoned base handles without rewriting immutable
+  Scene Cache buffers, and restores draw and pick state on preview rollback.
 - Supports anchored wheel/button zoom, pointer pan and fitted-view reset.
 - Keeps byte-budgeted detail streaming active while zooming out so switching
   to the sampled overview cannot abruptly remove visible objects.

@@ -7,12 +7,16 @@ import {
   overlayCameraTransform,
   patchCurveReplacementMarkers,
   patchLineMaskBuckets,
+  ROOT_RENDER_DELTA_SCENE_ID,
   selectInteractiveInstanceIndices,
   WebGlLineRenderer,
 } from "../src/renderer.mjs";
 import { curveRefinementCameraKey } from "../src/curve-contract.mjs";
 import { decodeMaskBucket } from "../src/mask-order.mjs";
-import { GpuLineBatchKind } from "../src/scene-cache.mjs";
+import {
+  GPU_LINE_VERTEX_RECORD_SIZE,
+  GpuLineBatchKind,
+} from "../src/scene-cache.mjs";
 import { createClipNode } from "../src/instance-graph.mjs";
 import { identityMat4 } from "../src/math.mjs";
 
@@ -190,6 +194,38 @@ function batch({ id, kind, lodLevel, firstVertex }) {
     origin: [0, 0, 0],
     bounds: { min: [0, 0, 0], max: [1, 1, 0] },
   };
+}
+
+function lineVerticesForHandles(handles) {
+  const vertexCount = handles.length * 2;
+  const buffer = new ArrayBuffer(
+    vertexCount * GPU_LINE_VERTEX_RECORD_SIZE,
+  );
+  const view = new DataView(buffer);
+  for (const [segment, handle] of handles.entries()) {
+    for (let endpoint = 0; endpoint < 2; endpoint += 1) {
+      const vertex = segment * 2 + endpoint;
+      const offset = vertex * GPU_LINE_VERTEX_RECORD_SIZE;
+      view.setFloat32(offset, segment + endpoint, true);
+      view.setUint32(offset + 16, 7, true);
+      view.setUint32(
+        offset + 20,
+        Number(handle & 0xffff_ffffn),
+        true,
+      );
+      view.setUint32(
+        offset + 24,
+        Number(handle >> 32n),
+        true,
+      );
+    }
+  }
+  return Object.freeze({
+    buffer,
+    byteLength: buffer.byteLength,
+    vertexCount,
+    recordSize: GPU_LINE_VERTEX_RECORD_SIZE,
+  });
 }
 
 test("limits fitted bounds and packs camera-relative INSERT clips", () => {
@@ -659,6 +695,102 @@ test("redraws overview and independently uploaded detail vertex ranges", () => {
   assert.equal(interactive.detailDrawCalls, 1);
 
   assert.equal(renderer.deleteDetailBatch(detail.id), true);
+  renderer.dispose();
+});
+
+test("atomically overlays delta lines and suppresses matching base handles", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const overviewBatch = {
+    ...batch({
+      id: 0,
+      kind: GpuLineBatchKind.ModelOverview,
+      lodLevel: 0,
+      firstVertex: 0,
+    }),
+    vertexCount: 4,
+    bounds: { min: [0, 0, 0], max: [2, 1, 0] },
+  };
+  const first = renderer.renderOverview({
+    batches: [overviewBatch],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: { instancesByBlock: new Map() },
+    vertices: lineVerticesForHandles([0x2an, 0x2bn]),
+  });
+  const deltaBatch = batch({
+    id: 10,
+    kind: GpuLineBatchKind.ModelDetail,
+    lodLevel: 1,
+    firstVertex: 0,
+  });
+  const staged = renderer.stageRenderDeltaLine({
+    key: "delta:1\u0000dwg:root:2A",
+    sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+    batch: deltaBatch,
+    vertices: lineVerticesForHandles([0x2an]),
+  });
+
+  renderer.activateRenderDelta({
+    lines: [staged],
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x2a,
+        handleHigh: 0,
+      },
+    ],
+    affectedWorldBounds: {
+      min: [0, 0, 0],
+      max: [3, 2, 0],
+    },
+  });
+  const callCount = calls.drawArraysInstanced.length;
+  const overlaid = renderer.redraw(first.camera);
+
+  assert.deepEqual(
+    calls.drawArraysInstanced.slice(callCount),
+    [
+      { mode: gl.LINES, first: 2, count: 2, instances: 1 },
+      { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+    ],
+  );
+  assert.equal(overlaid.drawCalls, 2);
+  assert.equal(overlaid.submittedVertices, 4);
+  assert.equal(overlaid.renderDeltaDrawCalls, 1);
+  assert.equal(overlaid.renderDeltaSubmittedVertices, 2);
+  assert.equal(overlaid.renderDeltaBatches, 1);
+  assert.equal(overlaid.renderDeltaGpuBytes, 72);
+  assert.equal(overlaid.renderDeltaAllocatedGpuBytes, 72);
+  assert.equal(overlaid.renderDeltaBaseSuppressions, 1);
+  assert.deepEqual(overlaid.bounds, {
+    min: [0, 0, 0],
+    max: [3, 2, 0],
+  });
+
+  renderer.activateRenderDelta();
+  assert.equal(renderer.releaseRenderDeltaLines([staged]), 1);
+  const restoredCallCount = calls.drawArraysInstanced.length;
+  const restored = renderer.redraw(first.camera);
+  assert.deepEqual(
+    calls.drawArraysInstanced.slice(restoredCallCount),
+    [{ mode: gl.LINES, first: 0, count: 4, instances: 1 }],
+  );
+  assert.equal(restored.renderDeltaBatches, 0);
+  assert.equal(restored.renderDeltaAllocatedGpuBytes, 0);
+  assert.deepEqual(restored.bounds, {
+    min: [0, 0, 0],
+    max: [2, 1, 0],
+  });
+
   renderer.dispose();
 });
 

@@ -66,7 +66,16 @@ preview rollback/promotion without rereading the immutable base, and exposes a
 source-neutral renderer adapter hook. `MockRenderDeltaSource` verifies that a
 stale replay cannot advance either source or overlay revision and that picking
 tracks the applied revision. The existing 36-byte DWG WebGL vertex layout
-remains private to the Webview adapter.
+remains private to the Webview adapter. `DwgRenderDeltaAdapter` now consumes a
+digest/byte-bound decoded DWG line packet, stages every GPU resource before an
+atomic renderer state swap and keeps the committed resources alive while a
+preview is active. The renderer suppresses replaced or tombstoned base line
+handles by cached visible draw ranges rather than rewriting the immutable
+Scene Cache buffer. Rollback therefore restores both the base ranges and the
+native-handle pick status without rereading the snapshot, while promotion and
+disposal release superseded resources under a dedicated 64 MiB GPU bound.
+Dynamic fill, Canvas text and deferred primitive packet kinds still extend
+this private adapter rather than the public protocol.
 The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
 remain Webview adapters and move incrementally without changing raw DWG
 qualification. `ViewerReviewUiController` now owns review toolbar state,

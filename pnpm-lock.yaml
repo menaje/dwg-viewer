@@ -51,6 +51,9 @@ importers:
       '@dwg-viewer/dwg-scene-source':
         specifier: workspace:^
         version: link:../dwg-scene-source
+      '@dwg-viewer/render-protocol':
+        specifier: workspace:^
+        version: link:../render-protocol
       '@dwg-viewer/viewer-core':
         specifier: workspace:^
         version: link:../viewer-core

@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@dwg-viewer/dwg-scene-source": "workspace:^",
+    "@dwg-viewer/render-protocol": "workspace:^",
     "@dwg-viewer/viewer-core": "workspace:^",
     "@dwg-viewer/viewer-ui": "workspace:^",
     "@mlightcad/shx-parser": "1.4.5",
