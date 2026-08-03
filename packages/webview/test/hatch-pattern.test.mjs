@@ -166,6 +166,11 @@ test("clips continuous HATCH pattern lines around a nested hole", () => {
   assert.equal(result.metrics.renderedHatches, 1);
   assert.equal(result.metrics.segments, 6);
   assert.equal(result.vertices.byteLength, 6 * 2 * 32);
+  assert.equal(result.identityRanges.count, 1);
+  assert.deepEqual(
+    [...result.identityRanges.data],
+    [0, 12, 42, 0],
+  );
   assert.deepEqual(
     segments
       .filter((segment) => segment[0][1] === 5)

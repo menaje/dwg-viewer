@@ -78,7 +78,10 @@ self.addEventListener("message", async (event) => {
       );
       self.postMessage(
         { requestId, ok: true, pattern },
-        [pattern.vertices.buffer],
+        [
+          pattern.vertices.buffer,
+          pattern.identityRanges.data.buffer,
+        ],
       );
       return;
     }
@@ -154,9 +157,13 @@ self.addEventListener("message", async (event) => {
           { maskOrder },
         )
       : null;
-    const transfers = [fill.vertices.buffer];
+    const transfers = [
+      fill.vertices.buffer,
+      fill.identityRanges.data.buffer,
+    ];
     if (pattern) {
       transfers.push(pattern.vertices.buffer);
+      transfers.push(pattern.identityRanges.data.buffer);
     }
     self.postMessage(
       {

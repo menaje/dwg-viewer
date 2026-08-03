@@ -14,6 +14,9 @@ import {
 import { curveRefinementCameraKey } from "../src/curve-contract.mjs";
 import { decodeMaskBucket } from "../src/mask-order.mjs";
 import {
+  packRenderIdentityRanges,
+} from "../src/render-identity-ranges.mjs";
+import {
   GPU_LINE_VERTEX_RECORD_SIZE,
   GpuLineBatchKind,
 } from "../src/scene-cache.mjs";
@@ -226,6 +229,15 @@ function lineVerticesForHandles(handles) {
     vertexCount,
     recordSize: GPU_LINE_VERTEX_RECORD_SIZE,
   });
+}
+
+function identityRangesFor(vertexCount, handle = 0x2an) {
+  return packRenderIdentityRanges(
+    vertexCount === 0
+      ? []
+      : [{ firstVertex: 0, vertexCount, handle }],
+    vertexCount,
+  );
 }
 
 test("limits fitted bounds and packs camera-relative INSERT clips", () => {
@@ -1231,6 +1243,7 @@ test("draws HATCH fills then patterns before boundary geometry", () => {
       byteLength: 96,
       vertexCount: 3,
     },
+    identityRanges: identityRangesFor(3),
     metrics: { triangles: 1 },
   });
   renderer.setHatchPatterns({
@@ -1251,6 +1264,7 @@ test("draws HATCH fills then patterns before boundary geometry", () => {
       byteLength: 64,
       vertexCount: 2,
     },
+    identityRanges: identityRangesFor(2),
     metrics: { segments: 1 },
   });
 
@@ -1274,6 +1288,24 @@ test("draws HATCH fills then patterns before boundary geometry", () => {
   assert.equal(interactive.interactive, true);
   assert.equal(interactive.hatchFillDrawCalls, 1);
   assert.equal(interactive.hatchPatternDrawCalls, 1);
+
+  renderer.activateRenderDelta({
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x2a,
+        handleHigh: 0,
+      },
+    ],
+  });
+  const suppressed = renderer.redraw(first.camera);
+  assert.equal(suppressed.hatchFillDrawCalls, 0);
+  assert.equal(suppressed.hatchPatternDrawCalls, 0);
+
+  renderer.activateRenderDelta();
+  const restored = renderer.redraw(first.camera);
+  assert.equal(restored.hatchFillSubmittedVertices, 3);
+  assert.equal(restored.hatchPatternSubmittedVertices, 2);
   renderer.dispose();
 });
 
@@ -1333,6 +1365,7 @@ test("drops view-specific HATCH patterns before switching instance graphs", () =
       byteLength: 64,
       vertexCount: 2,
     },
+    identityRanges: identityRangesFor(2),
   });
 
   assert.doesNotThrow(() =>
@@ -1398,6 +1431,7 @@ test("draws deferred SOLID fills and outlines before POINT markers", () => {
         byteLength: 32,
         vertexCount: 1,
       },
+      identityRanges: identityRangesFor(1),
     },
     solidFills: {
       batches: [makePrimitiveBatch(3)],
@@ -1406,6 +1440,7 @@ test("draws deferred SOLID fills and outlines before POINT markers", () => {
         byteLength: 96,
         vertexCount: 3,
       },
+      identityRanges: identityRangesFor(3),
     },
     solidOutlines: {
       batches: [makePrimitiveBatch(2)],
@@ -1414,6 +1449,7 @@ test("draws deferred SOLID fills and outlines before POINT markers", () => {
         byteLength: 64,
         vertexCount: 2,
       },
+      identityRanges: identityRangesFor(2),
     },
     metrics: { sourcePoints: 1, sourceSolids: 1, gpuBytes: 192 },
   });
@@ -1444,6 +1480,145 @@ test("draws deferred SOLID fills and outlines before POINT markers", () => {
   assert.equal(interactive.solidFillDrawCalls, 1);
   assert.equal(interactive.solidOutlineDrawCalls, 1);
   assert.equal(interactive.pointDrawCalls, 1);
+
+  renderer.activateRenderDelta({
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x2a,
+        handleHigh: 0,
+      },
+    ],
+  });
+  const suppressed = renderer.redraw(first.camera);
+  assert.equal(suppressed.solidFillDrawCalls, 0);
+  assert.equal(suppressed.solidOutlineDrawCalls, 0);
+  assert.equal(suppressed.pointDrawCalls, 0);
+
+  renderer.activateRenderDelta();
+  const restored = renderer.redraw(first.camera);
+  assert.equal(restored.solidFillSubmittedVertices, 3);
+  assert.equal(restored.solidOutlineSubmittedVertices, 2);
+  assert.equal(restored.pointSubmittedVertices, 1);
+  renderer.dispose();
+});
+
+test("suppresses only matching packed primitive identity ranges", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const overview = batch({
+    id: 0,
+    kind: GpuLineBatchKind.ModelOverview,
+    lodLevel: 0,
+    firstVertex: 0,
+  });
+  const first = renderer.renderOverview({
+    batches: [overview],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: { instancesByBlock: new Map() },
+    vertices: {
+      buffer: new ArrayBuffer(72),
+      byteLength: 72,
+      vertexCount: 2,
+    },
+  });
+  const empty = {
+    batches: [],
+    vertices: {
+      buffer: new ArrayBuffer(0),
+      byteLength: 0,
+      vertexCount: 0,
+    },
+    identityRanges: identityRangesFor(0),
+  };
+  renderer.setPrimitiveMeshes({
+    points: {
+      batches: [
+        {
+          id: 0,
+          kind: GpuLineBatchKind.ModelDetail,
+          lodLevel: 1,
+          firstVertex: 0,
+          vertexCount: 2,
+          blockIndex: null,
+          origin: [0, 0, 0],
+          bounds: { min: [0, 0, 0], max: [1, 1, 0] },
+        },
+      ],
+      vertices: {
+        buffer: new ArrayBuffer(64),
+        byteLength: 64,
+        vertexCount: 2,
+      },
+      identityRanges: packRenderIdentityRanges(
+        [
+          { firstVertex: 0, vertexCount: 1, handle: 0x2an },
+          { firstVertex: 1, vertexCount: 1, handle: 0x2bn },
+        ],
+        2,
+      ),
+    },
+    solidFills: empty,
+    solidOutlines: empty,
+  });
+
+  renderer.activateRenderDelta({
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x2a,
+        handleHigh: 0,
+      },
+    ],
+  });
+  let callCount = calls.drawArraysInstanced.length;
+  let redrawn = renderer.redraw(first.camera);
+  assert.equal(redrawn.pointSubmittedVertices, 1);
+  assert.deepEqual(
+    calls.drawArraysInstanced
+      .slice(callCount)
+      .filter((call) => call.mode === gl.POINTS),
+    [{ mode: gl.POINTS, first: 1, count: 1, instances: 1 }],
+  );
+
+  renderer.activateRenderDelta({
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x2b,
+        handleHigh: 0,
+      },
+    ],
+  });
+  callCount = calls.drawArraysInstanced.length;
+  redrawn = renderer.redraw(first.camera);
+  assert.equal(redrawn.pointSubmittedVertices, 1);
+  assert.deepEqual(
+    calls.drawArraysInstanced
+      .slice(callCount)
+      .filter((call) => call.mode === gl.POINTS),
+    [{ mode: gl.POINTS, first: 0, count: 1, instances: 1 }],
+  );
+
+  renderer.activateRenderDelta();
+  callCount = calls.drawArraysInstanced.length;
+  redrawn = renderer.redraw(first.camera);
+  assert.equal(redrawn.pointSubmittedVertices, 2);
+  assert.deepEqual(
+    calls.drawArraysInstanced
+      .slice(callCount)
+      .filter((call) => call.mode === gl.POINTS),
+    [{ mode: gl.POINTS, first: 0, count: 2, instances: 1 }],
+  );
   renderer.dispose();
 });
 
@@ -1517,6 +1692,7 @@ test("patches line buckets and draws WIPEOUT masks before depth-tested geometry"
       byteLength: 0,
       vertexCount: 0,
     },
+    identityRanges: identityRangesFor(0),
   };
   renderer.setPrimitiveMeshes({
     points: empty,
@@ -1536,6 +1712,7 @@ test("patches line buckets and draws WIPEOUT masks before depth-tested geometry"
         byteLength: 96,
         vertexCount: 3,
       },
+      identityRanges: identityRangesFor(3, 10n),
     },
   });
   const redrawn = renderer.redraw(first.camera);
@@ -1569,6 +1746,20 @@ test("patches line buckets and draws WIPEOUT masks before depth-tested geometry"
   });
 
   renderer.setWipeoutMasksVisible(true);
+  assert.equal(renderer.redraw(first.camera).wipeoutMaskDrawCalls, 1);
+
+  renderer.activateRenderDelta({
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 10,
+        handleHigh: 0,
+      },
+    ],
+  });
+  assert.equal(renderer.redraw(first.camera).wipeoutMaskDrawCalls, 0);
+
+  renderer.activateRenderDelta();
   assert.equal(renderer.redraw(first.camera).wipeoutMaskDrawCalls, 1);
   renderer.dispose();
 });

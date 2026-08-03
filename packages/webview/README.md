@@ -25,11 +25,13 @@ composition과 DOM listener disposal은 `@dwg-viewer/viewer-ui`가 소유합니�
 package의 private 36-byte line packet을 연결합니다. payload resolver가
 descriptor의 digest와 byte bound를 검증한 decoded packet을 동기적으로
 제공하면 adapter는 모든 WebGL line resource를 먼저 stage한 뒤 한 번에
-활성화합니다. base Scene Cache buffer는 수정하지 않고 vertex에 보존된 DWG
-handle로 draw range만 제외하므로 preview rollback은 base를 다시 읽거나
-GPU buffer를 복원하지 않습니다. 같은 state가 native identity별
-upsert/tombstone pick 상태도 제공하며, source switch와 disposal은 staged 및
-committed delta resource를 모두 회수합니다.
+활성화합니다. base Scene Cache buffer는 수정하지 않고 line vertex의 DWG
+handle과 fill·pattern·POINT·surface·WIPEOUT의 압축 identity-range sidecar로
+draw range만 제외합니다. Canvas text도 같은 source/handle suppression을
+적용하므로 preview rollback은 base를 다시 읽거나 GPU buffer를 복원하지
+않습니다. 같은 state가 native identity별 upsert/tombstone pick 상태도
+제공하며, source switch와 disposal은 staged 및 committed delta resource를
+모두 회수합니다.
 
 The decoded packet is private to this package:
 
@@ -90,7 +92,8 @@ layout tabs on hover, focus or an explicit click.
 - Rebases world coordinates around the camera before WebGL2 `f32` upload.
 - Renders overview lines with batched, instanced draw calls.
 - Stages bounded DWG Render Delta line packets before one atomic state swap,
-  suppresses replaced/tombstoned base handles without rewriting immutable
+  suppresses replaced/tombstoned base lines, HATCH fills/patterns, POINTs,
+  SOLID/3DFACE/WIPEOUT primitives and Canvas text without rewriting immutable
   Scene Cache buffers, and restores draw and pick state on preview rollback.
 - Supports anchored wheel/button zoom, pointer pan and fitted-view reset.
 - Keeps byte-budgeted detail streaming active while zooming out so switching

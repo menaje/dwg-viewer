@@ -72,12 +72,15 @@ remains private to the Webview adapter. `DwgRenderDeltaAdapter` now consumes a
 digest/byte-bound decoded DWG line packet, stages every GPU resource before an
 atomic renderer state swap and keeps the committed resources alive while a
 preview is active. The renderer suppresses replaced or tombstoned base line
-handles by cached visible draw ranges rather than rewriting the immutable
-Scene Cache buffer. Rollback therefore restores both the base ranges and the
-native-handle pick status without rereading the snapshot, while promotion and
-disposal release superseded resources under a dedicated 64 MiB GPU bound.
-Dynamic fill, Canvas text and deferred primitive packet kinds still extend
-this private adapter rather than the public protocol.
+handles from vertex identity and HATCH fill/pattern, POINT,
+SOLID/3DFACE/WIPEOUT handles from compact vertex-range sidecars. Canvas text
+uses the same source-scoped handle filter. Cached visible draw ranges avoid
+rewriting immutable Scene Cache buffers, so rollback restores the complete
+base presentation and native-handle pick status without rereading the
+snapshot. Promotion and disposal release superseded resources under a
+dedicated 64 MiB GPU bound. Dynamic fill, Canvas text and deferred primitive
+upsert packet kinds still extend this private adapter rather than the public
+protocol.
 The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
 remain Webview adapters and move incrementally without changing raw DWG
 qualification. `ViewerReviewUiController` now owns review toolbar state,

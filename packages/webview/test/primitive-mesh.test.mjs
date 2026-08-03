@@ -81,6 +81,14 @@ test("builds instanced POINT markers and FILLMODE-aware SOLID meshes", async () 
     result.metrics.solidOutlineGpuBytes,
     6 * PRIMITIVE_VERTEX_STRIDE,
   );
+  assert.deepEqual(
+    [...result.points.identityRanges.data],
+    [0, 1, 501, 0],
+  );
+  assert.deepEqual(
+    [...result.solidFills.identityRanges.data],
+    [0, 6, 601, 0],
+  );
 
   assert.equal(
     result.points.batches[0].kind,

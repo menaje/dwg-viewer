@@ -8,6 +8,10 @@ import {
   maskBucketFor,
 } from "./mask-order.mjs";
 import { encodeCadLineStyle } from "./cad-line-style.mjs";
+import {
+  appendRenderIdentityRange,
+  packRenderIdentityRanges,
+} from "./render-identity-ranges.mjs";
 
 export const HATCH_PATTERN_VERTEX_STRIDE = 32;
 export const MAX_HATCH_PATTERN_GPU_BYTES = 32 * 1024 * 1024;
@@ -608,6 +612,7 @@ class PackedPatternBatch {
     this.view = new DataView(this.buffer);
     this.byteLength = 0;
     this.vertexCount = 0;
+    this.identityRanges = [];
     this.maximumPositionError = 0;
     this.bounds = { min: [...firstPoint], max: [...firstPoint] };
   }
@@ -626,6 +631,12 @@ class PackedPatternBatch {
 
   writeSegment(points, attributes) {
     this.#ensure(2 * HATCH_PATTERN_VERTEX_STRIDE);
+    appendRenderIdentityRange(
+      this.identityRanges,
+      attributes.handle,
+      this.vertexCount,
+      2,
+    );
     for (const point of points) {
       const offset = this.byteLength;
       for (let axis = 0; axis < 3; axis += 1) {
@@ -704,6 +715,7 @@ class PatternMeshBuilder {
     const buffer = new ArrayBuffer(this.byteLength);
     const destination = new Uint8Array(buffer);
     const batches = [];
+    const identityRanges = [];
     let byteOffset = 0;
     let firstVertex = 0;
     for (const group of this.groups.values()) {
@@ -730,6 +742,14 @@ class PatternMeshBuilder {
             maximumPositionError: builder.maximumPositionError,
           }),
         );
+        for (const range of builder.identityRanges) {
+          appendRenderIdentityRange(
+            identityRanges,
+            range.handle,
+            firstVertex + range.firstVertex,
+            range.vertexCount,
+          );
+        }
         this.maximumPositionError = Math.max(
           this.maximumPositionError,
           builder.maximumPositionError,
@@ -747,6 +767,10 @@ class PatternMeshBuilder {
         byteLength: buffer.byteLength,
         vertexCount: this.segments * 2,
       }),
+      identityRanges: packRenderIdentityRanges(
+        identityRanges,
+        this.segments * 2,
+      ),
       maximumPositionError: this.maximumPositionError,
     });
   }
@@ -945,6 +969,7 @@ export function buildHatchPatternMesh(
     const attributes = {
       layerIndex: entity.layerIndex,
       color: entity.color,
+      handle: entity.handle,
       handleLow: Number(entity.handle & 0xffffffffn),
       handleHigh: Number((entity.handle >> 32n) & 0xffffffffn),
       style: encodeMaskBucket(

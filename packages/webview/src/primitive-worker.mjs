@@ -61,9 +61,13 @@ self.addEventListener(
         },
         [
           primitives.points.vertices.buffer,
+          primitives.points.identityRanges.data.buffer,
           primitives.solidFills.vertices.buffer,
+          primitives.solidFills.identityRanges.data.buffer,
           primitives.solidOutlines.vertices.buffer,
+          primitives.solidOutlines.identityRanges.data.buffer,
           primitives.wipeoutMasks.vertices.buffer,
+          primitives.wipeoutMasks.identityRanges.data.buffer,
         ],
       );
     } catch (error) {

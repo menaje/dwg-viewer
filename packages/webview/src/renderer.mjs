@@ -27,6 +27,10 @@ import {
   maskBucketFor,
 } from "./mask-order.mjs";
 import { effectiveClipBounds } from "./instance-graph.mjs";
+import {
+  RENDER_IDENTITY_RANGE_WORDS,
+  validateRenderIdentityRanges,
+} from "./render-identity-ranges.mjs";
 
 const VERTEX_STRIDE = 36;
 const FILL_VERTEX_STRIDE = 32;
@@ -77,6 +81,10 @@ const EMPTY_PACKED_SCENE = Object.freeze({
     buffer: new ArrayBuffer(0),
     byteLength: 0,
     vertexCount: 0,
+  }),
+  identityRanges: Object.freeze({
+    data: new Uint32Array(0),
+    count: 0,
   }),
 });
 
@@ -1533,6 +1541,11 @@ function validatePackedScene(
   if (expectedFirstVertex !== scene.vertices.vertexCount) {
     throw new Error(`${label} batches do not cover the vertex buffer`);
   }
+  validateRenderIdentityRanges(scene.identityRanges, {
+    vertexCount: scene.vertices.vertexCount,
+    verticesPerPrimitive,
+    label: `${label} render identity ranges`,
+  });
 }
 
 function renderDeltaIdentityKey(sceneId, handleLow, handleHigh) {
@@ -1657,6 +1670,74 @@ function lineVisibilityRanges(
         firstVertex: firstVisible,
         vertexCount:
           localFirstVertex + batch.vertexCount - firstVisible,
+      }),
+    );
+  }
+  return Object.freeze(ranges);
+}
+
+function identityVisibilityRanges(
+  identityRanges,
+  batch,
+  sceneId,
+  suppressions,
+) {
+  if (suppressions.size === 0) {
+    return null;
+  }
+  const data = identityRanges.data;
+  const batchEnd = batch.firstVertex + batch.vertexCount;
+  let low = 0;
+  let high = identityRanges.count;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    const offset = middle * RENDER_IDENTITY_RANGE_WORDS;
+    const end = data[offset] + data[offset + 1];
+    if (end <= batch.firstVertex) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  const ranges = [];
+  let firstVisible = -1;
+  let visibleEnd = -1;
+  for (let index = low; index < identityRanges.count; index += 1) {
+    const offset = index * RENDER_IDENTITY_RANGE_WORDS;
+    const first = data[offset];
+    if (first >= batchEnd) {
+      break;
+    }
+    const end = Math.min(first + data[offset + 1], batchEnd);
+    const clippedFirst = Math.max(first, batch.firstVertex);
+    const hidden = suppressions.has(
+      renderDeltaIdentityKey(
+        sceneId,
+        data[offset + 2],
+        data[offset + 3],
+      ),
+    );
+    if (!hidden) {
+      if (firstVisible < 0) {
+        firstVisible = clippedFirst;
+      }
+      visibleEnd = end;
+    } else if (firstVisible >= 0) {
+      ranges.push(
+        Object.freeze({
+          firstVertex: firstVisible,
+          vertexCount: visibleEnd - firstVisible,
+        }),
+      );
+      firstVisible = -1;
+      visibleEnd = -1;
+    }
+  }
+  if (firstVisible >= 0) {
+    ranges.push(
+      Object.freeze({
+        firstVertex: firstVisible,
+        vertexCount: visibleEnd - firstVisible,
       }),
     );
   }
@@ -2441,6 +2522,9 @@ export class WebGlLineRenderer {
     this.lastTextMetrics = null;
     resetOverlayTransform(this.textOverlay);
     this.textOverlay?.setMaskVisibility?.(this.wipeoutMasksVisible);
+    this.textOverlay?.setRenderDeltaSuppressions?.(
+      this.renderDeltaState.baseSuppressions,
+    );
   }
 
   setImageOverlay(overlay) {
@@ -2948,6 +3032,9 @@ export class WebGlLineRenderer {
               max: Object.freeze([...affectedWorldBounds.max]),
             }),
     });
+    this.textOverlay?.setRenderDeltaSuppressions?.(
+      next.baseSuppressions,
+    );
     this.renderDeltaState = next;
     this.renderDeltaRangeCache = new WeakMap();
     this.recalculateCombinedBounds();
@@ -3018,6 +3105,36 @@ export class WebGlLineRenderer {
         vertices,
         batch,
         firstBufferVertex,
+        sceneId,
+        this.renderDeltaState.suppressionKeys,
+      );
+      entries.set(key, ranges);
+    }
+    return ranges;
+  }
+
+  renderDeltaIdentityRanges(
+    sceneId,
+    batch,
+    identityRanges,
+    resource,
+  ) {
+    if (this.renderDeltaState.suppressionKeys.size === 0) {
+      return null;
+    }
+    let entries = this.renderDeltaRangeCache.get(resource);
+    if (!entries) {
+      entries = new Map();
+      this.renderDeltaRangeCache.set(resource, entries);
+    }
+    const key =
+      `identity\u0000${sceneId}\u0000${batch.id}` +
+      `\u0000${batch.firstVertex}\u0000${batch.vertexCount}`;
+    let ranges = entries.get(key);
+    if (!ranges) {
+      ranges = identityVisibilityRanges(
+        identityRanges,
+        batch,
         sceneId,
         this.renderDeltaState.suppressionKeys,
       );
@@ -3472,7 +3589,12 @@ export class WebGlLineRenderer {
     return enabled;
   }
 
-  setHatchFills({ batches, vertices, metrics = null }) {
+  setHatchFills({
+    batches,
+    vertices,
+    identityRanges,
+    metrics = null,
+  }) {
     if (
       !vertices ||
       vertices.byteLength !== vertices.vertexCount * FILL_VERTEX_STRIDE ||
@@ -3493,6 +3615,11 @@ export class WebGlLineRenderer {
     if (expectedFirstVertex !== vertices.vertexCount) {
       throw new Error("HATCH fill batches do not cover the vertex buffer");
     }
+    validateRenderIdentityRanges(identityRanges, {
+      vertexCount: vertices.vertexCount,
+      verticesPerPrimitive: 3,
+      label: "HATCH fill render identity ranges",
+    });
     if (this.hatchFillScene?.resource) {
       this.deleteVertices(this.hatchFillScene.resource);
     }
@@ -3502,12 +3629,18 @@ export class WebGlLineRenderer {
         : null;
     this.hatchFillScene = Object.freeze({
       batches,
+      identityRanges,
       metrics,
       resource,
     });
   }
 
-  setHatchPatterns({ batches, vertices, metrics = null }) {
+  setHatchPatterns({
+    batches,
+    vertices,
+    identityRanges,
+    metrics = null,
+  }) {
     if (
       !vertices ||
       vertices.byteLength !==
@@ -3529,6 +3662,11 @@ export class WebGlLineRenderer {
     if (expectedFirstVertex !== vertices.vertexCount) {
       throw new Error("HATCH pattern batches do not cover the vertex buffer");
     }
+    validateRenderIdentityRanges(identityRanges, {
+      vertexCount: vertices.vertexCount,
+      verticesPerPrimitive: 2,
+      label: "HATCH pattern render identity ranges",
+    });
     this.clearHatchPatterns();
     const resource =
       vertices.byteLength > 0
@@ -3539,6 +3677,7 @@ export class WebGlLineRenderer {
         : null;
     this.hatchPatternScene = Object.freeze({
       batches,
+      identityRanges,
       metrics,
       resource,
     });
@@ -3584,6 +3723,7 @@ export class WebGlLineRenderer {
     }
     this.pointScene = Object.freeze({
       batches: points.batches,
+      identityRanges: points.identityRanges,
       resource:
         points.vertices.byteLength > 0
           ? this.uploadPointVertices(points.vertices.buffer)
@@ -3591,6 +3731,7 @@ export class WebGlLineRenderer {
     });
     this.solidFillScene = Object.freeze({
       batches: solidFills.batches,
+      identityRanges: solidFills.identityRanges,
       resource:
         solidFills.vertices.byteLength > 0
           ? this.uploadHatchFillVertices(solidFills.vertices.buffer)
@@ -3598,6 +3739,7 @@ export class WebGlLineRenderer {
     });
     this.solidOutlineScene = Object.freeze({
       batches: solidOutlines.batches,
+      identityRanges: solidOutlines.identityRanges,
       resource:
         solidOutlines.vertices.byteLength > 0
           ? this.uploadVertices(solidOutlines.vertices.buffer, {
@@ -3608,6 +3750,7 @@ export class WebGlLineRenderer {
     });
     this.wipeoutMaskScene = Object.freeze({
       batches: wipeoutMasks.batches,
+      identityRanges: wipeoutMasks.identityRanges,
       resource:
         wipeoutMasks.vertices.byteLength > 0
           ? this.uploadHatchFillVertices(wipeoutMasks.vertices.buffer)
@@ -4127,6 +4270,12 @@ export class WebGlLineRenderer {
             {
               wipeoutMask: true,
               primitive: gl.TRIANGLES,
+              vertexRanges: this.renderDeltaIdentityRanges(
+                ROOT_RENDER_DELTA_SCENE_ID,
+                batch,
+                this.wipeoutMaskScene.identityRanges,
+                this.wipeoutMaskScene.resource,
+              ),
             },
           );
         }
@@ -4144,6 +4293,12 @@ export class WebGlLineRenderer {
             {
               solidFill: true,
               primitive: gl.TRIANGLES,
+              vertexRanges: this.renderDeltaIdentityRanges(
+                ROOT_RENDER_DELTA_SCENE_ID,
+                batch,
+                this.solidFillScene.identityRanges,
+                this.solidFillScene.resource,
+              ),
             },
           );
         }
@@ -4159,6 +4314,12 @@ export class WebGlLineRenderer {
             {
               fill: true,
               primitive: gl.TRIANGLES,
+              vertexRanges: this.renderDeltaIdentityRanges(
+                ROOT_RENDER_DELTA_SCENE_ID,
+                batch,
+                this.hatchFillScene.identityRanges,
+                this.hatchFillScene.resource,
+              ),
             },
           );
         }
@@ -4286,6 +4447,12 @@ export class WebGlLineRenderer {
             {
               pattern: true,
               instanceIndices: batch.instanceIndices,
+              vertexRanges: this.renderDeltaIdentityRanges(
+                ROOT_RENDER_DELTA_SCENE_ID,
+                batch,
+                this.hatchPatternScene.identityRanges,
+                this.hatchPatternScene.resource,
+              ),
             },
           );
         }
@@ -4300,6 +4467,12 @@ export class WebGlLineRenderer {
             metrics,
             {
               solidOutline: true,
+              vertexRanges: this.renderDeltaIdentityRanges(
+                ROOT_RENDER_DELTA_SCENE_ID,
+                batch,
+                this.solidOutlineScene.identityRanges,
+                this.solidOutlineScene.resource,
+              ),
             },
           );
         }
@@ -4504,6 +4677,12 @@ export class WebGlLineRenderer {
           {
             point: true,
             primitive: gl.POINTS,
+            vertexRanges: this.renderDeltaIdentityRanges(
+              ROOT_RENDER_DELTA_SCENE_ID,
+              batch,
+              this.pointScene.identityRanges,
+              this.pointScene.resource,
+            ),
           },
         );
       }

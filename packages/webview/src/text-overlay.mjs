@@ -760,6 +760,7 @@ export class CanvasTextOverlay {
       typeof onInlineFonts === "function" ? onInlineFonts : null;
     this.sourceId = String(sourceId || "root");
     this.sourceLabel = String(sourceLabel || "현재 도면");
+    this.renderDeltaSuppressedHandles = new Set();
     this.hitTestingEnabled = Boolean(hitTestingEnabled);
     this.hitOccurrences = [];
     this.reportedInlineFontKeys = new Set();
@@ -804,6 +805,42 @@ export class CanvasTextOverlay {
     return Boolean(this.maskOrder);
   }
 
+  setRenderDeltaSuppressions(identities) {
+    if (!Array.isArray(identities)) {
+      throw new TypeError(
+        "text render delta suppressions must be an array",
+      );
+    }
+    const next = new Set();
+    for (const identity of identities) {
+      if (identity?.sceneId !== this.sourceId) {
+        continue;
+      }
+      if (
+        !Number.isInteger(identity.handleLow) ||
+        identity.handleLow < 0 ||
+        identity.handleLow > 0xffff_ffff ||
+        !Number.isInteger(identity.handleHigh) ||
+        identity.handleHigh < 0 ||
+        identity.handleHigh > 0xffff_ffff
+      ) {
+        throw new TypeError(
+          "text render delta suppression identity is invalid",
+        );
+      }
+      next.add(
+        BigInt(identity.handleLow) |
+          (BigInt(identity.handleHigh) << 32n),
+      );
+    }
+    this.renderDeltaSuppressedHandles = next;
+    this.hitOccurrences = this.hitOccurrences.filter(
+      (occurrence) =>
+        !next.has(occurrence.record.handle),
+    );
+    return next.size;
+  }
+
   setPalette(palette) {
     if (!(palette instanceof Uint8Array) || palette.length !== 256 * 4) {
       throw new TypeError("text palette must contain 256 RGBA colors");
@@ -827,6 +864,9 @@ export class CanvasTextOverlay {
       return null;
     }
     const expected = BigInt(`0x${normalized}`);
+    if (this.renderDeltaSuppressedHandles.has(expected)) {
+      return null;
+    }
     const sourceCount = Math.min(
       this.textEntities.length,
       this.maximumSourceTexts,
@@ -1037,6 +1077,9 @@ export class CanvasTextOverlay {
             )
           : this.textEntities.get(textIndex);
       metrics.visitedSourceTexts += 1;
+      if (this.renderDeltaSuppressedHandles.has(record.handle)) {
+        continue;
+      }
       if (
         (record.commonFlags & 1) !== 0 ||
         ((record.kind === TextEntityKind.AttributeDefinition ||
@@ -2388,6 +2431,8 @@ export class CanvasTextOverlay {
     const { width, height } = this.resize();
     this.context.setTransform(1, 0, 0, 1, 0, 0);
     this.context.clearRect(0, 0, width, height);
+    this.renderDeltaSuppressedHandles.clear();
+    this.hitOccurrences = [];
   }
 }
 
@@ -2398,6 +2443,7 @@ export class CompositeTextOverlay {
     this.maskVisibility = true;
     this.hitTestingEnabled = false;
     this.palette = new Uint8Array(DEFAULT_ACI_PALETTE);
+    this.renderDeltaSuppressions = Object.freeze([]);
   }
 
   add(overlay, { first = false } = {}) {
@@ -2407,6 +2453,9 @@ export class CompositeTextOverlay {
     overlay.setMaskVisibility?.(this.maskVisibility);
     overlay.setPalette?.(this.palette);
     overlay.setHitTestingEnabled?.(this.hitTestingEnabled);
+    overlay.setRenderDeltaSuppressions?.(
+      this.renderDeltaSuppressions,
+    );
     if (first) {
       this.overlays.unshift(overlay);
     } else {
@@ -2439,6 +2488,20 @@ export class CompositeTextOverlay {
       overlay.setHitTestingEnabled?.(this.hitTestingEnabled);
     }
     return this.hitTestingEnabled;
+  }
+
+  setRenderDeltaSuppressions(identities) {
+    if (!Array.isArray(identities)) {
+      throw new TypeError(
+        "composite text render delta suppressions must be an array",
+      );
+    }
+    const next = Object.freeze([...identities]);
+    for (const overlay of this.overlays) {
+      overlay.setRenderDeltaSuppressions?.(next);
+    }
+    this.renderDeltaSuppressions = next;
+    return next.length;
   }
 
   findTextOccurrence(handle) {
@@ -2523,6 +2586,7 @@ export class CompositeTextOverlay {
       overlay.dispose();
     }
     this.overlays.length = 0;
+    this.renderDeltaSuppressions = Object.freeze([]);
   }
 }
 

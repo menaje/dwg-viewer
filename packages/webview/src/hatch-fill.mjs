@@ -10,6 +10,10 @@ import {
   encodeMaskBucket,
   maskBucketFor,
 } from "./mask-order.mjs";
+import {
+  appendRenderIdentityRange,
+  packRenderIdentityRanges,
+} from "./render-identity-ranges.mjs";
 
 export const HATCH_FILL_VERTEX_STRIDE = 32;
 export const MAX_HATCH_FILL_GPU_BYTES = 32 * 1024 * 1024;
@@ -351,6 +355,7 @@ class PackedBatchBuilder {
     this.byteLength = 0;
     this.vertexCount = 0;
     this.maximumPositionError = 0;
+    this.identityRanges = [];
     this.bounds = {
       min: [...firstPoint],
       max: [...firstPoint],
@@ -372,8 +377,14 @@ class PackedBatchBuilder {
     );
   }
 
-  writeTriangle(points, attributes) {
+  writeTriangle(points, attributes, handle) {
     this.#ensure(points.length * HATCH_FILL_VERTEX_STRIDE);
+    appendRenderIdentityRange(
+      this.identityRanges,
+      handle,
+      this.vertexCount,
+      points.length,
+    );
     for (let index = 0; index < points.length; index += 1) {
       this.#writeVertex(points[index], attributes, attributes.mixes[index]);
     }
@@ -437,7 +448,7 @@ class FillMeshBuilder {
     );
   }
 
-  writeTriangle(owner, points, attributes) {
+  writeTriangle(owner, points, attributes, handle) {
     let group = this.groups.get(owner.key);
     if (!group) {
       group = { owner, batches: [], active: null };
@@ -447,7 +458,7 @@ class FillMeshBuilder {
       group.active = new PackedBatchBuilder(owner, points[0]);
       group.batches.push(group.active);
     }
-    group.active.writeTriangle(points, attributes);
+    group.active.writeTriangle(points, attributes, handle);
     this.byteLength += 3 * HATCH_FILL_VERTEX_STRIDE;
     this.vertexCount += 3;
   }
@@ -456,6 +467,7 @@ class FillMeshBuilder {
     const buffer = new ArrayBuffer(this.byteLength);
     const destination = new Uint8Array(buffer);
     const batches = [];
+    const identityRanges = [];
     let byteOffset = 0;
     let firstVertex = 0;
     for (const group of this.groups.values()) {
@@ -481,6 +493,14 @@ class FillMeshBuilder {
             maximumPositionError: builder.maximumPositionError,
           }),
         );
+        for (const range of builder.identityRanges) {
+          appendRenderIdentityRange(
+            identityRanges,
+            range.handle,
+            firstVertex + range.firstVertex,
+            range.vertexCount,
+          );
+        }
         this.maximumPositionError = Math.max(
           this.maximumPositionError,
           builder.maximumPositionError,
@@ -498,6 +518,10 @@ class FillMeshBuilder {
         byteLength: buffer.byteLength,
         vertexCount: this.vertexCount,
       }),
+      identityRanges: packRenderIdentityRanges(
+        identityRanges,
+        this.vertexCount,
+      ),
       maximumPositionError: this.maximumPositionError,
     });
   }
@@ -696,13 +720,18 @@ export function buildHatchFillMesh(
             colors.gradient,
           );
         }
-        mesh.writeTriangle(owner, pointTargets, {
-          layerIndex: entity.layerIndex,
-          firstColor: colors.first,
-          lastColor: colors.last,
-          mixes,
-          style,
-        });
+        mesh.writeTriangle(
+          owner,
+          pointTargets,
+          {
+            layerIndex: entity.layerIndex,
+            firstColor: colors.first,
+            lastColor: colors.last,
+            mixes,
+            style,
+          },
+          entity.handle,
+        );
         entityTriangles += 1;
         metrics.triangles += 1;
         rendered = true;

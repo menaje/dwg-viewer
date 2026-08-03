@@ -206,6 +206,39 @@ test("finds a text occurrence by handle for workspace search navigation", async 
   assert.deepEqual(occurrence.point, [101, 201, 0]);
   assert.equal(occurrence.worldHeight, 0.5);
   assert.equal(overlay.findTextOccurrence("FFFF"), null);
+
+  const visible = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => true),
+  );
+  overlay.setRenderDeltaSuppressions([
+    {
+      sceneId: "external",
+      handleLow: 300,
+      handleHigh: 0,
+    },
+  ]);
+  assert.notEqual(overlay.findTextOccurrence("12C"), null);
+
+  overlay.setRenderDeltaSuppressions([
+    {
+      sceneId: "root",
+      handleLow: 300,
+      handleHigh: 0,
+    },
+  ]);
+  const suppressed = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => true),
+  );
+  assert.equal(overlay.findTextOccurrence("12C"), null);
+  assert.equal(
+    suppressed.visibleOccurrences,
+    visible.visibleOccurrences - 1,
+  );
+
+  overlay.setRenderDeltaSuppressions([]);
+  assert.notEqual(overlay.findTextOccurrence("12C"), null);
 });
 
 test("selects rendered text by its screen footprint", async () => {

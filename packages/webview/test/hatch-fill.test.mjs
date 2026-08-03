@@ -63,6 +63,11 @@ test("triangulates a bounded gradient HATCH with a nested hole", async () => {
   assert.equal(result.batches.length, 1);
   assert.equal(result.batches[0].kind, GpuLineBatchKind.ModelDetail);
   assert.equal(result.batches[0].blockIndex, null);
+  assert.equal(result.identityRanges.count, 1);
+  assert.deepEqual(
+    [...result.identityRanges.data],
+    [0, 24, 401, 0],
+  );
 
   const view = new DataView(result.vertices.buffer);
   let area = 0;

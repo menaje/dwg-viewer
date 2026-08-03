@@ -5,6 +5,10 @@ import {
 } from "./mask-order.mjs";
 import { GpuLineBatchKind } from "./scene-cache.mjs";
 import { encodeCadLineStyle } from "./cad-line-style.mjs";
+import {
+  appendRenderIdentityRange,
+  packRenderIdentityRanges,
+} from "./render-identity-ranges.mjs";
 
 export const PRIMITIVE_VERTEX_STRIDE = 32;
 export const MAX_POINT_GPU_BYTES = 8 * 1024 * 1024;
@@ -97,6 +101,7 @@ class PackedBatchBuilder {
     this.byteLength = 0;
     this.vertexCount = 0;
     this.maximumPositionError = 0;
+    this.identityRanges = [];
     this.bounds = {
       min: [...firstPoint],
       max: [...firstPoint],
@@ -118,8 +123,14 @@ class PackedBatchBuilder {
     );
   }
 
-  write(points, writeAttributes) {
+  write(points, writeAttributes, handle) {
     this.#ensure(points.length * PRIMITIVE_VERTEX_STRIDE);
+    appendRenderIdentityRange(
+      this.identityRanges,
+      handle,
+      this.vertexCount,
+      points.length,
+    );
     for (let index = 0; index < points.length; index += 1) {
       const point = points[index];
       const offset = this.byteLength;
@@ -173,7 +184,7 @@ class PackedMeshBuilder {
     );
   }
 
-  write(owner, points, writeAttributes) {
+  write(owner, points, writeAttributes, handle) {
     if (!this.canWrite(points.length)) {
       return false;
     }
@@ -190,7 +201,7 @@ class PackedMeshBuilder {
       );
       group.batches.push(group.active);
     }
-    group.active.write(points, writeAttributes);
+    group.active.write(points, writeAttributes, handle);
     this.byteLength += points.length * PRIMITIVE_VERTEX_STRIDE;
     this.vertexCount += points.length;
     return true;
@@ -200,6 +211,7 @@ class PackedMeshBuilder {
     const buffer = new ArrayBuffer(this.byteLength);
     const destination = new Uint8Array(buffer);
     const batches = [];
+    const identityRanges = [];
     let byteOffset = 0;
     let firstVertex = 0;
     for (const group of this.groups.values()) {
@@ -225,6 +237,14 @@ class PackedMeshBuilder {
             maximumPositionError: builder.maximumPositionError,
           }),
         );
+        for (const range of builder.identityRanges) {
+          appendRenderIdentityRange(
+            identityRanges,
+            range.handle,
+            firstVertex + range.firstVertex,
+            range.vertexCount,
+          );
+        }
         this.maximumPositionError = Math.max(
           this.maximumPositionError,
           builder.maximumPositionError,
@@ -242,6 +262,10 @@ class PackedMeshBuilder {
         byteLength: buffer.byteLength,
         vertexCount: this.vertexCount,
       }),
+      identityRanges: packRenderIdentityRanges(
+        identityRanges,
+        this.vertexCount,
+      ),
       maximumPositionError: this.maximumPositionError,
     });
   }
@@ -526,6 +550,7 @@ export function buildPrimitiveMeshes(
         owner,
         pointVertices,
         pointAttributes(point, maskOrder),
+        point.handle,
       )
     ) {
       metrics.pointGpuLimitReached = true;
@@ -572,6 +597,7 @@ export function buildPrimitiveMeshes(
             owner,
             triangle,
             attributes,
+            solid.handle,
           )
         ) {
           metrics.solidFillGpuLimitReached = true;
@@ -599,6 +625,7 @@ export function buildPrimitiveMeshes(
           owner,
           outlineEdge,
           attributes,
+          solid.handle,
         )
       ) {
         metrics.solidOutlineGpuLimitReached = true;
@@ -638,7 +665,14 @@ export function buildPrimitiveMeshes(
       }
       outlineEdge[0] = face.corners[start];
       outlineEdge[1] = face.corners[end];
-      if (!surfaceOutlineMesh.write(owner, outlineEdge, attributes)) {
+      if (
+        !surfaceOutlineMesh.write(
+          owner,
+          outlineEdge,
+          attributes,
+          face.handle,
+        )
+      ) {
         metrics.faceOutlineGpuLimitReached = true;
         break;
       }
@@ -742,6 +776,7 @@ export function buildPrimitiveMeshes(
           owner,
           wipeoutWorldEdge,
           attributes,
+          wipeout.handle,
         )
       ) {
         metrics.wipeoutOutlineGpuLimitReached = true;
@@ -781,7 +816,14 @@ export function buildPrimitiveMeshes(
           metrics.skippedWipeoutMaskTriangles += 1;
           continue;
         }
-        if (!wipeoutMaskMesh.write(owner, triangle, attributes)) {
+        if (
+          !wipeoutMaskMesh.write(
+            owner,
+            triangle,
+            attributes,
+            mask.handle,
+          )
+        ) {
           metrics.wipeoutMaskGpuLimitReached = true;
           break;
         }

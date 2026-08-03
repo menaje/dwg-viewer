@@ -169,10 +169,12 @@ immutable base를 다시 읽지 않는다. renderer adapter hook은 원자적인
 preview rollback/promotion만 요구하며 현재 Webview의 36-byte DWG GPU
 format은 public protocol로 승격하지 않는다. Webview의
 `DwgRenderDeltaAdapter`는 검증된 decoded line packet의 GPU resource를 먼저
-stage하고 renderer state를 한 번에 교체한다. base line tombstone/upsert는
-DWG handle별 cached draw range로 적용하므로 Scene Cache buffer를 수정하지
-않으며, preview rollback과 promotion은 같은 native identity/pick map을
-사용한다. `MockRenderDeltaSource`와 공용 conformance는 stale replay 뒤에도
+stage하고 renderer state를 한 번에 교체한다. base tombstone/upsert는 line
+vertex handle, HATCH/POINT/SOLID/3DFACE/WIPEOUT의 압축 identity-range
+sidecar와 Canvas text의 source-scoped handle filter를 통해 cached draw
+range로 적용한다. 따라서 Scene Cache buffer를 수정하지 않으며 preview
+rollback과 promotion은 같은 native identity/pick map을 사용한다.
+`MockRenderDeltaSource`와 공용 conformance는 stale replay 뒤에도
 source/overlay/pick revision이 함께 전진하는지 검증한다.
 `@dwg-viewer/viewer-ui`의 첫 public controller는 review toolbar의 active
 state와 접근성 속성, bounded text-only result row/action composition,
