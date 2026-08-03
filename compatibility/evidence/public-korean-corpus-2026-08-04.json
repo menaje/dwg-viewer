@@ -7,6 +7,7 @@
     "license": "KOGL-Type-1",
     "publisher": "국가유산청·국립문화유산연구원",
     "sourceArchives": 3,
+    "catalogLicensesVerifiedAtRun": 3,
     "availableDwgFiles": 63,
     "selectedDwgFiles": 30,
     "archiveIntegrity": {
@@ -21,11 +22,11 @@
   },
   "execution": {
     "target": "github-actions-ubuntu-24.04-x64",
-    "workflowRun": "https://github.com/menaje/dwg-viewer/actions/runs/30862448141",
+    "workflowRun": "https://github.com/menaje/dwg-viewer/actions/runs/30863132622",
     "evidenceArtifact": {
       "name": "dwg-viewer-public-korean-corpus-evidence",
-      "sizeBytes": 5066,
-      "sha256": "4dc35a6e53af761536de1c639c0c4e819edfca29aef64b36bb9a9d603fe29645"
+      "sizeBytes": 5092,
+      "sha256": "38d5fde75cf1450d0598620fec9b1f979fcdc13d575ed59343b0147b4420acf7"
     },
     "engine": {
       "id": "libredwg",
@@ -51,8 +52,8 @@
     "entities": 408245,
     "serializedEntities": 408245,
     "deferredEntities": 0,
-    "maximumWallMs": 672,
-    "maximumPeakRssBytes": 118943744
+    "maximumWallMs": 688,
+    "maximumPeakRssBytes": 119009280
   },
   "observedCoverage": {
     "versions": {
