@@ -705,6 +705,142 @@ function screenPolygonDistance(point, polygon) {
   return distance;
 }
 
+function renderDeltaSuppressedHandles(identities, sourceId) {
+  if (!Array.isArray(identities)) {
+    throw new TypeError(
+      "text render delta suppressions must be an array",
+    );
+  }
+  const handles = new Set();
+  for (const identity of identities) {
+    if (identity?.sceneId !== sourceId) {
+      continue;
+    }
+    if (
+      !Number.isInteger(identity.handleLow) ||
+      identity.handleLow < 0 ||
+      identity.handleLow > 0xffff_ffff ||
+      !Number.isInteger(identity.handleHigh) ||
+      identity.handleHigh < 0 ||
+      identity.handleHigh > 0xffff_ffff
+    ) {
+      throw new TypeError(
+        "text render delta suppression identity is invalid",
+      );
+    }
+    handles.add(
+      BigInt(identity.handleLow) |
+        (BigInt(identity.handleHigh) << 32n),
+    );
+  }
+  return handles;
+}
+
+function renderDeltaTextEntries(entries, sourceId) {
+  if (!Array.isArray(entries)) {
+    throw new TypeError("text render delta entries must be an array");
+  }
+  const selected = [];
+  const handles = new Set();
+  for (const entry of entries) {
+    if (entry?.sceneId !== sourceId) {
+      continue;
+    }
+    if (
+      entry.resourceKind !== "text" ||
+      !entry.record ||
+      typeof entry.record !== "object" ||
+      typeof entry.record.handle !== "bigint" ||
+      handles.has(entry.record.handle)
+    ) {
+      throw new TypeError("text render delta entry is invalid");
+    }
+    handles.add(entry.record.handle);
+    selected.push(entry);
+  }
+  return Object.freeze(selected);
+}
+
+function combinedTextEntities(base, renderDeltaEntries) {
+  const baseLength = base.length;
+  const dynamicRecord = (index) => {
+    const offset = index - baseLength;
+    if (
+      !Number.isInteger(index) ||
+      offset < 0 ||
+      offset >= renderDeltaEntries.length
+    ) {
+      throw new RangeError(`text entity index is out of range: ${index}`);
+    }
+    return renderDeltaEntries[offset].record;
+  };
+  return Object.freeze({
+    length: baseLength + renderDeltaEntries.length,
+    *indices(maximum) {
+      const dynamicCount = Math.min(
+        renderDeltaEntries.length,
+        maximum,
+      );
+      const baseCount = Math.min(
+        baseLength,
+        maximum - dynamicCount,
+      );
+      for (let index = 0; index < baseCount; index += 1) {
+        yield index;
+      }
+      for (let index = 0; index < dynamicCount; index += 1) {
+        yield baseLength + index;
+      }
+    },
+    isRenderDelta(index) {
+      return index >= baseLength;
+    },
+    readDisplayRecord(index, target) {
+      if (index < baseLength) {
+        return typeof base.readDisplayRecord === "function"
+          ? base.readDisplayRecord(index, target)
+          : Object.assign(target, base.get(index));
+      }
+      const record = dynamicRecord(index);
+      Object.assign(target, record, { index });
+      target.insertionPoint = [...record.insertionPoint];
+      target.alignmentPoint = [...record.alignmentPoint];
+      target.normal = [...record.normal];
+      target.xAxisDirection = [...record.xAxisDirection];
+      return target;
+    },
+    readValue(index) {
+      if (index < baseLength) {
+        return typeof base.readValue === "function"
+          ? base.readValue(index)
+          : base.get(index).value;
+      }
+      return dynamicRecord(index).value;
+    },
+    get(index) {
+      if (index < baseLength) {
+        if (typeof base.get === "function") {
+          return base.get(index);
+        }
+        const record =
+          typeof base.readDisplayRecord === "function"
+            ? base.readDisplayRecord(index, {})
+            : {};
+        return Object.freeze({
+          ...record,
+          value:
+            typeof base.readValue === "function"
+              ? base.readValue(index)
+              : record.value ?? "",
+          tag: record.tag ?? "",
+          prompt: record.prompt ?? "",
+        });
+      }
+      return dynamicRecord(index);
+    },
+  });
+}
+
 export class CanvasTextOverlay {
   constructor(
     canvas,
@@ -735,7 +871,12 @@ export class CanvasTextOverlay {
     }
     this.canvas = canvas;
     this.context = context;
-    this.textEntities = textEntities;
+    this.baseTextEntities = textEntities;
+    this.renderDeltaTextEntries = Object.freeze([]);
+    this.textEntities = combinedTextEntities(
+      this.baseTextEntities,
+      this.renderDeltaTextEntries,
+    );
     this.blocks = blocks;
     this.layers = layers;
     this.instanceGraph = instanceGraph;
@@ -784,6 +925,7 @@ export class CanvasTextOverlay {
     };
     this.lastMetrics = Object.freeze({
       sourceTexts: textEntities.length,
+      renderDeltaTexts: 0,
       visitedSourceTexts: 0,
       visibleOccurrences: 0,
       vectorGlyphs: 0,
@@ -806,39 +948,49 @@ export class CanvasTextOverlay {
   }
 
   setRenderDeltaSuppressions(identities) {
-    if (!Array.isArray(identities)) {
-      throw new TypeError(
-        "text render delta suppressions must be an array",
-      );
-    }
-    const next = new Set();
-    for (const identity of identities) {
-      if (identity?.sceneId !== this.sourceId) {
-        continue;
-      }
-      if (
-        !Number.isInteger(identity.handleLow) ||
-        identity.handleLow < 0 ||
-        identity.handleLow > 0xffff_ffff ||
-        !Number.isInteger(identity.handleHigh) ||
-        identity.handleHigh < 0 ||
-        identity.handleHigh > 0xffff_ffff
-      ) {
-        throw new TypeError(
-          "text render delta suppression identity is invalid",
-        );
-      }
-      next.add(
-        BigInt(identity.handleLow) |
-          (BigInt(identity.handleHigh) << 32n),
-      );
-    }
+    const next = renderDeltaSuppressedHandles(
+      identities,
+      this.sourceId,
+    );
     this.renderDeltaSuppressedHandles = next;
     this.hitOccurrences = this.hitOccurrences.filter(
       (occurrence) =>
         !next.has(occurrence.record.handle),
     );
     return next.size;
+  }
+
+  setRenderDeltaTexts(entries) {
+    const next = renderDeltaTextEntries(entries, this.sourceId);
+    this.renderDeltaTextEntries = next;
+    this.textEntities = combinedTextEntities(
+      this.baseTextEntities,
+      next,
+    );
+    this.hitOccurrences = [];
+    return next.length;
+  }
+
+  setRenderDeltaState({
+    suppressions = Object.freeze([]),
+    texts = Object.freeze([]),
+  } = {}) {
+    const nextSuppressions = renderDeltaSuppressedHandles(
+      suppressions,
+      this.sourceId,
+    );
+    const nextTexts = renderDeltaTextEntries(texts, this.sourceId);
+    this.renderDeltaSuppressedHandles = nextSuppressions;
+    this.renderDeltaTextEntries = nextTexts;
+    this.textEntities = combinedTextEntities(
+      this.baseTextEntities,
+      nextTexts,
+    );
+    this.hitOccurrences = [];
+    return Object.freeze({
+      baseSuppressions: nextSuppressions.size,
+      textRecords: nextTexts.length,
+    });
   }
 
   setPalette(palette) {
@@ -864,14 +1016,9 @@ export class CanvasTextOverlay {
       return null;
     }
     const expected = BigInt(`0x${normalized}`);
-    if (this.renderDeltaSuppressedHandles.has(expected)) {
-      return null;
-    }
-    const sourceCount = Math.min(
-      this.textEntities.length,
+    for (const textIndex of this.textEntities.indices(
       this.maximumSourceTexts,
-    );
-    for (let textIndex = 0; textIndex < sourceCount; textIndex += 1) {
+    )) {
       const record =
         typeof this.textEntities.readDisplayRecord === "function"
           ? this.textEntities.readDisplayRecord(
@@ -879,6 +1026,12 @@ export class CanvasTextOverlay {
               this.displayRecord,
             )
           : this.textEntities.get(textIndex);
+      if (
+        !this.textEntities.isRenderDelta(textIndex) &&
+        this.renderDeltaSuppressedHandles.has(record.handle)
+      ) {
+        continue;
+      }
       if (record.handle !== expected) {
         continue;
       }
@@ -1034,6 +1187,7 @@ export class CanvasTextOverlay {
     context.lineJoin = "round";
     const metrics = {
       sourceTexts: this.textEntities.length,
+      renderDeltaTexts: this.renderDeltaTextEntries.length,
       visitedSourceTexts: 0,
       visibleOccurrences: 0,
       vectorGlyphs: 0,
@@ -1060,7 +1214,9 @@ export class CanvasTextOverlay {
       this.textEntities.length,
       this.maximumSourceTexts,
     );
-    for (let textIndex = 0; textIndex < sourceCount; textIndex += 1) {
+    for (const textIndex of this.textEntities.indices(
+      this.maximumSourceTexts,
+    )) {
       if (
         metrics.visibleOccurrences >= this.maximumOccurrences ||
         metrics.segments >= this.maximumSegments ||
@@ -1077,7 +1233,10 @@ export class CanvasTextOverlay {
             )
           : this.textEntities.get(textIndex);
       metrics.visitedSourceTexts += 1;
-      if (this.renderDeltaSuppressedHandles.has(record.handle)) {
+      if (
+        !this.textEntities.isRenderDelta(textIndex) &&
+        this.renderDeltaSuppressedHandles.has(record.handle)
+      ) {
         continue;
       }
       if (
@@ -2432,6 +2591,11 @@ export class CanvasTextOverlay {
     this.context.setTransform(1, 0, 0, 1, 0, 0);
     this.context.clearRect(0, 0, width, height);
     this.renderDeltaSuppressedHandles.clear();
+    this.renderDeltaTextEntries = Object.freeze([]);
+    this.textEntities = combinedTextEntities(
+      this.baseTextEntities,
+      this.renderDeltaTextEntries,
+    );
     this.hitOccurrences = [];
   }
 }
@@ -2444,6 +2608,7 @@ export class CompositeTextOverlay {
     this.hitTestingEnabled = false;
     this.palette = new Uint8Array(DEFAULT_ACI_PALETTE);
     this.renderDeltaSuppressions = Object.freeze([]);
+    this.renderDeltaTexts = Object.freeze([]);
   }
 
   add(overlay, { first = false } = {}) {
@@ -2453,9 +2618,17 @@ export class CompositeTextOverlay {
     overlay.setMaskVisibility?.(this.maskVisibility);
     overlay.setPalette?.(this.palette);
     overlay.setHitTestingEnabled?.(this.hitTestingEnabled);
-    overlay.setRenderDeltaSuppressions?.(
-      this.renderDeltaSuppressions,
-    );
+    if (typeof overlay.setRenderDeltaState === "function") {
+      overlay.setRenderDeltaState({
+        suppressions: this.renderDeltaSuppressions,
+        texts: this.renderDeltaTexts,
+      });
+    } else {
+      overlay.setRenderDeltaSuppressions?.(
+        this.renderDeltaSuppressions,
+      );
+      overlay.setRenderDeltaTexts?.(this.renderDeltaTexts);
+    }
     if (first) {
       this.overlays.unshift(overlay);
     } else {
@@ -2504,6 +2677,50 @@ export class CompositeTextOverlay {
     return next.length;
   }
 
+  setRenderDeltaTexts(entries) {
+    if (!Array.isArray(entries)) {
+      throw new TypeError(
+        "composite text render delta entries must be an array",
+      );
+    }
+    const next = Object.freeze([...entries]);
+    for (const overlay of this.overlays) {
+      overlay.setRenderDeltaTexts?.(next);
+    }
+    this.renderDeltaTexts = next;
+    return next.length;
+  }
+
+  setRenderDeltaState({
+    suppressions = Object.freeze([]),
+    texts = Object.freeze([]),
+  } = {}) {
+    if (!Array.isArray(suppressions) || !Array.isArray(texts)) {
+      throw new TypeError(
+        "composite text render delta state is invalid",
+      );
+    }
+    const nextSuppressions = Object.freeze([...suppressions]);
+    const nextTexts = Object.freeze([...texts]);
+    for (const overlay of this.overlays) {
+      if (typeof overlay.setRenderDeltaState === "function") {
+        overlay.setRenderDeltaState({
+          suppressions: nextSuppressions,
+          texts: nextTexts,
+        });
+      } else {
+        overlay.setRenderDeltaTexts?.(nextTexts);
+        overlay.setRenderDeltaSuppressions?.(nextSuppressions);
+      }
+    }
+    this.renderDeltaSuppressions = nextSuppressions;
+    this.renderDeltaTexts = nextTexts;
+    return Object.freeze({
+      baseSuppressions: nextSuppressions.length,
+      textRecords: nextTexts.length,
+    });
+  }
+
   findTextOccurrence(handle) {
     for (const overlay of this.overlays) {
       const occurrence = overlay.findTextOccurrence?.(handle);
@@ -2531,6 +2748,7 @@ export class CompositeTextOverlay {
   redraw(camera, layerVisibility, { size = null } = {}) {
     const metrics = {
       sourceTexts: 0,
+      renderDeltaTexts: 0,
       visitedSourceTexts: 0,
       visibleOccurrences: 0,
       vectorGlyphs: 0,
@@ -2561,6 +2779,7 @@ export class CompositeTextOverlay {
       });
       for (const name of [
         "sourceTexts",
+        "renderDeltaTexts",
         "visitedSourceTexts",
         "visibleOccurrences",
         "vectorGlyphs",
@@ -2587,6 +2806,7 @@ export class CompositeTextOverlay {
     }
     this.overlays.length = 0;
     this.renderDeltaSuppressions = Object.freeze([]);
+    this.renderDeltaTexts = Object.freeze([]);
   }
 }
 

@@ -3,14 +3,17 @@ import {
   RenderDeltaOperationKind,
 } from "@dwg-viewer/render-protocol";
 
+import { decodeDwgRenderDeltaText } from "./render-delta-text.mjs";
 import { ROOT_RENDER_DELTA_SCENE_ID } from "./renderer.mjs";
 
 const DWG_RENDER_DELTA_MEDIA_TYPE_V1 =
   "application/vnd.dwg-viewer.dwg-render-delta.v1";
 const DWG_RENDER_DELTA_MEDIA_TYPE_V2 =
   "application/vnd.dwg-viewer.dwg-render-delta.v2";
-const DWG_RENDER_DELTA_MEDIA_TYPE =
+const DWG_RENDER_DELTA_MEDIA_TYPE_V3 =
   "application/vnd.dwg-viewer.dwg-render-delta.v3";
+const DWG_RENDER_DELTA_MEDIA_TYPE =
+  "application/vnd.dwg-viewer.dwg-render-delta.v4";
 const DWG_LINE_VERTEX_STRIDE = 36;
 const DWG_FILL_VERTEX_STRIDE = 32;
 const DWG_POINT_VERTEX_STRIDE = 32;
@@ -60,6 +63,7 @@ function assertRenderer(renderer) {
     "stageRenderDeltaLine",
     "stageRenderDeltaFill",
     "stageRenderDeltaPoint",
+    "stageRenderDeltaText",
     "activateRenderDelta",
     "releaseRenderDeltaResources",
   ]) {
@@ -223,6 +227,9 @@ function resourcesForState(state) {
     for (const point of overlay.points) {
       resources.add(point);
     }
+    for (const text of overlay.texts) {
+      resources.add(text);
+    }
   }
   return resources;
 }
@@ -242,6 +249,12 @@ function activeFills(state) {
 function activePoints(state) {
   return [...state.overlays.values()].flatMap(
     (overlay) => overlay.points,
+  );
+}
+
+function activeTexts(state) {
+  return [...state.overlays.values()].flatMap(
+    (overlay) => overlay.texts,
   );
 }
 
@@ -325,6 +338,25 @@ function validatePointIdentity(point, identity, label) {
   }
 }
 
+function validateTextIdentity(text, identity, label) {
+  if (
+    text.sceneId !== identity.sceneId ||
+    !(text.buffer instanceof ArrayBuffer)
+  ) {
+    throw new TypeError(`${label} has an invalid DWG text payload`);
+  }
+  try {
+    return decodeDwgRenderDeltaText(text.buffer, {
+      expectedHandle: identity.handle,
+    });
+  } catch (error) {
+    throw new TypeError(
+      `${label} has an invalid DWG text payload`,
+      { cause: error },
+    );
+  }
+}
+
 function parsePacket(
   value,
   payload,
@@ -346,9 +378,12 @@ function parsePacket(
     payload.mediaType === DWG_RENDER_DELTA_MEDIA_TYPE_V1;
   const lineFillPacket =
     payload.mediaType === DWG_RENDER_DELTA_MEDIA_TYPE_V2;
+  const lineFillPointPacket =
+    payload.mediaType === DWG_RENDER_DELTA_MEDIA_TYPE_V3;
   if (
     (!legacyLinePacket &&
       !lineFillPacket &&
+      !lineFillPointPacket &&
       payload.mediaType !== DWG_RENDER_DELTA_MEDIA_TYPE) ||
     packet.payloadId !== payload.payloadId ||
     packet.sha256 !== payload.sha256 ||
@@ -389,7 +424,15 @@ function parsePacket(
         ? ["operationId", "lines"]
         : lineFillPacket
           ? ["operationId", "lines", "fills"]
-          : ["operationId", "lines", "fills", "points"],
+          : lineFillPointPacket
+            ? ["operationId", "lines", "fills", "points"]
+            : [
+                "operationId",
+                "lines",
+                "fills",
+                "points",
+                "texts",
+              ],
       "DWG render delta packet operation",
     );
     const packetLines = packetOperation.lines;
@@ -400,17 +443,25 @@ function parsePacket(
       legacyLinePacket || lineFillPacket
         ? []
         : packetOperation.points;
+    const packetTexts =
+      legacyLinePacket ||
+      lineFillPacket ||
+      lineFillPointPacket
+        ? []
+        : packetOperation.texts;
     const operation = expected.get(packetOperation.operationId);
     const resourceCount =
       packetLines?.length +
       packetFills?.length +
-      packetPoints?.length;
+      packetPoints?.length +
+      packetTexts?.length;
     if (
       !operation ||
       parsed.has(operation.operationId) ||
       !Array.isArray(packetLines) ||
       !Array.isArray(packetFills) ||
       !Array.isArray(packetPoints) ||
+      !Array.isArray(packetTexts) ||
       resourceCount === 0 ||
       resourceCount > 4_096
     ) {
@@ -423,6 +474,8 @@ function parsePacket(
     const lines = [];
     const fills = [];
     const points = [];
+    const texts = [];
+    const textRenderIds = new Set();
     for (const [index, rawLine] of packetLines.entries()) {
       const line = plainRecord(
         rawLine,
@@ -588,6 +641,54 @@ function parsePacket(
         }),
       );
     }
+    for (const [index, rawText] of packetTexts.entries()) {
+      const text = plainRecord(
+        rawText,
+        "DWG render delta packet text",
+      );
+      exactKeys(
+        text,
+        ["renderId", "sceneId", "buffer"],
+        "DWG render delta packet text",
+      );
+      if (
+        !renderIds.has(text.renderId) ||
+        buffers.has(text.buffer) ||
+        textRenderIds.has(text.renderId)
+      ) {
+        throw new TypeError(
+          "DWG render delta packet text scope is invalid",
+        );
+      }
+      const identity = identities.get(
+        logicalKey(operation.layerId, text.renderId),
+      );
+      const record = validateTextIdentity(
+        text,
+        identity,
+        `DWG render delta packet text ${index}`,
+      );
+      buffers.add(text.buffer);
+      textRenderIds.add(text.renderId);
+      covered.add(text.renderId);
+      byteLength += text.buffer.byteLength;
+      if (
+        !Number.isSafeInteger(byteLength) ||
+        byteLength > payload.byteLength
+      ) {
+        throw new RangeError(
+          "DWG render delta packet exceeds its byte bound",
+        );
+      }
+      texts.push(
+        Object.freeze({
+          renderId: text.renderId,
+          sceneId: text.sceneId,
+          record,
+          byteLength: text.buffer.byteLength,
+        }),
+      );
+    }
     if (
       covered.size !== renderIds.size ||
       [...renderIds].some((renderId) => !covered.has(renderId))
@@ -603,6 +704,7 @@ function parsePacket(
         lines: Object.freeze(lines),
         fills: Object.freeze(fills),
         points: Object.freeze(points),
+        texts: Object.freeze(texts),
       }),
     );
   }
@@ -658,6 +760,7 @@ export class DwgRenderDeltaAdapter {
         lines: activeLines(state),
         fills: activeFills(state),
         points: activePoints(state),
+        texts: activeTexts(state),
         baseSuppressions: [...state.suppressions.values()],
         affectedWorldBounds: state.affectedWorldBounds,
       }),
@@ -737,6 +840,7 @@ export class DwgRenderDeltaAdapter {
     const linesByOperation = new Map();
     const fillsByOperation = new Map();
     const pointsByOperation = new Map();
+    const textsByOperation = new Map();
     try {
       for (const [
         operationId,
@@ -819,6 +923,31 @@ export class DwgRenderDeltaAdapter {
           pointsByRenderId.set(point.renderId, entries);
         }
         pointsByOperation.set(operationId, pointsByRenderId);
+        const textsByRenderId = new Map();
+        for (const [index, text] of packetOperation.texts.entries()) {
+          const entry = synchronous(
+            this.#renderer.stageRenderDeltaText({
+              key:
+                `${delta.deltaId}\u0000${operationId}` +
+                `\u0000${text.renderId}\u0000text:${index}`,
+              sceneId: text.sceneId,
+              record: text.record,
+              byteLength: text.byteLength,
+            }),
+            "DWG renderer stageRenderDeltaText",
+          );
+          if (!entry || typeof entry !== "object") {
+            throw new TypeError(
+              "DWG renderer returned an invalid staged text",
+            );
+          }
+          staged.push(entry);
+          const entries =
+            textsByRenderId.get(text.renderId) ?? [];
+          entries.push(entry);
+          textsByRenderId.set(text.renderId, entries);
+        }
+        textsByOperation.set(operationId, textsByRenderId);
       }
     } catch (error) {
       this.#release(staged);
@@ -829,6 +958,7 @@ export class DwgRenderDeltaAdapter {
       linesByOperation,
       fillsByOperation,
       pointsByOperation,
+      textsByOperation,
       staged,
     };
   }
@@ -888,6 +1018,10 @@ export class DwgRenderDeltaAdapter {
             prepared.pointsByOperation
               .get(operation.operationId)
               ?.get(renderId) ?? [];
+          const texts =
+            prepared.textsByOperation
+              .get(operation.operationId)
+              ?.get(renderId) ?? [];
           next.overlays.set(
             key,
             Object.freeze({
@@ -897,6 +1031,7 @@ export class DwgRenderDeltaAdapter {
               lines: Object.freeze(lines),
               fills: Object.freeze(fills),
               points: Object.freeze(points),
+              texts: Object.freeze(texts),
             }),
           );
           next.suppressions.set(key, identity);
@@ -1001,6 +1136,11 @@ export class DwgRenderDeltaAdapter {
       lineBatches: activeLines(state).length,
       fillBatches: activeFills(state).length,
       pointBatches: activePoints(state).length,
+      textRecords: activeTexts(state).length,
+      textBytes: activeTexts(state).reduce(
+        (total, entry) => total + entry.byteLength,
+        0,
+      ),
       baseSuppressions: state.suppressions.size,
       affectedWorldBounds: state.affectedWorldBounds,
       invalidatedDependencyIds: Object.freeze(
@@ -1068,4 +1208,5 @@ export {
   DWG_RENDER_DELTA_MEDIA_TYPE,
   DWG_RENDER_DELTA_MEDIA_TYPE_V1,
   DWG_RENDER_DELTA_MEDIA_TYPE_V2,
+  DWG_RENDER_DELTA_MEDIA_TYPE_V3,
 };

@@ -69,11 +69,12 @@ source-neutral renderer adapter hook. `MockRenderDeltaSource` verifies that a
 stale replay cannot advance either source or overlay revision and that picking
 tracks the applied revision. The existing DWG WebGL vertex layouts remain
 private to the Webview adapter. `DwgRenderDeltaAdapter` now consumes a
-digest/byte-bound decoded v3 packet containing 36-byte lines, 32-byte triangle
-fills and 32-byte POINT records, stages every GPU resource before an atomic
-renderer state swap and keeps the committed resources alive while a preview is
-active. The v1 line-only and v2 line/fill media types remain accepted during the
-private producer transition.
+digest/byte-bound decoded v4 packet containing 36-byte lines, 32-byte triangle
+fills, 32-byte POINT records and bounded UTF-8 JSON native-text records. It
+stages every WebGL or Canvas resource before an atomic renderer state swap and
+keeps the committed resources alive while a preview is active. The v1
+line-only, v2 line/fill and v3 line/fill/POINT media types remain accepted
+during the private producer transition.
 The renderer suppresses replaced or tombstoned base line
 handles from vertex identity and HATCH fill/pattern, POINT,
 SOLID/3DFACE/WIPEOUT handles from compact vertex-range sidecars. Canvas text
@@ -81,8 +82,10 @@ uses the same source-scoped handle filter. Cached visible draw ranges avoid
 rewriting immutable Scene Cache buffers, so rollback restores the complete
 base presentation and native-handle pick status without rereading the
 snapshot. Promotion and disposal release superseded resources under a
-dedicated shared 64 MiB GPU bound. Native Canvas text upsert still extends this
-private adapter rather than the public protocol.
+dedicated shared 64 MiB GPU bound. Native Canvas text shares the same
+source-scoped handle suppression, font/layout/XCLIP and hit-test path, with a
+separate 8 MiB staged text bound. These DWG record kinds remain private adapter
+details rather than public protocol fields.
 The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
 remain Webview adapters and move incrementally without changing raw DWG
 qualification. `ViewerReviewUiController` now owns review toolbar state,

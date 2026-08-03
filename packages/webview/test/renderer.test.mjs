@@ -22,6 +22,9 @@ import {
 } from "../src/scene-cache.mjs";
 import { createClipNode } from "../src/instance-graph.mjs";
 import { identityMat4 } from "../src/math.mjs";
+import {
+  normalizedRenderDeltaTextRecord,
+} from "./render-delta-text-fixture.mjs";
 
 function makeFakeGl() {
   let nextId = 0;
@@ -1072,7 +1075,12 @@ test("atomically overlays delta points and restores base points", () => {
     fillBatches: 0,
     pointBatches: 1,
     activeGpuBytes: 32,
+    textRecords: 0,
+    activeTextBytes: 0,
+    activeResourceBytes: 32,
     allocatedGpuBytes: 32,
+    allocatedTextBytes: 0,
+    allocatedResourceBytes: 32,
     baseSuppressions: 1,
     affectedWorldBounds: null,
   });
@@ -1177,6 +1185,101 @@ test("shares one render delta GPU budget across lines, fills, and points", () =>
   );
   assert.equal(
     renderer.renderDeltaSnapshot().allocatedGpuBytes,
+    0,
+  );
+  renderer.dispose();
+});
+
+test("bounds, activates, rolls back, and releases Canvas text deltas", () => {
+  const { gl } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const text = normalizedRenderDeltaTextRecord();
+  const renderer = new WebGlLineRenderer(canvas, {
+    maximumRenderDeltaTextBytes: text.buffer.byteLength,
+  });
+  renderer.renderOverview({
+    batches: [
+      batch({
+        id: 0,
+        kind: GpuLineBatchKind.ModelOverview,
+        lodLevel: 0,
+        firstVertex: 0,
+      }),
+    ],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: { instancesByBlock: new Map() },
+    vertices: lineVerticesForHandles([0x2an]),
+  });
+  const states = [];
+  renderer.setTextOverlay({
+    setRenderDeltaState(state) {
+      states.push(state);
+    },
+    dispose() {},
+  });
+  const staged = renderer.stageRenderDeltaText({
+    key: "delta:text\u0000dwg:root:2A",
+    sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+    record: text.record,
+    byteLength: text.buffer.byteLength,
+  });
+  const secondText = normalizedRenderDeltaTextRecord({
+    value: "두 번째",
+  });
+
+  assert.throws(
+    () =>
+      renderer.stageRenderDeltaText({
+        key: "delta:text\u0000second",
+        record: secondText.record,
+        byteLength: secondText.buffer.byteLength,
+      }),
+    new RegExp(
+      `exceeds the ${text.buffer.byteLength}-byte limit`,
+      "u",
+    ),
+  );
+  renderer.activateRenderDelta({
+    texts: [staged],
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x2a,
+        handleHigh: 0,
+      },
+    ],
+  });
+  const active = renderer.renderDeltaSnapshot();
+  assert.equal(states.at(-1).texts[0], staged);
+  assert.equal(active.textRecords, 1);
+  assert.equal(active.activeTextBytes, text.buffer.byteLength);
+  assert.equal(active.activeGpuBytes, 0);
+  assert.equal(
+    active.activeResourceBytes,
+    text.buffer.byteLength,
+  );
+  assert.equal(active.allocatedTextBytes, text.buffer.byteLength);
+  assert.throws(
+    () => renderer.releaseRenderDeltaResources([staged]),
+    /cannot release an active/u,
+  );
+
+  renderer.activateRenderDelta();
+  assert.equal(states.at(-1).texts.length, 0);
+  assert.equal(
+    renderer.releaseRenderDeltaResources([staged]),
+    1,
+  );
+  assert.equal(
+    renderer.renderDeltaSnapshot().allocatedResourceBytes,
     0,
   );
   renderer.dispose();
@@ -1580,9 +1683,21 @@ test("draws independently cached XREF overview and detail geometry", () => {
     },
     vertices: deltaPointVertices(),
   });
+  const externalTextFixture = normalizedRenderDeltaTextRecord({
+    handle: "2b",
+    ownerHandle: "64",
+    value: "외부 문자",
+  });
+  const externalText = renderer.stageRenderDeltaText({
+    key: "delta:xref-text\u0000dwg:xref-1:2B",
+    sceneId: "xref-1",
+    record: externalTextFixture.record,
+    byteLength: externalTextFixture.buffer.byteLength,
+  });
   renderer.activateRenderDelta({
     fills: [externalFill],
     points: [externalPoint],
+    texts: [externalText],
   });
 
   const redrawn = renderer.redraw(external.camera);
@@ -1594,6 +1709,11 @@ test("draws independently cached XREF overview and detail geometry", () => {
   assert.equal(redrawn.drawCalls, 5);
   assert.equal(redrawn.renderDeltaFillDrawCalls, 1);
   assert.equal(redrawn.renderDeltaPointDrawCalls, 1);
+  assert.equal(redrawn.renderDeltaTextRecords, 1);
+  assert.equal(
+    redrawn.renderDeltaTextBytes,
+    externalTextFixture.buffer.byteLength,
+  );
   assert.deepEqual(calls.drawArraysInstanced.slice(-5), [
     { mode: gl.TRIANGLES, first: 0, count: 3, instances: 1 },
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },
@@ -1606,6 +1726,7 @@ test("draws independently cached XREF overview and detail geometry", () => {
   renderer.releaseRenderDeltaResources([
     externalFill,
     externalPoint,
+    externalText,
   ]);
   renderer.dispose();
 });

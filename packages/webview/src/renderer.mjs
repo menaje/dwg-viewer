@@ -31,6 +31,10 @@ import {
   RENDER_IDENTITY_RANGE_WORDS,
   validateRenderIdentityRanges,
 } from "./render-identity-ranges.mjs";
+import {
+  dwgRenderDeltaTextByteLength,
+  isNormalizedDwgRenderDeltaTextRecord,
+} from "./render-delta-text.mjs";
 
 const VERTEX_STRIDE = 36;
 const FILL_VERTEX_STRIDE = 32;
@@ -46,6 +50,7 @@ const MAX_PRIMITIVE_GPU_BYTES = 40 * 1024 * 1024;
 const MAX_EXTERNAL_OVERVIEW_GPU_BYTES = 32 * 1024 * 1024;
 const MAX_EXTERNAL_DETAIL_GPU_BYTES = 32 * 1024 * 1024;
 const MAX_RENDER_DELTA_GPU_BYTES = 64 * 1024 * 1024;
+const MAX_RENDER_DELTA_TEXT_BYTES = 8 * 1024 * 1024;
 const ROOT_RENDER_DELTA_SCENE_ID = "root";
 const INTERACTIVE_MINIMUM_PIXEL_SPAN = 0.75;
 const EMPTY_INSTANCE_INDICES = new Uint32Array(0);
@@ -1757,6 +1762,7 @@ export class WebGlLineRenderer {
       maximumExternalOverviewBytes = MAX_EXTERNAL_OVERVIEW_GPU_BYTES,
       maximumExternalDetailBytes = MAX_EXTERNAL_DETAIL_GPU_BYTES,
       maximumRenderDeltaBytes = MAX_RENDER_DELTA_GPU_BYTES,
+      maximumRenderDeltaTextBytes = MAX_RENDER_DELTA_TEXT_BYTES,
     } = {},
   ) {
     if (
@@ -1765,9 +1771,11 @@ export class WebGlLineRenderer {
       !Number.isSafeInteger(maximumExternalDetailBytes) ||
       maximumExternalDetailBytes <= 0 ||
       !Number.isSafeInteger(maximumRenderDeltaBytes) ||
-      maximumRenderDeltaBytes <= 0
+      maximumRenderDeltaBytes <= 0 ||
+      !Number.isSafeInteger(maximumRenderDeltaTextBytes) ||
+      maximumRenderDeltaTextBytes <= 0
     ) {
-      throw new RangeError("renderer GPU byte budgets must be positive");
+      throw new RangeError("renderer byte budgets must be positive");
     }
     const gl = canvas.getContext("webgl2", {
       alpha: true,
@@ -1813,12 +1821,16 @@ export class WebGlLineRenderer {
     this.maximumExternalOverviewBytes = maximumExternalOverviewBytes;
     this.maximumExternalDetailBytes = maximumExternalDetailBytes;
     this.maximumRenderDeltaBytes = maximumRenderDeltaBytes;
+    this.maximumRenderDeltaTextBytes =
+      maximumRenderDeltaTextBytes;
     this.renderDeltaResources = new Set();
     this.renderDeltaResourceBytes = 0;
+    this.renderDeltaTextResourceBytes = 0;
     this.renderDeltaState = Object.freeze({
       lines: Object.freeze([]),
       fills: Object.freeze([]),
       points: Object.freeze([]),
+      texts: Object.freeze([]),
       baseSuppressions: Object.freeze([]),
       suppressionKeys: new Set(),
       affectedWorldBounds: null,
@@ -2519,6 +2531,16 @@ export class WebGlLineRenderer {
   }
 
   setTextOverlay(overlay) {
+    if (
+      overlay &&
+      this.renderDeltaState.texts.length > 0 &&
+      typeof overlay.setRenderDeltaState !== "function" &&
+      typeof overlay.setRenderDeltaTexts !== "function"
+    ) {
+      throw new TypeError(
+        "text overlay cannot apply active render delta text",
+      );
+    }
     if (this.textOverlay && this.textOverlay !== overlay) {
       resetOverlayTransform(this.textOverlay);
       this.textOverlay.dispose();
@@ -2530,8 +2552,31 @@ export class WebGlLineRenderer {
     this.lastTextMetrics = null;
     resetOverlayTransform(this.textOverlay);
     this.textOverlay?.setMaskVisibility?.(this.wipeoutMasksVisible);
-    this.textOverlay?.setRenderDeltaSuppressions?.(
-      this.renderDeltaState.baseSuppressions,
+    this.applyTextRenderDeltaState(this.renderDeltaState);
+  }
+
+  applyTextRenderDeltaState(state) {
+    if (!this.textOverlay) {
+      return;
+    }
+    if (typeof this.textOverlay.setRenderDeltaState === "function") {
+      this.textOverlay.setRenderDeltaState({
+        suppressions: state.baseSuppressions,
+        texts: state.texts,
+      });
+      return;
+    }
+    if (
+      state.texts.length > 0 &&
+      typeof this.textOverlay.setRenderDeltaTexts !== "function"
+    ) {
+      throw new TypeError(
+        "text overlay cannot apply render delta text",
+      );
+    }
+    this.textOverlay.setRenderDeltaTexts?.(state.texts);
+    this.textOverlay.setRenderDeltaSuppressions?.(
+      state.baseSuppressions,
     );
   }
 
@@ -3145,10 +3190,61 @@ export class WebGlLineRenderer {
     return entry;
   }
 
+  stageRenderDeltaText({
+    key,
+    sceneId = ROOT_RENDER_DELTA_SCENE_ID,
+    record,
+    byteLength,
+  }) {
+    if (!this.overviewScene) {
+      throw new Error("cannot stage a render delta before the overview");
+    }
+    if (
+      typeof key !== "string" ||
+      key.length === 0 ||
+      key.length > 1_024 ||
+      typeof sceneId !== "string" ||
+      sceneId.length === 0 ||
+      sceneId.length > 512 ||
+      (sceneId !== ROOT_RENDER_DELTA_SCENE_ID &&
+        !this.externalScenes.has(sceneId))
+    ) {
+      throw new TypeError("render delta text target is invalid");
+    }
+    if (
+      !isNormalizedDwgRenderDeltaTextRecord(record) ||
+      !Number.isSafeInteger(byteLength) ||
+      byteLength <= 0 ||
+      dwgRenderDeltaTextByteLength(record) !== byteLength
+    ) {
+      throw new TypeError("render delta text payload is invalid");
+    }
+    if (
+      byteLength >
+      this.maximumRenderDeltaTextBytes -
+        this.renderDeltaTextResourceBytes
+    ) {
+      throw new RangeError(
+        `render delta text data exceeds the ${this.maximumRenderDeltaTextBytes}-byte limit`,
+      );
+    }
+    const entry = Object.freeze({
+      key,
+      resourceKind: "text",
+      sceneId,
+      record,
+      byteLength,
+    });
+    this.renderDeltaResources.add(entry);
+    this.renderDeltaTextResourceBytes += byteLength;
+    return entry;
+  }
+
   activateRenderDelta({
     lines = Object.freeze([]),
     fills = Object.freeze([]),
     points = Object.freeze([]),
+    texts = Object.freeze([]),
     baseSuppressions = Object.freeze([]),
     affectedWorldBounds = null,
   } = {}) {
@@ -3159,6 +3255,7 @@ export class WebGlLineRenderer {
       !Array.isArray(lines) ||
       !Array.isArray(fills) ||
       !Array.isArray(points) ||
+      !Array.isArray(texts) ||
       !Array.isArray(baseSuppressions)
     ) {
       throw new TypeError("render delta state is invalid");
@@ -3206,6 +3303,20 @@ export class WebGlLineRenderer {
       resourceKeys.add(entry.key);
       normalizedPoints.push(entry);
     }
+    const normalizedTexts = [];
+    for (const entry of texts) {
+      if (
+        !this.renderDeltaResources.has(entry) ||
+        entry.resourceKind !== "text" ||
+        resourceKeys.has(entry.key) ||
+        (entry.sceneId !== ROOT_RENDER_DELTA_SCENE_ID &&
+          !this.externalScenes.has(entry.sceneId))
+      ) {
+        throw new TypeError("render delta text resource is invalid");
+      }
+      resourceKeys.add(entry.key);
+      normalizedTexts.push(entry);
+    }
     const normalizedSuppressions = [];
     const suppressionKeys = new Set();
     for (const value of baseSuppressions) {
@@ -3234,6 +3345,7 @@ export class WebGlLineRenderer {
       lines: Object.freeze(normalizedLines),
       fills: Object.freeze(normalizedFills),
       points: Object.freeze(normalizedPoints),
+      texts: Object.freeze(normalizedTexts),
       baseSuppressions: Object.freeze(normalizedSuppressions),
       suppressionKeys,
       affectedWorldBounds:
@@ -3244,9 +3356,7 @@ export class WebGlLineRenderer {
               max: Object.freeze([...affectedWorldBounds.max]),
             }),
     });
-    this.textOverlay?.setRenderDeltaSuppressions?.(
-      next.baseSuppressions,
-    );
+    this.applyTextRenderDeltaState(next);
     this.renderDeltaState = next;
     this.renderDeltaRangeCache = new WeakMap();
     this.recalculateCombinedBounds();
@@ -3263,6 +3373,7 @@ export class WebGlLineRenderer {
       ...this.renderDeltaState.lines,
       ...this.renderDeltaState.fills,
       ...this.renderDeltaState.points,
+      ...this.renderDeltaState.texts,
     ]);
     const unique = [...new Set(resources)];
     for (const entry of unique) {
@@ -3277,8 +3388,12 @@ export class WebGlLineRenderer {
     }
     for (const entry of unique) {
       this.renderDeltaResources.delete(entry);
-      this.renderDeltaResourceBytes -= entry.byteLength;
-      this.deleteVertices(entry.resource);
+      if (entry.resourceKind === "text") {
+        this.renderDeltaTextResourceBytes -= entry.byteLength;
+      } else {
+        this.renderDeltaResourceBytes -= entry.byteLength;
+        this.deleteVertices(entry.resource);
+      }
     }
     return unique.length;
   }
@@ -3293,12 +3408,23 @@ export class WebGlLineRenderer {
       ...this.renderDeltaState.fills,
       ...this.renderDeltaState.points,
     ].reduce((total, entry) => total + entry.byteLength, 0);
+    const activeTextBytes = this.renderDeltaState.texts.reduce(
+      (total, entry) => total + entry.byteLength,
+      0,
+    );
     return Object.freeze({
       lineBatches: this.renderDeltaState.lines.length,
       fillBatches: this.renderDeltaState.fills.length,
       pointBatches: this.renderDeltaState.points.length,
       activeGpuBytes: activeBytes,
+      textRecords: this.renderDeltaState.texts.length,
+      activeTextBytes,
+      activeResourceBytes: activeBytes + activeTextBytes,
       allocatedGpuBytes: this.renderDeltaResourceBytes,
+      allocatedTextBytes: this.renderDeltaTextResourceBytes,
+      allocatedResourceBytes:
+        this.renderDeltaResourceBytes +
+        this.renderDeltaTextResourceBytes,
       baseSuppressions:
         this.renderDeltaState.baseSuppressions.length,
       affectedWorldBounds:
@@ -4398,6 +4524,11 @@ export class WebGlLineRenderer {
       renderDeltaLineGpuBytes +
       renderDeltaFillGpuBytes +
       renderDeltaPointGpuBytes;
+    const renderDeltaTextBytes =
+      this.renderDeltaState.texts.reduce(
+        (total, entry) => total + entry.byteLength,
+        0,
+      );
     const metrics = {
       drawCalls: 0,
       detailDrawCalls: 0,
@@ -4414,9 +4545,16 @@ export class WebGlLineRenderer {
       renderDeltaPointSubmittedVertices: 0,
       renderDeltaPointBatches: this.renderDeltaState.points.length,
       renderDeltaPointGpuBytes,
+      renderDeltaTextRecords: this.renderDeltaState.texts.length,
+      renderDeltaTextBytes,
       renderDeltaGpuBytes,
       renderDeltaAllocatedGpuBytes:
         this.renderDeltaResourceBytes,
+      renderDeltaAllocatedTextBytes:
+        this.renderDeltaTextResourceBytes,
+      renderDeltaAllocatedBytes:
+        this.renderDeltaResourceBytes +
+        this.renderDeltaTextResourceBytes,
       renderDeltaBaseSuppressions:
         this.renderDeltaState.baseSuppressions.length,
       hatchFillDrawCalls: 0,
@@ -5201,10 +5339,12 @@ export class WebGlLineRenderer {
     this.detailSelections.clear();
     this.renderDeltaResources.clear();
     this.renderDeltaResourceBytes = 0;
+    this.renderDeltaTextResourceBytes = 0;
     this.renderDeltaState = Object.freeze({
       lines: Object.freeze([]),
       fills: Object.freeze([]),
       points: Object.freeze([]),
+      texts: Object.freeze([]),
       baseSuppressions: Object.freeze([]),
       suppressionKeys: new Set(),
       affectedWorldBounds: null,
@@ -5257,6 +5397,7 @@ export {
   MAX_EXTERNAL_DETAIL_GPU_BYTES,
   MAX_EXTERNAL_OVERVIEW_GPU_BYTES,
   MAX_RENDER_DELTA_GPU_BYTES,
+  MAX_RENDER_DELTA_TEXT_BYTES,
   MAX_INSTANCES_PER_DRAW,
   ROOT_RENDER_DELTA_SCENE_ID,
   INTERACTIVE_MINIMUM_PIXEL_SPAN,

@@ -24,6 +24,9 @@ import {
   wrapCadTextLines,
 } from "../src/text-overlay.mjs";
 import { makeFixtureCache } from "./cache-fixture.mjs";
+import {
+  normalizedRenderDeltaTextRecord,
+} from "./render-delta-text-fixture.mjs";
 
 function fakeCanvas() {
   const calls = {
@@ -239,6 +242,81 @@ test("finds a text occurrence by handle for workspace search navigation", async 
 
   overlay.setRenderDeltaSuppressions([]);
   assert.notEqual(overlay.findTextOccurrence("12C"), null);
+});
+
+test("replaces and rolls back a native Canvas text record", async () => {
+  const scene = await textScene();
+  const canvas = fakeCanvas();
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: scene.textEntities,
+    blocks: scene.metadata.blocks,
+    layers: scene.metadata.layers,
+    instanceGraph: scene.instanceGraph,
+    glyphCache: { getGlyph: () => undefined },
+    maximumSourceTexts: 1,
+    minimumPixelHeight: 0.1,
+    sourceId: "root",
+    hitTestingEnabled: true,
+  });
+  const baseline = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => true),
+  );
+  const { record } = normalizedRenderDeltaTextRecord({
+    handle: "12c",
+    ownerHandle: "64",
+    value: "수정 문자",
+    insertionPoint: [102, 201, 0],
+    alignmentPoint: [102, 201, 0],
+    height: 0.5,
+  });
+  const entry = Object.freeze({
+    resourceKind: "text",
+    sceneId: "root",
+    record,
+    byteLength: 1_024,
+  });
+
+  overlay.setRenderDeltaState({
+    suppressions: [
+      {
+        sceneId: "root",
+        handleLow: 300,
+        handleHigh: 0,
+      },
+    ],
+    texts: [entry],
+  });
+  const overlaid = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => true),
+  );
+
+  assert.equal(overlaid.renderDeltaTexts, 1);
+  assert.equal(
+    overlaid.visibleOccurrences,
+    baseline.visibleOccurrences,
+  );
+  assert.deepEqual(
+    overlay.findTextOccurrence("12C").point,
+    [102, 201, 0],
+  );
+  const selected = overlay.hitTest(280, 300, {
+    snapKinds: ["entity"],
+    tolerancePixels: 20,
+  });
+  assert.equal(selected?.entityRecord.value, "수정 문자");
+
+  overlay.setRenderDeltaState();
+  const restored = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => true),
+  );
+  assert.equal(restored.renderDeltaTexts, 0);
+  assert.deepEqual(
+    overlay.findTextOccurrence("12C").point,
+    [101, 201, 0],
+  );
 });
 
 test("selects rendered text by its screen footprint", async () => {
@@ -1736,6 +1814,7 @@ test("transforms and clips external ATTRIB text with its XREF root", () => {
     },
     glyphCache: { getGlyph: () => undefined },
     minimumPixelHeight: 0.1,
+    sourceId: "xref-1",
   });
 
   const metrics = overlay.redraw(
@@ -1753,4 +1832,53 @@ test("transforms and clips external ATTRIB text with its XREF root", () => {
   assert.deepEqual(canvas.calls.clips, ["nonzero"]);
   assert.equal(canvas.calls.saves, 1);
   assert.equal(canvas.calls.restores, 1);
+
+  const { record: dynamicRecord } =
+    normalizedRenderDeltaTextRecord({
+      handle: "5",
+      ownerHandle: "64",
+      kind: 3,
+      value: "외부 변경",
+      insertionPoint: [1, 0, 0],
+      alignmentPoint: [1, 0, 0],
+    });
+  overlay.setRenderDeltaState({
+    suppressions: [
+      {
+        sceneId: "xref-1",
+        handleLow: 5,
+        handleHigh: 0,
+      },
+    ],
+    texts: [
+      Object.freeze({
+        resourceKind: "text",
+        sceneId: "xref-1",
+        record: dynamicRecord,
+        byteLength: 1_024,
+      }),
+    ],
+  });
+  const overlaid = overlay.redraw(
+    {
+      origin: [100, 0, 0],
+      worldWidth: 20,
+      worldHeight: 15,
+    },
+    [true],
+  );
+  assert.equal(overlaid.renderDeltaTexts, 1);
+  assert.equal(overlaid.visibleOccurrences, 1);
+  assert.deepEqual(overlay.findTextOccurrence("5").point, [
+    101,
+    0,
+    0,
+  ]);
+
+  overlay.setRenderDeltaState();
+  assert.deepEqual(overlay.findTextOccurrence("5").point, [
+    100,
+    0,
+    0,
+  ]);
 });
