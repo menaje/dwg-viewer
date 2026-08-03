@@ -84,7 +84,12 @@ uses the same source-scoped handle filter. Cached visible draw ranges avoid
 rewriting immutable Scene Cache buffers, so rollback restores the complete
 base presentation and native-handle pick status without rereading the
 snapshot. Promotion and disposal release superseded resources under a
-dedicated shared 64 MiB GPU bound. Native Canvas text shares the same
+dedicated shared 64 MiB GPU bound. The adapter explicitly owns every staged
+resource, publishes transition state only after superseded resources are
+released, and restores the prior committed or preview renderer state when
+cleanup fails so rollback, promotion and disposal remain retryable. Successful
+source-switch disposal drains active and inactive owned resources exactly
+once. Native Canvas text shares the same
 source-scoped handle suppression, font/layout/XCLIP and hit-test path, with a
 separate 8 MiB staged text bound. These DWG record kinds remain private adapter
 details rather than public protocol fields. Instance transforms and styles

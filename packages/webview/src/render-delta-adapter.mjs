@@ -962,6 +962,7 @@ export class DwgRenderDeltaAdapter {
   #resolveIdentity;
   #committed = emptyState();
   #preview = null;
+  #resources = new Set();
   #disposed = false;
 
   constructor({
@@ -1023,13 +1024,22 @@ export class DwgRenderDeltaAdapter {
   }
 
   #release(resources) {
-    if (resources.length === 0) {
+    const unique = [...new Set(resources)];
+    if (unique.length === 0) {
       return;
     }
+    if (unique.some((resource) => !this.#resources.has(resource))) {
+      throw new TypeError(
+        "DWG render delta adapter cannot release an unowned resource",
+      );
+    }
     synchronous(
-      this.#renderer.releaseRenderDeltaResources(resources),
+      this.#renderer.releaseRenderDeltaResources(unique),
       "DWG renderer releaseRenderDeltaResources",
     );
+    for (const resource of unique) {
+      this.#resources.delete(resource);
+    }
   }
 
   #releaseDifference(previous, next) {
@@ -1039,6 +1049,65 @@ export class DwgRenderDeltaAdapter {
         (entry) => !retained.has(entry),
       ),
     );
+  }
+
+  #releaseUnretained(resources, state) {
+    const retained = resourcesForState(state);
+    this.#release(
+      resources.filter((resource) => !retained.has(resource)),
+    );
+  }
+
+  #own(resource, kind) {
+    if (!resource || typeof resource !== "object") {
+      throw new TypeError(
+        `DWG renderer returned an invalid staged ${kind}`,
+      );
+    }
+    if (this.#resources.has(resource)) {
+      throw new TypeError(
+        `DWG renderer returned a reused staged ${kind}`,
+      );
+    }
+    this.#resources.add(resource);
+    return resource;
+  }
+
+  #releaseAfterFailure(error, resources, message) {
+    try {
+      this.#release(resources);
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        message,
+      );
+    }
+    throw error;
+  }
+
+  #recoverTransition(state, staged, error, message) {
+    const cleanupErrors = [];
+    let restored = false;
+    try {
+      this.#activate(state);
+      restored = true;
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (restored && staged.length > 0) {
+      try {
+        this.#release(staged);
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        message,
+      );
+    }
+    throw error;
   }
 
   #prepare(delta) {
@@ -1104,23 +1173,21 @@ export class DwgRenderDeltaAdapter {
       ] of packetOperations) {
         const byRenderId = new Map();
         for (const [index, line] of packetOperation.lines.entries()) {
-          const entry = synchronous(
-            this.#renderer.stageRenderDeltaLine({
-              key:
-                `${delta.deltaId}\u0000${operationId}` +
-                `\u0000${line.renderId}\u0000${index}`,
-              sceneId: line.sceneId,
-              batch: line.batch,
-              vertices: line.vertices,
-              instanceIndices: line.instanceIndices,
-            }),
-            "DWG renderer stageRenderDeltaLine",
+          const entry = this.#own(
+            synchronous(
+              this.#renderer.stageRenderDeltaLine({
+                key:
+                  `${delta.deltaId}\u0000${operationId}` +
+                  `\u0000${line.renderId}\u0000${index}`,
+                sceneId: line.sceneId,
+                batch: line.batch,
+                vertices: line.vertices,
+                instanceIndices: line.instanceIndices,
+              }),
+              "DWG renderer stageRenderDeltaLine",
+            ),
+            "line",
           );
-          if (!entry || typeof entry !== "object") {
-            throw new TypeError(
-              "DWG renderer returned an invalid staged line",
-            );
-          }
           staged.push(entry);
           const entries = byRenderId.get(line.renderId) ?? [];
           entries.push(entry);
@@ -1129,23 +1196,21 @@ export class DwgRenderDeltaAdapter {
         linesByOperation.set(operationId, byRenderId);
         const fillsByRenderId = new Map();
         for (const [index, fill] of packetOperation.fills.entries()) {
-          const entry = synchronous(
-            this.#renderer.stageRenderDeltaFill({
-              key:
-                `${delta.deltaId}\u0000${operationId}` +
-                `\u0000${fill.renderId}\u0000fill:${index}`,
-              sceneId: fill.sceneId,
-              batch: fill.batch,
-              vertices: fill.vertices,
-              instanceIndices: fill.instanceIndices,
-            }),
-            "DWG renderer stageRenderDeltaFill",
+          const entry = this.#own(
+            synchronous(
+              this.#renderer.stageRenderDeltaFill({
+                key:
+                  `${delta.deltaId}\u0000${operationId}` +
+                  `\u0000${fill.renderId}\u0000fill:${index}`,
+                sceneId: fill.sceneId,
+                batch: fill.batch,
+                vertices: fill.vertices,
+                instanceIndices: fill.instanceIndices,
+              }),
+              "DWG renderer stageRenderDeltaFill",
+            ),
+            "fill",
           );
-          if (!entry || typeof entry !== "object") {
-            throw new TypeError(
-              "DWG renderer returned an invalid staged fill",
-            );
-          }
           staged.push(entry);
           const entries =
             fillsByRenderId.get(fill.renderId) ?? [];
@@ -1155,23 +1220,21 @@ export class DwgRenderDeltaAdapter {
         fillsByOperation.set(operationId, fillsByRenderId);
         const pointsByRenderId = new Map();
         for (const [index, point] of packetOperation.points.entries()) {
-          const entry = synchronous(
-            this.#renderer.stageRenderDeltaPoint({
-              key:
-                `${delta.deltaId}\u0000${operationId}` +
-                `\u0000${point.renderId}\u0000point:${index}`,
-              sceneId: point.sceneId,
-              batch: point.batch,
-              vertices: point.vertices,
-              instanceIndices: point.instanceIndices,
-            }),
-            "DWG renderer stageRenderDeltaPoint",
+          const entry = this.#own(
+            synchronous(
+              this.#renderer.stageRenderDeltaPoint({
+                key:
+                  `${delta.deltaId}\u0000${operationId}` +
+                  `\u0000${point.renderId}\u0000point:${index}`,
+                sceneId: point.sceneId,
+                batch: point.batch,
+                vertices: point.vertices,
+                instanceIndices: point.instanceIndices,
+              }),
+              "DWG renderer stageRenderDeltaPoint",
+            ),
+            "point",
           );
-          if (!entry || typeof entry !== "object") {
-            throw new TypeError(
-              "DWG renderer returned an invalid staged point",
-            );
-          }
           staged.push(entry);
           const entries =
             pointsByRenderId.get(point.renderId) ?? [];
@@ -1181,22 +1244,20 @@ export class DwgRenderDeltaAdapter {
         pointsByOperation.set(operationId, pointsByRenderId);
         const textsByRenderId = new Map();
         for (const [index, text] of packetOperation.texts.entries()) {
-          const entry = synchronous(
-            this.#renderer.stageRenderDeltaText({
-              key:
-                `${delta.deltaId}\u0000${operationId}` +
-                `\u0000${text.renderId}\u0000text:${index}`,
-              sceneId: text.sceneId,
-              record: text.record,
-              byteLength: text.byteLength,
-            }),
-            "DWG renderer stageRenderDeltaText",
+          const entry = this.#own(
+            synchronous(
+              this.#renderer.stageRenderDeltaText({
+                key:
+                  `${delta.deltaId}\u0000${operationId}` +
+                  `\u0000${text.renderId}\u0000text:${index}`,
+                sceneId: text.sceneId,
+                record: text.record,
+                byteLength: text.byteLength,
+              }),
+              "DWG renderer stageRenderDeltaText",
+            ),
+            "text",
           );
-          if (!entry || typeof entry !== "object") {
-            throw new TypeError(
-              "DWG renderer returned an invalid staged text",
-            );
-          }
           staged.push(entry);
           const entries =
             textsByRenderId.get(text.renderId) ?? [];
@@ -1207,23 +1268,21 @@ export class DwgRenderDeltaAdapter {
         const transformsByRenderId = new Map();
         for (const [index, transform] of
           packetOperation.transforms.entries()) {
-          const entry = synchronous(
-            this.#renderer.stageRenderDeltaTransform({
-              key:
-                `${delta.deltaId}\u0000${operationId}` +
-                `\u0000${transform.renderId}` +
-                `\u0000transform:${index}`,
-              sceneId: transform.sceneId,
-              record: transform.record,
-              byteLength: transform.byteLength,
-            }),
-            "DWG renderer stageRenderDeltaTransform",
+          const entry = this.#own(
+            synchronous(
+              this.#renderer.stageRenderDeltaTransform({
+                key:
+                  `${delta.deltaId}\u0000${operationId}` +
+                  `\u0000${transform.renderId}` +
+                  `\u0000transform:${index}`,
+                sceneId: transform.sceneId,
+                record: transform.record,
+                byteLength: transform.byteLength,
+              }),
+              "DWG renderer stageRenderDeltaTransform",
+            ),
+            "transform",
           );
-          if (!entry || typeof entry !== "object") {
-            throw new TypeError(
-              "DWG renderer returned an invalid staged transform",
-            );
-          }
           staged.push(entry);
           const entries =
             transformsByRenderId.get(transform.renderId) ?? [];
@@ -1242,22 +1301,20 @@ export class DwgRenderDeltaAdapter {
           const [index, style] of
             packetOperation.styles.entries()
         ) {
-          const entry = synchronous(
-            this.#renderer.stageRenderDeltaStyle({
-              key:
-                `${delta.deltaId}\u0000${operationId}` +
-                `\u0000${style.renderId}\u0000style:${index}`,
-              sceneId: style.sceneId,
-              record: style.record,
-              byteLength: style.byteLength,
-            }),
-            "DWG renderer stageRenderDeltaStyle",
+          const entry = this.#own(
+            synchronous(
+              this.#renderer.stageRenderDeltaStyle({
+                key:
+                  `${delta.deltaId}\u0000${operationId}` +
+                  `\u0000${style.renderId}\u0000style:${index}`,
+                sceneId: style.sceneId,
+                record: style.record,
+                byteLength: style.byteLength,
+              }),
+              "DWG renderer stageRenderDeltaStyle",
+            ),
+            "style",
           );
-          if (!entry || typeof entry !== "object") {
-            throw new TypeError(
-              "DWG renderer returned an invalid staged style",
-            );
-          }
           staged.push(entry);
           const entries =
             stylesByRenderId.get(style.renderId) ?? [];
@@ -1267,8 +1324,11 @@ export class DwgRenderDeltaAdapter {
         stylesByOperation.set(operationId, stylesByRenderId);
       }
     } catch (error) {
-      this.#release(staged);
-      throw error;
+      this.#releaseAfterFailure(
+        error,
+        staged,
+        "DWG render delta staging failed and cleanup did not complete",
+      );
     }
     return {
       identities,
@@ -1408,14 +1468,38 @@ export class DwgRenderDeltaAdapter {
         "only one DWG render delta preview may be active",
       );
     }
+    const previous = this.#committed;
     const prepared = this.#prepare(delta);
     let next;
     try {
       next = this.#nextState(delta, prepared);
       this.#activate(next);
     } catch (error) {
-      this.#release(prepared.staged);
-      throw error;
+      this.#releaseAfterFailure(
+        error,
+        prepared.staged,
+        "DWG render delta activation failed and cleanup did not complete",
+      );
+    }
+    try {
+      if (preview) {
+        this.#releaseUnretained(prepared.staged, next);
+      } else {
+        this.#releaseUnretained(
+          [
+            ...resourcesForState(previous),
+            ...prepared.staged,
+          ],
+          next,
+        );
+      }
+    } catch (error) {
+      this.#recoverTransition(
+        previous,
+        prepared.staged,
+        error,
+        "DWG render delta apply failed and rollback did not complete",
+      );
     }
     if (preview) {
       if (this.#committed.revisionId === null) {
@@ -1428,9 +1512,7 @@ export class DwgRenderDeltaAdapter {
         state: next,
       });
     } else {
-      const previous = this.#committed;
       this.#committed = next;
-      this.#releaseDifference(previous, next);
     }
     return this.snapshot();
   }
@@ -1443,9 +1525,10 @@ export class DwgRenderDeltaAdapter {
       );
     }
     const previous = this.#committed;
-    this.#committed = this.#preview.state;
+    const preview = this.#preview.state;
+    this.#releaseDifference(previous, preview);
+    this.#committed = preview;
     this.#preview = null;
-    this.#releaseDifference(previous, this.#committed);
     return this.snapshot();
   }
 
@@ -1458,8 +1541,17 @@ export class DwgRenderDeltaAdapter {
     }
     const preview = this.#preview.state;
     this.#activate(this.#committed);
+    try {
+      this.#releaseDifference(preview, this.#committed);
+    } catch (error) {
+      this.#recoverTransition(
+        preview,
+        [],
+        error,
+        "DWG render delta rollback failed and preview restoration did not complete",
+      );
+    }
     this.#preview = null;
-    this.#releaseDifference(preview, this.#committed);
     return this.snapshot();
   }
 
@@ -1535,13 +1627,16 @@ export class DwgRenderDeltaAdapter {
       return false;
     }
     const state = this.#activeState();
-    synchronous(
-      this.#renderer.activateRenderDelta(),
-      "DWG renderer activateRenderDelta",
-    );
-    this.#release([...resourcesForState(state)]);
-    if (this.#preview) {
-      this.#releaseDifference(this.#committed, state);
+    this.#activate(emptyState());
+    try {
+      this.#release([...this.#resources]);
+    } catch (error) {
+      this.#recoverTransition(
+        state,
+        [],
+        error,
+        "DWG render delta disposal failed and active state restoration did not complete",
+      );
     }
     this.#preview = null;
     this.#committed = emptyState();

@@ -468,7 +468,11 @@ class FakeDeltaRenderer {
     this.resources = new Set();
     this.released = [];
     this.stageCount = 0;
+    this.activationCount = 0;
+    this.releaseCount = 0;
     this.failStageAt = null;
+    this.failActivationAt = null;
+    this.failReleaseAt = null;
   }
 
   stageRenderDeltaLine(line) {
@@ -522,6 +526,10 @@ class FakeDeltaRenderer {
     invalidatedDependencyIds = [],
     affectedWorldBounds = null,
   } = {}) {
+    this.activationCount += 1;
+    if (this.activationCount === this.failActivationAt) {
+      throw new Error("GPU activation failed");
+    }
     for (const [resourceKind, entries] of [
       ["line", lines],
       ["fill", fills],
@@ -558,6 +566,10 @@ class FakeDeltaRenderer {
   }
 
   releaseRenderDeltaResources(resources) {
+    this.releaseCount += 1;
+    if (this.releaseCount === this.failReleaseAt) {
+      throw new Error("GPU release failed");
+    }
     const active = new Set([
       ...this.active.lines,
       ...this.active.fills,
@@ -721,6 +733,165 @@ test("cleans staged GPU resources when an atomic packet fails", () => {
   assert.equal(adapter.snapshot().revisionId, null);
 
   controller.dispose();
+});
+
+test("releases every staged resource when atomic activation fails", () => {
+  const renderer = new FakeDeltaRenderer();
+  renderer.failActivationAt = 1;
+  const { delta, packet } = upsertDelta({
+    fills: [fillEntry()],
+    points: [pointEntry()],
+    texts: [textEntry()],
+  });
+  const { adapter, controller } = makeController(renderer, packet);
+  const baseline = controller.snapshot();
+
+  assert.throws(
+    () => controller.applyCommitted(delta),
+    /GPU activation failed/u,
+  );
+  assert.deepEqual(controller.snapshot(), baseline);
+  assert.equal(adapter.snapshot().revisionId, null);
+  assert.equal(renderer.active.revisionId, null);
+  assert.equal(renderer.resources.size, 0);
+  assert.equal(renderer.released.length, 4);
+  assert.equal(new Set(renderer.released).size, 4);
+
+  controller.dispose();
+});
+
+test("restores the committed state when superseded resource cleanup fails", () => {
+  const renderer = new FakeDeltaRenderer();
+  const first = upsertDelta();
+  const second = upsertDelta({
+    deltaId: "delta:dwg:cleanup-retry",
+    operationId: "operation:dwg:cleanup-retry",
+    fromRevisionId: REVISION_TWO,
+    toRevisionId: REVISION_THREE,
+    sequence: 2,
+  });
+  const { adapter, controller, packets } = makeController(
+    renderer,
+    first.packet,
+  );
+  packets.set(second.packet.payloadId, second.packet);
+  controller.applyCommitted(first.delta);
+  const committedLine = renderer.active.lines[0];
+  renderer.failReleaseAt = renderer.releaseCount + 1;
+
+  assert.throws(
+    () => controller.applyCommitted(second.delta),
+    /GPU release failed/u,
+  );
+  assert.equal(controller.snapshot().revisionId, REVISION_TWO);
+  assert.equal(adapter.snapshot().revisionId, REVISION_TWO);
+  assert.equal(renderer.active.revisionId, REVISION_TWO);
+  assert.equal(renderer.active.lines[0], committedLine);
+  assert.equal(renderer.resources.size, 1);
+
+  controller.applyCommitted(second.delta);
+  assert.equal(controller.snapshot().revisionId, REVISION_THREE);
+  assert.equal(adapter.snapshot().revisionId, REVISION_THREE);
+  assert.equal(renderer.active.revisionId, REVISION_THREE);
+  assert.equal(renderer.resources.size, 1);
+
+  controller.dispose();
+  assert.equal(renderer.resources.size, 0);
+  assert.equal(
+    new Set(renderer.released).size,
+    renderer.released.length,
+  );
+});
+
+test("restores an active preview when rollback cleanup fails", () => {
+  const renderer = new FakeDeltaRenderer();
+  const first = upsertDelta();
+  const second = upsertDelta({
+    deltaId: "delta:dwg:rollback-retry",
+    operationId: "operation:dwg:rollback-retry",
+    fromRevisionId: REVISION_TWO,
+    toRevisionId: REVISION_THREE,
+    sequence: 2,
+  });
+  const { adapter, controller, packets } = makeController(
+    renderer,
+    first.packet,
+  );
+  packets.set(second.packet.payloadId, second.packet);
+  controller.applyCommitted(first.delta);
+  controller.applyPreview(second.delta);
+  const previewLine = renderer.active.lines[0];
+  renderer.failReleaseAt = renderer.releaseCount + 1;
+
+  assert.throws(
+    () => controller.rollbackPreview(second.delta.deltaId),
+    /GPU release failed/u,
+  );
+  assert.equal(
+    controller.snapshot().previewId,
+    second.delta.deltaId,
+  );
+  assert.equal(adapter.snapshot().previewId, second.delta.deltaId);
+  assert.equal(renderer.active.revisionId, REVISION_THREE);
+  assert.equal(renderer.active.lines[0], previewLine);
+  assert.equal(renderer.resources.size, 2);
+
+  controller.rollbackPreview(second.delta.deltaId);
+  assert.equal(controller.snapshot().previewId, null);
+  assert.equal(adapter.snapshot().previewId, null);
+  assert.equal(renderer.active.revisionId, REVISION_TWO);
+  assert.equal(renderer.resources.size, 1);
+
+  controller.dispose();
+  assert.equal(renderer.resources.size, 0);
+  assert.equal(
+    new Set(renderer.released).size,
+    renderer.released.length,
+  );
+});
+
+test("keeps a preview promotable when committed cleanup fails", () => {
+  const renderer = new FakeDeltaRenderer();
+  const first = upsertDelta();
+  const second = upsertDelta({
+    deltaId: "delta:dwg:promotion-retry",
+    operationId: "operation:dwg:promotion-retry",
+    fromRevisionId: REVISION_TWO,
+    toRevisionId: REVISION_THREE,
+    sequence: 2,
+  });
+  const { adapter, controller, packets } = makeController(
+    renderer,
+    first.packet,
+  );
+  packets.set(second.packet.payloadId, second.packet);
+  controller.applyCommitted(first.delta);
+  controller.applyPreview(second.delta);
+  renderer.failReleaseAt = renderer.releaseCount + 1;
+
+  assert.throws(
+    () => controller.promotePreview(second.delta.deltaId),
+    /GPU release failed/u,
+  );
+  assert.equal(
+    controller.snapshot().previewId,
+    second.delta.deltaId,
+  );
+  assert.equal(adapter.snapshot().previewId, second.delta.deltaId);
+  assert.equal(renderer.active.revisionId, REVISION_THREE);
+  assert.equal(renderer.resources.size, 2);
+
+  controller.promotePreview(second.delta.deltaId);
+  assert.equal(controller.snapshot().previewId, null);
+  assert.equal(adapter.snapshot().previewId, null);
+  assert.equal(renderer.resources.size, 1);
+
+  controller.dispose();
+  assert.equal(renderer.resources.size, 0);
+  assert.equal(
+    new Set(renderer.released).size,
+    renderer.released.length,
+  );
 });
 
 test("stages a fill-only upsert and restores it on preview rollback", () => {
@@ -1171,7 +1342,19 @@ test("releases committed and preview resources together on disposal", () => {
   assert.equal(renderer.active.texts.length, 1);
   assert.equal(adapter.snapshot().previewId, second.delta.deltaId);
 
-  controller.dispose();
+  renderer.failReleaseAt = renderer.releaseCount + 1;
+  assert.throws(() => controller.dispose(), /GPU release failed/u);
+  assert.equal(controller.disposed, false);
+  assert.equal(adapter.snapshot().previewId, second.delta.deltaId);
+  assert.equal(renderer.active.revisionId, REVISION_THREE);
+  assert.equal(renderer.active.lines.length, 1);
+  assert.equal(renderer.active.fills.length, 1);
+  assert.equal(renderer.active.points.length, 1);
+  assert.equal(renderer.active.texts.length, 1);
+  assert.equal(renderer.resources.size, 8);
+
+  assert.equal(controller.dispose(), true);
+  assert.equal(controller.dispose(), false);
   assert.equal(renderer.resources.size, 0);
   assert.equal(renderer.active.lines.length, 0);
   assert.equal(renderer.active.fills.length, 0);
@@ -1179,6 +1362,7 @@ test("releases committed and preview resources together on disposal", () => {
   assert.equal(renderer.active.texts.length, 0);
   assert.equal(renderer.active.baseSuppressions.length, 0);
   assert.equal(renderer.released.length, 8);
+  assert.equal(new Set(renderer.released).size, 8);
 });
 
 test("keeps unchanged pick identities on the active renderer revision", () => {

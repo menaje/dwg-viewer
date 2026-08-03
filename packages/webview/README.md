@@ -32,8 +32,11 @@ handle과 fill·pattern·POINT·surface·WIPEOUT의 압축 identity-range sideca
 draw range만 제외합니다. Canvas text도 같은 source/handle suppression을
 적용하므로 preview rollback은 base를 다시 읽거나 GPU buffer를 복원하지
 않습니다. 같은 state가 native identity별 upsert/tombstone pick 상태도
-제공하며, source switch와 disposal은 staged 및 committed delta resource를
-모두 회수합니다.
+제공합니다. adapter는 renderer가 반환한 staged resource의 소유권을
+명시적으로 추적하고 commit/promotion/rollback cleanup이 실패하면 직전
+committed/preview renderer state를 다시 활성화하므로 같은 전이를 안전하게
+재시도할 수 있습니다. source switch와 idempotent disposal은 active 여부와
+무관하게 소유한 GPU/Canvas/instance resource를 정확히 한 번 회수합니다.
 
 The current decoded v6 packet is private to this package:
 

@@ -198,6 +198,11 @@ scene의 base cache를 보수적으로 제외한다. delta overlay는 계속 표
 cache resource를 파괴하거나 다시 쓰지 않으므로 preview rollback은 같은
 atomic state swap으로 즉시 원복되며, DWG 형식이 아닌 알 수 없는 dependency
 ID는 추측하지 않고 관찰 상태로만 보존한다.
+adapter는 renderer가 반환한 staged resource를 별도 소유 집합으로 추적한다.
+commit/promotion/rollback 중 superseded resource 회수가 실패하면 Core 상태를
+게시하기 전에 직전 committed 또는 preview renderer state를 다시 활성화한다.
+따라서 같은 전이를 재시도할 수 있고, source 전환과 idempotent disposal은
+active/committed/preview에 흩어진 소유 resource를 중복 없이 전부 회수한다.
 같은 atomic state에는 현재 revision과 native identity pick map도 포함된다.
 root/XREF overview, detail, exact-curve와 filled-object 인덱스는 후보를
 확정하기 전에 renderer의 현재 map을 조회하므로 tombstone, 대체된 base와
