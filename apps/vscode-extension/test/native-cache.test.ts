@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   chmod,
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
@@ -163,14 +164,13 @@ test("doctor report requires the adapter, cache, engine, and license contract", 
 
 test(
   "runs a bounded adapter self-diagnosis and rejects a timeout",
-  { skip: process.platform === "win32" },
   async (context) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "dwg-doctor-test-"));
     context.after(() => rm(root, { recursive: true, force: true }));
-    const adapterPath = path.join(root, "libredwg-adapter");
+    const adapterScript = path.join(root, "libredwg-adapter.cjs");
     await writeFile(
-      adapterPath,
-      `#!/usr/bin/env node
+      adapterScript,
+      `
 if (
   process.argv[2] !== "doctor" ||
   process.env.DWG_VIEWER_ADAPTER_PROTOCOL !== "dwg-engine-adapter/1" ||
@@ -195,16 +195,20 @@ if (process.env.DWG_DOCTOR_TEST_MODE === "slow") {
 }
 `,
     );
-    await chmod(adapterPath, 0o700);
 
-    const report = await diagnoseLibreDwgAdapter(adapterPath);
+    const report = await diagnoseLibreDwgAdapter(process.execPath, {
+      argumentPrefix: [adapterScript],
+    });
     assert.equal(report.engineVersion, "0.14");
     assert.equal(report.linkage, "static");
 
     process.env.DWG_DOCTOR_TEST_MODE = "slow";
     try {
       await assert.rejects(
-        diagnoseLibreDwgAdapter(adapterPath, { timeoutMs: 100 }),
+        diagnoseLibreDwgAdapter(process.execPath, {
+          argumentPrefix: [adapterScript],
+          timeoutMs: 100,
+        }),
         /ADAPTER_DOCTOR_TIMEOUT/u,
       );
     } finally {
@@ -238,18 +242,19 @@ test("resolves only an absolute executable adapter path", async (context) => {
 
 test(
   "publishes a bounded native preview before full conversion completes",
-  { skip: process.platform === "win32" },
   async (context) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "dwg-native-preview-"));
     context.after(() => rm(root, { recursive: true, force: true }));
-    const sourcePath = path.join(root, "drawing.dwg");
-    const outputPath = path.join(root, "drawing.cache");
-    const previewPath = path.join(root, "drawing.preview");
-    const adapterPath = path.join(root, "libredwg-adapter");
-    await writeFile(sourcePath, "drawing");
+    const unicodeRoot = path.join(root, "한글-é-e\u0301");
+    await mkdir(unicodeRoot);
+    const sourcePath = path.join(unicodeRoot, "도면.dwg");
+    const outputPath = path.join(unicodeRoot, "drawing.cache");
+    const previewPath = path.join(unicodeRoot, "drawing.preview");
+    const adapterScript = path.join(root, "libredwg-adapter.cjs");
+    await writeFile(sourcePath, "AC1015drawing");
     await writeFile(
-      adapterPath,
-      `#!/usr/bin/env node
+      adapterScript,
+      `
 const fs = require("node:fs");
 const output = process.argv[4];
 const preview = process.env.DWG_VIEWER_PREVIEW_PATH;
@@ -266,14 +271,15 @@ setTimeout(() => {
 }, 120);
 `,
     );
-    await chmod(adapterPath, 0o700);
 
     let previewCount = 0;
     await runLibreDwgAdapter({
-      adapterPath,
+      adapterPath: process.execPath,
+      argumentPrefix: [adapterScript],
       inputPath: sourcePath,
       outputPath,
       previewPath,
+      platform: "win32",
       signal: new AbortController().signal,
       async onPreview(preview) {
         previewCount++;
@@ -291,17 +297,18 @@ setTimeout(() => {
 
 test(
   "creates, reuses, rebuilds, and cancels native caches",
-  { skip: process.platform === "win32" },
   async (context) => {
     const root = await mkdtemp(path.join(os.tmpdir(), "dwg-native-cache-"));
     context.after(() => rm(root, { recursive: true, force: true }));
-    const sourcePath = path.join(root, "drawing.dwg");
-    const adapterPath = path.join(root, "libredwg-adapter");
-    const cacheRoot = path.join(root, "cache");
-    await writeFile(sourcePath, "fast");
+    const unicodeRoot = path.join(root, "한글-é-e\u0301");
+    await mkdir(unicodeRoot);
+    const sourcePath = path.join(unicodeRoot, "도면.dwg");
+    const adapterScript = path.join(root, "libredwg-adapter.cjs");
+    const cacheRoot = path.join(unicodeRoot, "cache");
+    await writeFile(sourcePath, "AC1015fast");
     await writeFile(
-      adapterPath,
-      `#!/usr/bin/env node
+      adapterScript,
+      `
 const fs = require("node:fs");
 const input = process.argv[3];
 const output = process.argv[4];
@@ -309,7 +316,15 @@ if (
   process.env.DWG_VIEWER_ADAPTER_PROTOCOL !== "dwg-engine-adapter/1" ||
   process.env.DWG_VIEWER_BENCHMARK_PHASE !== "convert"
 ) process.exit(12);
-const mode = fs.readFileSync(input, "utf8");
+const source = fs.readFileSync(input === "-" ? 0 : input, "utf8");
+if (
+  input === "-" &&
+  (
+    process.env.DWG_VIEWER_STDIN_SOURCE_SIZE !== String(Buffer.byteLength(source)) ||
+    process.env.DWG_VIEWER_STDIN_SOURCE_VERSION !== source.slice(0, 6)
+  )
+) process.exit(13);
+const mode = source.slice(6);
 fs.writeFileSync(output, "cache");
 const report = () => process.stdout.write(JSON.stringify({
   schema: "dwg-scene-cache/1",
@@ -321,11 +336,13 @@ else if (mode === "change") setTimeout(report, 300);
 else report();
 `,
     );
-    await chmod(adapterPath, 0o700);
 
     const manager = new SceneCacheManager(
       cacheRoot,
-      new LibreDwgNativeSceneEngine(adapterPath),
+      new LibreDwgNativeSceneEngine(process.execPath, {
+        argumentPrefix: [adapterScript],
+        platform: "win32",
+      }),
     );
     const unsupportedPhases: SceneEngineProgressPhase[] = [];
     await assert.rejects(
@@ -368,18 +385,18 @@ else report();
     });
     assert.equal(rebuilt.reused, false);
 
-    await writeFile(sourcePath, "change");
+    await writeFile(sourcePath, "AC1015change");
     const changedPhases: SceneEngineProgressPhase[] = [];
     const changedInput = manager.prepare(sourcePath, {
       signal: new AbortController().signal,
       onProgress: ({ phase }) => changedPhases.push(phase),
     });
     await new Promise((resolve) => setTimeout(resolve, 100));
-    await writeFile(sourcePath, "changed");
+    await writeFile(sourcePath, "AC1015changed");
     await assert.rejects(changedInput, /CACHE_INPUT_CHANGED/u);
     assert.equal(changedPhases.at(-1), "failed");
 
-    await writeFile(sourcePath, "slow");
+    await writeFile(sourcePath, "AC1015slow");
     const controller = new AbortController();
     const cancelledPhases: SceneEngineProgressPhase[] = [];
     const cancelled = manager.prepare(sourcePath, {

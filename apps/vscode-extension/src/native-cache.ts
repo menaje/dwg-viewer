@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, stat } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { access, open, stat } from "node:fs/promises";
 import path from "node:path";
 import {
   abortSceneEngineError,
@@ -212,6 +213,7 @@ export function parseLibreDwgDoctorReport(
 export interface DiagnoseAdapterOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  argumentPrefix?: readonly string[];
 }
 
 export async function diagnoseLibreDwgAdapter(
@@ -219,6 +221,7 @@ export async function diagnoseLibreDwgAdapter(
   {
     signal = new AbortController().signal,
     timeoutMs = DEFAULT_DOCTOR_TIMEOUT_MS,
+    argumentPrefix = [],
   }: DiagnoseAdapterOptions = {},
 ): Promise<LibreDwgDoctorReport> {
   if (signal.aborted) {
@@ -234,7 +237,7 @@ export async function diagnoseLibreDwgAdapter(
 
   let child;
   try {
-    child = spawn(adapterPath, ["doctor"], {
+    child = spawn(adapterPath, [...argumentPrefix, "doctor"], {
       env: {
         ...process.env,
         DWG_VIEWER_ADAPTER_PROTOCOL: ADAPTER_PROTOCOL,
@@ -284,7 +287,7 @@ export async function diagnoseLibreDwgAdapter(
   const onAbort = (): void => terminate();
   signal.addEventListener("abort", onAbort, { once: true });
 
-  child.stdout.on("data", (value: Buffer | string) => {
+  child.stdout!.on("data", (value: Buffer | string) => {
     if (outputError) {
       return;
     }
@@ -300,7 +303,7 @@ export async function diagnoseLibreDwgAdapter(
       terminate();
     }
   });
-  child.stderr.on("data", (value: Buffer | string) => {
+  child.stderr!.on("data", (value: Buffer | string) => {
     if (outputError) {
       return;
     }
@@ -367,9 +370,11 @@ export async function diagnoseLibreDwgAdapter(
 
 interface RunAdapterOptions {
   adapterPath: string;
+  argumentPrefix?: readonly string[];
   inputPath: string;
   outputPath: string;
   previewPath?: string;
+  platform?: NodeJS.Platform;
   signal: AbortSignal;
   onPhase?: (phase: "converting" | "validating") => void;
   onPreview?: (preview: {
@@ -395,11 +400,63 @@ function appendBounded(
   return nextBytes;
 }
 
+function windowsChildPath(
+  candidatePath: string,
+  workingDirectory: string,
+  label: string,
+): string {
+  const resolvedPath = path.resolve(candidatePath);
+  if (path.dirname(resolvedPath) !== path.resolve(workingDirectory)) {
+    throw new SceneEngineError(
+      "ADAPTER_PATH_ISOLATION_FAILED",
+      `Windows ${label} 경로가 변환 작업 디렉터리 밖에 있습니다.`,
+    );
+  }
+  return path.basename(resolvedPath);
+}
+
+async function windowsPipedInputMetadata(
+  inputPath: string,
+): Promise<{ size: bigint; version: string }> {
+  const handle = await open(inputPath, "r");
+  try {
+    const [metadata, header] = await Promise.all([
+      handle.stat({ bigint: true }),
+      (async () => {
+        const bytes = Buffer.alloc(6);
+        const { bytesRead } = await handle.read(bytes, 0, bytes.length, 0);
+        if (bytesRead !== bytes.length) {
+          throw new Error("short DWG header");
+        }
+        return bytes.toString("ascii");
+      })(),
+    ]);
+    if (
+      !metadata.isFile() ||
+      metadata.size <= 0n ||
+      !/^AC\d{4}$/u.test(header)
+    ) {
+      throw new Error("invalid DWG input metadata");
+    }
+    return { size: metadata.size, version: header };
+  } catch (error) {
+    throw new SceneEngineError(
+      "INPUT_METADATA_FAILED",
+      "Windows에서 도면 입력 스트림을 준비하지 못했습니다.",
+      { cause: error },
+    );
+  } finally {
+    await handle.close();
+  }
+}
+
 export async function runLibreDwgAdapter({
   adapterPath,
+  argumentPrefix = [],
   inputPath,
   outputPath,
   previewPath,
+  platform = process.platform,
   signal,
   onPhase,
   onPreview,
@@ -408,24 +465,65 @@ export async function runLibreDwgAdapter({
     throw abortSceneEngineError();
   }
 
+  const workingDirectory = path.dirname(outputPath);
+  let adapterInputPath = inputPath;
+  let adapterOutputPath = outputPath;
+  let adapterPreviewPath = previewPath;
+  let pipedInput:
+    | {
+        size: bigint;
+        version: string;
+      }
+    | undefined;
+  if (platform === "win32") {
+    pipedInput = await windowsPipedInputMetadata(inputPath);
+    adapterInputPath = "-";
+    adapterOutputPath = windowsChildPath(
+      outputPath,
+      workingDirectory,
+      "output",
+    );
+    adapterPreviewPath = previewPath
+      ? windowsChildPath(previewPath, workingDirectory, "preview")
+      : undefined;
+  }
+
   let child;
   try {
-    child = spawn(adapterPath, ["convert", inputPath, outputPath], {
-      env: {
-        ...process.env,
-        DWG_VIEWER_ADAPTER_PROTOCOL: ADAPTER_PROTOCOL,
-        DWG_VIEWER_BENCHMARK_PHASE: "convert",
-        ...(previewPath
-          ? {
-              DWG_VIEWER_PREVIEW_PATH: previewPath,
-              DWG_VIEWER_PREVIEW_READY_PATH: `${previewPath}.ready`,
-            }
-          : {}),
+    child = spawn(
+      adapterPath,
+      [
+        ...argumentPrefix,
+        "convert",
+        adapterInputPath,
+        adapterOutputPath,
+      ],
+      {
+        env: {
+          ...process.env,
+          DWG_VIEWER_ADAPTER_PROTOCOL: ADAPTER_PROTOCOL,
+          DWG_VIEWER_BENCHMARK_PHASE: "convert",
+          ...(pipedInput
+            ? {
+                DWG_VIEWER_STDIN_SOURCE_SIZE:
+                  pipedInput.size.toString(),
+                DWG_VIEWER_STDIN_SOURCE_VERSION:
+                  pipedInput.version,
+              }
+            : {}),
+          ...(adapterPreviewPath
+            ? {
+                DWG_VIEWER_PREVIEW_PATH: adapterPreviewPath,
+                DWG_VIEWER_PREVIEW_READY_PATH:
+                  `${adapterPreviewPath}.ready`,
+              }
+            : {}),
+        },
+        stdio: [pipedInput ? "pipe" : "ignore", "pipe", "pipe"],
+        windowsHide: true,
+        cwd: workingDirectory,
       },
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-      cwd: path.dirname(outputPath),
-    });
+    );
   } catch (error) {
     throw new SceneEngineError(
       "ADAPTER_START_FAILED",
@@ -443,6 +541,7 @@ export async function runLibreDwgAdapter({
   let terminationTimer: NodeJS.Timeout | undefined;
   let previewNotified = false;
   let previewCheck: Promise<void> | undefined;
+  let pipedInputBytes = 0n;
 
   const checkPreview = async (): Promise<void> => {
     if (
@@ -505,8 +604,46 @@ export async function runLibreDwgAdapter({
   };
   const onAbort = (): void => terminate();
   signal.addEventListener("abort", onAbort, { once: true });
+  const inputStream = pipedInput
+    ? createReadStream(inputPath)
+    : undefined;
+  if (inputStream) {
+    inputStream.on("data", (chunk: Buffer | string) => {
+      pipedInputBytes += BigInt(Buffer.byteLength(chunk));
+    });
+    inputStream.on("error", (error) => {
+      if (!outputError) {
+        outputError = new SceneEngineError(
+          "INPUT_READ_FAILED",
+          "Windows에서 도면 입력 스트림을 읽지 못했습니다.",
+          { cause: error },
+        );
+      }
+      terminate();
+    });
+    child.stdin?.on("error", (error: NodeJS.ErrnoException) => {
+      if (error.code !== "EPIPE" && !outputError) {
+        outputError = new SceneEngineError(
+          "INPUT_READ_FAILED",
+          "Windows 도면 입력 스트림 전송이 중단되었습니다.",
+          { cause: error },
+        );
+        terminate();
+      }
+    });
+    if (!child.stdin) {
+      inputStream.destroy();
+      outputError = new SceneEngineError(
+        "ADAPTER_START_FAILED",
+        "Windows 변환기의 입력 스트림을 열지 못했습니다.",
+      );
+      terminate();
+    } else {
+      inputStream.pipe(child.stdin);
+    }
+  }
 
-  child.stdout.on("data", (value: Buffer | string) => {
+  child.stdout!.on("data", (value: Buffer | string) => {
     if (outputError) {
       return;
     }
@@ -522,7 +659,7 @@ export async function runLibreDwgAdapter({
       terminate();
     }
   });
-  child.stderr.on("data", (value: Buffer | string) => {
+  child.stderr!.on("data", (value: Buffer | string) => {
     if (outputError) {
       return;
     }
@@ -553,6 +690,8 @@ export async function runLibreDwgAdapter({
     });
   });
 
+  inputStream?.destroy();
+  child.stdin?.destroy();
   if (previewTimer) {
     clearInterval(previewTimer);
   }
@@ -567,6 +706,12 @@ export async function runLibreDwgAdapter({
   }
   if (outputError) {
     throw outputError;
+  }
+  if (pipedInput && pipedInputBytes !== pipedInput.size) {
+    throw new SceneEngineError(
+      "INPUT_CHANGED",
+      "Windows 도면 입력 크기가 변환 중 변경되었습니다.",
+    );
   }
   if (result.error) {
     throw new SceneEngineError(
@@ -624,10 +769,18 @@ export const LIBREDWG_NATIVE_ENGINE_DESCRIPTOR = Object.freeze({
   }),
 }) satisfies SceneEngineDescriptor;
 
+interface NativeAdapterInvocation {
+  argumentPrefix?: readonly string[];
+  platform?: NodeJS.Platform;
+}
+
 export class LibreDwgNativeSceneEngine implements SceneEngine {
   readonly descriptor = LIBREDWG_NATIVE_ENGINE_DESCRIPTOR;
 
-  constructor(readonly adapterPath: string) {}
+  constructor(
+    readonly adapterPath: string,
+    private readonly invocation: NativeAdapterInvocation = {},
+  ) {}
 
   async snapshot(): Promise<SceneEngineSnapshot> {
     const metadata = await stat(this.adapterPath, { bigint: true });
@@ -670,9 +823,11 @@ export class LibreDwgNativeSceneEngine implements SceneEngine {
     };
     await runLibreDwgAdapter({
       adapterPath: this.adapterPath,
+      argumentPrefix: this.invocation.argumentPrefix,
       inputPath: sourcePath,
       outputPath,
       previewPath,
+      platform: this.invocation.platform,
       signal,
       onPhase: (phase) =>
         emit(phase === "converting" ? "parsing" : "validating"),

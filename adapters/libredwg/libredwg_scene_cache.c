@@ -34,7 +34,26 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+
+#if defined(_WIN32)
+#include <io.h>
+#include <windows.h>
+#define close _close
+#define fdopen _fdopen
+#define fileno _fileno
+#define fseeko _fseeki64
+#define ftello _ftelli64
+#define open _open
+#define unlink _unlink
+#ifndef O_BINARY
+#define O_BINARY _O_BINARY
+#endif
+typedef __int64 DwgViewerFileOffset;
+#else
 #include <unistd.h>
+#define O_BINARY 0
+typedef off_t DwgViewerFileOffset;
+#endif
 
 /*
  * LibreDWG's public dynapi text helper intentionally returns legacy TV
@@ -825,7 +844,7 @@ align_up (uint64_t value, uint64_t alignment)
 static int
 position (CacheWriter *writer, uint64_t *value)
 {
-  off_t result;
+  DwgViewerFileOffset result;
   if (writer->failed)
     return 0;
   result = ftello (writer->file);
@@ -844,7 +863,9 @@ seek_to (CacheWriter *writer, uint64_t value)
   if (writer->failed)
     return 0;
   if (value > (uint64_t)INT64_MAX
-      || fseeko (writer->file, (off_t)value, SEEK_SET) != 0)
+      || fseeko (
+             writer->file, (DwgViewerFileOffset)value, SEEK_SET)
+             != 0)
     {
       set_error (writer, "cannot seek in scene cache");
       return 0;
@@ -9750,6 +9771,54 @@ typedef struct
 static FILE *
 open_spatial_temp_file (CacheWriter *writer)
 {
+#if defined(_WIN32)
+  wchar_t temporary_directory[MAX_PATH + 1u];
+  wchar_t temporary_path[MAX_PATH + 1u];
+  DWORD directory_length;
+  HANDLE handle;
+  int descriptor;
+  FILE *file;
+  directory_length = GetTempPathW (
+      (DWORD)(sizeof (temporary_directory)
+              / sizeof (temporary_directory[0])),
+      temporary_directory);
+  if (!directory_length || directory_length > MAX_PATH
+      || !GetTempFileNameW (
+          temporary_directory, L"DWG", 0, temporary_path))
+    {
+      set_error (writer, "cannot create private spatial-sort storage");
+      return NULL;
+    }
+  handle = CreateFileW (
+      temporary_path, GENERIC_READ | GENERIC_WRITE, 0, NULL,
+      CREATE_ALWAYS,
+      FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE
+          | FILE_FLAG_SEQUENTIAL_SCAN,
+      NULL);
+  if (handle == INVALID_HANDLE_VALUE)
+    {
+      (void)DeleteFileW (temporary_path);
+      set_error (writer, "cannot secure private spatial-sort storage");
+      return NULL;
+    }
+  descriptor = _open_osfhandle (
+      (intptr_t)handle, _O_RDWR | _O_BINARY | _O_NOINHERIT);
+  if (descriptor < 0)
+    {
+      (void)CloseHandle (handle);
+      (void)DeleteFileW (temporary_path);
+      set_error (writer, "cannot secure private spatial-sort storage");
+      return NULL;
+    }
+  file = _fdopen (descriptor, "w+b");
+  if (!file)
+    {
+      (void)_close (descriptor);
+      set_error (writer, "cannot open private spatial-sort storage");
+      return NULL;
+    }
+  return file;
+#else
   FILE *file = tmpfile ();
   int descriptor;
   int flags;
@@ -9768,6 +9837,7 @@ open_spatial_temp_file (CacheWriter *writer)
       return NULL;
     }
   return file;
+#endif
 }
 
 static void
@@ -9906,11 +9976,24 @@ read_spatial_records (int descriptor, uint64_t index, size_t count,
     return 0;
   byte_offset = index * record_size;
   byte_count = count * sizeof (SpatialSegmentRecord);
+#if defined(_WIN32)
+  if (_lseeki64 (descriptor, (__int64)byte_offset, SEEK_SET) < 0)
+    return 0;
+#endif
   while (completed < byte_count)
     {
+#if defined(_WIN32)
+      size_t remaining = byte_count - completed;
+      unsigned int requested
+          = remaining > (size_t)INT_MAX ? (unsigned int)INT_MAX
+                                        : (unsigned int)remaining;
+      int result = _read (
+          descriptor, (uint8_t *)records + completed, requested);
+#else
       ssize_t result = pread (
           descriptor, (uint8_t *)records + completed,
           byte_count - completed, (off_t)(byte_offset + completed));
+#endif
       if (result < 0 && errno == EINTR)
         continue;
       if (result <= 0)
@@ -10669,7 +10752,9 @@ write_scene_preview (
   writer.error = error_message;
   writer.error_size = sizeof (error_message);
 
-  descriptor = open (output_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  descriptor
+      = open (output_path,
+              O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
   if (descriptor < 0)
     goto done;
   created = 1;
@@ -10760,7 +10845,8 @@ done:
 static int
 create_preview_ready_file (const char *path)
 {
-  int descriptor = open (path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  int descriptor
+      = open (path, O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
   if (descriptor < 0)
     return 0;
   if (close (descriptor) != 0)
@@ -10865,7 +10951,9 @@ libredwg_write_scene_cache (
           &writer, dwg, &tables, &overview, gpu_segment_count, &spatial))
     goto done;
 
-  descriptor = open (output_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+  descriptor
+      = open (output_path,
+              O_WRONLY | O_CREAT | O_EXCL | O_BINARY, 0600);
   if (descriptor < 0)
     {
       if (error_message && error_message_size)

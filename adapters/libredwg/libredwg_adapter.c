@@ -35,7 +35,22 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+
+#if defined(_WIN32)
+#include <io.h>
+#include <windows.h>
+#define close _close
+#define dup _dup
+#define dup2 _dup2
+#define open _open
+#define DWG_VIEWER_NULL_DEVICE "NUL"
+#ifndef STDERR_FILENO
+#define STDERR_FILENO 2
+#endif
+#else
 #include <unistd.h>
+#define DWG_VIEWER_NULL_DEVICE "/dev/null"
+#endif
 
 #if defined(__unix__) || defined(__APPLE__)
 #include <sys/resource.h>
@@ -277,6 +292,29 @@ elapsed_ms (const struct timespec *started, const struct timespec *ended)
   return (uint64_t)seconds * 1000u + (uint64_t)nanoseconds / 1000000u;
 }
 
+static int
+monotonic_now (struct timespec *value)
+{
+#if defined(_WIN32)
+  LARGE_INTEGER counter;
+  LARGE_INTEGER frequency;
+  int64_t seconds;
+  int64_t remainder;
+  if (!value || !QueryPerformanceFrequency (&frequency)
+      || frequency.QuadPart <= 0 || !QueryPerformanceCounter (&counter))
+    return -1;
+  seconds = counter.QuadPart / frequency.QuadPart;
+  remainder = counter.QuadPart % frequency.QuadPart;
+  value->tv_sec = (time_t)seconds;
+  value->tv_nsec
+      = (long)((remainder * INT64_C (1000000000))
+               / frequency.QuadPart);
+  return 0;
+#else
+  return clock_gettime (CLOCK_MONOTONIC, value);
+#endif
+}
+
 static uint64_t
 peak_rss_bytes (void)
 {
@@ -303,7 +341,7 @@ read_dwg_quietly (const char *path, Dwg_Data *dwg, unsigned int *error)
 
   if (saved_stderr < 0)
     return 0;
-  sink = open ("/dev/null", O_WRONLY);
+  sink = open (DWG_VIEWER_NULL_DEVICE, O_WRONLY);
   if (sink < 0)
     {
       close (saved_stderr);
@@ -808,7 +846,7 @@ inspect_dwg (const char *path)
 
   memset (&dwg, 0, sizeof (dwg));
   dwg.opts = 0;
-  if (clock_gettime (CLOCK_MONOTONIC, &started) != 0)
+  if (monotonic_now (&started) != 0)
     {
       fputs ("cannot start monotonic timer\n", stderr);
       return 1;
@@ -819,7 +857,7 @@ inspect_dwg (const char *path)
       fputs ("cannot isolate LibreDWG diagnostics\n", stderr);
       goto done;
     }
-  if (clock_gettime (CLOCK_MONOTONIC, &parsed) != 0)
+  if (monotonic_now (&parsed) != 0)
     {
       fputs ("cannot read monotonic timer\n", stderr);
       goto done;
@@ -912,7 +950,7 @@ inspect_dwg (const char *path)
   qsort (unknown_types.items, unknown_types.len, sizeof (CounterEntry),
          counter_compare);
   bounds = drawing_bounds (&dwg);
-  if (clock_gettime (CLOCK_MONOTONIC, &analyzed) != 0)
+  if (monotonic_now (&analyzed) != 0)
     {
       fputs ("cannot read monotonic timer\n", stderr);
       goto done;
@@ -1146,6 +1184,36 @@ json_hatch_fills (const LibreDwgHatchFillSummary *summary)
 }
 
 static int
+read_piped_source_metadata (uint64_t *source_size,
+                            char version_code[7])
+{
+  const char *size_text = getenv ("DWG_VIEWER_STDIN_SOURCE_SIZE");
+  const char *version_text
+      = getenv ("DWG_VIEWER_STDIN_SOURCE_VERSION");
+  char *end = NULL;
+  unsigned long long parsed_size;
+  size_t i;
+  if (!source_size || !version_code || !size_text || !version_text
+      || strlen (version_text) != 6u)
+    return 0;
+  errno = 0;
+  parsed_size = strtoull (size_text, &end, 10);
+  if (errno || !end || *end != '\0' || parsed_size == 0u)
+    return 0;
+  for (i = 0; i < 6u; i++)
+    {
+      if (version_text[i] < 0x20 || version_text[i] > 0x7e)
+        return 0;
+      version_code[i] = version_text[i];
+    }
+  version_code[6] = '\0';
+  if (!numeric_version_code (version_code))
+    return 0;
+  *source_size = (uint64_t)parsed_size;
+  return 1;
+}
+
+static int
 convert_dwg (const char *path, const char *output_path)
 {
   const char *preview_path = getenv ("DWG_VIEWER_PREVIEW_PATH");
@@ -1163,6 +1231,7 @@ convert_dwg (const char *path, const char *output_path)
   uint64_t write_ms;
   uint64_t total_ms;
   uint64_t peak_rss;
+  uint64_t source_size;
   unsigned int error;
   size_t i;
   int result = 1;
@@ -1175,20 +1244,32 @@ convert_dwg (const char *path, const char *output_path)
       preview_path = NULL;
       preview_ready_path = NULL;
     }
-  if (stat (path, &metadata) != 0 || !S_ISREG (metadata.st_mode)
-      || metadata.st_size < 0)
+  if (strcmp (path, "-") == 0)
     {
-      fputs ("input is not a readable regular file\n", stderr);
-      return 1;
+      if (!read_piped_source_metadata (&source_size, version_code))
+        {
+          fputs ("piped input metadata is invalid\n", stderr);
+          return 1;
+        }
     }
-  if (!read_version_code (path, version_code))
+  else
     {
-      fputs ("cannot read DWG version code\n", stderr);
-      return 1;
+      if (stat (path, &metadata) != 0 || !S_ISREG (metadata.st_mode)
+          || metadata.st_size < 0)
+        {
+          fputs ("input is not a readable regular file\n", stderr);
+          return 1;
+        }
+      if (!read_version_code (path, version_code))
+        {
+          fputs ("cannot read DWG version code\n", stderr);
+          return 1;
+        }
+      source_size = (uint64_t)metadata.st_size;
     }
   memset (&dwg, 0, sizeof (dwg));
   dwg.opts = 0;
-  if (clock_gettime (CLOCK_MONOTONIC, &started) != 0)
+  if (monotonic_now (&started) != 0)
     {
       fputs ("cannot start monotonic timer\n", stderr);
       return 1;
@@ -1198,7 +1279,7 @@ convert_dwg (const char *path, const char *output_path)
       fputs ("cannot isolate LibreDWG diagnostics\n", stderr);
       goto done;
     }
-  if (clock_gettime (CLOCK_MONOTONIC, &parsed) != 0)
+  if (monotonic_now (&parsed) != 0)
     {
       fputs ("cannot read monotonic timer\n", stderr);
       goto done;
@@ -1212,14 +1293,14 @@ convert_dwg (const char *path, const char *output_path)
           &dwg, output_path,
           preview_path && preview_ready_path ? preview_path : NULL,
           preview_path && preview_ready_path ? preview_ready_path : NULL,
-          (uint64_t)metadata.st_size, numeric_version_code (version_code),
+          source_size, numeric_version_code (version_code),
           &report, cache_error, sizeof (cache_error)))
     {
       fprintf (stderr, "LibreDWG scene-cache conversion failed: %s\n",
                cache_error[0] ? cache_error : "unknown writer error");
       goto done;
     }
-  if (clock_gettime (CLOCK_MONOTONIC, &written) != 0)
+  if (monotonic_now (&written) != 0)
     {
       fputs ("cannot read monotonic timer\n", stderr);
       goto done;
@@ -1233,7 +1314,7 @@ convert_dwg (const char *path, const char *output_path)
          "\",\"status\":\"ok\",",
          stdout);
   printf ("\"input\":{\"size_bytes\":%" PRIu64 "},",
-          (uint64_t)metadata.st_size);
+          source_size);
   printf ("\"cache\":{\"format_major\":%u,\"format_minor\":%u,"
           "\"size_bytes\":%" PRIu64 ",\"validated\":true,\"sections\":[",
           LIBREDWG_SCENE_CACHE_VERSION_MAJOR,

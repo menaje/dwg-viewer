@@ -119,6 +119,8 @@ test("keeps package and source preparation pins synchronized", async () => {
   assert.match(buildScript, /--exact-version="\$LIBREDWG_VERSION"/u);
   assert.match(buildScript, /static_library=.*libredwg\.a/u);
   assert.match(buildScript, /"\$static_library" -lm/u);
+  assert.match(buildScript, /MINGW\*.*MSYS\*.*CYGWIN\*/u);
+  assert.match(buildScript, /-static -static-libgcc/u);
   assert.match(buildScript, /"\$strip" "\$output"/u);
   assert.match(
     nativeEngineSource,
@@ -127,6 +129,42 @@ test("keeps package and source preparation pins synchronized", async () => {
       "u",
     ),
   );
+});
+
+test("uses native Windows isolation and a path-safe piped input contract", async () => {
+  const [adapterSource, sceneCacheSource, hostSource] = await Promise.all([
+    readFile(
+      path.join(import.meta.dirname, "libredwg_adapter.c"),
+      "utf8",
+    ),
+    readFile(
+      path.join(import.meta.dirname, "libredwg_scene_cache.c"),
+      "utf8",
+    ),
+    readFile(
+      path.join(
+        import.meta.dirname,
+        "..",
+        "..",
+        "apps",
+        "vscode-extension",
+        "src",
+        "native-cache.ts",
+      ),
+      "utf8",
+    ),
+  ]);
+  assert.match(adapterSource, /DWG_VIEWER_NULL_DEVICE "NUL"/u);
+  assert.match(adapterSource, /QueryPerformanceCounter/u);
+  assert.match(adapterSource, /DWG_VIEWER_STDIN_SOURCE_SIZE/u);
+  assert.match(adapterSource, /dwg_read_file \(path, dwg\)/u);
+  assert.match(sceneCacheSource, /CreateFileW/u);
+  assert.match(sceneCacheSource, /FILE_FLAG_DELETE_ON_CLOSE/u);
+  assert.match(sceneCacheSource, /_O_NOINHERIT/u);
+  assert.match(sceneCacheSource, /_lseeki64/u);
+  assert.match(hostSource, /adapterInputPath = "-"/u);
+  assert.match(hostSource, /windowsChildPath/u);
+  assert.match(hostSource, /createReadStream\(inputPath\)/u);
 });
 
 test("normalizes legacy inspection text before corpus metrics", async () => {
