@@ -144,6 +144,12 @@ existing layer, viewport and clip tests; removed entities redraw only their
 suppressed base ranges. Canvas text uses the same presentation, including
 removed-base recovery, while preserving source-layer visibility. A revision
 change clears stale product styling before a new presentation is accepted.
+Direct transform/style identities additionally partition a shared root/XREF
+block draw by packed INSERT occurrence handle. Unchanged occurrences keep the
+global style; an explicitly changed child resource or removed base range
+overrides the containing occurrence style. Canvas block text resolves the same
+precedence inside its occurrence loop, and source-hidden sparse styles are
+filtered before either renderer applies diff visibility.
 `ViewerSplitViewCameraController` now coordinates the before and after surfaces
 through two distinct synchronous adapters. It sends only a frozen logical 2D
 camera (`origin` and `worldHeight`), leaving each renderer to derive its own

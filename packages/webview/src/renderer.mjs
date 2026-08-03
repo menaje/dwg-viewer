@@ -1139,6 +1139,88 @@ function visibleRenderDeltaInstanceIndices(
     : EMPTY_INSTANCE_INDICES;
 }
 
+function renderDiffEntryForInstance(
+  state,
+  sceneId,
+  instances,
+  instanceIndex,
+) {
+  if (!state.active) {
+    return null;
+  }
+  const handle = instances.handles?.[instanceIndex];
+  if (typeof handle !== "bigint" || handle === 0n) {
+    return null;
+  }
+  return (
+    state.identityEntries.get(
+      renderDeltaIdentityKey(
+        sceneId,
+        Number(handle & 0xffff_ffffn),
+        Number(handle >> 32n),
+      ),
+    ) ?? null
+  );
+}
+
+function renderDiffInstanceGroups(
+  instanceIndices,
+  instances,
+  state,
+  sceneId,
+  fallbackStyle,
+  { forceStyle = false } = {},
+) {
+  const total = instanceIndices?.length ?? instances.count;
+  if (total === 0) {
+    return Object.freeze([]);
+  }
+  if (forceStyle || !state.active || !instances.handles) {
+    return Object.freeze([
+      Object.freeze({
+        instanceIndices,
+        style: fallbackStyle,
+      }),
+    ]);
+  }
+  const indicesByStyle = new Map([[fallbackStyle, []]]);
+  for (let index = 0; index < total; index += 1) {
+    const instanceIndex = instanceIndices?.[index] ?? index;
+    const style =
+      renderDiffEntryForInstance(
+        state,
+        sceneId,
+        instances,
+        instanceIndex,
+      )?.style ?? fallbackStyle;
+    let selected = indicesByStyle.get(style);
+    if (!selected) {
+      selected = [];
+      indicesByStyle.set(style, selected);
+    }
+    selected.push(instanceIndex);
+  }
+  const selectedGroups = [...indicesByStyle.entries()].filter(
+    ([, selected]) => selected.length > 0,
+  );
+  if (selectedGroups.length === 1) {
+    return Object.freeze([
+      Object.freeze({
+        instanceIndices,
+        style: selectedGroups[0][0],
+      }),
+    ]);
+  }
+  return Object.freeze(
+    selectedGroups.map(([style, selected]) =>
+      Object.freeze({
+        instanceIndices: Uint32Array.from(selected),
+        style,
+      }),
+    ),
+  );
+}
+
 function overlayCameraTransform(anchor, camera, width, height) {
   if (
     !anchor ||
@@ -5765,6 +5847,7 @@ export class WebGlLineRenderer {
       primitive = this.gl.LINES,
       vertexRanges = null,
       diffStyle = null,
+      diffSceneId = ROOT_RENDER_DELTA_SCENE_ID,
       diffLocations = null,
       removedVertexRanges = Object.freeze([]),
       removedDiffStyle = null,
@@ -5807,191 +5890,234 @@ export class WebGlLineRenderer {
       (this.renderDiffOverlayState.active
         ? this.renderDiffOverlayState.statusStyles.removed
         : NATIVE_RENDER_DIFF_STYLE);
+    const instanceGroups = renderDiffInstanceGroups(
+      visibleInstanceIndices,
+      instances,
+      this.renderDiffOverlayState,
+      diffSceneId,
+      effectiveDiffStyle,
+      {
+        forceStyle:
+          diffStyle !== null ||
+          renderDelta ||
+          renderDeltaFill ||
+          renderDeltaPoint,
+      },
+    );
     const rangeGroups = [];
-    if (effectiveDiffStyle.visible && ranges.length > 0) {
+    if (ranges.length > 0) {
       rangeGroups.push(
-        Object.freeze({ ranges, style: effectiveDiffStyle }),
+        Object.freeze({ ranges, forceStyle: false }),
       );
     }
-    if (
-      effectiveRemovedDiffStyle.visible &&
-      removedVertexRanges.length > 0
-    ) {
+    if (removedVertexRanges.length > 0) {
       rangeGroups.push(
         Object.freeze({
           ranges: removedVertexRanges,
           style: effectiveRemovedDiffStyle,
+          forceStyle: true,
         }),
       );
     }
-    if (totalInstances === 0 || rangeGroups.length === 0) {
+    if (
+      totalInstances === 0 ||
+      rangeGroups.length === 0 ||
+      !instanceGroups.some((instanceGroup) =>
+        rangeGroups.some(
+          (rangeGroup) =>
+            (
+              rangeGroup.forceStyle
+                ? rangeGroup.style
+                : instanceGroup.style
+            ).visible,
+        ),
+      )
+    ) {
       return;
     }
     gl.bindVertexArray(resource.vertexArray);
-    for (
-      let firstInstance = 0;
-      firstInstance < totalInstances;
-      firstInstance += MAX_INSTANCES_PER_DRAW
-    ) {
-      const instanceCount = Math.min(
-        MAX_INSTANCES_PER_DRAW,
-        totalInstances - firstInstance,
-      );
-      const packed = this.instanceScratchView(instanceCount);
-      const packedIntegers = new Uint32Array(
-        packed.buffer,
-        packed.byteOffset,
-        packed.length,
-      );
-      for (let index = 0; index < instanceCount; index += 1) {
-        const matrixIndex =
-          visibleInstanceIndices?.[firstInstance + index] ??
-          firstInstance + index;
-        if (matrixIndex >= instances.count) {
-          throw new Error(
-            `GPU batch ${batch.id} references an invalid instance index`,
-          );
-        }
-        const transform = renderDeltaInstanceTransform(
-          this.renderDeltaTransformIndexesByGraph.get(
-            instanceGraph,
-          ),
-          instances,
-          matrixIndex,
-        );
-        const style = renderDeltaInstanceStyle(
-          styleIndex,
-          instances,
-          matrixIndex,
-        );
-        batchRelativeInstanceMatrix(
-          transform?.matrix ?? instances.data,
-          batch.origin,
-          camera.origin,
-          transform ? 0 : matrixIndex * 16,
-          packed,
-          index * INSTANCE_VALUES,
-        );
-        packed[index * INSTANCE_VALUES + 16] =
-          instances.maskBases?.[matrixIndex] ?? 0;
-        const clipId = instances.clipIds?.[matrixIndex] ?? 0;
-        const visibilityRow =
-          instances.visibilityRows?.[matrixIndex] ?? 0;
-        if (
-          clipId < 0 ||
-          clipId > MAX_PACKED_CLIP_ID ||
-          visibilityRow < 0 ||
-          visibilityRow >= MAX_VISIBILITY_ROWS
-        ) {
-          throw new RangeError(
-            "instance clip or viewport visibility index exceeds its packed range",
-          );
-        }
-        packed[index * INSTANCE_VALUES + 17] =
-          clipId + visibilityRow * (1 << CLIP_ID_BITS);
-        packedIntegers[index * INSTANCE_VALUES + 18] =
-          style?.color ??
-          instances.colors?.[matrixIndex] ??
-          ((2 << 30) | 7);
-        packedIntegers[index * INSTANCE_VALUES + 19] =
-          style?.layerIndex ??
-          instances.layerIndices?.[matrixIndex] ??
-          0xffffffff;
-        packed[index * INSTANCE_VALUES + 20] =
-          style?.opacity ?? instances.opacities?.[matrixIndex] ?? 1;
-        packed[index * INSTANCE_VALUES + 21] =
-          style?.lineWeight ??
-          instances.lineWeights?.[matrixIndex] ??
-          -3;
-        packedIntegers[index * INSTANCE_VALUES + 22] =
-          style?.linetypeCode ??
-          instances.linetypeCodes?.[matrixIndex] ??
-          2;
+    for (const instanceGroup of instanceGroups) {
+      const groupRangeStyles = rangeGroups
+        .map((rangeGroup) =>
+          Object.freeze({
+            ranges: rangeGroup.ranges,
+            style: rangeGroup.forceStyle
+              ? rangeGroup.style
+              : instanceGroup.style,
+          }),
+        )
+        .filter(({ style }) => style.visible);
+      if (groupRangeStyles.length === 0) {
+        continue;
       }
-      gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
-      gl.bufferData(gl.ARRAY_BUFFER, packed, gl.DYNAMIC_DRAW);
-      this.instanceBufferBytes = packed.byteLength;
-      this.peakInstanceBufferBytes = Math.max(
-        this.peakInstanceBufferBytes,
-        packed.byteLength,
-      );
-      metrics.instanceUploadBytes += packed.byteLength;
-      metrics.maximumInstanceBufferBytes = Math.max(
-        metrics.maximumInstanceBufferBytes,
-        packed.byteLength,
-      );
-      for (const group of rangeGroups) {
-        if (effectiveDiffLocations) {
-          this.bindRenderDiffStyle(
-            effectiveDiffLocations,
-            group.style,
+      const groupInstanceIndices = instanceGroup.instanceIndices;
+      const groupInstances =
+        groupInstanceIndices?.length ?? instances.count;
+      for (
+        let firstInstance = 0;
+        firstInstance < groupInstances;
+        firstInstance += MAX_INSTANCES_PER_DRAW
+      ) {
+        const instanceCount = Math.min(
+          MAX_INSTANCES_PER_DRAW,
+          groupInstances - firstInstance,
+        );
+        const packed = this.instanceScratchView(instanceCount);
+        const packedIntegers = new Uint32Array(
+          packed.buffer,
+          packed.byteOffset,
+          packed.length,
+        );
+        for (let index = 0; index < instanceCount; index += 1) {
+          const matrixIndex =
+            groupInstanceIndices?.[firstInstance + index] ??
+            firstInstance + index;
+          if (matrixIndex >= instances.count) {
+            throw new Error(
+              `GPU batch ${batch.id} references an invalid instance index`,
+            );
+          }
+          const transform = renderDeltaInstanceTransform(
+            this.renderDeltaTransformIndexesByGraph.get(
+              instanceGraph,
+            ),
+            instances,
+            matrixIndex,
           );
+          const style = renderDeltaInstanceStyle(
+            styleIndex,
+            instances,
+            matrixIndex,
+          );
+          batchRelativeInstanceMatrix(
+            transform?.matrix ?? instances.data,
+            batch.origin,
+            camera.origin,
+            transform ? 0 : matrixIndex * 16,
+            packed,
+            index * INSTANCE_VALUES,
+          );
+          packed[index * INSTANCE_VALUES + 16] =
+            instances.maskBases?.[matrixIndex] ?? 0;
+          const clipId = instances.clipIds?.[matrixIndex] ?? 0;
+          const visibilityRow =
+            instances.visibilityRows?.[matrixIndex] ?? 0;
+          if (
+            clipId < 0 ||
+            clipId > MAX_PACKED_CLIP_ID ||
+            visibilityRow < 0 ||
+            visibilityRow >= MAX_VISIBILITY_ROWS
+          ) {
+            throw new RangeError(
+              "instance clip or viewport visibility index exceeds its packed range",
+            );
+          }
+          packed[index * INSTANCE_VALUES + 17] =
+            clipId + visibilityRow * (1 << CLIP_ID_BITS);
+          packedIntegers[index * INSTANCE_VALUES + 18] =
+            style?.color ??
+            instances.colors?.[matrixIndex] ??
+            ((2 << 30) | 7);
+          packedIntegers[index * INSTANCE_VALUES + 19] =
+            style?.layerIndex ??
+            instances.layerIndices?.[matrixIndex] ??
+            0xffffffff;
+          packed[index * INSTANCE_VALUES + 20] =
+            style?.opacity ?? instances.opacities?.[matrixIndex] ?? 1;
+          packed[index * INSTANCE_VALUES + 21] =
+            style?.lineWeight ??
+            instances.lineWeights?.[matrixIndex] ??
+            -3;
+          packedIntegers[index * INSTANCE_VALUES + 22] =
+            style?.linetypeCode ??
+            instances.linetypeCodes?.[matrixIndex] ??
+            2;
         }
-        for (const range of group.ranges) {
-          gl.drawArraysInstanced(
-            primitive,
-            range.firstVertex,
-            range.vertexCount,
-            instanceCount,
-          );
-          metrics.drawCalls += 1;
-          metrics.submittedInstances += instanceCount;
-          metrics.submittedVertices +=
-            range.vertexCount * instanceCount;
-          if (detail) {
-            metrics.detailDrawCalls += 1;
-            metrics.detailSubmittedVertices +=
-              range.vertexCount * instanceCount;
+        gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, packed, gl.DYNAMIC_DRAW);
+        this.instanceBufferBytes = packed.byteLength;
+        this.peakInstanceBufferBytes = Math.max(
+          this.peakInstanceBufferBytes,
+          packed.byteLength,
+        );
+        metrics.instanceUploadBytes += packed.byteLength;
+        metrics.maximumInstanceBufferBytes = Math.max(
+          metrics.maximumInstanceBufferBytes,
+          packed.byteLength,
+        );
+        for (const group of groupRangeStyles) {
+          if (effectiveDiffLocations) {
+            this.bindRenderDiffStyle(
+              effectiveDiffLocations,
+              group.style,
+            );
           }
-          if (fill) {
-            metrics.hatchFillDrawCalls += 1;
-            metrics.hatchFillSubmittedVertices +=
+          for (const range of group.ranges) {
+            gl.drawArraysInstanced(
+              primitive,
+              range.firstVertex,
+              range.vertexCount,
+              instanceCount,
+            );
+            metrics.drawCalls += 1;
+            metrics.submittedInstances += instanceCount;
+            metrics.submittedVertices +=
               range.vertexCount * instanceCount;
-          }
-          if (pattern) {
-            metrics.hatchPatternDrawCalls += 1;
-            metrics.hatchPatternSubmittedVertices +=
-              range.vertexCount * instanceCount;
-          }
-          if (point) {
-            metrics.pointDrawCalls += 1;
-            metrics.pointSubmittedVertices +=
-              range.vertexCount * instanceCount;
-          }
-          if (solidFill) {
-            metrics.solidFillDrawCalls += 1;
-            metrics.solidFillSubmittedVertices +=
-              range.vertexCount * instanceCount;
-          }
-          if (solidOutline) {
-            metrics.solidOutlineDrawCalls += 1;
-            metrics.solidOutlineSubmittedVertices +=
-              range.vertexCount * instanceCount;
-          }
-          if (wipeoutMask) {
-            metrics.wipeoutMaskDrawCalls += 1;
-            metrics.wipeoutMaskSubmittedVertices +=
-              range.vertexCount * instanceCount;
-          }
-          if (curveRefinement) {
-            metrics.curveRefinementDrawCalls += 1;
-            metrics.curveRefinementSubmittedVertices +=
-              range.vertexCount * instanceCount;
-          }
-          if (renderDelta) {
-            metrics.renderDeltaDrawCalls += 1;
-            metrics.renderDeltaSubmittedVertices +=
-              range.vertexCount * instanceCount;
-          }
-          if (renderDeltaFill) {
-            metrics.renderDeltaFillDrawCalls += 1;
-            metrics.renderDeltaFillSubmittedVertices +=
-              range.vertexCount * instanceCount;
-          }
-          if (renderDeltaPoint) {
-            metrics.renderDeltaPointDrawCalls += 1;
-            metrics.renderDeltaPointSubmittedVertices +=
-              range.vertexCount * instanceCount;
+            if (detail) {
+              metrics.detailDrawCalls += 1;
+              metrics.detailSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
+            if (fill) {
+              metrics.hatchFillDrawCalls += 1;
+              metrics.hatchFillSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
+            if (pattern) {
+              metrics.hatchPatternDrawCalls += 1;
+              metrics.hatchPatternSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
+            if (point) {
+              metrics.pointDrawCalls += 1;
+              metrics.pointSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
+            if (solidFill) {
+              metrics.solidFillDrawCalls += 1;
+              metrics.solidFillSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
+            if (solidOutline) {
+              metrics.solidOutlineDrawCalls += 1;
+              metrics.solidOutlineSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
+            if (wipeoutMask) {
+              metrics.wipeoutMaskDrawCalls += 1;
+              metrics.wipeoutMaskSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
+            if (curveRefinement) {
+              metrics.curveRefinementDrawCalls += 1;
+              metrics.curveRefinementSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
+            if (renderDelta) {
+              metrics.renderDeltaDrawCalls += 1;
+              metrics.renderDeltaSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
+            if (renderDeltaFill) {
+              metrics.renderDeltaFillDrawCalls += 1;
+              metrics.renderDeltaFillSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
+            if (renderDeltaPoint) {
+              metrics.renderDeltaPointDrawCalls += 1;
+              metrics.renderDeltaPointSubmittedVertices +=
+                range.vertexCount * instanceCount;
+            }
           }
         }
       }
@@ -6634,6 +6760,7 @@ export class WebGlLineRenderer {
             camera,
             metrics,
             {
+              diffSceneId: scene.id,
               instanceIndices:
                 externalInstanceIndices.get(scene)?.get(batch) ?? null,
               vertexRanges: this.renderDeltaLineRanges(
@@ -6676,6 +6803,7 @@ export class WebGlLineRenderer {
             metrics,
             {
               detail: true,
+              diffSceneId: scene.id,
               firstVertex: 0,
               instanceIndices: candidate.instanceIndices,
               vertexRanges: this.renderDeltaLineRanges(

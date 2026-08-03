@@ -321,6 +321,23 @@ function identityRangesFor(vertexCount, handle = 0x2an) {
   );
 }
 
+function sharedBlockInstances(handles = [0x2an, 0x2bn]) {
+  const data = new Float64Array(handles.length * 16);
+  for (let index = 0; index < handles.length; index += 1) {
+    data.set(identityMat4(), index * 16);
+    data[index * 16 + 12] = index * 0.25;
+  }
+  return Object.freeze({
+    data,
+    measurementData: new Float64Array(data),
+    handles: new BigUint64Array(handles),
+    clipIds: new Uint32Array(handles.length),
+    visibilityRows: new Uint32Array(handles.length),
+    count: handles.length,
+    length: handles.length,
+  });
+}
+
 test("limits fitted bounds and packs camera-relative INSERT clips", () => {
   const clipNodes = [
     createClipNode(1, 0, [
@@ -1021,6 +1038,298 @@ test("styles unchanged, removed, and modified line ranges atomically", () => {
     revisionId: "revision:diff:3",
   });
   assert.equal(renderer.renderDiffOverlaySnapshot().active, false);
+  renderer.releaseRenderDeltaResources([staged]);
+  renderer.dispose();
+});
+
+test("styles shared block INSERT occurrences without losing removed children", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const transform = normalizedRenderDeltaTransformRecord({
+    matrix: translatedTransformMatrix(0.1, 0, 0),
+  });
+  const renderer = new WebGlLineRenderer(canvas, {
+    maximumRenderDeltaTransformBytes:
+      transform.buffer.byteLength,
+  });
+  const instances = sharedBlockInstances();
+  const blockBatch = {
+    ...batch({
+      id: 0,
+      kind: GpuLineBatchKind.BlockDefinition,
+      lodLevel: 0,
+      firstVertex: 0,
+    }),
+    blockIndex: 1,
+  };
+  const first = renderer.renderOverview({
+    batches: [blockBatch],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: {
+      instancesByBlock: new Map([[1, instances]]),
+      insertsByOwner: new Map(),
+    },
+    vertices: lineVerticesForHandles([0x99n]),
+  });
+  const staged = renderer.stageRenderDeltaTransform({
+    key: "delta:transform\u0000dwg:root:2A",
+    record: transform.record,
+    byteLength: transform.buffer.byteLength,
+  });
+  const revisionId = "revision:diff:insert-occurrence";
+  renderer.activateRenderDelta({
+    revisionId,
+    transforms: [staged],
+  });
+  renderer.activateRenderDiffOverlay({
+    revisionId,
+    visibilityRule: "intersect-source",
+    statusStyles: renderDiffStyles(),
+    entries: [
+      {
+        status: "modified",
+        identity: {
+          sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+          handleLow: 0x2a,
+          handleHigh: 0,
+        },
+        lines: [],
+        fills: [],
+        points: [],
+        texts: [],
+        transforms: [staged],
+        styles: [],
+      },
+    ],
+  });
+  const splitDrawCount = calls.drawArraysInstanced.length;
+  const splitOpacityCount = calls.uniform1f.length;
+  const splitColorCount = calls.uniform3f.length;
+  const split = renderer.redraw(first.camera);
+
+  assert.deepEqual(
+    calls.drawArraysInstanced.slice(splitDrawCount),
+    [
+      { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+      { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+    ],
+  );
+  assert.deepEqual(
+    calls.uniform1f
+      .slice(splitOpacityCount)
+      .filter(({ name }) => name === "u_diffOpacity")
+      .map(({ value }) => value),
+    [0.35, 0.8],
+  );
+  assert.deepEqual(
+    calls.uniform3f
+      .slice(splitColorCount)
+      .filter(({ name }) => name === "u_diffColor")
+      .map(({ value }) => value),
+    [[0xd2 / 255, 0x99 / 255, 0x22 / 255]],
+  );
+  assert.equal(split.submittedInstances, 2);
+
+  renderer.clearRenderDiffOverlay();
+  renderer.activateRenderDelta({
+    revisionId,
+    transforms: [staged],
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x99,
+        handleHigh: 0,
+      },
+    ],
+  });
+  const hiddenModifiedStyles = renderDiffStyles();
+  hiddenModifiedStyles.modified = {
+    ...hiddenModifiedStyles.modified,
+    visible: false,
+  };
+  renderer.activateRenderDiffOverlay({
+    revisionId,
+    visibilityRule: "intersect-source",
+    statusStyles: hiddenModifiedStyles,
+    entries: [
+      {
+        status: "removed",
+        identity: {
+          sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+          handleLow: 0x99,
+          handleHigh: 0,
+        },
+        lines: [],
+        fills: [],
+        points: [],
+        texts: [],
+        transforms: [],
+        styles: [],
+      },
+      {
+        status: "modified",
+        identity: {
+          sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+          handleLow: 0x2a,
+          handleHigh: 0,
+        },
+        lines: [],
+        fills: [],
+        points: [],
+        texts: [],
+        transforms: [staged],
+        styles: [],
+      },
+    ],
+  });
+  const removedDrawCount = calls.drawArraysInstanced.length;
+  const removedOpacityCount = calls.uniform1f.length;
+  const removedColorCount = calls.uniform3f.length;
+  renderer.redraw(first.camera);
+
+  assert.deepEqual(
+    calls.drawArraysInstanced.slice(removedDrawCount),
+    [
+      { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+      { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+    ],
+  );
+  assert.deepEqual(
+    calls.uniform1f
+      .slice(removedOpacityCount)
+      .filter(({ name }) => name === "u_diffOpacity")
+      .map(({ value }) => value),
+    [1, 1],
+  );
+  assert.deepEqual(
+    calls.uniform3f
+      .slice(removedColorCount)
+      .filter(({ name }) => name === "u_diffColor")
+      .map(({ value }) => value),
+    [
+      [0xf8 / 255, 0x51 / 255, 0x49 / 255],
+      [0xf8 / 255, 0x51 / 255, 0x49 / 255],
+    ],
+  );
+
+  renderer.clearRenderDiffOverlay();
+  renderer.activateRenderDelta({
+    revisionId,
+    transforms: [staged],
+  });
+  const restoredDrawCount = calls.drawArraysInstanced.length;
+  renderer.redraw(first.camera);
+  assert.deepEqual(
+    calls.drawArraysInstanced.slice(restoredDrawCount),
+    [{ mode: gl.LINES, first: 0, count: 2, instances: 2 }],
+  );
+
+  renderer.activateRenderDelta();
+  renderer.releaseRenderDeltaResources([staged]);
+  renderer.dispose();
+});
+
+test("does not reveal a source-hidden modified INSERT occurrence", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const hidden = normalizedRenderDeltaStyleRecord({
+    visible: false,
+  });
+  const renderer = new WebGlLineRenderer(canvas, {
+    maximumRenderDeltaStyleBytes: hidden.buffer.byteLength,
+  });
+  const instances = sharedBlockInstances();
+  const blockBatch = {
+    ...batch({
+      id: 0,
+      kind: GpuLineBatchKind.BlockDefinition,
+      lodLevel: 0,
+      firstVertex: 0,
+    }),
+    blockIndex: 1,
+  };
+  const first = renderer.renderOverview({
+    batches: [blockBatch],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: {
+      instancesByBlock: new Map([[1, instances]]),
+      insertsByOwner: new Map(),
+    },
+    vertices: lineVerticesForHandles([0x99n]),
+  });
+  const staged = renderer.stageRenderDeltaStyle({
+    key: "delta:style-hidden\u0000dwg:root:2A",
+    record: hidden.record,
+    byteLength: hidden.buffer.byteLength,
+  });
+  const revisionId = "revision:diff:hidden-insert";
+  renderer.activateRenderDelta({
+    revisionId,
+    styles: [staged],
+  });
+  renderer.activateRenderDiffOverlay({
+    revisionId,
+    visibilityRule: "intersect-source",
+    statusStyles: renderDiffStyles(),
+    entries: [
+      {
+        status: "modified",
+        identity: {
+          sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+          handleLow: 0x2a,
+          handleHigh: 0,
+        },
+        lines: [],
+        fills: [],
+        points: [],
+        texts: [],
+        transforms: [],
+        styles: [staged],
+      },
+    ],
+  });
+  const drawCount = calls.drawArraysInstanced.length;
+  const opacityCount = calls.uniform1f.length;
+  const colorCount = calls.uniform3f.length;
+  const metrics = renderer.redraw(first.camera);
+
+  assert.deepEqual(
+    calls.drawArraysInstanced.slice(drawCount),
+    [{ mode: gl.LINES, first: 0, count: 2, instances: 1 }],
+  );
+  assert.deepEqual(
+    calls.uniform1f
+      .slice(opacityCount)
+      .filter(({ name }) => name === "u_diffOpacity")
+      .map(({ value }) => value),
+    [0.35],
+  );
+  assert.deepEqual(
+    calls.uniform3f
+      .slice(colorCount)
+      .filter(({ name }) => name === "u_diffColor"),
+    [],
+  );
+  assert.equal(metrics.submittedInstances, 1);
+
+  renderer.clearRenderDiffOverlay();
+  renderer.activateRenderDelta();
   renderer.releaseRenderDeltaResources([staged]);
   renderer.dispose();
 });
@@ -2327,6 +2636,45 @@ test("draws independently cached XREF overview and detail geometry", () => {
   renderer.setExternalDetailSelections("xref-1", [
     { batch: externalDetail, instanceIndices: null },
   ]);
+  const diffRevisionId = "revision:diff:xref-insert";
+  renderer.activateRenderDelta({
+    revisionId: diffRevisionId,
+  });
+  renderer.activateRenderDiffOverlay({
+    revisionId: diffRevisionId,
+    visibilityRule: "intersect-source",
+    statusStyles: renderDiffStyles(),
+    entries: [
+      {
+        status: "modified",
+        identity: {
+          sceneId: "xref-1",
+          handleLow: 0x2c,
+          handleHigh: 0,
+        },
+        lines: [],
+        fills: [],
+        points: [],
+        texts: [],
+        transforms: [],
+        styles: [],
+      },
+    ],
+  });
+  const xrefDiffColorCount = calls.uniform3f.length;
+  renderer.redraw(external.camera);
+  assert.deepEqual(
+    calls.uniform3f
+      .slice(xrefDiffColorCount)
+      .filter(({ name }) => name === "u_diffColor")
+      .map(({ value }) => value),
+    [
+      [0xd2 / 255, 0x99 / 255, 0x22 / 255],
+      [0xd2 / 255, 0x99 / 255, 0x22 / 255],
+    ],
+  );
+  renderer.clearRenderDiffOverlay();
+  renderer.activateRenderDelta();
   const externalFill = renderer.stageRenderDeltaFill({
     key: "delta:xref-fill\u0000dwg:xref-1:2A",
     sceneId: "xref-1",

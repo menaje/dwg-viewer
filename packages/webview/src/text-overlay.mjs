@@ -1222,10 +1222,18 @@ export class CanvasTextOverlay {
     );
   }
 
-  renderDiffStyleForText(textIndex, record) {
+  renderDiffEntryForInstance(instances, instanceIndex) {
+    if (!this.renderDiffOverlay.active) {
+      return null;
+    }
+    const handle = instances.handles?.[instanceIndex];
+    if (typeof handle !== "bigint" || handle === 0n) {
+      return null;
+    }
     return (
-      this.renderDiffEntryForText(textIndex, record)?.style ??
-      this.renderDiffOverlay.statusStyles.unchanged
+      this.renderDiffOverlay.identityEntries.get(
+        textDiffIdentityKey(this.sourceId, handle),
+      ) ?? null
     );
   }
 
@@ -1251,14 +1259,6 @@ export class CanvasTextOverlay {
         textIndex,
         record,
       );
-      if (
-        (
-          renderDiffEntry?.style ??
-          this.renderDiffOverlay.statusStyles.unchanged
-        ).visible === false
-      ) {
-        continue;
-      }
       if (
         !this.textEntities.isRenderDelta(textIndex) &&
         ((this.renderDeltaSuppressedHandles.has(record.handle) &&
@@ -1303,6 +1303,18 @@ export class CanvasTextOverlay {
             instanceIndex,
           )?.visible === false
         ) {
+          continue;
+        }
+        const renderDiffStyle =
+          (
+            renderDiffEntry ??
+            this.renderDiffEntryForInstance(
+              instances,
+              instanceIndex,
+            )
+          )?.style ??
+          this.renderDiffOverlay.statusStyles.unchanged;
+        if (renderDiffStyle.visible === false) {
           continue;
         }
         const instanceMatrix = renderDeltaInstanceMatrix(
@@ -1513,12 +1525,6 @@ export class CanvasTextOverlay {
         textIndex,
         record,
       );
-      const renderDiffStyle =
-        renderDiffEntry?.style ??
-        this.renderDiffOverlay.statusStyles.unchanged;
-      if (renderDiffStyle.visible === false) {
-        continue;
-      }
       if (
         !this.textEntities.isRenderDelta(textIndex) &&
         ((this.renderDeltaSuppressedHandles.has(record.handle) &&
@@ -1565,6 +1571,18 @@ export class CanvasTextOverlay {
           instanceIndex,
         );
         if (style?.visible === false) {
+          continue;
+        }
+        const renderDiffStyle =
+          (
+            renderDiffEntry ??
+            this.renderDiffEntryForInstance(
+              instances,
+              instanceIndex,
+            )
+          )?.style ??
+          this.renderDiffOverlay.statusStyles.unchanged;
+        if (renderDiffStyle.visible === false) {
           continue;
         }
         const instanceLayerIndex =

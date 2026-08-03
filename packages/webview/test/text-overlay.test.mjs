@@ -468,6 +468,188 @@ test("tints modified text and redraws removed base text without revealing hidden
   overlay.dispose();
 });
 
+test("styles block text per INSERT occurrence and keeps source-hidden text hidden", async () => {
+  const scene = await textScene();
+  const secondInsert = Object.freeze({
+    ...scene.metadata.inserts[1],
+    index: scene.metadata.inserts.length,
+    handle: 0xcbn,
+    insertPoint: [15, 0, 0],
+  });
+  const instanceGraph = buildInstanceGraph(
+    scene.metadata.blocks,
+    [...scene.metadata.inserts, secondInsert],
+  );
+  const instances = instanceGraph.instancesByBlock.get(2);
+  assert.deepEqual([...instances.handles], [0xcan, 0xcbn]);
+  const sourceText = normalizedRenderDeltaTextRecord({
+    handle: "130",
+    ownerHandle: "66",
+    value: "A",
+    insertionPoint: [0, 0, 0],
+    alignmentPoint: [0, 0, 0],
+    height: 0.5,
+  }).record;
+  const textEntities = Object.freeze({
+    length: 1,
+    get(index) {
+      if (index !== 0) {
+        throw new RangeError("text entity index is out of range");
+      }
+      return sourceText;
+    },
+  });
+  const canvas = fakeCanvas();
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities,
+    blocks: scene.metadata.blocks,
+    layers: scene.metadata.layers,
+    instanceGraph,
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+    sourceId: "root",
+  });
+  const transform = normalizedRenderDeltaTransformRecord({
+    blockIndex: 2,
+    handle: 0xcan,
+    matrix: translatedTransformMatrix(
+      instances.data[12],
+      instances.data[13],
+      0,
+    ),
+  });
+  const transformEntry = Object.freeze({
+    resourceKind: "transform",
+    sceneId: "root",
+    record: transform.record,
+    byteLength: transform.buffer.byteLength,
+  });
+  const unchanged = Object.freeze({
+    color: null,
+    opacity: 0.35,
+    visible: true,
+  });
+  const modified = Object.freeze({
+    color: "#d29922",
+    opacity: 0.8,
+    visible: true,
+  });
+  const modifiedEntry = Object.freeze({
+    status: "modified",
+    style: modified,
+  });
+  const diffOverlay = Object.freeze({
+    active: true,
+    statusStyles: Object.freeze({ unchanged }),
+    resourceEntries: new WeakMap([
+      [transformEntry, modifiedEntry],
+    ]),
+    identityEntries: new Map([
+      ["root\u00000:202", modifiedEntry],
+    ]),
+  });
+  const firstX = instances.data[12];
+  const secondX = instances.data[16 + 12];
+  const firstY = instances.data[13];
+  const secondY = instances.data[16 + 13];
+  const occurrenceCamera = {
+    origin: [
+      (firstX + secondX) * 0.5,
+      (firstY + secondY) * 0.5,
+      0,
+    ],
+    worldWidth: Math.max(Math.abs(firstX - secondX) + 20, 20),
+    worldHeight: Math.max(Math.abs(firstY - secondY) + 15, 15),
+  };
+
+  overlay.setRenderDeltaState({
+    transforms: [transformEntry],
+    diffOverlay,
+  });
+  const styled = overlay.redraw(
+    occurrenceCamera,
+    scene.metadata.layers.map(() => true),
+  );
+  const amber = "rgba(210, 153, 34, 0.8)";
+  assert.equal(styled.visibleOccurrences, 2);
+  assert.equal(
+    canvas.calls.fillStyles.filter((value) => value === amber).length,
+    1,
+  );
+
+  const hiddenStyle = normalizedRenderDeltaStyleRecord({
+    blockIndex: 2,
+    handle: 0xcan,
+    visible: false,
+  });
+  const hiddenStyleEntry = Object.freeze({
+    resourceKind: "style",
+    sceneId: "root",
+    record: hiddenStyle.record,
+    byteLength: hiddenStyle.buffer.byteLength,
+  });
+  const amberCount = canvas.calls.fillStyles.filter(
+    (value) => value === amber,
+  ).length;
+  overlay.setRenderDeltaState({
+    styles: [hiddenStyleEntry],
+    diffOverlay: Object.freeze({
+      ...diffOverlay,
+      resourceEntries: new WeakMap([
+        [hiddenStyleEntry, modifiedEntry],
+      ]),
+    }),
+  });
+  const hidden = overlay.redraw(
+    occurrenceCamera,
+    scene.metadata.layers.map(() => true),
+  );
+  assert.equal(hidden.visibleOccurrences, 1);
+  assert.equal(
+    canvas.calls.fillStyles.filter((value) => value === amber).length,
+    amberCount,
+  );
+  assert.deepEqual(
+    overlay.findTextOccurrence("130").point,
+    [secondX, secondY, instances.data[16 + 14]],
+  );
+
+  const invisibleModified = Object.freeze({
+    status: "modified",
+    style: Object.freeze({
+      ...modified,
+      visible: false,
+    }),
+  });
+  overlay.setRenderDeltaState({
+    diffOverlay: Object.freeze({
+      active: true,
+      statusStyles: Object.freeze({ unchanged }),
+      resourceEntries: new WeakMap(),
+      identityEntries: new Map([
+        ["root\u00000:202", invisibleModified],
+      ]),
+    }),
+  });
+  const filtered = overlay.redraw(
+    occurrenceCamera,
+    scene.metadata.layers.map(() => true),
+  );
+  assert.equal(filtered.visibleOccurrences, 1);
+  assert.deepEqual(
+    overlay.findTextOccurrence("130").point,
+    [secondX, secondY, instances.data[16 + 14]],
+  );
+
+  overlay.setRenderDeltaState();
+  const restored = overlay.redraw(
+    occurrenceCamera,
+    scene.metadata.layers.map(() => true),
+  );
+  assert.equal(restored.visibleOccurrences, 2);
+  overlay.dispose();
+});
+
 test("moves block text through a sparse instance transform", async () => {
   const scene = await textScene();
   const overlay = new CanvasTextOverlay(fakeCanvas(), {

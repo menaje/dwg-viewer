@@ -134,6 +134,13 @@ layout tabs on hover, focus or an explicit click.
   state on preview rollback. Tombstoned, replaced, dependency-invalidated,
   transformed-stale and hidden-style base candidates fail closed while native
   Canvas text delta hits resolve as upserts.
+- Applies diff presentation to direct INSERT transform/style identities by
+  partitioning only the packed root/XREF occurrence indices for a shared block
+  draw. Unchanged occurrences retain the global unchanged style, a changed
+  child resource or removed base range takes precedence over its containing
+  INSERT style, and source-hidden occurrences remain hidden. WebGL geometry and
+  Canvas block text use the same native-handle rule without cloning block
+  vertices.
 - Supports anchored wheel/button zoom, pointer pan and fitted-view reset.
 - Keeps byte-budgeted detail streaming active while zooming out so switching
   to the sampled overview cannot abruptly remove visible objects.

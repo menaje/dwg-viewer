@@ -448,7 +448,7 @@ test("keeps package versions and producer compatibility manifest aligned", async
   );
   assert.equal(
     manifest.components.diffOverlay,
-    "bounded-revision-bound-status-style-policy-with-dwg-line-fill-point-canvas-text-presentation-source-intersected-visibility-and-retryable-application",
+    "bounded-revision-bound-status-style-policy-with-dwg-line-fill-point-canvas-text-and-shared-insert-occurrence-presentation-source-intersected-visibility-child-precedence-and-retryable-application",
   );
   assert.equal(
     manifest.components.splitViewCamera,

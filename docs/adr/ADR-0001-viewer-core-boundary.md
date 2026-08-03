@@ -230,7 +230,11 @@ source geometry를 다시 노출하지 않는다. renderer adapter 적용은 동
 line/fill/point/text resource와 native handle에 연결한다. WebGL shader는 기존
 layer/viewport/clip 판정 뒤에만 상태 tint와 opacity를 적용하고, removed는
 억제된 base range 중 해당 handle만 다시 그린다. Canvas text도 같은 정책을
-적용하되 source-hidden text를 다시 노출하지 않는다.
+적용하되 source-hidden text를 다시 노출하지 않는다. direct transform/style
+identity는 root/XREF shared block의 packed INSERT occurrence index만 상태별로
+분할한다. 명시적인 child resource와 removed base range가 containing INSERT
+상태보다 우선하며, Canvas block text도 occurrence loop에서 같은 precedence를
+사용하므로 block geometry를 복제하지 않는다.
 `ViewerSplitViewCameraController`는 서로 다른 before/after surface adapter에
 불변의 논리 2D 카메라만 전달한다. 각 surface의 revision, scene, GPU/detail
 state와 canvas 비율은 공유하지 않으며 renderer가 자신의 `worldWidth`를
@@ -249,8 +253,8 @@ selection/measurement overlay, generic render data model의 물리적 package
 이동은 남아 있다. 일반 Viewer UI도 toolbar/result lifecycle부터 이동했으며
 layer/layout panel composition은 이후 단계다. #30의 실제 cross-repository
 `ConiServiceSource` qualification과 #27의 nested block dependency
-recomputation, nested INSERT transform/style diff highlight, semantic panel
-hook, 실제 split composition 및 대형 도면 qualification은 남아 있다.
+recomputation, semantic panel hook, 실제 split composition 및 대형 도면
+qualification은 남아 있다.
 제품 진입점을
 먼저 runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
 private message를 Core API로 승격하지 않고 진행한다.
