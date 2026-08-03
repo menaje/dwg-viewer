@@ -45,6 +45,43 @@ const WIDTHS = Object.freeze([
   Object.freeze({ label: "narrow", editorWidth: 520 }),
 ]);
 const FRAME_TIMEOUT_MS = 120_000;
+const MEASUREMENT_UNITS = new Set([
+  "도면 단위",
+  "in",
+  "ft",
+  "mi",
+  "mm",
+  "cm",
+  "m",
+  "km",
+  "µin",
+  "mil",
+  "yd",
+  "Å",
+  "nm",
+  "µm",
+  "dm",
+  "dam",
+  "hm",
+  "Gm",
+  "AU",
+  "ly",
+  "pc",
+  "US ft",
+  "US in",
+  "US yd",
+  "US mi",
+]);
+const MEASUREMENT_NUMBER =
+  "-?(?:\\d{1,3}(?:,\\d{3})*|\\d+)(?:\\.\\d+)?";
+const MEASUREMENT_LENGTH_PATTERN = new RegExp(
+  `^(${MEASUREMENT_NUMBER}) (.+)$`,
+  "u",
+);
+const MEASUREMENT_ANGLE_PATTERN = new RegExp(
+  `^${MEASUREMENT_NUMBER}°$`,
+  "u",
+);
 
 function requireValue(values, index, option) {
   const value = values[index + 1];
@@ -233,6 +270,93 @@ export function canvasPointIsUnobstructed(
   );
 }
 
+function exactRows(rows, requiredLabels, label) {
+  if (!Array.isArray(rows)) {
+    throw new Error(`${label} rows are missing`);
+  }
+  const result = new Map();
+  for (const row of rows) {
+    if (
+      !Array.isArray(row) ||
+      row.length !== 2 ||
+      typeof row[0] !== "string" ||
+      typeof row[1] !== "string" ||
+      result.has(row[0])
+    ) {
+      throw new Error(`${label} has invalid rows`);
+    }
+    result.set(row[0], row[1]);
+  }
+  for (const required of requiredLabels) {
+    if (!result.has(required)) {
+      throw new Error(`${label} is missing ${required}`);
+    }
+  }
+  return result;
+}
+
+function measurementLength(value, label) {
+  const match = MEASUREMENT_LENGTH_PATTERN.exec(value);
+  if (!match || !MEASUREMENT_UNITS.has(match[2])) {
+    throw new Error(`${label} is not a numeric measurement with a DWG unit`);
+  }
+  return Object.freeze({ value: match[1], unit: match[2] });
+}
+
+export function parseCoordinateMeasurementRows(rows) {
+  const values = exactRows(rows, ["X", "Y", "Z", "스냅"], "coordinate");
+  const coordinates = ["X", "Y", "Z"].map((axis) =>
+    measurementLength(values.get(axis), axis),
+  );
+  if (
+    coordinates.some(
+      (coordinate) => coordinate.unit !== coordinates[0].unit,
+    )
+  ) {
+    throw new Error("coordinate measurement units are inconsistent");
+  }
+  const snap = values.get("스냅").trim();
+  if (!snap) {
+    throw new Error("coordinate snap label is empty");
+  }
+  return Object.freeze({
+    unit: coordinates[0].unit,
+    values: Object.freeze({
+      x: values.get("X"),
+      y: values.get("Y"),
+      z: values.get("Z"),
+      snap,
+    }),
+  });
+}
+
+export function parseDistanceMeasurementRows(rows) {
+  const values = exactRows(
+    rows,
+    ["거리", "ΔX", "ΔY", "ΔZ", "각도"],
+    "distance",
+  );
+  const lengths = ["거리", "ΔX", "ΔY", "ΔZ"].map((field) =>
+    measurementLength(values.get(field), field),
+  );
+  if (lengths.some((length) => length.unit !== lengths[0].unit)) {
+    throw new Error("distance measurement units are inconsistent");
+  }
+  if (!MEASUREMENT_ANGLE_PATTERN.test(values.get("각도"))) {
+    throw new Error("distance angle is not numeric");
+  }
+  return Object.freeze({
+    unit: lengths[0].unit,
+    values: Object.freeze({
+      distance: values.get("거리"),
+      deltaX: values.get("ΔX"),
+      deltaY: values.get("ΔY"),
+      deltaZ: values.get("ΔZ"),
+      angle: values.get("각도"),
+    }),
+  });
+}
+
 async function surfaceSnapshot(frame) {
   return frame.evaluate(() => {
     const snapshot = (selector) => {
@@ -364,6 +488,14 @@ async function resultSnapshot(frame) {
       "",
     content:
       (await frame.locator("[data-review-content]").innerText()).trim(),
+    rows: await frame
+      .locator("[data-review-content] > div")
+      .evaluateAll((elements) =>
+        elements.map((element) => [
+          element.children[0]?.textContent?.trim() ?? "",
+          element.children[1]?.textContent?.trim() ?? "",
+        ]),
+      ),
   };
 }
 
@@ -383,12 +515,19 @@ async function findTwoMeasurementPoints(frame) {
     }
     await canvas.click({ position });
     const result = await resultSnapshot(frame);
-    if (
-      result?.title === "점 좌표" &&
-      result.content.includes("스냅") &&
-      !points.some((entry) => entry.content === result.content)
-    ) {
-      points.push({ position, content: result.content });
+    if (result?.title === "점 좌표") {
+      const measurement = parseCoordinateMeasurementRows(result.rows);
+      if (
+        !points.some(
+          (entry) => entry.content === result.content,
+        )
+      ) {
+        points.push({
+          position,
+          content: result.content,
+          measurement,
+        });
+      }
       if (points.length === 2) {
         break;
       }
@@ -418,9 +557,16 @@ async function qualifyReviewInteractions(frame) {
   await frame.locator("#drawing").click({ position: points[1].position });
   const distance = await resultSnapshot(frame);
   assert.equal(distance?.title, "두 점 거리");
-  for (const label of ["거리", "ΔX", "ΔY", "ΔZ", "각도"]) {
-    assert.ok(distance.content.includes(label));
-  }
+  const distanceMeasurement = parseDistanceMeasurementRows(
+    distance.rows,
+  );
+  assert.equal(
+    points.every(
+      (point) =>
+        point.measurement.unit === distanceMeasurement.unit,
+    ),
+    true,
+  );
 
   await frame.locator('[data-review-action="fit"]').click();
   assert.match(
@@ -435,6 +581,11 @@ async function qualifyReviewInteractions(frame) {
     coordinate: true,
     distance: true,
     distanceFields: ["distance", "deltaX", "deltaY", "deltaZ", "angle"],
+    measurementUnit: distanceMeasurement.unit,
+    coordinateValues: points.map(
+      (point) => point.measurement.values,
+    ),
+    distanceValues: distanceMeasurement.values,
     fit: true,
     clear: true,
     observedSnapLabels: points.map((point) => {

@@ -8,6 +8,8 @@ import test from "node:test";
 import {
   canvasPointIsUnobstructed,
   parseWindowsUiArguments,
+  parseCoordinateMeasurementRows,
+  parseDistanceMeasurementRows,
   rectIsContained,
   WINDOWS_UI_CLEANUP_OPTIONS,
   WINDOWS_UI_EXTENSION_ID,
@@ -120,6 +122,69 @@ test("skips measurement points covered by floating viewer tools", () => {
       () => canvas,
     ),
     true,
+  );
+});
+
+test("accepts numeric coordinate and distance rows with one DWG unit", () => {
+  assert.deepEqual(
+    parseCoordinateMeasurementRows([
+      ["X", "1,234.5 mm"],
+      ["Y", "-20 mm"],
+      ["Z", "0 mm"],
+      ["스냅", "끝점"],
+    ]),
+    {
+      unit: "mm",
+      values: {
+        x: "1,234.5 mm",
+        y: "-20 mm",
+        z: "0 mm",
+        snap: "끝점",
+      },
+    },
+  );
+  assert.deepEqual(
+    parseDistanceMeasurementRows([
+      ["거리", "5 도면 단위"],
+      ["ΔX", "3 도면 단위"],
+      ["ΔY", "4 도면 단위"],
+      ["ΔZ", "0 도면 단위"],
+      ["각도", "53.1301°"],
+    ]),
+    {
+      unit: "도면 단위",
+      values: {
+        distance: "5 도면 단위",
+        deltaX: "3 도면 단위",
+        deltaY: "4 도면 단위",
+        deltaZ: "0 도면 단위",
+        angle: "53.1301°",
+      },
+    },
+  );
+});
+
+test("rejects nonnumeric or inconsistent measurement evidence", () => {
+  assert.throws(
+    () =>
+      parseDistanceMeasurementRows([
+        ["거리", "five mm"],
+        ["ΔX", "3 mm"],
+        ["ΔY", "4 mm"],
+        ["ΔZ", "0 mm"],
+        ["각도", "53°"],
+      ]),
+    /numeric measurement/u,
+  );
+  assert.throws(
+    () =>
+      parseCoordinateMeasurementRows([
+        ["X", "1 mm"],
+        ["Y", "2 cm"],
+        ["Z", "0 mm"],
+        ["스냅", "끝점"],
+      ]),
+    /units are inconsistent/u,
   );
 });
 
