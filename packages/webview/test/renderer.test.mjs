@@ -251,6 +251,27 @@ function deltaFillVertices() {
   });
 }
 
+function deltaPointVertices(vertexCount = 1) {
+  const buffer = new ArrayBuffer(vertexCount * 32);
+  const view = new DataView(buffer);
+  for (let vertex = 0; vertex < vertexCount; vertex += 1) {
+    const offset = vertex * 32;
+    view.setFloat32(offset, vertex + 0.5, true);
+    view.setFloat32(offset + 4, 0.5, true);
+    view.setUint32(offset + 12, 0, true);
+    view.setUint32(offset + 16, (2 << 30) | 2, true);
+    view.setFloat32(offset + 20, 0, true);
+    view.setFloat32(offset + 24, 4, true);
+    view.setUint32(offset + 28, 0, true);
+  }
+  return Object.freeze({
+    buffer,
+    byteLength: buffer.byteLength,
+    vertexCount,
+    recordSize: 32,
+  });
+}
+
 function identityRangesFor(vertexCount, handle = 0x2an) {
   return packRenderIdentityRanges(
     vertexCount === 0
@@ -941,7 +962,144 @@ test("atomically overlays delta fills and restores base fills", () => {
   renderer.dispose();
 });
 
-test("shares one render delta GPU budget across lines and fills", () => {
+test("atomically overlays delta points and restores base points", () => {
+  const { gl, calls } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const overviewBatch = {
+    ...batch({
+      id: 0,
+      kind: GpuLineBatchKind.ModelOverview,
+      lodLevel: 0,
+      firstVertex: 0,
+    }),
+    vertexCount: 4,
+    bounds: { min: [0, 0, 0], max: [2, 1, 0] },
+  };
+  const first = renderer.renderOverview({
+    batches: [overviewBatch],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: { instancesByBlock: new Map() },
+    vertices: lineVerticesForHandles([0x2an, 0x2bn]),
+  });
+  const empty = {
+    batches: [],
+    vertices: {
+      buffer: new ArrayBuffer(0),
+      byteLength: 0,
+      vertexCount: 0,
+    },
+    identityRanges: identityRangesFor(0),
+  };
+  renderer.setPrimitiveMeshes({
+    points: {
+      batches: [
+        {
+          ...batch({
+            id: 22,
+            kind: GpuLineBatchKind.ModelDetail,
+            lodLevel: 1,
+            firstVertex: 0,
+          }),
+          vertexCount: 2,
+        },
+      ],
+      vertices: deltaPointVertices(2),
+      identityRanges: packRenderIdentityRanges(
+        [
+          { firstVertex: 0, vertexCount: 1, handle: 0x2an },
+          { firstVertex: 1, vertexCount: 1, handle: 0x2bn },
+        ],
+        2,
+      ),
+    },
+    solidFills: empty,
+    solidOutlines: empty,
+  });
+  const staged = renderer.stageRenderDeltaPoint({
+    key: "delta:point\u0000dwg:root:2A",
+    sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+    batch: {
+      ...batch({
+        id: 23,
+        kind: GpuLineBatchKind.ModelDetail,
+        lodLevel: 1,
+        firstVertex: 0,
+      }),
+      vertexCount: 1,
+    },
+    vertices: deltaPointVertices(),
+  });
+
+  renderer.activateRenderDelta({
+    points: [staged],
+    baseSuppressions: [
+      {
+        sceneId: ROOT_RENDER_DELTA_SCENE_ID,
+        handleLow: 0x2a,
+        handleHigh: 0,
+      },
+    ],
+  });
+  let callCount = calls.drawArraysInstanced.length;
+  const overlaid = renderer.redraw(first.camera);
+
+  assert.deepEqual(
+    calls.drawArraysInstanced
+      .slice(callCount)
+      .filter((call) => call.mode === gl.POINTS),
+    [
+      { mode: gl.POINTS, first: 1, count: 1, instances: 1 },
+      { mode: gl.POINTS, first: 0, count: 1, instances: 1 },
+    ],
+  );
+  assert.equal(overlaid.pointSubmittedVertices, 1);
+  assert.equal(overlaid.renderDeltaPointDrawCalls, 1);
+  assert.equal(overlaid.renderDeltaPointSubmittedVertices, 1);
+  assert.equal(overlaid.renderDeltaPointBatches, 1);
+  assert.equal(overlaid.renderDeltaPointGpuBytes, 32);
+  assert.equal(overlaid.renderDeltaGpuBytes, 32);
+  assert.deepEqual(renderer.renderDeltaSnapshot(), {
+    lineBatches: 0,
+    fillBatches: 0,
+    pointBatches: 1,
+    activeGpuBytes: 32,
+    allocatedGpuBytes: 32,
+    baseSuppressions: 1,
+    affectedWorldBounds: null,
+  });
+
+  renderer.activateRenderDelta();
+  const deletedBuffers = calls.deletedBuffers.length;
+  assert.equal(
+    renderer.releaseRenderDeltaResources([staged]),
+    1,
+  );
+  assert.equal(calls.deletedBuffers.length, deletedBuffers + 1);
+  callCount = calls.drawArraysInstanced.length;
+  const restored = renderer.redraw(first.camera);
+  assert.deepEqual(
+    calls.drawArraysInstanced
+      .slice(callCount)
+      .filter((call) => call.mode === gl.POINTS),
+    [{ mode: gl.POINTS, first: 0, count: 2, instances: 1 }],
+  );
+  assert.equal(restored.pointSubmittedVertices, 2);
+  assert.equal(restored.renderDeltaPointBatches, 0);
+  assert.equal(restored.renderDeltaAllocatedGpuBytes, 0);
+
+  renderer.dispose();
+});
+
+test("shares one render delta GPU budget across lines, fills, and points", () => {
   const { gl } = makeFakeGl();
   const canvas = {
     clientWidth: 200,
@@ -953,7 +1111,7 @@ test("shares one render delta GPU budget across lines and fills", () => {
     },
   };
   const renderer = new WebGlLineRenderer(canvas, {
-    maximumRenderDeltaBytes: 167,
+    maximumRenderDeltaBytes: 199,
   });
   renderer.renderOverview({
     batches: [
@@ -978,31 +1136,44 @@ test("shares one render delta GPU budget across lines and fills", () => {
     }),
     vertices: lineVerticesForHandles([0x2an]),
   });
+  const stagedFill = renderer.stageRenderDeltaFill({
+    key: "delta:budget\u0000fill",
+    batch: {
+      ...batch({
+        id: 31,
+        kind: GpuLineBatchKind.ModelDetail,
+        lodLevel: 1,
+        firstVertex: 0,
+      }),
+      vertexCount: 3,
+    },
+    vertices: deltaFillVertices(),
+  });
 
   assert.throws(
     () =>
-      renderer.stageRenderDeltaFill({
-        key: "delta:budget\u0000fill",
+      renderer.stageRenderDeltaPoint({
+        key: "delta:budget\u0000point",
         batch: {
           ...batch({
-            id: 31,
+            id: 32,
             kind: GpuLineBatchKind.ModelDetail,
             lodLevel: 1,
             firstVertex: 0,
           }),
-          vertexCount: 3,
+          vertexCount: 1,
         },
-        vertices: deltaFillVertices(),
+        vertices: deltaPointVertices(),
       }),
-    /exceeds the 167-byte limit/u,
+    /exceeds the 199-byte limit/u,
   );
   assert.equal(
     renderer.renderDeltaSnapshot().allocatedGpuBytes,
-    72,
+    168,
   );
   assert.equal(
-    renderer.releaseRenderDeltaResources([stagedLine]),
-    1,
+    renderer.releaseRenderDeltaResources([stagedLine, stagedFill]),
+    2,
   );
   assert.equal(
     renderer.renderDeltaSnapshot().allocatedGpuBytes,
@@ -1397,8 +1568,21 @@ test("draws independently cached XREF overview and detail geometry", () => {
     },
     vertices: deltaFillVertices(),
   });
+  const externalPoint = renderer.stageRenderDeltaPoint({
+    key: "delta:xref-point\u0000dwg:xref-1:2B",
+    sceneId: "xref-1",
+    batch: {
+      ...externalOverview,
+      id: 4,
+      lodLevel: 1,
+      firstVertex: 0,
+      vertexCount: 1,
+    },
+    vertices: deltaPointVertices(),
+  });
   renderer.activateRenderDelta({
     fills: [externalFill],
+    points: [externalPoint],
   });
 
   const redrawn = renderer.redraw(external.camera);
@@ -1407,17 +1591,22 @@ test("draws independently cached XREF overview and detail geometry", () => {
   assert.equal(redrawn.externalOverviewGpuBytes, 72);
   assert.equal(redrawn.externalDetailGpuBytes, 72);
   assert.equal(redrawn.externalDetailBatches, 1);
-  assert.equal(redrawn.drawCalls, 4);
+  assert.equal(redrawn.drawCalls, 5);
   assert.equal(redrawn.renderDeltaFillDrawCalls, 1);
-  assert.deepEqual(calls.drawArraysInstanced.slice(-4), [
+  assert.equal(redrawn.renderDeltaPointDrawCalls, 1);
+  assert.deepEqual(calls.drawArraysInstanced.slice(-5), [
     { mode: gl.TRIANGLES, first: 0, count: 3, instances: 1 },
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },
+    { mode: gl.POINTS, first: 0, count: 1, instances: 1 },
   ]);
   assert.ok(redrawn.bounds.max[0] >= 21);
   renderer.activateRenderDelta();
-  renderer.releaseRenderDeltaResources([externalFill]);
+  renderer.releaseRenderDeltaResources([
+    externalFill,
+    externalPoint,
+  ]);
   renderer.dispose();
 });
 

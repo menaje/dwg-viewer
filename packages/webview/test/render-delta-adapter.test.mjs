@@ -19,8 +19,10 @@ import {
   DwgRenderDeltaAdapter,
   DWG_FILL_VERTEX_STRIDE,
   DWG_LINE_VERTEX_STRIDE,
+  DWG_POINT_VERTEX_STRIDE,
   DWG_RENDER_DELTA_MEDIA_TYPE,
   DWG_RENDER_DELTA_MEDIA_TYPE_V1,
+  DWG_RENDER_DELTA_MEDIA_TYPE_V2,
 } from "../src/render-delta-adapter.mjs";
 import { GpuLineBatchKind } from "../src/scene-cache.mjs";
 
@@ -152,6 +154,41 @@ function fillEntry(vertices = fillVertices(), id = 2) {
   };
 }
 
+function pointVertices() {
+  const buffer = new ArrayBuffer(DWG_POINT_VERTEX_STRIDE);
+  const view = new DataView(buffer);
+  view.setFloat32(0, 0.5, true);
+  view.setFloat32(4, 0.5, true);
+  view.setUint32(12, 0, true);
+  view.setUint32(16, (2 << 30) | 2, true);
+  view.setFloat32(20, 0, true);
+  view.setFloat32(24, 4, true);
+  view.setUint32(28, 0, true);
+  return Object.freeze({
+    buffer,
+    byteLength: buffer.byteLength,
+    vertexCount: 1,
+    recordSize: DWG_POINT_VERTEX_STRIDE,
+  });
+}
+
+function pointBatch(id = 3) {
+  return Object.freeze({
+    ...lineBatch(id),
+    vertexCount: 1,
+  });
+}
+
+function pointEntry(vertices = pointVertices(), id = 3) {
+  return {
+    renderId: RENDER_ID,
+    sceneId: "root",
+    batch: pointBatch(id),
+    vertices,
+    instanceIndices: null,
+  };
+}
+
 function upsertDelta({
   deltaId = "delta:dwg:1",
   operationId = "operation:dwg:upsert",
@@ -162,6 +199,7 @@ function upsertDelta({
   extraLines = [],
   includeLine = true,
   fills = [],
+  points = [],
 } = {}) {
   const sha256 = "a".repeat(64);
   const lines = [
@@ -178,7 +216,7 @@ function upsertDelta({
       : []),
     ...extraLines,
   ];
-  const byteLength = [...lines, ...fills].reduce(
+  const byteLength = [...lines, ...fills, ...points].reduce(
     (total, entry) => total + entry.vertices.byteLength,
     0,
   );
@@ -230,6 +268,7 @@ function upsertDelta({
           operationId,
           lines,
           fills,
+          points,
         },
       ],
     },
@@ -297,6 +336,7 @@ class FakeDeltaRenderer {
     this.active = Object.freeze({
       lines: Object.freeze([]),
       fills: Object.freeze([]),
+      points: Object.freeze([]),
       baseSuppressions: Object.freeze([]),
       affectedWorldBounds: null,
     });
@@ -312,6 +352,10 @@ class FakeDeltaRenderer {
 
   stageRenderDeltaFill(fill) {
     return this.stage("fill", fill);
+  }
+
+  stageRenderDeltaPoint(point) {
+    return this.stage("point", point);
   }
 
   stage(resourceKind, value) {
@@ -331,12 +375,14 @@ class FakeDeltaRenderer {
   activateRenderDelta({
     lines = [],
     fills = [],
+    points = [],
     baseSuppressions = [],
     affectedWorldBounds = null,
   } = {}) {
     for (const [resourceKind, entries] of [
       ["line", lines],
       ["fill", fills],
+      ["point", points],
     ]) {
       for (const entry of entries) {
         if (
@@ -350,6 +396,7 @@ class FakeDeltaRenderer {
     this.active = Object.freeze({
       lines: Object.freeze([...lines]),
       fills: Object.freeze([...fills]),
+      points: Object.freeze([...points]),
       baseSuppressions: Object.freeze([...baseSuppressions]),
       affectedWorldBounds,
     });
@@ -360,6 +407,7 @@ class FakeDeltaRenderer {
     const active = new Set([
       ...this.active.lines,
       ...this.active.fills,
+      ...this.active.points,
     ]);
     for (const resource of resources) {
       if (
@@ -411,6 +459,7 @@ test("stages a DWG line overlay and restores it on preview rollback", () => {
     overlayEntities: 1,
     lineBatches: 1,
     fillBatches: 0,
+    pointBatches: 0,
     baseSuppressions: 1,
     affectedWorldBounds: bounds(),
     invalidatedDependencyIds: [],
@@ -428,6 +477,7 @@ test("stages a DWG line overlay and restores it on preview rollback", () => {
   controller.rollbackPreview(delta.deltaId);
   assert.equal(renderer.active.lines.length, 0);
   assert.equal(renderer.active.fills.length, 0);
+  assert.equal(renderer.active.points.length, 0);
   assert.equal(renderer.active.baseSuppressions.length, 0);
   assert.equal(renderer.resources.size, 0);
   assert.equal(adapter.acceptsBasePick("root", 0x2an), true);
@@ -445,6 +495,7 @@ test("stages a DWG line overlay and restores it on preview rollback", () => {
   controller.applyCommitted(tombstoneDelta());
   assert.equal(renderer.active.lines.length, 0);
   assert.equal(renderer.active.fills.length, 0);
+  assert.equal(renderer.active.points.length, 0);
   assert.equal(renderer.active.baseSuppressions.length, 1);
   assert.equal(renderer.resources.size, 0);
   assert.deepEqual(
@@ -462,9 +513,10 @@ test("stages a DWG line overlay and restores it on preview rollback", () => {
 
 test("cleans staged GPU resources when an atomic packet fails", () => {
   const renderer = new FakeDeltaRenderer();
-  renderer.failStageAt = 2;
+  renderer.failStageAt = 3;
   const { delta, packet } = upsertDelta({
     fills: [fillEntry()],
+    points: [pointEntry()],
   });
   const { adapter, controller } = makeController(renderer, packet);
   const baseline = controller.snapshot();
@@ -477,6 +529,7 @@ test("cleans staged GPU resources when an atomic packet fails", () => {
   assert.equal(renderer.resources.size, 0);
   assert.equal(renderer.active.lines.length, 0);
   assert.equal(renderer.active.fills.length, 0);
+  assert.equal(renderer.active.points.length, 0);
   assert.equal(adapter.snapshot().revisionId, null);
 
   controller.dispose();
@@ -506,18 +559,66 @@ test("stages a fill-only upsert and restores it on preview rollback", () => {
   controller.dispose();
 });
 
-test("accepts the line-only v1 private packet during the v2 transition", () => {
+test("stages a point-only upsert and restores it on preview rollback", () => {
+  const renderer = new FakeDeltaRenderer();
+  const { delta, packet } = upsertDelta({
+    includeLine: false,
+    points: [pointEntry()],
+  });
+  const { adapter, controller } = makeController(renderer, packet);
+
+  controller.applyPreview(delta);
+  assert.equal(renderer.active.lines.length, 0);
+  assert.equal(renderer.active.fills.length, 0);
+  assert.equal(renderer.active.points.length, 1);
+  assert.equal(renderer.resources.size, 1);
+  assert.equal(adapter.snapshot().lineBatches, 0);
+  assert.equal(adapter.snapshot().fillBatches, 0);
+  assert.equal(adapter.snapshot().pointBatches, 1);
+  assert.equal(adapter.lookupIdentity("root", 0x2an).status, "upsert");
+
+  controller.rollbackPreview(delta.deltaId);
+  assert.equal(renderer.active.points.length, 0);
+  assert.equal(renderer.resources.size, 0);
+  assert.equal(adapter.acceptsBasePick("root", 0x2an), true);
+
+  controller.dispose();
+});
+
+test("accepts the line-only v1 private packet during the v3 transition", () => {
   const renderer = new FakeDeltaRenderer();
   const { delta, packet } = upsertDelta();
   delta.payload.mediaType = DWG_RENDER_DELTA_MEDIA_TYPE_V1;
   delete packet.operations[0].fills;
+  delete packet.operations[0].points;
   const { adapter, controller } = makeController(renderer, packet);
 
   controller.applyCommitted(delta);
 
   assert.equal(renderer.active.lines.length, 1);
   assert.equal(renderer.active.fills.length, 0);
+  assert.equal(renderer.active.points.length, 0);
   assert.equal(adapter.snapshot().fillBatches, 0);
+  assert.equal(adapter.snapshot().pointBatches, 0);
+  controller.dispose();
+});
+
+test("accepts the line/fill v2 private packet during the v3 transition", () => {
+  const renderer = new FakeDeltaRenderer();
+  const { delta, packet } = upsertDelta({
+    fills: [fillEntry()],
+  });
+  delta.payload.mediaType = DWG_RENDER_DELTA_MEDIA_TYPE_V2;
+  delete packet.operations[0].points;
+  const { adapter, controller } = makeController(renderer, packet);
+
+  controller.applyCommitted(delta);
+
+  assert.equal(renderer.active.lines.length, 1);
+  assert.equal(renderer.active.fills.length, 1);
+  assert.equal(renderer.active.points.length, 0);
+  assert.equal(adapter.snapshot().fillBatches, 1);
+  assert.equal(adapter.snapshot().pointBatches, 0);
   controller.dispose();
 });
 
@@ -534,6 +635,26 @@ test("rejects a fill packet outside its Render ID scene", () => {
   assert.throws(
     () => controller.applyCommitted(delta),
     /invalid DWG fill payload/u,
+  );
+  assert.equal(renderer.stageCount, 0);
+  assert.equal(renderer.resources.size, 0);
+  assert.equal(adapter.snapshot().revisionId, null);
+  controller.dispose();
+});
+
+test("rejects a point packet outside its Render ID scene", () => {
+  const renderer = new FakeDeltaRenderer();
+  const point = pointEntry();
+  point.sceneId = "external";
+  const { delta, packet } = upsertDelta({
+    includeLine: false,
+    points: [point],
+  });
+  const { adapter, controller } = makeController(renderer, packet);
+
+  assert.throws(
+    () => controller.applyCommitted(delta),
+    /invalid DWG point payload/u,
   );
   assert.equal(renderer.stageCount, 0);
   assert.equal(renderer.resources.size, 0);
@@ -563,6 +684,7 @@ test("releases committed and preview resources together on disposal", () => {
   const renderer = new FakeDeltaRenderer();
   const first = upsertDelta({
     fills: [fillEntry()],
+    points: [pointEntry()],
   });
   const { adapter, controller, packets } = makeController(
     renderer,
@@ -577,21 +699,24 @@ test("releases committed and preview resources together on disposal", () => {
     toRevisionId: REVISION_THREE,
     sequence: 2,
     fills: [fillEntry(fillVertices(), 3)],
+    points: [pointEntry(pointVertices(), 4)],
   });
   packets.set(second.packet.payloadId, second.packet);
   controller.applyPreview(second.delta);
 
-  assert.equal(renderer.resources.size, 4);
+  assert.equal(renderer.resources.size, 6);
   assert.equal(renderer.active.lines.length, 1);
   assert.equal(renderer.active.fills.length, 1);
+  assert.equal(renderer.active.points.length, 1);
   assert.equal(adapter.snapshot().previewId, second.delta.deltaId);
 
   controller.dispose();
   assert.equal(renderer.resources.size, 0);
   assert.equal(renderer.active.lines.length, 0);
   assert.equal(renderer.active.fills.length, 0);
+  assert.equal(renderer.active.points.length, 0);
   assert.equal(renderer.active.baseSuppressions.length, 0);
-  assert.equal(renderer.released.length, 4);
+  assert.equal(renderer.released.length, 6);
 });
 
 test("keeps unchanged pick identities on the active renderer revision", () => {

@@ -40,7 +40,7 @@
     "interaction": "canonical-with-dwg-detail-adapter",
     "picking": "core-selection-lifecycle-with-dwg-pick-adapter",
     "serviceIdentity": "revision-bound-core-hook-and-conformance",
-    "renderDelta": "atomic-overlay-state-with-dwg-line-fill-upsert-and-native-base-suppression",
+    "renderDelta": "atomic-overlay-state-with-dwg-line-fill-point-upsert-and-native-base-suppression",
     "reviewUi": "canonical-dom-lifecycle-with-dwg-result-adapter"
   },
   "conformance": {

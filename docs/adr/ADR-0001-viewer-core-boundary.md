@@ -168,9 +168,10 @@ tombstone/upsert, dependency/identity map과 preview만 보관하고 rollback �
 immutable base를 다시 읽지 않는다. renderer adapter hook은 원자적인 apply,
 preview rollback/promotion만 요구하며 현재 Webview의 private DWG GPU
 vertex format은 public protocol로 승격하지 않는다. Webview의
-`DwgRenderDeltaAdapter`는 검증된 decoded v2 line/triangle-fill packet의 GPU
-resource를 공용 64 MiB 한도 안에서 먼저 stage하고 renderer state를 한 번에
-교체한다. private v1 line-only packet은 producer 전환 기간에 계속 읽는다.
+`DwgRenderDeltaAdapter`는 검증된 decoded v3 line/triangle-fill/POINT packet의
+GPU resource를 공용 64 MiB 한도 안에서 먼저 stage하고 renderer state를
+한 번에 교체한다. private v1 line-only 및 v2 line/fill packet은 producer
+전환 기간에 계속 읽는다.
 base tombstone/upsert는 line
 vertex handle, HATCH/POINT/SOLID/3DFACE/WIPEOUT의 압축 identity-range
 sidecar와 Canvas text의 source-scoped handle filter를 통해 cached draw

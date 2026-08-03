@@ -440,7 +440,7 @@ test("keeps package versions and producer compatibility manifest aligned", async
   );
   assert.equal(
     manifest.components.renderDelta,
-    "atomic-overlay-state-with-dwg-line-fill-upsert-and-native-base-suppression",
+    "atomic-overlay-state-with-dwg-line-fill-point-upsert-and-native-base-suppression",
   );
   assert.equal(
     manifest.conformance.viewerRenderDelta,
