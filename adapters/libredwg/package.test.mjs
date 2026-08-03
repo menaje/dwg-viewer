@@ -197,6 +197,10 @@ test("uses native Windows isolation and a path-safe piped input contract", async
   assert.match(adapterSource, /DWG_VIEWER_NULL_DEVICE "NUL"/u);
   assert.match(adapterSource, /QueryPerformanceCounter/u);
   assert.match(adapterSource, /DWG_VIEWER_STDIN_SOURCE_SIZE/u);
+  assert.match(
+    adapterSource,
+    /_setmode \(_fileno \(stdin\), _O_BINARY\)/u,
+  );
   assert.match(adapterSource, /dwg_read_file \(path, dwg\)/u);
   assert.match(sceneCacheSource, /CreateFileW/u);
   assert.match(sceneCacheSource, /FILE_FLAG_DELETE_ON_CLOSE/u);

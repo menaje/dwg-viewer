@@ -1214,6 +1214,20 @@ read_piped_source_metadata (uint64_t *source_size,
 }
 
 static int
+prepare_piped_source (void)
+{
+#if defined(_WIN32)
+  /*
+   * The Microsoft CRT defaults inherited standard input to text mode. DWG
+   * input must not translate CRLF pairs or treat 0x1a as end-of-file.
+   */
+  return _setmode (_fileno (stdin), _O_BINARY) != -1;
+#else
+  return 1;
+#endif
+}
+
+static int
 convert_dwg (const char *path, const char *output_path)
 {
   const char *preview_path = getenv ("DWG_VIEWER_PREVIEW_PATH");
@@ -1246,6 +1260,11 @@ convert_dwg (const char *path, const char *output_path)
     }
   if (strcmp (path, "-") == 0)
     {
+      if (!prepare_piped_source ())
+        {
+          fputs ("cannot switch piped input to binary mode\n", stderr);
+          return 1;
+        }
       if (!read_piped_source_metadata (&source_size, version_code))
         {
           fputs ("piped input metadata is invalid\n", stderr);
