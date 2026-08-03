@@ -7,6 +7,10 @@ import {
 } from "./math.mjs";
 import { effectiveClipBounds } from "./instance-graph.mjs?v=1.18.8";
 import {
+  indexDwgRenderDeltaStyles,
+  renderDeltaInstanceStyle,
+} from "./render-delta-style.mjs";
+import {
   indexDwgRenderDeltaTransforms,
   renderDeltaInstanceMatrix,
 } from "./render-delta-transform.mjs";
@@ -813,11 +817,16 @@ export class CanvasRasterImageOverlay {
     this.sourceId = sourceId;
     this.sourceLabel = sourceLabel;
     this.renderDeltaTransforms = Object.freeze([]);
+    this.renderDeltaStyles = Object.freeze([]);
     this.renderDeltaTransformIndex =
       indexDwgRenderDeltaTransforms([], {
         sourceId: this.sourceId,
         instanceGraph: this.instanceGraph,
       });
+    this.renderDeltaStyleIndex = indexDwgRenderDeltaStyles([], {
+      sourceId: this.sourceId,
+      instanceGraph: this.instanceGraph,
+    });
     this.hitTestingEnabled = Boolean(hitTestingEnabled);
     this.hitOccurrences = [];
     this.maximumSourceImages = positiveSafeInteger(
@@ -852,6 +861,7 @@ export class CanvasRasterImageOverlay {
     this.lastMetrics = Object.freeze({
       sourceImages: imageEntities.length,
       renderDeltaTransforms: 0,
+      renderDeltaStyles: 0,
       visitedSourceImages: 0,
       visibleOccurrences: 0,
       loadedOccurrences: 0,
@@ -898,6 +908,43 @@ export class CanvasRasterImageOverlay {
     return next.entries.length;
   }
 
+  setRenderDeltaStyles(entries) {
+    const next = indexDwgRenderDeltaStyles(entries, {
+      sourceId: this.sourceId,
+      instanceGraph: this.instanceGraph,
+    });
+    this.renderDeltaStyles = next.entries;
+    this.renderDeltaStyleIndex = next;
+    this.hitOccurrences = [];
+    return next.entries.length;
+  }
+
+  setRenderDeltaState({
+    transforms = Object.freeze([]),
+    styles = Object.freeze([]),
+  } = {}) {
+    const nextTransforms = indexDwgRenderDeltaTransforms(
+      transforms,
+      {
+        sourceId: this.sourceId,
+        instanceGraph: this.instanceGraph,
+      },
+    );
+    const nextStyles = indexDwgRenderDeltaStyles(styles, {
+      sourceId: this.sourceId,
+      instanceGraph: this.instanceGraph,
+    });
+    this.renderDeltaTransforms = nextTransforms.entries;
+    this.renderDeltaTransformIndex = nextTransforms;
+    this.renderDeltaStyles = nextStyles.entries;
+    this.renderDeltaStyleIndex = nextStyles;
+    this.hitOccurrences = [];
+    return Object.freeze({
+      transformRecords: nextTransforms.entries.length,
+      styleRecords: nextStyles.entries.length,
+    });
+  }
+
   redraw(camera, layerVisibility, { clear = true, size = null } = {}) {
     const { width, height } = this.resize(size);
     this.hitOccurrences = [];
@@ -913,6 +960,7 @@ export class CanvasRasterImageOverlay {
     const metrics = {
       sourceImages: this.imageEntities.length,
       renderDeltaTransforms: this.renderDeltaTransforms.length,
+      renderDeltaStyles: this.renderDeltaStyles.length,
       visitedSourceImages: 0,
       visibleOccurrences: 0,
       loadedOccurrences: 0,
@@ -955,8 +1003,18 @@ export class CanvasRasterImageOverlay {
         instanceIndex < instances.count;
         instanceIndex += 1
       ) {
+        const style = renderDeltaInstanceStyle(
+          this.renderDeltaStyleIndex,
+          instances,
+          instanceIndex,
+        );
+        if (style?.visible === false) {
+          continue;
+        }
         const instanceLayerIndex =
-          instances.layerIndices?.[instanceIndex] ?? NO_LAYER;
+          style?.layerIndex ??
+          instances.layerIndices?.[instanceIndex] ??
+          NO_LAYER;
         const inheritsInstanceLayer =
           record.layerIndex === this.sourceLayerZeroIndex &&
           instanceLayerIndex !== NO_LAYER;
@@ -1201,7 +1259,9 @@ export class CanvasRasterImageOverlay {
           0,
           Math.min(
             1,
-            (instances.opacities?.[instanceIndex] ?? 1) *
+            (style?.opacity ??
+              instances.opacities?.[instanceIndex] ??
+              1) *
               (1 - record.fade / 100),
           ),
         );
@@ -1407,6 +1467,11 @@ export class CanvasRasterImageOverlay {
         sourceId: this.sourceId,
         instanceGraph: this.instanceGraph,
       });
+    this.renderDeltaStyles = Object.freeze([]);
+    this.renderDeltaStyleIndex = indexDwgRenderDeltaStyles([], {
+      sourceId: this.sourceId,
+      instanceGraph: this.instanceGraph,
+    });
     this.hitOccurrences = [];
   }
 }
@@ -1417,6 +1482,7 @@ export class CompositeRasterImageOverlay {
     this.overlays = [];
     this.hitTestingEnabled = false;
     this.renderDeltaTransforms = Object.freeze([]);
+    this.renderDeltaStyles = Object.freeze([]);
   }
 
   add(overlay, { first = false } = {}) {
@@ -1426,9 +1492,17 @@ export class CompositeRasterImageOverlay {
       );
     }
     overlay.setHitTestingEnabled?.(this.hitTestingEnabled);
-    overlay.setRenderDeltaTransforms?.(
-      this.renderDeltaTransforms,
-    );
+    if (typeof overlay.setRenderDeltaState === "function") {
+      overlay.setRenderDeltaState({
+        transforms: this.renderDeltaTransforms,
+        styles: this.renderDeltaStyles,
+      });
+    } else {
+      overlay.setRenderDeltaTransforms?.(
+        this.renderDeltaTransforms,
+      );
+      overlay.setRenderDeltaStyles?.(this.renderDeltaStyles);
+    }
     if (first) {
       this.overlays.unshift(overlay);
     } else {
@@ -1441,6 +1515,7 @@ export class CompositeRasterImageOverlay {
     const metrics = {
       sourceImages: 0,
       renderDeltaTransforms: 0,
+      renderDeltaStyles: 0,
       visitedSourceImages: 0,
       visibleOccurrences: 0,
       loadedOccurrences: 0,
@@ -1469,6 +1544,7 @@ export class CompositeRasterImageOverlay {
       for (const name of [
         "sourceImages",
         "renderDeltaTransforms",
+        "renderDeltaStyles",
         "visitedSourceImages",
         "visibleOccurrences",
         "loadedOccurrences",
@@ -1508,6 +1584,50 @@ export class CompositeRasterImageOverlay {
     return next.length;
   }
 
+  setRenderDeltaStyles(entries) {
+    if (!Array.isArray(entries)) {
+      throw new TypeError(
+        "composite image render delta styles must be an array",
+      );
+    }
+    const next = Object.freeze([...entries]);
+    for (const overlay of this.overlays) {
+      overlay.setRenderDeltaStyles?.(next);
+    }
+    this.renderDeltaStyles = next;
+    return next.length;
+  }
+
+  setRenderDeltaState({
+    transforms = Object.freeze([]),
+    styles = Object.freeze([]),
+  } = {}) {
+    if (!Array.isArray(transforms) || !Array.isArray(styles)) {
+      throw new TypeError(
+        "composite image render delta state is invalid",
+      );
+    }
+    const nextTransforms = Object.freeze([...transforms]);
+    const nextStyles = Object.freeze([...styles]);
+    for (const overlay of this.overlays) {
+      if (typeof overlay.setRenderDeltaState === "function") {
+        overlay.setRenderDeltaState({
+          transforms: nextTransforms,
+          styles: nextStyles,
+        });
+      } else {
+        overlay.setRenderDeltaTransforms?.(nextTransforms);
+        overlay.setRenderDeltaStyles?.(nextStyles);
+      }
+    }
+    this.renderDeltaTransforms = nextTransforms;
+    this.renderDeltaStyles = nextStyles;
+    return Object.freeze({
+      transformRecords: nextTransforms.length,
+      styleRecords: nextStyles.length,
+    });
+  }
+
   hitTest(x, y, options) {
     let best = null;
     for (let index = this.overlays.length - 1; index >= 0; index -= 1) {
@@ -1528,6 +1648,7 @@ export class CompositeRasterImageOverlay {
     }
     this.overlays.length = 0;
     this.renderDeltaTransforms = Object.freeze([]);
+    this.renderDeltaStyles = Object.freeze([]);
   }
 }
 

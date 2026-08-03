@@ -36,6 +36,12 @@ import {
   isNormalizedDwgRenderDeltaTextRecord,
 } from "./render-delta-text.mjs";
 import {
+  dwgRenderDeltaStyleByteLength,
+  indexDwgRenderDeltaStyles,
+  isNormalizedDwgRenderDeltaStyleRecord,
+  renderDeltaInstanceStyle,
+} from "./render-delta-style.mjs";
+import {
   dwgRenderDeltaTransformByteLength,
   indexDwgRenderDeltaTransforms,
   isNormalizedDwgRenderDeltaTransformRecord,
@@ -58,6 +64,7 @@ const MAX_EXTERNAL_DETAIL_GPU_BYTES = 32 * 1024 * 1024;
 const MAX_RENDER_DELTA_GPU_BYTES = 64 * 1024 * 1024;
 const MAX_RENDER_DELTA_TEXT_BYTES = 8 * 1024 * 1024;
 const MAX_RENDER_DELTA_TRANSFORM_BYTES = 8 * 1024 * 1024;
+const MAX_RENDER_DELTA_STYLE_BYTES = 8 * 1024 * 1024;
 const ROOT_RENDER_DELTA_SCENE_ID = "root";
 const INTERACTIVE_MINIMUM_PIXEL_SPAN = 0.75;
 const EMPTY_INSTANCE_INDICES = new Uint32Array(0);
@@ -962,6 +969,7 @@ function selectInteractiveInstanceIndices(
     minimumPixelSpan = INTERACTIVE_MINIMUM_PIXEL_SPAN,
     context = interactiveCullContext(camera),
     transformIndex = null,
+    styleIndex = null,
   } = {},
 ) {
   const instances = instancesForBatch(batch, instanceGraph);
@@ -977,6 +985,12 @@ function selectInteractiveInstanceIndices(
   const pixelsPerWorldX = camera.width / camera.worldWidth;
   const pixelsPerWorldY = camera.height / camera.worldHeight;
   for (let index = 0; index < instances.count; index += 1) {
+    if (
+      renderDeltaInstanceStyle(styleIndex, instances, index)
+        ?.visible === false
+    ) {
+      continue;
+    }
     const clipId = instances.clipIds?.[index] ?? 0;
     let clipBounds = null;
     if (clipId > 0) {
@@ -1035,6 +1049,36 @@ function selectInteractiveInstanceIndices(
   }
   if (visible.length === instances.count) {
     return null;
+  }
+  return visible.length > 0
+    ? Uint32Array.from(visible)
+    : EMPTY_INSTANCE_INDICES;
+}
+
+function visibleRenderDeltaInstanceIndices(
+  instanceIndices,
+  instances,
+  styleIndex,
+) {
+  if (!styleIndex?.hiddenInstances?.has(instances)) {
+    return instanceIndices;
+  }
+  const total = instanceIndices?.length ?? instances.count;
+  const visible = [];
+  for (let index = 0; index < total; index += 1) {
+    const instanceIndex = instanceIndices?.[index] ?? index;
+    if (
+      renderDeltaInstanceStyle(
+        styleIndex,
+        instances,
+        instanceIndex,
+      )?.visible !== false
+    ) {
+      visible.push(instanceIndex);
+    }
+  }
+  if (visible.length === total) {
+    return instanceIndices;
   }
   return visible.length > 0
     ? Uint32Array.from(visible)
@@ -1778,6 +1822,8 @@ export class WebGlLineRenderer {
       maximumRenderDeltaTextBytes = MAX_RENDER_DELTA_TEXT_BYTES,
       maximumRenderDeltaTransformBytes =
         MAX_RENDER_DELTA_TRANSFORM_BYTES,
+      maximumRenderDeltaStyleBytes =
+        MAX_RENDER_DELTA_STYLE_BYTES,
     } = {},
   ) {
     if (
@@ -1790,7 +1836,9 @@ export class WebGlLineRenderer {
       !Number.isSafeInteger(maximumRenderDeltaTextBytes) ||
       maximumRenderDeltaTextBytes <= 0 ||
       !Number.isSafeInteger(maximumRenderDeltaTransformBytes) ||
-      maximumRenderDeltaTransformBytes <= 0
+      maximumRenderDeltaTransformBytes <= 0 ||
+      !Number.isSafeInteger(maximumRenderDeltaStyleBytes) ||
+      maximumRenderDeltaStyleBytes <= 0
     ) {
       throw new RangeError("renderer byte budgets must be positive");
     }
@@ -1842,21 +1890,26 @@ export class WebGlLineRenderer {
       maximumRenderDeltaTextBytes;
     this.maximumRenderDeltaTransformBytes =
       maximumRenderDeltaTransformBytes;
+    this.maximumRenderDeltaStyleBytes =
+      maximumRenderDeltaStyleBytes;
     this.renderDeltaResources = new Set();
     this.renderDeltaResourceBytes = 0;
     this.renderDeltaTextResourceBytes = 0;
     this.renderDeltaTransformResourceBytes = 0;
+    this.renderDeltaStyleResourceBytes = 0;
     this.renderDeltaState = Object.freeze({
       lines: Object.freeze([]),
       fills: Object.freeze([]),
       points: Object.freeze([]),
       texts: Object.freeze([]),
       transforms: Object.freeze([]),
+      styles: Object.freeze([]),
       baseSuppressions: Object.freeze([]),
       suppressionKeys: new Set(),
       affectedWorldBounds: null,
     });
     this.renderDeltaTransformIndexesByGraph = new WeakMap();
+    this.renderDeltaStyleIndexesByGraph = new WeakMap();
     this.renderDeltaRangeCache = new WeakMap();
     this.overviewScene = null;
     this.combinedBounds = null;
@@ -2559,7 +2612,9 @@ export class WebGlLineRenderer {
       ((this.renderDeltaState.texts.length > 0 &&
         typeof overlay.setRenderDeltaTexts !== "function") ||
         (this.renderDeltaState.transforms.length > 0 &&
-          typeof overlay.setRenderDeltaTransforms !== "function"))
+          typeof overlay.setRenderDeltaTransforms !== "function") ||
+        (this.renderDeltaState.styles.length > 0 &&
+          typeof overlay.setRenderDeltaStyles !== "function"))
     ) {
       throw new TypeError(
         "text overlay cannot apply active render delta text",
@@ -2588,6 +2643,7 @@ export class WebGlLineRenderer {
         suppressions: state.baseSuppressions,
         texts: state.texts,
         transforms: state.transforms,
+        styles: state.styles,
       });
       return;
     }
@@ -2609,6 +2665,15 @@ export class WebGlLineRenderer {
       );
     }
     this.textOverlay.setRenderDeltaTransforms?.(state.transforms);
+    if (
+      state.styles.length > 0 &&
+      typeof this.textOverlay.setRenderDeltaStyles !== "function"
+    ) {
+      throw new TypeError(
+        "text overlay cannot apply render delta styles",
+      );
+    }
+    this.textOverlay.setRenderDeltaStyles?.(state.styles);
     this.textOverlay.setRenderDeltaSuppressions?.(
       state.baseSuppressions,
     );
@@ -2617,8 +2682,11 @@ export class WebGlLineRenderer {
   setImageOverlay(overlay) {
     if (
       overlay &&
-      this.renderDeltaState.transforms.length > 0 &&
-      typeof overlay.setRenderDeltaTransforms !== "function"
+      typeof overlay.setRenderDeltaState !== "function" &&
+      ((this.renderDeltaState.transforms.length > 0 &&
+        typeof overlay.setRenderDeltaTransforms !== "function") ||
+        (this.renderDeltaState.styles.length > 0 &&
+          typeof overlay.setRenderDeltaStyles !== "function"))
     ) {
       throw new TypeError(
         "image overlay cannot apply active render delta transforms",
@@ -2641,6 +2709,13 @@ export class WebGlLineRenderer {
     if (!this.imageOverlay) {
       return;
     }
+    if (typeof this.imageOverlay.setRenderDeltaState === "function") {
+      this.imageOverlay.setRenderDeltaState({
+        transforms: state.transforms,
+        styles: state.styles,
+      });
+      return;
+    }
     if (
       state.transforms.length > 0 &&
       typeof this.imageOverlay.setRenderDeltaTransforms !== "function"
@@ -2652,6 +2727,15 @@ export class WebGlLineRenderer {
     this.imageOverlay.setRenderDeltaTransforms?.(
       state.transforms,
     );
+    if (
+      state.styles.length > 0 &&
+      typeof this.imageOverlay.setRenderDeltaStyles !== "function"
+    ) {
+      throw new TypeError(
+        "image overlay cannot apply render delta styles",
+      );
+    }
+    this.imageOverlay.setRenderDeltaStyles?.(state.styles);
   }
 
   applyOverlayRenderDeltaState(state) {
@@ -3379,12 +3463,80 @@ export class WebGlLineRenderer {
     return entry;
   }
 
+  stageRenderDeltaStyle({
+    key,
+    sceneId = ROOT_RENDER_DELTA_SCENE_ID,
+    record,
+    byteLength,
+  }) {
+    if (!this.overviewScene) {
+      throw new Error("cannot stage a render delta before the overview");
+    }
+    const scene =
+      sceneId === ROOT_RENDER_DELTA_SCENE_ID
+        ? this.overviewScene
+        : this.externalScenes.get(sceneId);
+    if (
+      typeof key !== "string" ||
+      key.length === 0 ||
+      key.length > 1_024 ||
+      typeof sceneId !== "string" ||
+      sceneId.length === 0 ||
+      sceneId.length > 512 ||
+      !scene
+    ) {
+      throw new TypeError("render delta style target is invalid");
+    }
+    if (
+      !isNormalizedDwgRenderDeltaStyleRecord(record) ||
+      !Number.isSafeInteger(byteLength) ||
+      byteLength <= 0 ||
+      dwgRenderDeltaStyleByteLength(record) !== byteLength
+    ) {
+      throw new TypeError("render delta style payload is invalid");
+    }
+    if (
+      record.layerIndex !== null &&
+      record.layerIndex !== 0xffff_ffff &&
+      record.layerIndex >= this.layerVisibility.length
+    ) {
+      throw new RangeError(
+        "render delta style layer target is invalid",
+      );
+    }
+    if (
+      byteLength >
+      this.maximumRenderDeltaStyleBytes -
+        this.renderDeltaStyleResourceBytes
+    ) {
+      throw new RangeError(
+        `render delta style data exceeds the ${this.maximumRenderDeltaStyleBytes}-byte limit`,
+      );
+    }
+    const entry = Object.freeze({
+      key,
+      resourceKind: "style",
+      sceneId,
+      record,
+      byteLength,
+    });
+    indexDwgRenderDeltaStyles([entry], {
+      sourceId: sceneId,
+      instanceGraph: scene.instanceGraph,
+      requireComplete: false,
+    });
+    this.renderDeltaResources.add(entry);
+    this.renderDeltaStyleResourceBytes += byteLength;
+    return entry;
+  }
+
   activateRenderDelta({
     lines = Object.freeze([]),
     fills = Object.freeze([]),
     points = Object.freeze([]),
     texts = Object.freeze([]),
     transforms = Object.freeze([]),
+    styles = Object.freeze([]),
     baseSuppressions = Object.freeze([]),
     affectedWorldBounds = null,
   } = {}) {
@@ -3397,6 +3549,7 @@ export class WebGlLineRenderer {
       !Array.isArray(points) ||
       !Array.isArray(texts) ||
       !Array.isArray(transforms) ||
+      !Array.isArray(styles) ||
       !Array.isArray(baseSuppressions)
     ) {
       throw new TypeError("render delta state is invalid");
@@ -3474,6 +3627,22 @@ export class WebGlLineRenderer {
       resourceKeys.add(entry.key);
       normalizedTransforms.push(entry);
     }
+    const normalizedStyles = [];
+    for (const entry of styles) {
+      if (
+        !this.renderDeltaResources.has(entry) ||
+        entry.resourceKind !== "style" ||
+        resourceKeys.has(entry.key) ||
+        (entry.sceneId !== ROOT_RENDER_DELTA_SCENE_ID &&
+          !this.externalScenes.has(entry.sceneId))
+      ) {
+        throw new TypeError(
+          "render delta style resource is invalid",
+        );
+      }
+      resourceKeys.add(entry.key);
+      normalizedStyles.push(entry);
+    }
     const normalizedSuppressions = [];
     const suppressionKeys = new Set();
     for (const value of baseSuppressions) {
@@ -3504,6 +3673,7 @@ export class WebGlLineRenderer {
       points: Object.freeze(normalizedPoints),
       texts: Object.freeze(normalizedTexts),
       transforms: Object.freeze(normalizedTransforms),
+      styles: Object.freeze(normalizedStyles),
       baseSuppressions: Object.freeze(normalizedSuppressions),
       suppressionKeys,
       affectedWorldBounds:
@@ -3535,10 +3705,32 @@ export class WebGlLineRenderer {
         }),
       );
     }
+    const styleIndexesByGraph = new WeakMap();
+    const rootStyleIndex = indexDwgRenderDeltaStyles(
+      normalizedStyles,
+      {
+        sourceId: ROOT_RENDER_DELTA_SCENE_ID,
+        instanceGraph: this.overviewScene.instanceGraph,
+      },
+    );
+    styleIndexesByGraph.set(
+      this.overviewScene.instanceGraph,
+      rootStyleIndex,
+    );
+    for (const scene of this.externalScenes.values()) {
+      styleIndexesByGraph.set(
+        scene.instanceGraph,
+        indexDwgRenderDeltaStyles(normalizedStyles, {
+          sourceId: scene.id,
+          instanceGraph: scene.instanceGraph,
+        }),
+      );
+    }
     this.applyOverlayRenderDeltaState(next);
     this.renderDeltaState = next;
     this.renderDeltaTransformIndexesByGraph =
       transformIndexesByGraph;
+    this.renderDeltaStyleIndexesByGraph = styleIndexesByGraph;
     this.renderDeltaRangeCache = new WeakMap();
     this.recalculateCombinedBounds();
     return this.renderDeltaSnapshot();
@@ -3556,6 +3748,7 @@ export class WebGlLineRenderer {
       ...this.renderDeltaState.points,
       ...this.renderDeltaState.texts,
       ...this.renderDeltaState.transforms,
+      ...this.renderDeltaState.styles,
     ]);
     const unique = [...new Set(resources)];
     for (const entry of unique) {
@@ -3574,6 +3767,8 @@ export class WebGlLineRenderer {
         this.renderDeltaTextResourceBytes -= entry.byteLength;
       } else if (entry.resourceKind === "transform") {
         this.renderDeltaTransformResourceBytes -= entry.byteLength;
+      } else if (entry.resourceKind === "style") {
+        this.renderDeltaStyleResourceBytes -= entry.byteLength;
       } else {
         this.renderDeltaResourceBytes -= entry.byteLength;
         this.deleteVertices(entry.resource);
@@ -3601,6 +3796,10 @@ export class WebGlLineRenderer {
         (total, entry) => total + entry.byteLength,
         0,
       );
+    const activeStyleBytes = this.renderDeltaState.styles.reduce(
+      (total, entry) => total + entry.byteLength,
+      0,
+    );
     return Object.freeze({
       lineBatches: this.renderDeltaState.lines.length,
       fillBatches: this.renderDeltaState.fills.length,
@@ -3610,16 +3809,23 @@ export class WebGlLineRenderer {
       activeTextBytes,
       transformRecords: this.renderDeltaState.transforms.length,
       activeTransformBytes,
+      styleRecords: this.renderDeltaState.styles.length,
+      activeStyleBytes,
       activeResourceBytes:
-        activeBytes + activeTextBytes + activeTransformBytes,
+        activeBytes +
+        activeTextBytes +
+        activeTransformBytes +
+        activeStyleBytes,
       allocatedGpuBytes: this.renderDeltaResourceBytes,
       allocatedTextBytes: this.renderDeltaTextResourceBytes,
       allocatedTransformBytes:
         this.renderDeltaTransformResourceBytes,
+      allocatedStyleBytes: this.renderDeltaStyleResourceBytes,
       allocatedResourceBytes:
         this.renderDeltaResourceBytes +
         this.renderDeltaTextResourceBytes +
-        this.renderDeltaTransformResourceBytes,
+        this.renderDeltaTransformResourceBytes +
+        this.renderDeltaStyleResourceBytes,
       baseSuppressions:
         this.renderDeltaState.baseSuppressions.length,
       affectedWorldBounds:
@@ -4502,7 +4708,16 @@ export class WebGlLineRenderer {
   ) {
     const gl = this.gl;
     const instances = instancesForBatch(batch, instanceGraph);
-    const totalInstances = instanceIndices?.length ?? instances.count;
+    const styleIndex =
+      this.renderDeltaStyleIndexesByGraph.get(instanceGraph);
+    const visibleInstanceIndices =
+      visibleRenderDeltaInstanceIndices(
+        instanceIndices,
+        instances,
+        styleIndex,
+      );
+    const totalInstances =
+      visibleInstanceIndices?.length ?? instances.count;
     const ranges =
       vertexRanges ??
       Object.freeze([
@@ -4532,7 +4747,8 @@ export class WebGlLineRenderer {
       );
       for (let index = 0; index < instanceCount; index += 1) {
         const matrixIndex =
-          instanceIndices?.[firstInstance + index] ?? firstInstance + index;
+          visibleInstanceIndices?.[firstInstance + index] ??
+          firstInstance + index;
         if (matrixIndex >= instances.count) {
           throw new Error(
             `GPU batch ${batch.id} references an invalid instance index`,
@@ -4542,6 +4758,11 @@ export class WebGlLineRenderer {
           this.renderDeltaTransformIndexesByGraph.get(
             instanceGraph,
           ),
+          instances,
+          matrixIndex,
+        );
+        const style = renderDeltaInstanceStyle(
+          styleIndex,
           instances,
           matrixIndex,
         );
@@ -4571,15 +4792,23 @@ export class WebGlLineRenderer {
         packed[index * INSTANCE_VALUES + 17] =
           clipId + visibilityRow * (1 << CLIP_ID_BITS);
         packedIntegers[index * INSTANCE_VALUES + 18] =
-          instances.colors?.[matrixIndex] ?? ((2 << 30) | 7);
+          style?.color ??
+          instances.colors?.[matrixIndex] ??
+          ((2 << 30) | 7);
         packedIntegers[index * INSTANCE_VALUES + 19] =
-          instances.layerIndices?.[matrixIndex] ?? 0xffffffff;
+          style?.layerIndex ??
+          instances.layerIndices?.[matrixIndex] ??
+          0xffffffff;
         packed[index * INSTANCE_VALUES + 20] =
-          instances.opacities?.[matrixIndex] ?? 1;
+          style?.opacity ?? instances.opacities?.[matrixIndex] ?? 1;
         packed[index * INSTANCE_VALUES + 21] =
-          instances.lineWeights?.[matrixIndex] ?? -3;
+          style?.lineWeight ??
+          instances.lineWeights?.[matrixIndex] ??
+          -3;
         packedIntegers[index * INSTANCE_VALUES + 22] =
-          instances.linetypeCodes?.[matrixIndex] ?? 2;
+          style?.linetypeCode ??
+          instances.linetypeCodes?.[matrixIndex] ??
+          2;
       }
       gl.bindBuffer(gl.ARRAY_BUFFER, this.instanceBuffer);
       gl.bufferData(gl.ARRAY_BUFFER, packed, gl.DYNAMIC_DRAW);
@@ -4736,6 +4965,11 @@ export class WebGlLineRenderer {
         (total, entry) => total + entry.byteLength,
         0,
       );
+    const renderDeltaStyleBytes =
+      this.renderDeltaState.styles.reduce(
+        (total, entry) => total + entry.byteLength,
+        0,
+      );
     const metrics = {
       drawCalls: 0,
       detailDrawCalls: 0,
@@ -4757,6 +4991,9 @@ export class WebGlLineRenderer {
       renderDeltaTransformRecords:
         this.renderDeltaState.transforms.length,
       renderDeltaTransformBytes,
+      renderDeltaStyleRecords:
+        this.renderDeltaState.styles.length,
+      renderDeltaStyleBytes,
       renderDeltaGpuBytes,
       renderDeltaAllocatedGpuBytes:
         this.renderDeltaResourceBytes,
@@ -4764,10 +5001,13 @@ export class WebGlLineRenderer {
         this.renderDeltaTextResourceBytes,
       renderDeltaAllocatedTransformBytes:
         this.renderDeltaTransformResourceBytes,
+      renderDeltaAllocatedStyleBytes:
+        this.renderDeltaStyleResourceBytes,
       renderDeltaAllocatedBytes:
         this.renderDeltaResourceBytes +
         this.renderDeltaTextResourceBytes +
-        this.renderDeltaTransformResourceBytes,
+        this.renderDeltaTransformResourceBytes +
+        this.renderDeltaStyleResourceBytes,
       renderDeltaBaseSuppressions:
         this.renderDeltaState.baseSuppressions.length,
       hatchFillDrawCalls: 0,
@@ -5043,6 +5283,10 @@ export class WebGlLineRenderer {
               this.renderDeltaTransformIndexesByGraph.get(
                 this.overviewScene.instanceGraph,
               ),
+            styleIndex:
+              this.renderDeltaStyleIndexesByGraph.get(
+                this.overviewScene.instanceGraph,
+              ),
           },
         ),
       );
@@ -5065,6 +5309,10 @@ export class WebGlLineRenderer {
               minimumPixelSpan,
               transformIndex:
                 this.renderDeltaTransformIndexesByGraph.get(
+                  scene.instanceGraph,
+                ),
+              styleIndex:
+                this.renderDeltaStyleIndexesByGraph.get(
                   scene.instanceGraph,
                 ),
             },
@@ -5568,17 +5816,20 @@ export class WebGlLineRenderer {
     this.renderDeltaResourceBytes = 0;
     this.renderDeltaTextResourceBytes = 0;
     this.renderDeltaTransformResourceBytes = 0;
+    this.renderDeltaStyleResourceBytes = 0;
     this.renderDeltaState = Object.freeze({
       lines: Object.freeze([]),
       fills: Object.freeze([]),
       points: Object.freeze([]),
       texts: Object.freeze([]),
       transforms: Object.freeze([]),
+      styles: Object.freeze([]),
       baseSuppressions: Object.freeze([]),
       suppressionKeys: new Set(),
       affectedWorldBounds: null,
     });
     this.renderDeltaTransformIndexesByGraph = new WeakMap();
+    this.renderDeltaStyleIndexesByGraph = new WeakMap();
     this.renderDeltaRangeCache = new WeakMap();
     this.curveRefinementScene = null;
     this.curveReplacementHandles.clear();
@@ -5629,6 +5880,7 @@ export {
   MAX_RENDER_DELTA_GPU_BYTES,
   MAX_RENDER_DELTA_TEXT_BYTES,
   MAX_RENDER_DELTA_TRANSFORM_BYTES,
+  MAX_RENDER_DELTA_STYLE_BYTES,
   MAX_INSTANCES_PER_DRAW,
   ROOT_RENDER_DELTA_SCENE_ID,
   INTERACTIVE_MINIMUM_PIXEL_SPAN,

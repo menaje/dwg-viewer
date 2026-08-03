@@ -28,6 +28,9 @@ import {
   normalizedRenderDeltaTextRecord,
 } from "./render-delta-text-fixture.mjs";
 import {
+  normalizedRenderDeltaStyleRecord,
+} from "./render-delta-style-fixture.mjs";
+import {
   normalizedRenderDeltaTransformRecord,
   translatedTransformMatrix,
 } from "./render-delta-transform-fixture.mjs";
@@ -387,6 +390,92 @@ test("moves block text through a sparse instance transform", async () => {
       scene.instanceGraph.instancesByBlock.get(2).data[14],
     ],
   );
+});
+
+test("restyles and hides block text through a sparse instance style", async () => {
+  const scene = await textScene();
+  const canvas = fakeCanvas();
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: scene.textEntities,
+    blocks: scene.metadata.blocks,
+    layers: scene.metadata.layers,
+    instanceGraph: scene.instanceGraph,
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+    sourceId: "root",
+  });
+  const text = normalizedRenderDeltaTextRecord({
+    handle: "130",
+    ownerHandle: "66",
+    color: ((1 << 30) | (2 << 24)) >>> 0,
+    value: "블록 문자",
+    insertionPoint: [0, 0, 0],
+    alignmentPoint: [0, 0, 0],
+    height: 0.5,
+  });
+  const visibleStyle = normalizedRenderDeltaStyleRecord({
+    blockIndex: 2,
+    handle: 0xcan,
+    color: 0x8000_0005,
+    opacity: 0.25,
+    visible: true,
+  });
+  const hiddenStyle = normalizedRenderDeltaStyleRecord({
+    blockIndex: 2,
+    handle: 0xcan,
+    visible: false,
+  });
+  const textEntry = Object.freeze({
+    resourceKind: "text",
+    sceneId: "root",
+    record: text.record,
+    byteLength: text.buffer.byteLength,
+  });
+  const styleEntry = (fixture) =>
+    Object.freeze({
+      resourceKind: "style",
+      sceneId: "root",
+      record: fixture.record,
+      byteLength: fixture.buffer.byteLength,
+    });
+  const instances =
+    scene.instanceGraph.instancesByBlock.get(2);
+  const camera = {
+    origin: [instances.data[12], instances.data[13], 0],
+    worldWidth: 20,
+    worldHeight: 15,
+  };
+
+  overlay.setRenderDeltaState({
+    texts: [textEntry],
+    styles: [styleEntry(visibleStyle)],
+  });
+  const visibleMetrics = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => true),
+  );
+  assert.equal(visibleMetrics.renderDeltaStyles, 1);
+  assert.equal(visibleMetrics.visibleOccurrences, 2);
+  assert.ok(
+    canvas.calls.fillStyles.includes(
+      "rgba(0, 0, 255, 0.25)",
+    ),
+  );
+
+  overlay.setRenderDeltaState({
+    texts: [textEntry],
+    styles: [styleEntry(hiddenStyle)],
+  });
+  const hiddenMetrics = overlay.redraw(
+    camera,
+    scene.metadata.layers.map(() => true),
+  );
+  assert.equal(hiddenMetrics.renderDeltaStyles, 1);
+  assert.equal(hiddenMetrics.visibleOccurrences, 1);
+  assert.equal(overlay.findTextOccurrence("130"), null);
+
+  overlay.setRenderDeltaState({ texts: [textEntry] });
+  assert.notEqual(overlay.findTextOccurrence("130"), null);
 });
 
 test("selects rendered text by its screen footprint", async () => {

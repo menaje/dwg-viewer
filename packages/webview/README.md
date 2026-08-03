@@ -22,8 +22,8 @@ composition과 DOM listener disposal은 `@dwg-viewer/viewer-ui`가 소유합니�
 속성과 측정 결과를 bounded view model로 투영합니다.
 
 `DwgRenderDeltaAdapter`는 Core의 source-neutral atomic delta hook과 이
-package의 private line/triangle-fill/POINT/Canvas-text/instance-transform
-packet을 연결합니다.
+package의 private line/triangle-fill/POINT/Canvas-text/instance-transform/
+instance-style packet을 연결합니다.
 payload resolver가
 descriptor의 digest와 byte bound를 검증한 decoded packet을 동기적으로
 제공하면 adapter는 모든 WebGL/Canvas/instance resource를 먼저 stage한 뒤 한 번에
@@ -35,7 +35,7 @@ draw range만 제외합니다. Canvas text도 같은 source/handle suppression�
 제공하며, source switch와 disposal은 staged 및 committed delta resource를
 모두 회수합니다.
 
-The current decoded v5 packet is private to this package:
+The current decoded v6 packet is private to this package:
 
 ```text
 {
@@ -46,30 +46,37 @@ The current decoded v5 packet is private to this package:
     fills: [{ renderId, sceneId, batch, vertices, instanceIndices }],
     points: [{ renderId, sceneId, batch, vertices, instanceIndices }],
     texts: [{ renderId, sceneId, buffer }],
-    transforms: [{ renderId, sceneId, buffer }]
+    transforms: [{ renderId, sceneId, buffer }],
+    styles: [{ renderId, sceneId, buffer }]
   }]
 }
 ```
 
 `byteLength` is the exact sum of the non-shared 36-byte line, 32-byte
 triangle-fill, 32-byte POINT, UTF-8 JSON text and fixed 272-byte instance
-transform buffers. Every line vertex, text record or transform occurrence
-handle must match its operation's `dwg:<sceneId>:<handle>` Render ID. Each
-fill, POINT, text or transform entry belongs to exactly one Render ID, and
-every visual upsert Render ID must be covered across the five streams. A
+transform and 40-byte instance-style buffers. Every line vertex, text record,
+transform occurrence or style occurrence handle must match its operation's
+`dwg:<sceneId>:<handle>` Render ID. Each fill, POINT, text, transform or style
+entry belongs to exactly one Render ID, and every visual upsert Render ID must
+be covered across the six streams. A
 transform record binds one existing block/index occurrence to separate
 display and measurement affine matrices. It replaces only that packed matrix,
-so the shared block geometry is neither copied nor re-uploaded. Direct clipped
-occurrences and target blocks with nested children are rejected until
-dependency recomputation is available, and repeated/MINSERT cells for one
+so the shared block geometry is neither copied nor re-uploaded. A style record
+binds `blockIndex`, `instanceIndex` and handle, then uses canonical flag-gated
+fields to partially override resolved color, layer, opacity, line weight,
+linetype and visibility in the same packed occurrence metadata used by WebGL,
+Canvas text and raster IMAGE. Inactive fields and the three reserved tail
+bytes must be zero. Direct clipped transforms and target blocks with nested
+children are rejected until dependency recomputation is available; style-only
+updates remain valid for clipped occurrences. Repeated/MINSERT cells for one
 native handle require complete atomic coverage.
-One text record is capped at 256 KiB; staged Canvas text and transforms each
-use separate 8 MiB CPU bounds. Packet
+One text record is capped at 256 KiB; staged Canvas text, transforms and styles
+each use separate 8 MiB CPU bounds. Packet
 lookup and digest verification happen before the synchronous Core apply
 boundary; the adapter rechecks descriptor binding, operation coverage, byte
 bounds and native identity before allocating renderer resources. The v1
-line-only, v2 line/fill, v3 line/fill/POINT and v4 Canvas-text media types
-remain readable while producers move to v5.
+line-only, v2 line/fill, v3 line/fill/POINT, v4 Canvas-text and v5
+instance-transform media types remain readable while producers move to v6.
 
 The standalone page is the development and qualification shell: it keeps the
 framed canvas, diagnostics and full memory/performance dashboard. When hosted
@@ -111,14 +118,15 @@ layout tabs on hover, focus or an explicit click.
 - Rebases world coordinates around the camera before WebGL2 `f32` upload.
 - Renders overview lines with batched, instanced draw calls.
 - Stages bounded DWG Render Delta
-  line/triangle-fill/POINT/Canvas-text/instance-transform packets
+  line/triangle-fill/POINT/Canvas-text/instance-transform/instance-style
+  packets
   before one
   atomic state swap under one 64 MiB GPU budget,
   suppresses replaced/tombstoned base lines, HATCH fills/patterns, POINTs,
   SOLID/3DFACE/WIPEOUT primitives and Canvas text without rewriting immutable
   Scene Cache buffers, sparsely replaces root/XREF block occurrence matrices
-  across WebGL, Canvas text and raster images, and restores draw and pick state
-  on preview rollback.
+  and resolved style/visibility metadata across WebGL, Canvas text and raster
+  images, and restores draw and pick state on preview rollback.
 - Supports anchored wheel/button zoom, pointer pan and fitted-view reset.
 - Keeps byte-budgeted detail streaming active while zooming out so switching
   to the sampled overview cannot abruptly remove visible objects.

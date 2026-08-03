@@ -10,6 +10,9 @@ import {
   requestedBitmapTargetSize,
 } from "../src/raster-image-overlay.mjs";
 import {
+  normalizedRenderDeltaStyleRecord,
+} from "./render-delta-style-fixture.mjs";
+import {
   normalizedRenderDeltaTransformRecord,
   translatedTransformMatrix,
 } from "./render-delta-transform-fixture.mjs";
@@ -470,4 +473,98 @@ test("moves and rolls back a block IMAGE instance transform", () => {
   assert.equal(restoredMetrics.renderDeltaTransforms, 0);
   assert.deepEqual(restored.displayPoint, [0, 0, 0]);
   assert.deepEqual(restored.measurementPoint, [0, 0, 0]);
+});
+
+test("restyles and hides a block IMAGE occurrence", () => {
+  const canvas = fakeCanvas();
+  const instances = Object.freeze({
+    data: identityMat4(),
+    measurementData: identityMat4(),
+    handles: new BigUint64Array([0xc9n]),
+    clipIds: new Uint32Array([0]),
+    layerIndices: new Uint32Array([0xffffffff]),
+    opacities: new Float32Array([1]),
+    visibilityRows: new Uint32Array([0]),
+    count: 1,
+  });
+  const instanceGraph = {
+    rootInstances: modelGraph().rootInstances,
+    instancesByBlock: new Map([[1, instances]]),
+    insertsByOwner: new Map(),
+    modelBlockIndices: new Set([0]),
+    clipNodes: [],
+  };
+  const bitmap = { width: 4, height: 3 };
+  const overlay = new CanvasRasterImageOverlay(canvas, {
+    imageEntities: imageTable({
+      ...visibleRecord,
+      ownerHandle: 101n,
+      clippingEnabled: false,
+      clipVertexCount: 0,
+    }),
+    blocks: [
+      { index: 0, handle: 100n },
+      { index: 1, handle: 101n },
+    ],
+    layers: [{ name: "0" }],
+    instanceGraph,
+    cacheId: "root",
+    sourceId: "root",
+    hitTestingEnabled: true,
+    assetStore: {
+      lookup: () => ({
+        status: "ready",
+        bitmap,
+        width: bitmap.width,
+        height: bitmap.height,
+      }),
+      snapshot: () => ({}),
+    },
+  });
+  const styleEntry = (fixture) =>
+    Object.freeze({
+      resourceKind: "style",
+      sceneId: "root",
+      record: fixture.record,
+      byteLength: fixture.buffer.byteLength,
+    });
+  const visibleStyle = normalizedRenderDeltaStyleRecord({
+    blockIndex: 1,
+    handle: 0xc9n,
+    opacity: 0.5,
+    visible: true,
+  });
+  const hiddenStyle = normalizedRenderDeltaStyleRecord({
+    blockIndex: 1,
+    handle: 0xc9n,
+    visible: false,
+  });
+
+  overlay.setRenderDeltaState({
+    styles: [styleEntry(visibleStyle)],
+  });
+  const styledMetrics = overlay.redraw(camera, [true]);
+  assert.equal(styledMetrics.renderDeltaStyles, 1);
+  assert.equal(styledMetrics.visibleOccurrences, 1);
+  assert.equal(canvas.calls.drawImage.at(-1).alpha, 0.45);
+
+  overlay.setRenderDeltaState({
+    styles: [styleEntry(hiddenStyle)],
+  });
+  const drawCount = canvas.calls.drawImage.length;
+  const hiddenMetrics = overlay.redraw(camera, [true]);
+  assert.equal(hiddenMetrics.renderDeltaStyles, 1);
+  assert.equal(hiddenMetrics.visibleOccurrences, 0);
+  assert.equal(canvas.calls.drawImage.length, drawCount);
+  assert.equal(
+    overlay.hitTest(400, 300, {
+      snapKinds: ["insertion"],
+    }),
+    null,
+  );
+
+  overlay.setRenderDeltaState();
+  const restoredMetrics = overlay.redraw(camera, [true]);
+  assert.equal(restoredMetrics.renderDeltaStyles, 0);
+  assert.equal(canvas.calls.drawImage.at(-1).alpha, 0.9);
 });
