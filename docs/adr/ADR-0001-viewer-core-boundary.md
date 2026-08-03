@@ -135,6 +135,14 @@ Cache batch 가시성 계산과 reader/WebGL mapping만 주입한다.
 `ViewerSelectionController`는 DWG pick projection을 active
 session/revision/snapshot에 묶어 monotonic `selection.changed` Host event로
 전달한다.
+`pick.resolve`, Render/Pick/external identity, Context Reference와 source
+reveal descriptor도 같은 snapshot layer와 revision에 묶여 검증된다.
+`ViewerIdentityController`는 Service source의 identity/context/reveal hook을
+호출하고 opaque reference만 `context.request`와 `source.reveal` Host event로
+전달한다. `MockServiceRenderSource`와 재사용 가능한 service conformance는
+base/live layer 합성, stale pick 거부와 disposal을 실행한다. 실제
+`ConiServiceSource`, Canonical ID authority와 Context 저장소는 계속
+`coni-spatial`의 책임이다.
 `@dwg-viewer/viewer-ui`의 첫 public controller는 review toolbar의 active
 state와 접근성 속성, bounded text-only result row/action composition,
 DOM listener disposal을 소유한다. DWG Webview는 candidate 판독과 CAD 속성,
@@ -143,10 +151,11 @@ DOM listener disposal을 소유한다. DWG Webview는 candidate 판독과 CAD �
 아직 `packages/webview`에 있는 실제 WebGL CAD shader, DWG candidate decoder와
 selection/measurement overlay, generic render data model의 물리적 package
 이동은 남아 있다. 일반 Viewer UI도 toolbar/result lifecycle부터 이동했으며
-layer/layout panel composition은 이후 단계다. 외부 identity와 `pick-resolve`
-stable schema도 #30에서 conformance를 추가해야 한다. 제품 진입점을 먼저
-runtime 계약에 연결했으므로 이후 이동은 raw range transport나 VS Code
-private message를 Core API로 승격하지 않고 진행한다.
+layer/layout panel composition은 이후 단계다. #30의 실제 cross-repository
+`ConiServiceSource` qualification과 #27의 Render Snapshot/Delta packet은
+남아 있다. 제품 진입점을 먼저 runtime 계약에 연결했으므로 이후 이동은 raw
+range transport나 VS Code private message를 Core API로 승격하지 않고
+진행한다.
 
 ## Revisit
 

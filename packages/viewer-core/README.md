@@ -14,11 +14,15 @@ Source는 다음을 제공합니다.
 열린 session은 `descriptor`, `getSnapshot()`과 `dispose()`를 제공해야
 합니다. capability를 선언하면 해당 method도 반드시 구현해야 합니다.
 예를 들어 `range-read`는 `readRange()`, `revision-events`는
-`subscribeRevisionEvents()`를 요구합니다.
+`subscribeRevisionEvents()`를 요구합니다. Service-backed source는
+`pick-resolve`, `context-create`, `source-reveal` capability에 맞춰 각각
+`resolvePick()`, `createContext()`, `resolveSourceReveal()`을 구현합니다.
 
 `openRenderSource()`는 version을 협상하고 descriptor/snapshot binding을
 검증하며, stale 또는 out-of-order 상태를 화면에 전달하기 전에 거부합니다.
-모든 disposal은 idempotent합니다.
+pick/context/reveal 응답도 요청 전후에 active snapshot을 검사하므로 작업
+도중 snapshot이 바뀌면 늦은 응답을 `STALE_REVISION`으로 거부합니다. 모든
+disposal은 idempotent합니다.
 
 `createRenderLayerRangeSource()`는 snapshot의 range-backed layer 하나를
 기존 bounded reader가 소비할 수 있는 source로 projection합니다.
@@ -27,8 +31,12 @@ Source는 다음을 제공합니다.
 한 번에 소유합니다. mount 실패나 취소에서도 같은 자원을 정리합니다.
 
 `@dwg-viewer/viewer-core/testing`은 브라우저에서도 실행 가능한
-`MockRenderSource`를 제공하고, `@dwg-viewer/viewer-core/conformance`는 source
-구현이 실행할 공통 lifecycle/range fixture를 제공합니다.
+`MockRenderSource`, base/live layer와 identity hook을 갖춘
+`MockServiceRenderSource`를 제공합니다.
+`@dwg-viewer/viewer-core/conformance`의
+`runRenderSourceConformance()`는 공통 lifecycle/range 계약을,
+`runServiceRenderSourceConformance()`는 pick/external identity/context/reveal
+계약과 stale pick 거부를 검증합니다.
 
 ## ViewerHost
 
@@ -37,9 +45,13 @@ host-owned resource를 위한 `openResource()`를 제공할 수 있습니다.
 
 Viewer event vocabulary는 `selection.changed`, `viewport.changed`,
 `context.request`, `source.reveal`, `diagnostics.changed`, `diff.open`,
-`humanAction.request`입니다. event detail schema와 source reveal/context
-conformance는 #30에서 고정합니다. `humanAction.request`는 intent일 뿐
-capability 또는 approval evidence가 아닙니다.
+`humanAction.request`입니다. `ViewerIdentityController`는 제품의 bounded pick
+projection을 source의 revision-bound external identity로 resolve하고,
+opaque Context Reference와 source reveal을 각각 `context.request`,
+`source.reveal` event로 전달합니다. 두 event detail은 protocol/session/
+revision/snapshot/layer scope, monotonic sequence, reason, identity와 opaque
+reference를 포함합니다. `humanAction.request`는 intent일 뿐 capability 또는
+approval evidence가 아닙니다.
 
 현재 package에는 DOM bootstrap, `vscode`, `acquireVsCodeApi()`, Scene Cache
 parser와 Spatial permission code가 없습니다. Browser와 VS Code 제품
@@ -62,8 +74,9 @@ batch selection과 reader/renderer mapping만 담당하는 얇은 adapter입니�
 `ViewerSelectionController`는 제품 pick을 source-specific projector로
 정규화한 뒤 active session/revision/snapshot에 결합하고 monotonic
 `selection.changed` event를 ViewerHost에 전달합니다. 현재 DWG adapter는
-handle, source, layer와 point만 투영합니다. 외부 identity 및
-`pick-resolve` schema의 stable conformance는 #30에서 고정합니다.
+handle, source, layer와 point만 투영합니다. Service source는
+`ViewerIdentityController.resolvePick()` 결과를 같은 selection projection에
+사용해 external identity token과 world bounds를 유지할 수 있습니다.
 
 실제 WebGL CAD shader와 CPU DWG candidate decoder, DOM inspector는 아직
 `packages/webview`에 있습니다. Core는 이 구현을 import하지 않으며 이후

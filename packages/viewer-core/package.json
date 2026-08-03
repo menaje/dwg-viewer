@@ -11,10 +11,11 @@
     "./camera": "./src/camera.mjs",
     "./conformance": "./src/conformance.mjs",
     "./detail-streaming": "./src/detail-streaming-controller.mjs",
+    "./identity": "./src/identity-controller.mjs",
     "./interaction": "./src/viewport-interaction.mjs",
     "./renderer": "./src/renderer-controller.mjs",
     "./selection": "./src/selection-controller.mjs",
-    "./testing": "./src/mock-render-source.mjs"
+    "./testing": "./src/testing.mjs"
   },
   "engines": {
     "node": ">=24"

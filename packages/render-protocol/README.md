@@ -10,6 +10,9 @@ Viewer Core가 raw Scene Cache source와 Service-backed source를 같은 경계�
 - current revision과 last-successful revision 분리
 - generic 2D/3D layer manifest
 - session/revision/layer에 묶인 bounded range handle
+- 같은 snapshot layer에 묶인 pick request와 Render/Pick identity
+- nullable opaque external identity token
+- 만료 또는 session disposal scope를 가진 Context Reference와 source reveal
 - stale revision, scope mismatch와 unknown field의 fail-closed 처리
 
 이 package는 Spatial Workspace, Agent method, credential, 실제 file path와
@@ -36,6 +39,11 @@ const descriptor = parseRenderSessionDescriptor({
 });
 ```
 
-Render Delta, pick identity와 typed ViewerHost event의 세부 payload는 #30과
-#27의 후속 conformance에서 같은 protocol의 compatible version으로
-추가합니다.
+`pick.resolve` 결과는 world position/bounds와 optional external identity를
+포함하지만 실제 file path, credential 또는 Service graph object는 포함할 수
+없습니다. external identity가 없는 source는 token을 `null`로 명시합니다.
+Context와 source reveal은 Host가 임의 경로를 받는 대신 session-bound opaque
+ID를 전달받도록 설계되어 있습니다.
+
+Render Snapshot/Delta packet과 tombstone/upsert 적용 계약은 #27에서 같은
+protocol의 compatible version으로 추가합니다.

@@ -14,8 +14,12 @@ export {
   RenderProtocolError,
 } from "./diagnostics.mjs";
 export {
+  parseContextReferenceDescriptor,
+  parsePickResolveRequest,
   parseRangeHandleDescriptor,
+  parseRenderIdentityDescriptor,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
+  parseSourceRevealDescriptor,
 } from "./descriptors.mjs";
 export { negotiateRenderProtocolVersion } from "./handshake.mjs";

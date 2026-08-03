@@ -51,3 +51,6 @@ export {
 export {
   ViewerSelectionController,
 } from "./selection-controller.mjs";
+export {
+  ViewerIdentityController,
+} from "./identity-controller.mjs";

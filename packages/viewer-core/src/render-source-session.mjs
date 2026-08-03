@@ -4,9 +4,13 @@ import {
   RenderProtocolError,
   SupportedRenderProtocolVersions,
   negotiateRenderProtocolVersion,
+  parseContextReferenceDescriptor,
+  parsePickResolveRequest,
   parseRangeHandleDescriptor,
+  parseRenderIdentityDescriptor,
   parseRenderSessionDescriptor,
   parseRenderSnapshotDescriptor,
+  parseSourceRevealDescriptor,
 } from "@dwg-viewer/render-protocol";
 
 import {
@@ -52,6 +56,20 @@ function disposedError() {
   );
 }
 
+function expiredReference(reference, label) {
+  if (
+    reference.expiresAt !== null &&
+    Date.parse(reference.expiresAt) <= Date.now()
+  ) {
+    throw new RenderProtocolError(
+      RenderProtocolDiagnosticCode.MESSAGE_INVALID,
+      `${label} is already expired`,
+      { expiresAt: reference.expiresAt },
+    );
+  }
+  return reference;
+}
+
 function binaryBuffer(value) {
   if (value instanceof ArrayBuffer) {
     return value;
@@ -87,6 +105,42 @@ export class ViewerRenderSourceSession {
 
   get disposed() {
     return this.#disposed;
+  }
+
+  #activeSnapshot(capability) {
+    if (this.#disposed) {
+      throw disposedError();
+    }
+    if (!this.#descriptor.capabilities.includes(capability)) {
+      throw new RenderProtocolError(
+        RenderProtocolDiagnosticCode.CAPABILITY_MISSING,
+        `render source session does not provide ${capability}`,
+        { capability },
+      );
+    }
+    if (!this.#lastSnapshot) {
+      outOfOrder(
+        `${capability} requires an active render snapshot`,
+        { capability },
+      );
+    }
+    return this.#lastSnapshot;
+  }
+
+  #assertSnapshotStillActive(snapshot, operation) {
+    if (this.#disposed) {
+      throw disposedError();
+    }
+    if (this.#lastSnapshot !== snapshot) {
+      throw new RenderProtocolError(
+        RenderProtocolDiagnosticCode.STALE_REVISION,
+        `render snapshot changed while ${operation} was in flight`,
+        {
+          snapshotId: snapshot.snapshotId,
+          revisionId: snapshot.revisionId,
+        },
+      );
+    }
   }
 
   async getSnapshot({ signal } = {}) {
@@ -253,6 +307,78 @@ export class ViewerRenderSourceSession {
       );
     }
     return bytes;
+  }
+
+  async resolvePick(request, { signal } = {}) {
+    const snapshot = this.#activeSnapshot(
+      RenderCapability.PICK_RESOLVE,
+    );
+    throwIfAborted(signal);
+    const parsedRequest = parsePickResolveRequest(request, {
+      session: this.#descriptor,
+      snapshot,
+    });
+    const rawIdentity = await this.#session.resolvePick(
+      parsedRequest,
+      { signal },
+    );
+    throwIfAborted(signal);
+    this.#assertSnapshotStillActive(snapshot, "pick resolution");
+    return parseRenderIdentityDescriptor(rawIdentity, {
+      session: this.#descriptor,
+      snapshot,
+      request: parsedRequest,
+    });
+  }
+
+  async createContext(identity, { signal } = {}) {
+    const snapshot = this.#activeSnapshot(
+      RenderCapability.CONTEXT_CREATE,
+    );
+    throwIfAborted(signal);
+    const parsedIdentity = parseRenderIdentityDescriptor(identity, {
+      session: this.#descriptor,
+      snapshot,
+    });
+    const rawContext = await this.#session.createContext(
+      parsedIdentity,
+      { signal },
+    );
+    throwIfAborted(signal);
+    this.#assertSnapshotStillActive(snapshot, "context creation");
+    return expiredReference(
+      parseContextReferenceDescriptor(rawContext, {
+        session: this.#descriptor,
+        snapshot,
+        identity: parsedIdentity,
+      }),
+      "context reference",
+    );
+  }
+
+  async resolveSourceReveal(identity, { signal } = {}) {
+    const snapshot = this.#activeSnapshot(
+      RenderCapability.SOURCE_REVEAL,
+    );
+    throwIfAborted(signal);
+    const parsedIdentity = parseRenderIdentityDescriptor(identity, {
+      session: this.#descriptor,
+      snapshot,
+    });
+    const rawReveal = await this.#session.resolveSourceReveal(
+      parsedIdentity,
+      { signal },
+    );
+    throwIfAborted(signal);
+    this.#assertSnapshotStillActive(snapshot, "source reveal resolution");
+    return expiredReference(
+      parseSourceRevealDescriptor(rawReveal, {
+        session: this.#descriptor,
+        snapshot,
+        identity: parsedIdentity,
+      }),
+      "source reveal",
+    );
   }
 
   dispose() {

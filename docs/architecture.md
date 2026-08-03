@@ -52,9 +52,15 @@ capabilities and coordinates root/XREF detail disposal.
 stale-work rejection, review geometry publication and redraw coalescing.
 `ViewerSelectionController` binds projected picks to the active
 session/revision/snapshot and publishes monotonic `selection.changed` Host
-events. The WebGL CAD renderer, viewport batch selection and DWG candidate
-decoder remain Webview adapters and move incrementally without changing raw
-DWG qualification. `ViewerReviewUiController` now owns review toolbar state,
+events. Service-backed sources can additionally use revision-bound
+`pick.resolve`, external identity, Context Reference and source-reveal
+descriptors. `ViewerIdentityController` rejects stale in-flight responses and
+publishes only opaque `context.request` and `source.reveal` details to the Host.
+`MockServiceRenderSource` and the reusable service conformance exercise
+base/live layer composition and those hooks without importing Spatial code.
+The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
+remain Webview adapters and move incrementally without changing raw DWG
+qualification. `ViewerReviewUiController` now owns review toolbar state,
 accessibility attributes, bounded text-only result composition and DOM listener
 disposal. The Webview adapter still owns Korean/CAD labels, DWG property
 projection, picking and measurement calculations.
