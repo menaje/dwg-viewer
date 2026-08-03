@@ -1,0 +1,185 @@
+{
+  "schema": "dwg-native-document-adapter-qualification/1",
+  "status": "passed-query-preview-writer-blocked",
+  "asOf": "2026-08-03T22:00:34.347Z",
+  "compatibility": {
+    "status": "query-preview",
+    "nativeBackend": "backend:libredwg-native",
+    "wasmBackend": "backend:libredwg-wasm-memfs",
+    "writerAdmitted": false,
+    "nativeQueryOperations": 3
+  },
+  "nativeQuery": {
+    "descriptor": {
+      "protocol": "dwg-native-document-adapter/0.1.0",
+      "adapterId": "adapter:dwg-scene-cache-native-query",
+      "engineId": "engine:libredwg",
+      "engineVersion": "0.14",
+      "backendId": "backend:libredwg-native",
+      "backendKind": "native-process"
+    },
+    "index": {
+      "disposed": true,
+      "entries": 20,
+      "recordsRead": 20,
+      "sourceBytesRead": 3280,
+      "packedIndexBytes": 1500
+    },
+    "rangeSource": {
+      "requests": 31,
+      "bytesRead": 8256,
+      "maximumRequestBytes": 1760
+    },
+    "scannedEntries": 20,
+    "unindexedEntries": 3,
+    "returnedEntities": 17,
+    "resolvedHandle": "handle:12C",
+    "exactBounds": 8,
+    "conservativeBounds": 9,
+    "writerBlocked": {
+      "beforeOutputReservation": true,
+      "code": "DWG_NATIVE_CAPABILITY_BLOCKED"
+    },
+    "cleanup": {
+      "remainingTemporaryFiles": 0,
+      "remainingOutputReservations": 0,
+      "processExited": true,
+      "workerTerminated": false
+    }
+  },
+  "referenceWriter": {
+    "schema": "dwg-native-document-conformance/1",
+    "protocol": "dwg-native-document-adapter/0.1.0",
+    "adapterId": "adapter:reference-native-document",
+    "backendId": "backend:reference",
+    "backendKind": "reference",
+    "sourceFingerprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "query": {
+      "entityHandle": "handle:10",
+      "pages": 2,
+      "returnedEntities": 2,
+      "staleSource": {
+        "label": "stale native source",
+        "rejected": true,
+        "code": "DWG_NATIVE_STALE_SOURCE"
+      },
+      "staleEntity": {
+        "label": "stale native entity",
+        "rejected": true,
+        "code": "DWG_NATIVE_STALE_ENTITY"
+      }
+    },
+    "writer": {
+      "admitted": true,
+      "noopReopened": true,
+      "changeObserved": true,
+      "cleanup": {
+        "remainingTemporaryFiles": 0,
+        "remainingOutputReservations": 0,
+        "processExited": true,
+        "workerTerminated": false
+      }
+    },
+    "safety": {
+      "outputConflict": {
+        "label": "native original overwrite",
+        "rejected": true,
+        "code": "DWG_NATIVE_OUTPUT_CONFLICT"
+      },
+      "disposedQuery": {
+        "label": "disposed native session",
+        "rejected": true,
+        "code": "DWG_NATIVE_SOURCE_DISPOSED"
+      },
+      "cleanup": {
+        "remainingTemporaryFiles": 0,
+        "remainingOutputReservations": 0,
+        "processExited": true,
+        "workerTerminated": false
+      }
+    }
+  },
+  "blockedWriter": {
+    "admitted": false,
+    "blockedBeforeWrite": {
+      "label": "unqualified native writer",
+      "rejected": true,
+      "code": "DWG_NATIVE_CAPABILITY_BLOCKED"
+    }
+  },
+  "nativeWasm": {
+    "schema": "dwg-native-wasm-capability-comparison/1",
+    "protocol": "dwg-native-document-adapter/0.1.0",
+    "nativeBackend": "backend:libredwg-native",
+    "wasmBackend": "backend:libredwg-wasm-memfs",
+    "operations": {
+      "read": {
+        "native": "native",
+        "wasm": "native",
+        "equal": true
+      },
+      "query-entity": {
+        "native": "mapped",
+        "wasm": "mapped",
+        "equal": true
+      },
+      "query-region": {
+        "native": "mapped",
+        "wasm": "mapped",
+        "equal": true
+      },
+      "change-text": {
+        "native": "blocked",
+        "wasm": "blocked",
+        "equal": true
+      },
+      "change-line-polyline": {
+        "native": "blocked",
+        "wasm": "blocked",
+        "equal": true
+      },
+      "change-layer-style": {
+        "native": "blocked",
+        "wasm": "blocked",
+        "equal": true
+      },
+      "change-insert-transform": {
+        "native": "blocked",
+        "wasm": "blocked",
+        "equal": true
+      },
+      "create-delete-basic-entity": {
+        "native": "blocked",
+        "wasm": "blocked",
+        "equal": true
+      },
+      "write-dwg": {
+        "native": "blocked",
+        "wasm": "blocked",
+        "equal": true
+      },
+      "write-dxf": {
+        "native": "blocked",
+        "wasm": "blocked",
+        "equal": true
+      },
+      "preserve-unsupported": {
+        "native": "blocked",
+        "wasm": "blocked",
+        "equal": true
+      },
+      "reopen-validate": {
+        "native": "blocked",
+        "wasm": "blocked",
+        "equal": true
+      }
+    },
+    "productBackend": "backend:libredwg-native",
+    "wasmProductAdmitted": false
+  },
+  "productDecision": {
+    "native": "query-preview",
+    "writer": "blocked",
+    "wasm": "rejected"
+  }
+}

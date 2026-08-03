@@ -68,6 +68,14 @@ ACadSharp 파서 탈락 결과도
 모든 후보는 같은 [`engine-adapter`](specs/engine-adapter.md) 계약으로
 연결해 비교합니다.
 
+raw DWG의 source-precision query와 change/Save As 판정은 별도
+[`native-document-adapter`](specs/native-document-adapter.md) 계약을
+사용합니다. 현재 제품은 Scene Cache v1.18 source record의 packed,
+bounded handle/region query만 `query-preview`로 허용합니다. 실제
+LibreDWG writer와 WASM MEMFS backend는 qualification Gate를 통과하지
+못했으므로 output 생성 전에 명시적으로 차단하며, 읽기 전용 Viewer
+동작에는 영향을 주지 않습니다.
+
 LibreDWG 직접 변환기는 Scene Cache v1.18만 생성합니다. LINE,
 LWPOLYLINE/2D·3D POLYLINE, ARC, CIRCLE, ELLIPSE, SPLINE과 HATCH
 경계를 화면 버퍼와 정밀 원본으로 보존합니다. TEXT, MTEXT, ATTDEF,

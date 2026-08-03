@@ -209,6 +209,18 @@ The engine/backend capability, progress and cache-isolation boundary is
 recorded in
 [`scene-engine.md`](../specs/scene-engine.md).
 
+Raw DWG query and mutation admission is a second, narrower boundary:
+[`dwg-native-document-adapter/0.1.0`](../specs/native-document-adapter.md).
+It accepts only registered opaque input/output capabilities and exact
+source/entity fingerprints. The current implementation builds a compact
+parallel-typed-array handle index by reading Scene Cache source records in
+bounded ranges; it never exports LibreDWG pointers or a whole JavaScript
+drawing graph. Native read/entity/region query is available as a
+`query-preview`. The actual LibreDWG writer, every mutation, preservation and
+reopen capability remain pre-write `blocked`, while the reference writer
+exercises intended-versus-reopened-observed receipt validation. The rejected
+WASM MEMFS candidate remains outside settings and the VSIX.
+
 The product writer, preview writer, benchmark validator and Webview reader now
 accept only Scene Cache v1.18. Lower version numbers in the milestone evidence
 below are historical development records, not supported runtime formats.

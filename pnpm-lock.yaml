@@ -36,6 +36,12 @@ importers:
         specifier: workspace:^
         version: link:../viewer-core
 
+  packages/native-document-adapter:
+    dependencies:
+      '@dwg-viewer/dwg-scene-source':
+        specifier: workspace:^
+        version: link:../dwg-scene-source
+
   packages/render-protocol: {}
 
   packages/viewer-core:

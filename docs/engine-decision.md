@@ -253,6 +253,29 @@ but fails large-output equality, browser execution and the 800 MB memory hard
 gate. Compiler memory settings did not solve both time and memory. Reproduction
 is under [`adapters/libredwg/wasm`](../adapters/libredwg/wasm/README.md).
 
+## Native document query and writer admission
+
+이 문서에서 기존에 “writer”라고 부른 구현은 DWG를 Scene Cache v1.18로
+투영하는 읽기 전용 cache writer다. 원본 DWG를 수정해 새 DWG/DXF를 만드는
+native document writer와는 별도다.
+
+Issue #28의 raw DWG 경계는
+[`dwg-native-document-adapter/0.1.0`](../specs/native-document-adapter.md)으로
+분리했다. 현재 Native 경로는 Scene Cache의 source-precision record를
+bounded range로 읽어 packed handle/owner/layer/bounds index를 만들며,
+entity별 JavaScript graph를 노출하지 않는다. 이 `read`,
+`query-entity`, `query-region`만 product `query-preview`다.
+
+LibreDWG 0.14 raw writer의 public no-op rewrite/reopen preservation 결과는
+production admission을 통과하지 못했다. 따라서 TEXT/LINE/POLYLINE,
+layer/style, INSERT, basic create/delete, DWG/DXF write, unsupported-object
+preservation과 reopen capability를 모두 파일 생성과 output reservation 전에
+`blocked`한다. reference writer conformance가 no-op 및 변경 receipt의
+intended/observed 일치를 통과하는 것은 실제 LibreDWG writer 승인 근거가
+아니다. 기계 판독 판정과 fixture evidence는
+[`compatibility/native-document-adapter.json`](../compatibility/native-document-adapter.json)에
+있다.
+
 ## License and distribution boundary
 
 The selected engine is free software, but it is not permissively licensed.

@@ -1,0 +1,25 @@
+{
+  "name": "@dwg-viewer/native-document-adapter",
+  "version": "0.1.0",
+  "description": "Bounded native DWG query and fail-closed change/write adapter contract",
+  "license": "MPL-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./compatibility": "./src/compatibility.mjs",
+    "./conformance": "./src/conformance.mjs",
+    "./scene-cache": "./src/scene-cache-index.mjs",
+    "./testing": "./src/testing.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "node --check src/*.mjs && node --test test/*.test.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@dwg-viewer/dwg-scene-source": "workspace:^"
+  }
+}

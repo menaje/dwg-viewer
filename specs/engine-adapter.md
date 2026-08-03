@@ -18,6 +18,13 @@ The protocol identifier is:
 dwg-engine-adapter/1
 ```
 
+이 process 계약 위의 source/entity fingerprint, bounded native query,
+change proposal, exclusive Save As와 reopen receipt는
+[`dwg-native-document-adapter/0.1.0`](native-document-adapter.md)이
+정의한다. Scene Cache 변환 성공은 native writer capability를 뜻하지
+않으며, 현재 제품 writer는 별도 qualification 실패로 pre-write
+`blocked`다.
+
 ## Process contract
 
 The runner starts a new adapter process for every warmup and measured phase.

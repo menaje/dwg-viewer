@@ -26,3 +26,12 @@ protocol의 호환 기준을 기록한다.
 
 실제 package version, protocol version, artifact digest 또는 conformance
 경로가 바뀌면 manifest와 package test를 같은 변경에서 갱신한다.
+
+`native-document-adapter.json`은 raw DWG query/change/write backend의
+operation별 admission을 별도로 기록한다. 현재 Native는 bounded packed
+query만 `query-preview`이고 writer는 실제 no-op round-trip 실패 때문에
+output 예약 전에 `blocked`된다. WASM MEMFS 후보도 memory/Browser Gate
+실패로 제품 비허용이다. 계약 fixture의 writer 성공은 실제 LibreDWG writer
+승격으로 해석하지 않는다. 실행 증거는
+[`evidence/native-document-adapter-2026-08-04.json`](evidence/native-document-adapter-2026-08-04.json)에
+있다.

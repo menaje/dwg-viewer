@@ -1,0 +1,104 @@
+{
+  "schema": "dwg-native-document-adapter-compatibility/1",
+  "status": "query-preview",
+  "asOf": "2026-08-04",
+  "protocol": "dwg-native-document-adapter/0.1.0",
+  "native": {
+    "engine": "GNU LibreDWG",
+    "engineVersion": "0.14",
+    "backendId": "backend:libredwg-native",
+    "backendKind": "native-process",
+    "status": "query-preview",
+    "index": {
+      "projection": "Scene Cache v1.18 source records",
+      "storage": "packed typed arrays",
+      "maximumEntries": 1000000,
+      "maximumSourceBytes": 268435456,
+      "maximumReadBytes": 524288,
+      "wholeObjectGraphExposed": false,
+      "unindexedBoundsReported": true
+    },
+    "capabilities": {
+      "change-insert-transform": "blocked",
+      "change-layer-style": "blocked",
+      "change-line-polyline": "blocked",
+      "change-text": "blocked",
+      "create-delete-basic-entity": "blocked",
+      "preserve-unsupported": "blocked",
+      "query-entity": "mapped",
+      "query-region": "mapped",
+      "read": "native",
+      "reopen-validate": "blocked",
+      "write-dwg": "blocked",
+      "write-dxf": "blocked"
+    }
+  },
+  "wasm": {
+    "engine": "GNU LibreDWG",
+    "engineVersion": "0.14",
+    "backendId": "backend:libredwg-wasm-memfs",
+    "backendKind": "wasm-worker",
+    "status": "rejected",
+    "productAdmitted": false,
+    "observedPeakBytes": 2983854080,
+    "memoryHardLimitBytes": 800000000,
+    "browserCompleted": false,
+    "workerTerminationMilliseconds": 2.12,
+    "capabilities": {
+      "change-insert-transform": "blocked",
+      "change-layer-style": "blocked",
+      "change-line-polyline": "blocked",
+      "change-text": "blocked",
+      "create-delete-basic-entity": "blocked",
+      "preserve-unsupported": "blocked",
+      "query-entity": "mapped",
+      "query-region": "mapped",
+      "read": "native",
+      "reopen-validate": "blocked",
+      "write-dwg": "blocked",
+      "write-dxf": "blocked"
+    },
+    "limitations": [
+      "MEMFS copies the complete input, output, and temporary files",
+      "large-output fingerprinting exceeded the memory hard limit",
+      "the small public drawing did not complete within 30 seconds in Chromium",
+      "the candidate is absent from settings, fallback, and the VSIX"
+    ]
+  },
+  "writerQualification": {
+    "productAdmitted": false,
+    "actualNoopRoundTrip": "failed",
+    "referenceConformance": "passed",
+    "blockBeforeOutputReservation": true,
+    "originalOverwriteAllowed": false,
+    "requiredBeforeAdmission": [
+      "no-op Save As and independent reopen semantic equality",
+      "operation-specific intended and observed diff equality",
+      "Korean TEXT and MTEXT plus SHX and BigFont reference preservation",
+      "block, XREF, layout, viewport, and draw-order preservation",
+      "opaque and custom object preservation or pre-write blocking",
+      "external CAD open and regeneration"
+    ]
+  },
+  "conformance": {
+    "command": "pnpm --filter @dwg-viewer/native-document-adapter check",
+    "queryImplementation": "packages/native-document-adapter/src/scene-cache-index.mjs",
+    "sessionContract": "packages/native-document-adapter/src/session.mjs",
+    "referenceWriter": "packages/native-document-adapter/src/testing.mjs",
+    "suite": "packages/native-document-adapter/src/conformance.mjs",
+    "evidence": "compatibility/evidence/native-document-adapter-2026-08-04.json"
+  },
+  "distributionBoundary": {
+    "mplVsixBundlesGplAdapter": false,
+    "gplAdapterSeparateArtifact": true,
+    "sourceCompletePackage": true,
+    "qualifiedTargets": [
+      "linux-x64",
+      "darwin-arm64"
+    ],
+    "windows": "blocked"
+  },
+  "tracking": [
+    "https://github.com/menaje/dwg-viewer/issues/28"
+  ]
+}

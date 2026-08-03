@@ -46,6 +46,8 @@ jobs:
         run: pnpm --filter @menaje/viewer-ui check
       - name: Check DWG Scene source
         run: pnpm --filter @dwg-viewer/dwg-scene-source check
+      - name: Check native document adapter contract
+        run: pnpm --filter @dwg-viewer/native-document-adapter check
       - name: Check Webview
         run: pnpm --filter @dwg-viewer/webview check
       - name: Check VS Code extension
