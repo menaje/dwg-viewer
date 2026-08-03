@@ -276,9 +276,10 @@ private message를 Core API로 승격하지 않고 진행한다.
 
 2026-08-04에는 Viewer 저장소 소유 경계를
 `pnpm run qualify:viewer-boundary`로 고정했다. 이 Gate는 public package를
-두 번 pack해 manifest digest와 byte 동일성을 확인하고, 빈 임시 consumer에
-tarball만 설치해 source/service conformance와 외부 제품 없는 standalone
-runtime lifecycle을 실행한다. Browser HTML과 VS Code bundle도 같은
+두 번 pack해 같은 runner의 byte 동일성과 platform-neutral content digest를
+확인하고, published archive의 raw digest/size pin을 유지한다. 빈 임시
+consumer에 tarball만 설치해 source/service conformance와 외부 제품 없는
+standalone runtime lifecycle을 실행한다. Browser HTML과 VS Code bundle도 같은
 `packages/webview/src/main.mjs`에서 `DwgSceneCacheSource`와
 `openViewerRuntime()`을 사용해야 통과한다. 결과는
 [`viewer-boundary-2026-08-04.json`](../../compatibility/evidence/viewer-boundary-2026-08-04.json)에

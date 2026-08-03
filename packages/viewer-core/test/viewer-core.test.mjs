@@ -455,6 +455,9 @@ test("keeps package versions and producer compatibility manifest aligned", async
   )) {
     assert.match(artifact.file, /^menaje-viewer-.+\.tgz$/u);
     assert.match(artifact.sha256, /^[a-f0-9]{64}$/u);
+    assert.match(artifact.contentSha256, /^[a-f0-9]{64}$/u);
+    assert.ok(Number.isSafeInteger(artifact.bytes));
+    assert.ok(artifact.bytes > 0);
   }
   assert.deepEqual(manifest.compatibilityWindow.renderProtocol, [
     RenderProtocolVersion,

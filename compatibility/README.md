@@ -30,8 +30,10 @@ protocol의 호환 기준을 기록한다.
 실제 package version, protocol version, artifact digest 또는 conformance
 경로가 바뀌면 manifest와 package test를 같은 변경에서 갱신한다.
 
-`pnpm run qualify:viewer-boundary`는 세 public tarball을 두 번 pack해 byte
-동일성과 manifest SHA-256을 확인하고, 빈 임시 consumer에 artifact만 설치해
+`pnpm run qualify:viewer-boundary`는 세 public tarball을 두 번 pack해 같은
+runner의 byte 동일성과 platform-neutral package content SHA-256을 확인하고,
+published archive의 raw SHA-256/size pin을 보존한다. 빈 임시 consumer에는
+artifact만 설치해
 RenderSource/Service fixture와 standalone runtime을 실행한다. Browser와
 VS Code가 같은 Webview entrypoint를 bundle하는지도 확인한다. 이 저장소가
 소유하지 않는 BIM/Spatial consumer qualification은 실행하거나 수정하지

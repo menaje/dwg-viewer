@@ -29,15 +29,21 @@
     "artifacts": {
       "viewerCore": {
         "file": "menaje-viewer-core-0.1.0.tgz",
-        "sha256": "2a04c367b5b2cf5870f5f18f33e2a1d8e545f099f0dd735c7e5d90f8224b698d"
+        "sha256": "2a04c367b5b2cf5870f5f18f33e2a1d8e545f099f0dd735c7e5d90f8224b698d",
+        "bytes": 44323,
+        "contentSha256": "db4edb620f5f34c355d3030a16b703fed0f76f4f602d03737303683ce8269adb"
       },
       "renderProtocol": {
         "file": "menaje-viewer-render-protocol-0.1.0.tgz",
-        "sha256": "60e952677c17333fbdb07193ef87cafb1a0be9923573ac5366297a19cfc8b9ed"
+        "sha256": "60e952677c17333fbdb07193ef87cafb1a0be9923573ac5366297a19cfc8b9ed",
+        "bytes": 11158,
+        "contentSha256": "cf86c55a3d6f1afc64d42d3de6e80f5796fbe00b0b8e3eb0b15af465e0f78c09"
       },
       "viewerUi": {
         "file": "menaje-viewer-ui-0.1.0.tgz",
-        "sha256": "9f13c2aa782297929058c298728114fa31c1cc387c82319e27b90ad0f267b8db"
+        "sha256": "9f13c2aa782297929058c298728114fa31c1cc387c82319e27b90ad0f267b8db",
+        "bytes": 8560,
+        "contentSha256": "3165c60c1dbba66c160359de497144da4e750e93440657f526eb95be47619d9c"
       }
     }
   },

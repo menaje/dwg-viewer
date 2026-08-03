@@ -97,15 +97,15 @@ async function readJson(filePath) {
   return JSON.parse(await readFile(filePath, "utf8"));
 }
 
-async function sourceFiles(directory) {
+async function filesBelow(directory) {
   const files = [];
   for (const entry of await readdir(directory, {
     withFileTypes: true,
   })) {
     const entryPath = path.join(directory, entry.name);
     if (entry.isDirectory()) {
-      files.push(...(await sourceFiles(entryPath)));
-    } else if (entry.isFile() && entry.name.endsWith(".mjs")) {
+      files.push(...(await filesBelow(entryPath)));
+    } else if (entry.isFile()) {
       files.push(entryPath);
     }
   }
@@ -150,7 +150,8 @@ async function validatePublicPackageBoundary(
     "src",
   ]);
 
-  const files = await sourceFiles(path.join(packageRoot, "src"));
+  const files = (await filesBelow(path.join(packageRoot, "src")))
+    .filter((file) => file.endsWith(".mjs"));
   const imports = new Set();
   for (const file of files) {
     const source = await readFile(file, "utf8");
@@ -178,8 +179,34 @@ async function validatePublicPackageBoundary(
   });
 }
 
-function sha256(bytes) {
-  return createHash("sha256").update(bytes).digest("hex");
+async function packageContentSha256(
+  artifactPath,
+  extractionDirectory,
+) {
+  await mkdir(extractionDirectory, { recursive: true });
+  run("tar", [
+    "-xzf",
+    artifactPath,
+    "-C",
+    extractionDirectory,
+  ]);
+  const packageRoot = path.join(extractionDirectory, "package");
+  const files = await filesBelow(packageRoot);
+  const digest = createHash("sha256");
+  for (const file of files) {
+    const relativePath = path
+      .relative(packageRoot, file)
+      .split(path.sep)
+      .join("/");
+    const bytes = await readFile(file);
+    digest.update(relativePath);
+    digest.update("\0");
+    digest.update(String(bytes.byteLength));
+    digest.update("\0");
+    digest.update(bytes);
+    digest.update("\0");
+  }
+  return digest.digest("hex");
 }
 
 async function packArtifacts(destination, manifest) {
@@ -199,9 +226,10 @@ async function packArtifacts(destination, manifest) {
     const expected =
       manifest.distribution.artifacts[definition.artifactKey];
     const artifactPath = path.join(destination, expected.file);
-    const bytes = await readFile(artifactPath);
-    const digest = sha256(bytes);
-    assert.equal(digest, expected.sha256);
+    assert.match(expected.sha256, /^[a-f0-9]{64}$/u);
+    assert.match(expected.contentSha256, /^[a-f0-9]{64}$/u);
+    assert.ok(Number.isSafeInteger(expected.bytes));
+    assert.ok(expected.bytes > 0);
 
     const entries = run("tar", ["-tzf", artifactPath])
       .split(/\r?\n/u)
@@ -219,12 +247,22 @@ async function packArtifacts(destination, manifest) {
           !entry.includes("/adapters/"),
       ),
     );
+    const contentDigest = await packageContentSha256(
+      artifactPath,
+      path.join(
+        destination,
+        `content-${definition.artifactKey}`,
+      ),
+    );
+    assert.equal(contentDigest, expected.contentSha256);
 
     artifacts[definition.artifactKey] = Object.freeze({
       file: expected.file,
-      sha256: digest,
-      bytes: bytes.byteLength,
+      publishedSha256: expected.sha256,
+      publishedBytes: expected.bytes,
+      contentSha256: contentDigest,
       entries: entries.length,
+      runnerRepackByteIdentical: true,
     });
   }
   return Object.freeze(artifacts);
