@@ -32,6 +32,7 @@ const {
   runVSCodeCommand,
 } = vscodeTestElectron;
 const REPORT_SCHEMA = "dwg-windows-vscode-ui-qualification/1";
+export const WINDOWS_UI_EXTENSION_ID = "menaje.dwg-viewer-vscode";
 const SCALE_FACTORS = Object.freeze([1, 1.25, 1.5, 2]);
 const WIDTHS = Object.freeze([
   Object.freeze({ label: "normal", editorWidth: 1_050 }),
@@ -723,7 +724,15 @@ export async function qualifyWindowsVsCodeUi(options) {
       ],
       downloadOptions,
     );
-    assert.match(installedExtensions, /^menaje\.dwg-viewer@/mu);
+    assert.equal(
+      installedExtensions
+        .split(/\r?\n/u)
+        .some((line) =>
+          line.startsWith(`${WINDOWS_UI_EXTENSION_ID}@`),
+        ),
+      true,
+      `packaged extension ${WINDOWS_UI_EXTENSION_ID} was not installed`,
+    );
 
     const cases = [];
     for (const scaleFactor of SCALE_FACTORS) {

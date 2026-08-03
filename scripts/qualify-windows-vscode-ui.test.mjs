@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: MPL-2.0
 
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 
 import {
   parseWindowsUiArguments,
   rectIsContained,
+  WINDOWS_UI_EXTENSION_ID,
 } from "./qualify-windows-vscode-ui.mjs";
 
 test("parses only the bounded Windows UI qualification inputs", () => {
@@ -85,5 +87,18 @@ test("accepts only visible rectangles contained by the CSS viewport", () => {
       viewport,
     ),
     false,
+  );
+});
+
+test("uses the packaged extension manifest identity", async () => {
+  const manifest = JSON.parse(
+    await readFile(
+      path.resolve("apps/vscode-extension/package.json"),
+      "utf8",
+    ),
+  );
+  assert.equal(
+    WINDOWS_UI_EXTENSION_ID,
+    `${manifest.publisher}.${manifest.name}`,
   );
 });
