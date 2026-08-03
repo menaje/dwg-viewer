@@ -3,6 +3,20 @@
 Scene Cache v1.18 range reader, WebGL2 line/fill/point renderer, bounded CAD
 text overlay and lazy raster IMAGE overlay for the VS Code Webview.
 
+Standalone Browser의 `File`과 VS Code의 cache channel은 모두
+`DwgSceneCacheSource -> Viewer Core runtime -> render-layer range source`를
+거쳐 같은 renderer를 mount합니다. Viewer Core가 source/snapshot,
+presentation과 Host disposal을 소유하고, 기존 worker transport는
+DWG 제품 내부 구현으로 유지됩니다. 2D camera의 canonical 구현은
+`viewer-core`에 있으며 source-neutral GPU batch cache와 함께 과거 Webview
+import path는 re-export입니다. Viewport interaction lifecycle도 Core
+구현을 상속합니다. Core의 renderer controller가 root/XREF detail target을
+조정하고 generic detail streaming controller가 cache·concurrency·폐기를
+소유합니다. Webview wrapper는 Scene Cache batch 가시성 계산과 vertex
+reader/WebGL mapping만 주입합니다. 객체 선택은 DWG candidate decoder에
+남지만 선택 상태는 active snapshot에 묶인 Core controller를 통해
+`selection.changed` Host event로 전달됩니다.
+
 The standalone page is the development and qualification shell: it keeps the
 framed canvas, diagnostics and full memory/performance dashboard. When hosted
 by VS Code, the same renderer switches to an immersive shell that fills the
@@ -176,11 +190,12 @@ From the repository root:
 
 ```bash
 pnpm install --frozen-lockfile
-python3 -m http.server 4173 --bind 127.0.0.1 --directory packages/webview
+python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 ```
 
-Open `http://127.0.0.1:4173` and select a generated `.cache` file. The file
-stays local to the browser.
+Open `http://127.0.0.1:4173/packages/webview/` and select a generated `.cache`
+file. The repository root is the static root because the Webview imports the
+shared `packages/dwg-scene-source` package. The file stays local to the browser.
 
 ## Test
 
@@ -190,8 +205,9 @@ pnpm --filter @dwg-viewer/webview check
 
 Tests cover bounded range reads, cache validation, nested/DIMENSION block
 transforms, invalid targets, cycles and instance/depth caps, large-coordinate
-camera rebasing, camera controls, viewport detail selection, GPU resource
-ranges, layer visibility, arbitrary Unicode/nested XREF layer grouping,
+camera rebasing, camera controls, Core renderer/detail lifecycle adapters,
+viewport detail selection, GPU resource ranges, selection publication,
+layer visibility, arbitrary Unicode/nested XREF layer grouping,
 rectangle camera fitting, bounded branching view history, bookmark-state
 validation, XREF instance/layer/text composition, aggregate XREF GPU budgets,
 bounded root/XREF filled-object selection with layer and clip filtering, and

@@ -26,8 +26,32 @@ importers:
         specifier: 7.0.2
         version: 7.0.2
 
+  packages/dwg-scene-source:
+    dependencies:
+      '@dwg-viewer/render-protocol':
+        specifier: workspace:^
+        version: link:../render-protocol
+    devDependencies:
+      '@dwg-viewer/viewer-core':
+        specifier: workspace:^
+        version: link:../viewer-core
+
+  packages/render-protocol: {}
+
+  packages/viewer-core:
+    dependencies:
+      '@dwg-viewer/render-protocol':
+        specifier: workspace:^
+        version: link:../render-protocol
+
   packages/webview:
     dependencies:
+      '@dwg-viewer/dwg-scene-source':
+        specifier: workspace:^
+        version: link:../dwg-scene-source
+      '@dwg-viewer/viewer-core':
+        specifier: workspace:^
+        version: link:../viewer-core
       '@mlightcad/shx-parser':
         specifier: 1.4.5
         version: 1.4.5

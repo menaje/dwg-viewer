@@ -272,6 +272,7 @@ export class ReviewTools {
     measurementPreferences = {},
     onMeasurementPreferencesChange = () => {},
     onReviewModeChange = () => {},
+    onSelectionChange = () => {},
     onStatus = () => {},
   }) {
     this.canvas = canvas;
@@ -290,6 +291,7 @@ export class ReviewTools {
     this.onMeasurementPreferencesChange =
       onMeasurementPreferencesChange;
     this.onReviewModeChange = onReviewModeChange;
+    this.onSelectionChange = onSelectionChange;
     this.onStatus = onStatus;
     const normalizedPreferences =
       normalizeMeasurementPreferences(measurementPreferences);
@@ -346,8 +348,24 @@ export class ReviewTools {
       linetypes: scene.metadata.linetypes,
       reader: scene.reader,
     });
+    this.resetToolControls();
     this.bind();
     this.setEnabled(true);
+  }
+
+  resetToolControls() {
+    this.canvas.classList.remove("reviewing");
+    for (const button of this.toolbar.querySelectorAll(
+      "[data-review-tool]",
+    )) {
+      button.setAttribute("aria-pressed", "false");
+    }
+    const finishButton = this.toolbar.querySelector(
+      "[data-review-action='finish']",
+    );
+    if (finishButton) {
+      finishButton.hidden = true;
+    }
   }
 
   bind() {
@@ -506,6 +524,22 @@ export class ReviewTools {
     for (const button of this.toolbar.querySelectorAll("button")) {
       button.disabled = !enabled;
     }
+  }
+
+  replaceSelection(selection, { reason = "pick" } = {}) {
+    this.selection = selection ?? null;
+    this.onSelectionChange?.(this.selection, { reason });
+    return this.selection;
+  }
+
+  clearSelection(reason = "clear") {
+    if (this.selection === null || this.selection === undefined) {
+      this.selection = null;
+      return false;
+    }
+    this.selection = null;
+    this.onSelectionChange?.(null, { reason });
+    return true;
   }
 
   measurementDisplay() {
@@ -801,7 +835,7 @@ export class ReviewTools {
     this.pendingCalibration = null;
     this.measurementGuide = null;
     this.measurementPath = null;
-    this.selection = null;
+    this.clearSelection("measurement.start");
     this.result.hidden = true;
     if (this.activeTool === "calibrate") {
       this.firstPoint = null;
@@ -1304,7 +1338,7 @@ export class ReviewTools {
     this.measurementPath = null;
     this.pendingCalibration = null;
     this.textMatch = null;
-    this.selection = null;
+    this.clearSelection("clear");
     if (!keepResult) {
       this.result.hidden = true;
     }
@@ -1411,10 +1445,10 @@ export class ReviewTools {
       return;
     }
     if (this.activeTool === "select") {
-      this.selection = candidate;
+      this.replaceSelection(candidate, { reason: "pick" });
       this.showSelection(candidate);
     } else if (this.activeTool === "coordinate") {
-      this.selection = candidate;
+      this.replaceSelection(candidate, { reason: "coordinate" });
       this.showCoordinate(candidate);
     } else if (this.activeTool === "distance") {
       this.selectDistancePoint(candidate);
@@ -1678,7 +1712,7 @@ export class ReviewTools {
     const distance = Math.hypot(deltaX, deltaY, deltaZ);
     const angle = (Math.atan2(deltaY, deltaX) * 180) / Math.PI;
     const measurement = this.measurementDisplay();
-    this.selection = null;
+    this.clearSelection("measurement.complete");
     this.measurementPath = null;
     this.measurementGuide = Object.freeze({
       first: Object.freeze([...firstCandidate.displayPoint]),
@@ -1721,7 +1755,7 @@ export class ReviewTools {
       this.onStatus("앞 점과 다른 위치를 선택하세요.");
       return;
     }
-    this.selection = null;
+    this.clearSelection("measurement.start");
     points.push(candidate);
     if (this.activeTool === "angle") {
       if (points.length === 1) {
@@ -1766,7 +1800,7 @@ export class ReviewTools {
       closed,
     });
     this.measurementPoints = [];
-    this.selection = null;
+    this.clearSelection("measurement.complete");
   }
 
   finishPathMeasurement() {
@@ -1901,7 +1935,7 @@ export class ReviewTools {
         measurement.length(curve.measurementCenter[1]),
       ],
     );
-    this.selection = null;
+    this.clearSelection("measurement.complete");
     this.textMatch = null;
     this.measurementPath = null;
     this.measurementGuide = Object.freeze({
@@ -1966,7 +2000,7 @@ export class ReviewTools {
     this.measurementPoints = [];
     this.measurementGuide = null;
     this.measurementPath = null;
-    this.selection = null;
+    this.clearSelection("search.navigate");
     this.textMatch = Object.freeze({
       point: Object.freeze([...point]),
       handle: String(handle ?? ""),
@@ -2327,6 +2361,7 @@ export class ReviewTools {
   dispose() {
     this.abortController.abort();
     this.onReviewModeChange(false);
+    this.clearSelection("dispose");
     this.activeTool = null;
     this.releaseFilledObjects();
     this.clearExactCurves();
@@ -2334,7 +2369,7 @@ export class ReviewTools {
     this.detailSelections.clear();
     this.detailEntries.clear();
     this.detailBytes = 0;
-    this.canvas.classList.remove("reviewing");
+    this.resetToolControls();
     this.toolbar.hidden = true;
     this.result.hidden = true;
     const context = this.overlay.getContext("2d", { alpha: true });

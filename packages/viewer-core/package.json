@@ -1,0 +1,29 @@
+{
+  "name": "@dwg-viewer/viewer-core",
+  "version": "0.1.0",
+  "description": "Source-neutral lifecycle and host contracts for DWG Viewer renderers",
+  "license": "MPL-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./batch-cache": "./src/batch-cache.mjs",
+    "./camera": "./src/camera.mjs",
+    "./conformance": "./src/conformance.mjs",
+    "./detail-streaming": "./src/detail-streaming-controller.mjs",
+    "./interaction": "./src/viewport-interaction.mjs",
+    "./renderer": "./src/renderer-controller.mjs",
+    "./selection": "./src/selection-controller.mjs",
+    "./testing": "./src/mock-render-source.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "node --check src/*.mjs && node --test test/*.test.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@dwg-viewer/render-protocol": "workspace:^"
+  }
+}

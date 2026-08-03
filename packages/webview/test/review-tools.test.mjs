@@ -455,6 +455,85 @@ test("review candidate search includes text and image overlay hits", () => {
   assert.equal(found, overlayCandidate);
 });
 
+test("publishes picked and cleared selection lifecycle changes", () => {
+  const changes = [];
+  const tools = Object.create(ReviewTools.prototype);
+  Object.assign(tools, {
+    selection: null,
+    onSelectionChange(selection, options) {
+      changes.push({ selection, options });
+    },
+  });
+  const selected = candidate({
+    displayPoint: [2, 3, 0],
+    kind: "entity",
+  });
+
+  assert.equal(
+    tools.replaceSelection(selected, { reason: "pick" }),
+    selected,
+  );
+  assert.equal(tools.clearSelection("tool.clear"), true);
+  assert.equal(tools.clearSelection("tool.clear"), false);
+  assert.deepEqual(changes, [
+    {
+      selection: selected,
+      options: { reason: "pick" },
+    },
+    {
+      selection: null,
+      options: { reason: "tool.clear" },
+    },
+  ]);
+});
+
+test("resets stale review button state across view remounts", () => {
+  const pressed = [];
+  const finishButton = { hidden: false };
+  const tools = Object.create(ReviewTools.prototype);
+  Object.assign(tools, {
+    canvas: {
+      classList: {
+        remove(value) {
+          assert.equal(value, "reviewing");
+        },
+      },
+    },
+    toolbar: {
+      querySelectorAll(selector) {
+        assert.equal(selector, "[data-review-tool]");
+        return [
+          {
+            setAttribute(name, value) {
+              pressed.push([name, value]);
+            },
+          },
+          {
+            setAttribute(name, value) {
+              pressed.push([name, value]);
+            },
+          },
+        ];
+      },
+      querySelector(selector) {
+        assert.equal(
+          selector,
+          "[data-review-action='finish']",
+        );
+        return finishButton;
+      },
+    },
+  });
+
+  tools.resetToolControls();
+
+  assert.deepEqual(pressed, [
+    ["aria-pressed", "false"],
+    ["aria-pressed", "false"],
+  ]);
+  assert.equal(finishButton.hidden, true);
+});
+
 test("refreshes a composite filled-object index when an XREF mounts", async () => {
   const emptyData = () => ({
     records: [],

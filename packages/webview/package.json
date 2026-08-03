@@ -11,6 +11,8 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@dwg-viewer/dwg-scene-source": "workspace:^",
+    "@dwg-viewer/viewer-core": "workspace:^",
     "@mlightcad/shx-parser": "1.4.5",
     "earcut": "3.2.3"
   }

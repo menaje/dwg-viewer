@@ -38,6 +38,12 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Check adapter packaging
         run: pnpm run check:adapter-package
+      - name: Check render protocol
+        run: pnpm --filter @dwg-viewer/render-protocol check
+      - name: Check Viewer Core contracts
+        run: pnpm --filter @dwg-viewer/viewer-core check
+      - name: Check DWG Scene source
+        run: pnpm --filter @dwg-viewer/dwg-scene-source check
       - name: Check Webview
         run: pnpm --filter @dwg-viewer/webview check
       - name: Check VS Code extension

@@ -1,0 +1,26 @@
+{
+  "name": "@dwg-viewer/dwg-scene-source",
+  "version": "0.1.0",
+  "description": "Scene Cache reader and RenderSource adapter for DWG Viewer Core",
+  "license": "MPL-2.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./scene-cache": "./src/scene-cache.mjs",
+    "./range-source": "./src/range-source.mjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "check": "node --check src/*.mjs && node --test test/*.test.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@dwg-viewer/render-protocol": "workspace:^"
+  },
+  "devDependencies": {
+    "@dwg-viewer/viewer-core": "workspace:^"
+  }
+}

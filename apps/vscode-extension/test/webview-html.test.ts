@@ -167,6 +167,14 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   assert.match(template, /id="review-result"/u);
   assert.match(
     template,
+    /"@dwg-viewer\/viewer-core":\s*"\.\.\/viewer-core\/src\/index\.mjs"/u,
+  );
+  assert.match(
+    template,
+    /"@dwg-viewer\/dwg-scene-source":\s*"\.\.\/dwg-scene-source\/src\/index\.mjs"/u,
+  );
+  assert.match(
+    template,
     /id="host-rebuild"[^>]*hidden[^>]*>\s*다시 그리기/u,
   );
   assert.doesNotMatch(template, /캐시 다시 만들기/u);
@@ -177,6 +185,12 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   );
   assert.match(mainModule, /viewerToolSurfaceContains/u);
   assert.match(mainModule, /new ReviewTools/u);
+  assert.match(mainModule, /new DwgSceneCacheSource/u);
+  assert.match(mainModule, /openViewerRuntime/u);
+  assert.match(mainModule, /createRenderLayerRangeSource/u);
+  assert.match(mainModule, /new ViewerSelectionController/u);
+  assert.match(mainModule, /projectDwgSelection/u);
+  assert.match(mainModule, /onSelectionChange/u);
   assert.match(mainModule, /new CameraViewHistory/u);
   assert.match(mainModule, /normalizeViewBookmarks/u);
   assert.match(mainModule, /focusAt\(\s*bookmark\.view\.origin/u);

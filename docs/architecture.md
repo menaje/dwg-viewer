@@ -14,6 +14,47 @@ DWG
   -> batched and instanced GPU renderer
 ```
 
+## Viewer product and package boundary
+
+The raw DWG Viewer remains an independently installed product. Renderer reuse
+by another product is through versioned Viewer Core packages rather than the
+installed extension, its process, or its private `dwg-*` Host–Webview messages.
+The accepted boundary and extraction order are recorded in
+[`ADR-0001`](adr/ADR-0001-viewer-core-boundary.md).
+
+The first executable package boundary is:
+
+```text
+RenderSource
+  -> @dwg-viewer/render-protocol
+  -> @dwg-viewer/viewer-core
+  -> ViewerHost
+```
+
+Both packages are currently `0.1.0`, `experimental`, and workspace-only. Their
+producer compatibility record is
+[`compatibility/viewer-core.json`](../compatibility/viewer-core.json). This
+status does not claim npm, release-artifact, or cross-repository compatibility.
+The canonical Scene Cache reader and bounded range sources now live in
+`packages/dwg-scene-source`; the legacy Webview paths are compatibility
+re-exports. `DwgSceneCacheSource` and the Browser mock source pass the common
+source lifecycle fixture. Both the standalone Browser file path and VS Code
+cache channel now open `DwgSceneCacheSource` through the same Viewer Core
+runtime and mount the existing renderer through a snapshot-bound range
+projection. The source-neutral 2D camera is now canonical in Viewer Core with
+a legacy Webview re-export, as is the byte-budgeted GPU batch cache. Viewport
+interaction lifecycle is also canonical in Core; the Webview wrapper injects
+the current DWG detail-selection policy so Core does not import Scene Cache
+batch kinds. `ViewerRendererController` validates redraw/camera/detail-target
+capabilities and coordinates root/XREF detail disposal.
+`DetailStreamingController` owns concurrency, byte-budgeted GPU caching,
+stale-work rejection, review geometry publication and redraw coalescing.
+`ViewerSelectionController` binds projected picks to the active
+session/revision/snapshot and publishes monotonic `selection.changed` Host
+events. The WebGL CAD renderer, viewport batch selection and DWG candidate
+decoder remain Webview adapters and move incrementally without changing raw
+DWG qualification.
+
 The engine decision is now accepted: LibreDWG 0.14 is the primary parser and
 converter for continued product development. The former acadrust comparison
 engine was retired and removed after failing the reference drawing's memory

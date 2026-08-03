@@ -1,3 +1,13 @@
+import {
+  DwgSceneCacheSource,
+  createSceneCacheRevisionId,
+} from "@dwg-viewer/dwg-scene-source";
+import {
+  createRenderLayerRangeSource,
+  openViewerRuntime,
+  ViewerSelectionController,
+} from "@dwg-viewer/viewer-core";
+
 import { ViewportInteraction } from "./interaction.mjs?v=1.18.12";
 import {
   buildExternalLayerMap,
@@ -203,6 +213,7 @@ let fontRefreshTimer;
 let lastPatternCameraKey;
 let patternRequestRevision = 0;
 let openRevision = 0;
+let sourceOpenRequestRevision = 0;
 const glyphCache = new ShxGlyphCache();
 const fontDiagnostics = new Map();
 const pendingHostFontRequests = new Map();
@@ -232,7 +243,7 @@ let activeMeasurementPreferences =
   initialWebviewState.measurementPreferences
     ? initialWebviewState.measurementPreferences
     : {};
-let activeHostRangeSource;
+let activeViewerRuntime;
 let activeRangeMetricsSource;
 const externalHostSources = new Map();
 const externalRangeSources = new Map();
@@ -250,6 +261,162 @@ const plotStyleWaiters = new Map();
 const MAX_EXTERNAL_SOURCE_OVERVIEW_BYTES = 32 * 1024 * 1024;
 let externalSourceOverviewBytes = 0;
 let externalLoadQueue = Promise.resolve();
+const LOCAL_CACHE_FINGERPRINT_SAMPLE_BYTES = 64 * 1024;
+const MAX_DWG_SESSION_READ_BUDGET_BYTES = 2 * 1024 * 1024 * 1024;
+
+function bytesToHex(bytes) {
+  return [...bytes]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function localCacheSessionDigest(file) {
+  if (!globalThis.crypto?.subtle) {
+    throw new Error("이 브라우저는 캐시 session fingerprint를 지원하지 않습니다.");
+  }
+  const sampleBytes = LOCAL_CACHE_FINGERPRINT_SAMPLE_BYTES;
+  const tailOffset = Math.max(0, file.size - sampleBytes);
+  const [head, tail] = await Promise.all([
+    file.slice(0, Math.min(file.size, sampleBytes)).arrayBuffer(),
+    file.slice(tailOffset, file.size).arrayBuffer(),
+  ]);
+  const metadata = new TextEncoder().encode(
+    JSON.stringify([
+      String(file.name ?? "").normalize("NFC").slice(0, 240),
+      Number(file.size) || 0,
+      Number(file.lastModified) || 0,
+      file.type || "application/octet-stream",
+    ]),
+  );
+  const fingerprint = new Uint8Array(
+    metadata.byteLength + head.byteLength + tail.byteLength,
+  );
+  fingerprint.set(metadata);
+  fingerprint.set(new Uint8Array(head), metadata.byteLength);
+  fingerprint.set(
+    new Uint8Array(tail),
+    metadata.byteLength + head.byteLength,
+  );
+  return bytesToHex(
+    new Uint8Array(
+      await globalThis.crypto.subtle.digest("SHA-256", fingerprint),
+    ),
+  );
+}
+
+function dwgSessionReadBudget(size) {
+  const multiplied =
+    size <= Number.MAX_SAFE_INTEGER / 8
+      ? size * 8
+      : Number.MAX_SAFE_INTEGER;
+  return Math.max(
+    size,
+    Math.min(multiplied, MAX_DWG_SESSION_READ_BUDGET_BYTES),
+  );
+}
+
+function createWebviewViewerHost() {
+  let disposed = false;
+  return Object.freeze({
+    handleEvent(event) {
+      if (disposed) {
+        throw new DOMException(
+          "Viewer host is disposed",
+          "InvalidStateError",
+        );
+      }
+      window.dispatchEvent(
+        new CustomEvent("dwg-viewer-core-event", {
+          detail: event,
+        }),
+      );
+    },
+    dispose() {
+      disposed = true;
+    },
+  });
+}
+
+function createDwgRenderSource(rangeSource, cacheSha256) {
+  const scope = cacheSha256.slice(0, 24);
+  const resourceBudgetBytes = dwgSessionReadBudget(rangeSource.size);
+  return new DwgSceneCacheSource({
+    rangeSource,
+    sessionId: `session:dwg:${scope}`,
+    sourceId: `source:dwg:${scope}`,
+    revisionId: createSceneCacheRevisionId(cacheSha256),
+    cacheSha256,
+    resourceBudgetBytes,
+    readBudgetBytes: resourceBudgetBytes,
+  });
+}
+
+function dwgSelectionHandle(value) {
+  if (typeof value === "bigint") {
+    return value.toString(16).toUpperCase();
+  }
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const text = String(value)
+    .trim()
+    .replace(/^0x/iu, "")
+    .slice(0, 128);
+  return text || null;
+}
+
+function dwgSelectionPoint(candidate) {
+  const point =
+    candidate?.measurementPoint ?? candidate?.displayPoint;
+  if (
+    !Array.isArray(point) ||
+    point.length < 2 ||
+    !point.slice(0, 3).every(Number.isFinite)
+  ) {
+    return null;
+  }
+  return Object.freeze([
+    point[0],
+    point[1],
+    Number.isFinite(point[2]) ? point[2] : 0,
+  ]);
+}
+
+function projectDwgSelection(candidate) {
+  const nativeHandle = dwgSelectionHandle(candidate?.handle);
+  const sourceId = String(candidate?.sourceId ?? "root").slice(
+    0,
+    240,
+  );
+  return Object.freeze({
+    renderId: nativeHandle
+      ? `dwg:${sourceId}:${nativeHandle}`
+      : null,
+    sourceId,
+    nativeReference: nativeHandle
+      ? Object.freeze({
+          scheme: "dwg-handle",
+          value: nativeHandle,
+        })
+      : null,
+    layerIndex: Number.isSafeInteger(candidate?.layerIndex)
+      ? candidate.layerIndex
+      : null,
+    kind: String(
+      candidate?.sourceKindName ??
+        candidate?.entityType ??
+        candidate?.kind ??
+        "entity",
+    ).slice(0, 128),
+    coordinateSpace: Number.isSafeInteger(
+      candidate?.coordinateSpace,
+    )
+      ? candidate.coordinateSpace
+      : null,
+    position: dwgSelectionPoint(candidate),
+    approximated: Boolean(candidate?.approximated),
+  });
+}
 
 function saveMeasurementPreferences(preferences) {
   activeMeasurementPreferences = preferences;
@@ -4655,6 +4822,18 @@ function installInteraction(
       activeInteraction?.setReviewEnabled(enabled);
       activeInteraction?.refresh();
     },
+    onSelectionChange(selection, options) {
+      const controller =
+        activeViewerRuntime?.presentation.selectionController;
+      if (!controller || controller.disposed) {
+        return;
+      }
+      if (selection) {
+        controller.replace(selection, options);
+      } else {
+        controller.clear(options);
+      }
+    },
     onStatus(message) {
       status.textContent = message;
     },
@@ -4844,7 +5023,7 @@ function populateLayoutTabs(scene, source, revision) {
   updateLayoutTabSelection();
 }
 
-async function openCache(source, workerSource) {
+async function openCache(source, workerSource, cacheSha256) {
   activeExportController?.abort();
   activeExportController = undefined;
   setExportPanelOpen(false);
@@ -4945,26 +5124,58 @@ async function openCache(source, workerSource) {
   activeInteraction = undefined;
   activeReviewTools?.dispose();
   activeReviewTools = undefined;
-  activeScene?.renderer.dispose();
+  const previousRuntime = activeViewerRuntime;
+  activeViewerRuntime = undefined;
+  await previousRuntime?.dispose().catch(console.error);
   activeScene = undefined;
-  activeHostRangeSource?.dispose();
-  activeHostRangeSource =
-    workerSource.kind === "host" ? workerSource.source : undefined;
   const renderer = new WebGlLineRenderer(canvas);
   renderer.setWipeoutMasksVisible(activeWipeoutMasksVisible);
+  let runtime;
   try {
-    const scene = await loadFirstFrame(source, canvas, {
-      renderer,
-      onProgress(message) {
-        if (revision === openRevision) {
-          status.textContent = message;
+    const renderSource = createDwgRenderSource(source, cacheSha256);
+    runtime = await openViewerRuntime(renderSource, {
+      host: createWebviewViewerHost(),
+      async mount({ sourceSession, snapshot, host }) {
+        const rangeSource = createRenderLayerRangeSource(
+          sourceSession,
+          snapshot,
+        );
+        try {
+          const scene = await loadFirstFrame(rangeSource, canvas, {
+            renderer,
+            onProgress(message) {
+              if (revision === openRevision) {
+                status.textContent = message;
+              }
+            },
+          });
+          const selectionController =
+            new ViewerSelectionController({
+              host,
+              snapshot,
+              projectSelection: projectDwgSelection,
+            });
+          return Object.freeze({
+            scene,
+            rangeSource,
+            selectionController,
+            dispose() {
+              selectionController.dispose();
+              renderer.dispose();
+            },
+          });
+        } catch (error) {
+          renderer.dispose();
+          throw error;
         }
       },
     });
+    const { scene, rangeSource } = runtime.presentation;
     if (revision !== openRevision) {
-      renderer.dispose();
+      await runtime.dispose().catch(console.error);
       return;
     }
+    activeViewerRuntime = runtime;
     activeScene = scene;
     activeTextComposite = new CompositeTextOverlay(textCanvas);
     scene.renderer.setTextOverlay(activeTextComposite);
@@ -4996,7 +5207,10 @@ async function openCache(source, workerSource) {
       }
     }
     if (revision !== openRevision || activeScene !== scene) {
-      renderer.dispose();
+      if (activeViewerRuntime === runtime) {
+        activeViewerRuntime = undefined;
+      }
+      await runtime.dispose().catch(console.error);
       return;
     }
     activeMaskOrder = maskState.maskOrder;
@@ -5052,6 +5266,15 @@ async function openCache(source, workerSource) {
       console.error(error);
     });
   } catch (error) {
+    if (activeViewerRuntime === runtime) {
+      activeViewerRuntime = undefined;
+    }
+    await runtime?.dispose().catch(() => {});
+    try {
+      await source.dispose?.();
+    } catch {
+      // Preserve the render failure.
+    }
     renderer.dispose();
     if (revision !== openRevision) {
       return;
@@ -5060,20 +5283,18 @@ async function openCache(source, workerSource) {
     activeReviewTools?.dispose();
     activeReviewTools = undefined;
     activeScene = undefined;
-    if (
-      workerSource.kind === "host" &&
-      activeHostRangeSource === workerSource.source
-    ) {
-      activeHostRangeSource.dispose();
-      activeHostRangeSource = undefined;
-    }
     dropZone.classList.remove("loaded");
     status.textContent = `열기 실패: ${error.message}`;
     throw error;
   }
 }
 
-function openFile(file) {
+async function openFile(file) {
+  const requestRevision = ++sourceOpenRequestRevision;
+  const cacheSha256 = await localCacheSessionDigest(file);
+  if (requestRevision !== sourceOpenRequestRevision) {
+    return;
+  }
   activeHostCacheId = undefined;
   activeDocumentName =
     typeof file?.name === "string" && file.name ? file.name : "drawing";
@@ -5084,10 +5305,12 @@ function openFile(file) {
   return openCache(
     new TrackedRangeSource(new BlobRangeSource(file)),
     { kind: "blob", file },
+    cacheSha256,
   );
 }
 
 function openHostedCache(message) {
+  sourceOpenRequestRevision += 1;
   glyphCache.configureLegacyEncodings(message.bigFontEncodings);
   activeHostCacheId = message.cacheId;
   activeDocumentName =
@@ -5102,6 +5325,7 @@ function openHostedCache(message) {
   return openCache(
     new TrackedRangeSource(source),
     { kind: "host", source },
+    message.cacheId,
   );
 }
 
@@ -5746,12 +5970,11 @@ window.addEventListener("beforeunload", () => {
   activeCurveWorker = undefined;
   activeCurveWorkerSource = undefined;
   activeInteraction?.dispose();
-  activeScene?.renderer.dispose();
+  void activeViewerRuntime?.dispose().catch(console.error);
+  activeViewerRuntime = undefined;
   resetExternalReferences();
   activeInteraction = undefined;
   activeScene = undefined;
-  activeHostRangeSource?.dispose();
-  activeHostRangeSource = undefined;
   activeRangeMetricsSource = undefined;
   activeMemoryTelemetry = undefined;
   glyphCache.dispose();

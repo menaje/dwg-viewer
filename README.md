@@ -22,6 +22,18 @@ ACadSharp 3.6.51도 파싱만으로 메모리 하드 한도를 넘어 대형 도
 - 한글과 대형 도면 성능을 초기 합격 조건으로 다룹니다.
 - 유료 SDK나 비공개 렌더링 엔진을 사용하지 않습니다.
 
+독립 DWG Viewer와 공용 Viewer Core의 package 경계, version 규칙과 단계적
+추출 순서는
+[`ADR-0001`](docs/adr/ADR-0001-viewer-core-boundary.md)에 있습니다.
+초기 `@dwg-viewer/render-protocol`과 `@dwg-viewer/viewer-core`는
+workspace-only experimental contract이며 기존 VS Code `dwg-*` message를
+public protocol로 노출하지 않습니다. standalone Browser 파일과 VS Code
+cache channel은 모두 `DwgSceneCacheSource`와 같은 Viewer Core runtime을
+통해 현재 renderer를 mount합니다. Core는 renderer/detail target 계약,
+상한형 상세 스트리밍과 revision-bound selection event lifecycle도
+소유하고, Webview는 DWG 배치 가시성·객체 판독과 WebGL 구현만
+어댑터로 주입합니다.
+
 ## 도면 엔진 벤치마크
 
 `benchmark` 명령은 검사와 변환을 각각 독립 프로세스로 반복해 벽시계
@@ -111,10 +123,14 @@ ISC 라이선스의 `earcut`을 사용하며 두 패키지 모두 정확한 버�
 
 ```bash
 pnpm install --frozen-lockfile
-python3 -m http.server 4173 --bind 127.0.0.1 --directory packages/webview
+python3 -m http.server 4173 --bind 127.0.0.1 --directory .
 ```
 
-브라우저에서 `http://127.0.0.1:4173`을 열고 변환된 `.cache` 파일을
+브라우저에서 `http://127.0.0.1:4173/packages/webview/`를 엽니다. Scene Cache
+reader가 공용 source package로 분리되어 있으므로 저장소 루트를 정적 서버
+root로 사용합니다.
+
+브라우저에서 `http://127.0.0.1:4173/packages/webview/`를 열고 변환된 `.cache` 파일을
 선택합니다. 브라우저는 로컬 파일에서 헤더, 렌더 메타데이터와 최대
 4MiB의 첫 화면 정점만 범위 읽기합니다. 블록 형상은 한 번만 GPU에
 올리고 변환 행렬로 반복 배치합니다. 휠 또는 화면 버튼으로 확대하고
