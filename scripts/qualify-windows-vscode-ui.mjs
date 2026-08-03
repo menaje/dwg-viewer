@@ -435,9 +435,14 @@ async function openViewerTools(frame) {
   assert.equal(await trigger.getAttribute("aria-expanded"), "true");
 }
 
-function candidatePositions(width, height) {
-  const marginX = Math.min(24, width * 0.08);
+export function candidatePositions(width, height) {
+  const leftMargin = Math.min(176, width * 0.35);
+  const rightMargin = Math.min(24, width * 0.08);
   const marginY = Math.min(24, height * 0.08);
+  const usableWidth = Math.max(
+    1,
+    width - leftMargin - rightMargin,
+  );
   const result = [];
   const fractions = [
     0.5, 0.25, 0.75, 0.125, 0.375, 0.625, 0.875, 0.2, 0.4, 0.6,
@@ -445,7 +450,7 @@ function candidatePositions(width, height) {
   ];
   for (const fraction of fractions) {
     result.push({
-      x: marginX + (width - marginX * 2) * fraction,
+      x: leftMargin + usableWidth * fraction,
       y: height / 2,
     });
     result.push({
@@ -453,11 +458,11 @@ function candidatePositions(width, height) {
       y: marginY + (height - marginY * 2) * fraction,
     });
     result.push({
-      x: marginX + (width - marginX * 2) * fraction,
+      x: leftMargin + usableWidth * fraction,
       y: marginY + (height - marginY * 2) * fraction,
     });
     result.push({
-      x: marginX + (width - marginX * 2) * fraction,
+      x: leftMargin + usableWidth * fraction,
       y: marginY + (height - marginY * 2) * (1 - fraction),
     });
   }

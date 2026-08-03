@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  candidatePositions,
   canvasPointIsUnobstructed,
   parseWindowsUiArguments,
   parseCoordinateMeasurementRows,
@@ -120,6 +121,21 @@ test("skips measurement points covered by floating viewer tools", () => {
       canvas,
       candidate,
       () => canvas,
+    ),
+    true,
+  );
+});
+
+test("keeps candidate points outside the expanded VS Code review toolbar", () => {
+  const candidates = candidatePositions(720, 606);
+  assert.ok(candidates.length > 20);
+  assert.equal(
+    candidates.every(
+      ({ x, y }) =>
+        x > 176 &&
+        x < 720 &&
+        y > 0 &&
+        y < 606,
     ),
     true,
   );
