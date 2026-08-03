@@ -4922,12 +4922,12 @@ xline_segment_from_object (const Dwg_Data *dwg,
               = (bounds_min[axis] - coordinate) / direction[axis];
           double last
               = (bounds_max[axis] - coordinate) / direction[axis];
-          double near = fmin (first, last);
-          double far = fmax (first, last);
-          if (near > t_min)
-            t_min = near;
-          if (far < t_max)
-            t_max = far;
+          double near_parameter = fmin (first, last);
+          double far_parameter = fmax (first, last);
+          if (near_parameter > t_min)
+            t_min = near_parameter;
+          if (far_parameter < t_max)
+            t_max = far_parameter;
           if (t_min > t_max)
             return -1;
         }

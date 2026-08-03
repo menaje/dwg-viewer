@@ -7,18 +7,26 @@ on:
     paths:
       - "adapters/libredwg/**"
       - "apps/vscode-extension/src/native-cache.ts"
+      - "apps/vscode-extension/src/scene-cache-manager.ts"
+      - "apps/vscode-extension/src/scene-engine.ts"
       - "apps/vscode-extension/test/native-cache.test.ts"
+      - "scripts/qualify-windows-native.mjs"
       - ".github/workflows/libredwg-adapter.yml"
       - "LICENSE"
       - "package.json"
+      - "pnpm-lock.yaml"
   pull_request:
     paths:
       - "adapters/libredwg/**"
       - "apps/vscode-extension/src/native-cache.ts"
+      - "apps/vscode-extension/src/scene-cache-manager.ts"
+      - "apps/vscode-extension/src/scene-engine.ts"
       - "apps/vscode-extension/test/native-cache.test.ts"
+      - "scripts/qualify-windows-native.mjs"
       - ".github/workflows/libredwg-adapter.yml"
       - "LICENSE"
       - "package.json"
+      - "pnpm-lock.yaml"
 
 permissions:
   contents: read
@@ -44,6 +52,11 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: 24
+
+      - uses: pnpm/action-setup@v4
+        if: runner.os == 'Windows'
+        with:
+          version: 11.12.0
 
       - uses: msys2/setup-msys2@v2
         if: runner.os == 'Windows'
@@ -134,6 +147,60 @@ jobs:
           cd "$package_root"
           sha256sum -c SHA256SUMS
           bin/libredwg-adapter.exe doctor
+
+      - name: Install locked host qualification dependencies
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter dwg-viewer-vscode compile
+
+      - name: Create private Windows UNC qualification share
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $shareName = "DwgViewer-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $sharePath = Join-Path $env:RUNNER_TEMP "dwg-viewer-unc"
+          New-Item -ItemType Directory -Path $sharePath | Out-Null
+          $account = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+          New-SmbShare `
+            -Name $shareName `
+            -Path $sharePath `
+            -FullAccess $account `
+            -Temporary | Out-Null
+          "DWG_VIEWER_UNC_ROOT=\\localhost\$shareName" >> $env:GITHUB_ENV
+          "DWG_VIEWER_UNC_SHARE=$shareName" >> $env:GITHUB_ENV
+
+      - name: Qualify real drive, relative, UNC, Unicode, and cancellation paths
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          node scripts/qualify-windows-native.mjs `
+            --adapter "$env:RUNNER_TEMP\libredwg-adapter.exe" `
+            --fixture "$env:RUNNER_TEMP\dwg-libredwg-build\libredwg-0.14\test\test-data\2000\Line.dwg" `
+            --large-fixture "$env:RUNNER_TEMP\dwg-libredwg-build\libredwg-0.14\test\test-data\2018\Dynblocks.dwg" `
+            --work-root "$env:RUNNER_TEMP\windows-native-qualification" `
+            --unc-root "$env:DWG_VIEWER_UNC_ROOT" `
+            --report "$env:RUNNER_TEMP\windows-native-qualification.json"
+
+      - uses: actions/upload-artifact@v7
+        if: runner.os == 'Windows'
+        with:
+          name: dwg-viewer-windows-native-qualification
+          path: ${{ runner.temp }}/windows-native-qualification.json
+          archive: false
+          if-no-files-found: error
+
+      - name: Remove private Windows UNC qualification share
+        if: always() && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ($env:DWG_VIEWER_UNC_SHARE) {
+            Remove-SmbShare `
+              -Name $env:DWG_VIEWER_UNC_SHARE `
+              -Force `
+              -ErrorAction SilentlyContinue
+          }
 
       - uses: actions/upload-artifact@v7
         with:
