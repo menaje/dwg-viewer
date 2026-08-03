@@ -166,10 +166,12 @@ affected bounds와 bounded opaque payload에 묶인다.
 `ViewerRenderDeltaController`는 전체 entity graph 대신 변경된 Render ID의
 tombstone/upsert, dependency/identity map과 preview만 보관하고 rollback 시
 immutable base를 다시 읽지 않는다. renderer adapter hook은 원자적인 apply,
-preview rollback/promotion만 요구하며 현재 Webview의 36-byte DWG GPU
-format은 public protocol로 승격하지 않는다. Webview의
-`DwgRenderDeltaAdapter`는 검증된 decoded line packet의 GPU resource를 먼저
-stage하고 renderer state를 한 번에 교체한다. base tombstone/upsert는 line
+preview rollback/promotion만 요구하며 현재 Webview의 private DWG GPU
+vertex format은 public protocol로 승격하지 않는다. Webview의
+`DwgRenderDeltaAdapter`는 검증된 decoded v2 line/triangle-fill packet의 GPU
+resource를 공용 64 MiB 한도 안에서 먼저 stage하고 renderer state를 한 번에
+교체한다. private v1 line-only packet은 producer 전환 기간에 계속 읽는다.
+base tombstone/upsert는 line
 vertex handle, HATCH/POINT/SOLID/3DFACE/WIPEOUT의 압축 identity-range
 sidecar와 Canvas text의 source-scoped handle filter를 통해 cached draw
 range로 적용한다. 따라서 Scene Cache buffer를 수정하지 않으며 preview

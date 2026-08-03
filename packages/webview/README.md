@@ -22,9 +22,9 @@ composition과 DOM listener disposal은 `@dwg-viewer/viewer-ui`가 소유합니�
 속성과 측정 결과를 bounded view model로 투영합니다.
 
 `DwgRenderDeltaAdapter`는 Core의 source-neutral atomic delta hook과 이
-package의 private 36-byte line packet을 연결합니다. payload resolver가
+package의 private line/triangle-fill packet을 연결합니다. payload resolver가
 descriptor의 digest와 byte bound를 검증한 decoded packet을 동기적으로
-제공하면 adapter는 모든 WebGL line resource를 먼저 stage한 뒤 한 번에
+제공하면 adapter는 모든 WebGL resource를 먼저 stage한 뒤 한 번에
 활성화합니다. base Scene Cache buffer는 수정하지 않고 line vertex의 DWG
 handle과 fill·pattern·POINT·surface·WIPEOUT의 압축 identity-range sidecar로
 draw range만 제외합니다. Canvas text도 같은 source/handle suppression을
@@ -33,24 +33,27 @@ draw range만 제외합니다. Canvas text도 같은 source/handle suppression�
 제공하며, source switch와 disposal은 staged 및 committed delta resource를
 모두 회수합니다.
 
-The decoded packet is private to this package:
+The current decoded v2 packet is private to this package:
 
 ```text
 {
   payloadId, sha256, byteLength,
   operations: [{
     operationId,
-    lines: [{ renderId, sceneId, batch, vertices, instanceIndices }]
+    lines: [{ renderId, sceneId, batch, vertices, instanceIndices }],
+    fills: [{ renderId, sceneId, batch, vertices, instanceIndices }]
   }]
 }
 ```
 
-`byteLength` is the exact sum of the non-shared 36-byte line buffers. Every
-vertex handle must match its operation's `dwg:<sceneId>:<handle>` Render ID,
-and every visual upsert Render ID must be covered. Packet lookup and digest
-verification happen before the synchronous Core apply boundary; the adapter
-rechecks descriptor binding, operation coverage, byte bounds and native
-identity before allocating GPU resources.
+`byteLength` is the exact sum of the non-shared 36-byte line and 32-byte
+triangle-fill buffers. Every line vertex handle must match its operation's
+`dwg:<sceneId>:<handle>` Render ID. Each fill entry belongs to exactly one
+Render ID, and every visual upsert Render ID must be covered across the two
+streams. Packet lookup and digest verification happen before the synchronous
+Core apply boundary; the adapter rechecks descriptor binding, operation
+coverage, byte bounds and native identity before allocating GPU resources.
+The line-only v1 media type remains readable while producers move to v2.
 
 The standalone page is the development and qualification shell: it keeps the
 framed canvas, diagnostics and full memory/performance dashboard. When hosted
@@ -91,7 +94,8 @@ layout tabs on hover, focus or an explicit click.
 - Stores instance transforms in packed `Float64Array` collections.
 - Rebases world coordinates around the camera before WebGL2 `f32` upload.
 - Renders overview lines with batched, instanced draw calls.
-- Stages bounded DWG Render Delta line packets before one atomic state swap,
+- Stages bounded DWG Render Delta line/triangle-fill packets before one
+  atomic state swap under one 64 MiB GPU budget,
   suppresses replaced/tombstoned base lines, HATCH fills/patterns, POINTs,
   SOLID/3DFACE/WIPEOUT primitives and Canvas text without rewriting immutable
   Scene Cache buffers, and restores draw and pick state on preview rollback.
