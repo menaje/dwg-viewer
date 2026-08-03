@@ -102,6 +102,14 @@ viewport의 pan/zoom/window-zoom, view commit, redraw와 detail lifecycle은
 
 `ViewerRendererController`는 redraw/camera와 root·external detail target
 계약을 fail-closed로 검사하고 target별 GPU resource disposal을 조정합니다.
+`ViewerSplitViewCameraController`는 before/after surface가 각자 renderer,
+revision과 canvas 비율을 유지한 채 불변의 논리 카메라(`origin`,
+`worldHeight`)만 공유하도록 조정합니다. 한쪽 surface가 이미 적용한 카메라는
+`setCameraFrom()`으로 반대쪽에만 전달하며, programmatic 전환은 양쪽에 같은
+카메라 객체를 적용합니다. 동기화 실패 시 마지막 정상 카메라를 양쪽에 다시
+적용하고, 불완전한 rollback은 `synchronized: false`로 표시해
+`synchronize()`로 재시도할 수 있습니다. 이 컨트롤러는 surface 자원을
+dispose하지 않으므로 두 renderer lifecycle은 계속 독립적입니다.
 `DetailStreamingController`는 selection policy와 byte loader를 주입받아
 동시성, visible/cache budget, stale work, review geometry와 redraw
 coalescing을 소유합니다. 현재 Webview의 `DetailStreamer`는 DWG Scene Cache

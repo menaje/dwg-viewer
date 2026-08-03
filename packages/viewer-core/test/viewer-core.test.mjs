@@ -447,8 +447,16 @@ test("keeps package versions and producer compatibility manifest aligned", async
     "changed-id-only-added-removed-modified-unchanged-net-summary",
   );
   assert.equal(
+    manifest.components.splitViewCamera,
+    "before-after-logical-camera-sync-with-retryable-rollback-and-independent-renderer-lifecycles",
+  );
+  assert.equal(
     manifest.conformance.viewerRenderDelta,
     "packages/viewer-core/test/render-delta-controller.test.mjs",
+  );
+  assert.equal(
+    manifest.conformance.viewerSplitView,
+    "packages/viewer-core/test/split-view-camera-controller.test.mjs",
   );
   assert.equal(
     manifest.conformance.dwgRenderDelta,

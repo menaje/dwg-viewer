@@ -68,3 +68,8 @@ export {
   ViewerDiffStatus,
   ViewerRenderDiffController,
 } from "./render-diff-controller.mjs";
+export {
+  AllViewerSplitViewSides,
+  ViewerSplitViewCameraController,
+  ViewerSplitViewSide,
+} from "./split-view-camera-controller.mjs";

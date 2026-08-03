@@ -17,6 +17,7 @@
     "./render-diff": "./src/render-diff-controller.mjs",
     "./renderer": "./src/renderer-controller.mjs",
     "./selection": "./src/selection-controller.mjs",
+    "./split-view": "./src/split-view-camera-controller.mjs",
     "./testing": "./src/testing.mjs"
   },
   "engines": {

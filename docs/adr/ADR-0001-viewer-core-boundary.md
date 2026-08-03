@@ -220,6 +220,13 @@ membership와 총 개수만 사용해 changed ID를 added/removed/modified로
 분류하고 unchanged는 총계로 계산한다. 따라서 immutable base entity를
 열거하지 않으며 added 뒤 removed된 ID는 net diff에서 제외된다. preview와
 rollback은 같은 revision-bound summary를 사용한다.
+`ViewerSplitViewCameraController`는 서로 다른 before/after surface adapter에
+불변의 논리 2D 카메라만 전달한다. 각 surface의 revision, scene, GPU/detail
+state와 canvas 비율은 공유하지 않으며 renderer가 자신의 `worldWidth`를
+계산한다. 한쪽 interaction에서 온 카메라는 반대쪽에만 적용하고 programmatic
+전환은 양쪽에 적용한다. 실패한 전환은 마지막 정상 카메라로 rollback하며,
+불완전한 rollback은 명시적으로 관찰하고 재동기화할 수 있다. surface disposal과
+split DOM/canvas 배치는 계속 제품 lifecycle의 책임이다.
 `@dwg-viewer/viewer-ui`의 첫 public controller는 review toolbar의 active
 state와 접근성 속성, bounded text-only result row/action composition,
 DOM listener disposal을 소유한다. 네 diff 상태와 base/target revision도

@@ -18,7 +18,8 @@ DWG 후보 탐색, CAD 속성 이름, 측정 계산과 layer action 의미는
 `title`, `rows`, `actions` view model로 투영해 같은 controller를 사용할 수
 있습니다. `createViewerDiffResultModel()`은 Core의 bounded net diff summary를
 기존 text-only result panel에 투영하며 제품이 원하는 locale label을
-주입받습니다. overlay 색상, visibility와 split-view composition은 renderer와
+주입받습니다. before/after 논리 카메라 동기화는 Viewer Core가 제공하지만,
+overlay 색상, visibility와 split-view DOM/canvas composition은 renderer와
 제품 shell의 별도 controller가 소유합니다.
 
 이 package는 DOM bootstrap을 만들지 않습니다. 제품 shell이 이미 소유한

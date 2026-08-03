@@ -131,6 +131,15 @@ same snapshot follows preview apply and rollback. Viewer UI projects those
 four counts and the bound base/target revisions through its existing
 text-only result model; renderer color/visibility and split composition remain
 separate follow-on policies.
+`ViewerSplitViewCameraController` now coordinates the before and after surfaces
+through two distinct synchronous adapters. It sends only a frozen logical 2D
+camera (`origin` and `worldHeight`), leaving each renderer to derive its own
+canvas-dependent width and retain its own revision, scene, GPU and detail
+state. A source-side interaction updates only its peer, while a programmatic
+change updates both. Failed transitions restore the last stable camera on both
+surfaces; an incomplete rollback is observable and can be retried with an
+explicit synchronization. The controller never disposes either surface, and
+split DOM/canvas composition remains product-owned.
 The WebGL CAD renderer, viewport batch selection and DWG candidate decoder
 remain Webview adapters and move incrementally without changing raw DWG
 qualification. `ViewerReviewUiController` now owns review toolbar state,
