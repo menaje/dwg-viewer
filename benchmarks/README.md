@@ -67,9 +67,35 @@ pnpm --filter @dwg-viewer/webview test
 It distinguishes the 2,350 modern Hangul syllables available through strict
 EUC-KR from the complete 11,172-syllable CP949/UHC and Johab sets. CP949 and
 Johab boundary/sample codes, automatic glyph probing and per-BigFont overrides
-are deterministic regression cases. This is an encoding matrix, not the
-20–30-drawing Korean corpus required by issue #7; real geometry/image
-qualification remains private until redistributable fixtures are available.
+are deterministic regression cases.
+
+The repository also pins three official Data Portal archives made available
+by the Cultural Heritage Administration under KOGL Type 1. Fetching verifies
+the exact byte count and SHA-256 before a bounded ZIP reader extracts only DWG
+magic entries to deterministic ASCII names. It never trusts or publishes the
+archive's legacy-encoded entry names:
+
+```bash
+corpus_root=/absolute/new/public-korean-corpus
+node benchmarks/public-korean-corpus.mjs \
+  --manifest "$(pwd)/benchmarks/public-korean-corpus-assets.json" \
+  --output "$corpus_root"
+
+node benchmarks/korean-corpus-inventory.mjs \
+  --root "$corpus_root" \
+  --adapter /absolute/path/to/libredwg-adapter \
+  --output "$corpus_root/manifest.json" \
+  --discipline architecture \
+  --limit 30 \
+  --redistributable
+```
+
+`PUBLIC-CORPUS-PROVENANCE.json` retains the publisher, catalog, KOGL terms,
+archive checksums and the fact that DWG bytes were not modified. The public
+asset pool currently supplies 63 architectural drawings spanning AC1018,
+AC1021 and AC1032; the balanced inventory selects 30 actual drawings for the
+runner. It does not claim the still-missing AC1015/AC1024/AC1027,
+civil/MEP, strict EUC-KR/Johab, Extended BigFont or image-baseline cells.
 
 The corpus runner turns a private manifest into one path-free automatic result
 table. It executes cases sequentially so converter memory never overlaps:
@@ -97,14 +123,17 @@ node benchmarks/korean-corpus-inventory.mjs \
 The inventory reads candidates sequentially, excludes directories named
 `xref` by default and interleaves observed DWG-version/size groups. It selects
 only drawings with Hangul text plus an automatically observed Unicode or
-Korean legacy codepage and at least one SHX, BigFont or outline-font
-reference. The adapter converts legacy TV strings with the declared DWG
-codepage before those anonymous counts are made; current text counts then
+Korean legacy codepage. A drawing may legitimately have no font-table
+reference; font coverage remains a corpus-wide requirement instead of a
+per-case requirement. The adapter converts legacy TV strings with the declared
+DWG codepage before those anonymous counts are made; current text counts then
 become the loss baseline. It never infers
 EUC-KR, Extended BigFont or a drawing discipline from a filename, so those
 coverage cells remain incomplete until independently verified assets are
 provided. The exclusive manifest is owner-only and contains private paths;
-only its path-free summary may be shared.
+only its path-free summary may be shared. `--redistributable` is an explicit
+license assertion, requires the manifest to be inside the corpus root and
+writes only relative paths; do not use it for private or unverified drawings.
 
 The manifest has this shape:
 

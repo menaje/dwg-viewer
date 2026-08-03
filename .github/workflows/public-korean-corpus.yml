@@ -1,0 +1,91 @@
+name: Public Korean DWG corpus
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qualify:
+    name: 30-drawing public corpus
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Build checksum-pinned adapter and benchmark runner
+        shell: bash
+        run: |
+          adapters/libredwg/prepare.sh \
+            "$RUNNER_TEMP/dwg-libredwg-build" \
+            "$RUNNER_TEMP/libredwg-adapter"
+          cargo build --release -p dwg-converter
+
+      - name: Fetch checksum-pinned KOGL Type 1 drawings
+        shell: bash
+        run: |
+          node benchmarks/public-korean-corpus.mjs \
+            --manifest "$GITHUB_WORKSPACE/benchmarks/public-korean-corpus-assets.json" \
+            --output "$RUNNER_TEMP/public-korean-corpus"
+
+      - name: Inventory 30 balanced actual drawings
+        shell: bash
+        run: |
+          node benchmarks/korean-corpus-inventory.mjs \
+            --root "$RUNNER_TEMP/public-korean-corpus" \
+            --adapter "$RUNNER_TEMP/libredwg-adapter" \
+            --output "$RUNNER_TEMP/public-korean-corpus/manifest.json" \
+            --discipline architecture \
+            --limit 30 \
+            --redistributable
+
+      - name: Run path-free Korean corpus qualification
+        shell: bash
+        run: |
+          node benchmarks/korean-corpus.mjs \
+            --manifest "$RUNNER_TEMP/public-korean-corpus/manifest.json" \
+            --runner "$GITHUB_WORKSPACE/target/release/dwg-converter" \
+            --adapter "$RUNNER_TEMP/libredwg-adapter" \
+            --output "$RUNNER_TEMP/public-korean-corpus-report.json" \
+            --runs 1 \
+            --warmup-runs 0 \
+            --allow-incomplete
+
+      - name: Require 30 redistributable passing cases
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFile } from "node:fs/promises";
+
+          const report = JSON.parse(
+            await readFile(
+              process.env.RUNNER_TEMP + "/public-korean-corpus-report.json",
+              "utf8",
+            ),
+          );
+          if (
+            report?.schema !== "dwg-korean-corpus-report/1" ||
+            report.summary?.cases !== 30 ||
+            report.summary?.redistributableCases !== 30 ||
+            report.summary?.passed !== 30 ||
+            report.summary?.targetMisses !== 0 ||
+            report.summary?.failed !== 0 ||
+            report.cases?.some((entry) => entry.status !== "pass")
+          ) {
+            throw new Error("public Korean corpus did not produce 30 passes");
+          }
+          NODE
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dwg-viewer-public-korean-corpus-evidence
+          path: |
+            ${{ runner.temp }}/public-korean-corpus/PUBLIC-CORPUS-PROVENANCE.json
+            ${{ runner.temp }}/public-korean-corpus/manifest.json
+            ${{ runner.temp }}/public-korean-corpus-report.json
+          if-no-files-found: error

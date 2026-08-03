@@ -171,9 +171,14 @@ function enumValue(value, allowed, label) {
   return value;
 }
 
-function enumList(value, allowed, label) {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new TypeError(`${label} must be a non-empty array`);
+function enumList(value, allowed, label, allowEmpty = false) {
+  if (
+    !Array.isArray(value) ||
+    (!allowEmpty && value.length === 0)
+  ) {
+    throw new TypeError(
+      `${label} must be ${allowEmpty ? "an" : "a non-empty"} array`,
+    );
   }
   return Object.freeze(
     [...new Set(value.map((item) => enumValue(item, allowed, label)))],
@@ -283,6 +288,7 @@ export function validateCorpusManifest(value, manifestDirectory) {
         candidate.fontKinds,
         FONT_KINDS,
         `${label}.fontKinds`,
+        true,
       ),
       expectedText: expectedText(candidate.expectedText, label),
     });

@@ -163,6 +163,16 @@ test("validates bounded metadata and resolves paths without publishing them", ()
     "cp949",
     "johab",
   ]);
+  assert.deepEqual(
+    validateCorpusManifest(
+      {
+        schema: "dwg-korean-corpus-manifest/1",
+        cases: [manifestCase(2, { fontKinds: [] })],
+      },
+      "/private/corpus",
+    ).cases[0].fontKinds,
+    [],
+  );
   assert.throws(
     () =>
       validateCorpusManifest(

@@ -1,0 +1,107 @@
+{
+  "schema": "dwg-public-korean-corpus-evidence/1",
+  "observedAt": "2026-08-04",
+  "status": "pass-with-declared-coverage-gaps",
+  "scope": "dwg-viewer-owned-public-corpus",
+  "assets": {
+    "license": "KOGL-Type-1",
+    "publisher": "국가유산청·국립문화유산연구원",
+    "sourceArchives": 3,
+    "availableDwgFiles": 63,
+    "selectedDwgFiles": 30,
+    "archiveIntegrity": {
+      "sizePinsPassed": 3,
+      "sha256PinsPassed": 3,
+      "zipCrcPassed": 63,
+      "expectedDwgCountsPassed": 3,
+      "expectedVersionSetsPassed": 3
+    },
+    "dwgBytesModified": false,
+    "archiveEntryNamesPublished": false
+  },
+  "execution": {
+    "target": "darwin-arm64",
+    "engine": {
+      "id": "libredwg",
+      "version": "0.14",
+      "license": "GPL-3.0-or-later"
+    },
+    "measuredRunsPerCase": 1,
+    "warmupRunsPerCase": 0,
+    "processIsolated": true,
+    "sequentialCases": true
+  },
+  "result": {
+    "cases": 30,
+    "redistributableCases": 30,
+    "passed": 30,
+    "targetMisses": 0,
+    "failed": 0,
+    "hangulCharacters": 12607,
+    "replacementCharacters": 0,
+    "nullCharacters": 0,
+    "questionMarksAtPinnedBaseline": 1,
+    "questionMarkIncrease": 0,
+    "entities": 404479,
+    "serializedEntities": 404479,
+    "deferredEntities": 0,
+    "maximumWallMs": 690,
+    "maximumPeakRssBytes": 115294208
+  },
+  "observedCoverage": {
+    "versions": {
+      "AC1018": 12,
+      "AC1021": 13,
+      "AC1032": 5
+    },
+    "disciplines": {
+      "architecture": 30
+    },
+    "sizeClasses": {
+      "small": 16,
+      "medium": 8,
+      "large": 6
+    },
+    "encodings": {
+      "cp949": 12,
+      "unicode": 18
+    },
+    "fontKinds": {
+      "shx": 3,
+      "bigfont": 3,
+      "ttf": 25
+    }
+  },
+  "declaredCoverageGaps": {
+    "versions": [
+      "AC1015",
+      "AC1024",
+      "AC1027"
+    ],
+    "disciplines": [
+      "civil",
+      "mep"
+    ],
+    "encodings": [
+      "euc-kr",
+      "johab"
+    ],
+    "fontKinds": [
+      "extended-bigfont"
+    ],
+    "externalImageBaselines": true
+  },
+  "privacy": {
+    "pathsIncluded": false,
+    "textSamplesIncluded": false,
+    "absoluteBoundsIncluded": false
+  },
+  "reproduction": {
+    "assetManifest": "benchmarks/public-korean-corpus-assets.json",
+    "fetcher": "benchmarks/public-korean-corpus.mjs",
+    "inventory": "benchmarks/korean-corpus-inventory.mjs",
+    "runner": "benchmarks/korean-corpus.mjs",
+    "workflow": ".github/workflows/public-korean-corpus.yml"
+  },
+  "deploymentPerformed": false
+}

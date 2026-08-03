@@ -64,11 +64,16 @@ export function parseInventoryArguments(argv) {
     discipline: "architecture",
     timeoutMs: DEFAULT_TIMEOUT_MS,
     includeXrefs: false,
+    redistributable: false,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
     if (option === "--include-xrefs") {
       options.includeXrefs = true;
+      continue;
+    }
+    if (option === "--redistributable") {
+      options.redistributable = true;
       continue;
     }
     const value = optionValue(argv, index, option);
@@ -108,6 +113,15 @@ export function parseInventoryArguments(argv) {
     if (!options[key] || !path.isAbsolute(options[key])) {
       throw new TypeError(`${key} must be an absolute path`);
     }
+  }
+  if (
+    options.redistributable &&
+    path.resolve(path.dirname(options.outputPath)) !==
+      path.resolve(options.rootPath)
+  ) {
+    throw new TypeError(
+      "a redistributable manifest must be written inside its corpus root",
+    );
   }
   return Object.freeze(options);
 }
@@ -198,7 +212,12 @@ function detectedFontKinds(textEnvironment) {
   return Object.freeze(kinds);
 }
 
-export function deriveCorpusMetadata(candidate, report, discipline) {
+export function deriveCorpusMetadata(
+  candidate,
+  report,
+  discipline,
+  redistributable = false,
+) {
   if (
     report?.schema !== INSPECTION_SCHEMA ||
     report?.status !== "ok" ||
@@ -211,14 +230,13 @@ export function deriveCorpusMetadata(candidate, report, discipline) {
   const fontKinds = detectedFontKinds(report.text_environment);
   if (
     text.hangulCharacters === 0 ||
-    encodings.length === 0 ||
-    fontKinds.length === 0
+    encodings.length === 0
   ) {
     return null;
   }
   return Object.freeze({
     path: candidate.inputPath,
-    redistributable: false,
+    redistributable,
     discipline,
     sizeClass: candidate.sizeClass,
     dwgVersion: candidate.dwgVersion,
@@ -230,6 +248,28 @@ export function deriveCorpusMetadata(candidate, report, discipline) {
       maximumNullCharacters: text.nullCharacters,
       maximumQuestionMarks: text.questionMarks,
     }),
+  });
+}
+
+function publicManifestCandidate(candidate, options) {
+  if (!options.redistributable) {
+    return candidate;
+  }
+  const relativePath = path.relative(
+    options.rootPath,
+    candidate.inputPath,
+  );
+  if (
+    relativePath.length === 0 ||
+    path.isAbsolute(relativePath) ||
+    relativePath === ".." ||
+    relativePath.startsWith(`..${path.sep}`)
+  ) {
+    throw new Error("candidate is outside the public corpus root");
+  }
+  return Object.freeze({
+    ...candidate,
+    inputPath: relativePath.split(path.sep).join("/"),
   });
 }
 
@@ -288,9 +328,10 @@ export async function selectCorpusCases(
     let metadata;
     try {
       metadata = deriveCorpusMetadata(
-        candidate,
+        publicManifestCandidate(candidate, options),
         report,
         options.discipline,
+        options.redistributable,
       );
     } catch {
       continue;

@@ -1,0 +1,89 @@
+{
+  "schema": "dwg-public-korean-corpus-assets/1",
+  "sources": [
+    {
+      "id": "masan-detachment-20230208",
+      "title": "구 마산헌병 분견대 도면 정보",
+      "publisher": "국가유산청",
+      "catalogUrl": "https://www.data.go.kr/data/15032398/fileData.do",
+      "license": {
+        "id": "KOGL-Type-1",
+        "name": "공공누리 제1유형(출처표시)",
+        "termsUrl": "https://www.copyright.or.kr/gov/nuri/guide/index.do"
+      },
+      "download": {
+        "endpoint": "https://www.data.go.kr/cmm/cmm/fileDownload.do",
+        "parameters": {
+          "atchFileId": "FILE_000000002914783",
+          "fileDetailSn": "1",
+          "dataNm": "국가유산청_구 마산헌병 분견대 도면 정보_20230208"
+        },
+        "sizeBytes": 2558288,
+        "sha256": "dd48f9274cbd8ea7d84487598208803c13706de98f6b9e4a7fc9636df731de05"
+      },
+      "expected": {
+        "dwgFiles": 27,
+        "versions": [
+          "AC1018"
+        ],
+        "discipline": "architecture"
+      }
+    },
+    {
+      "id": "yongsan-railway-hospital-20220930",
+      "title": "서울 구 용산철도병원 본관 도면 정보",
+      "publisher": "국가유산청",
+      "catalogUrl": "https://www.data.go.kr/data/15032399/fileData.do",
+      "license": {
+        "id": "KOGL-Type-1",
+        "name": "공공누리 제1유형(출처표시)",
+        "termsUrl": "https://www.copyright.or.kr/gov/nuri/guide/index.do"
+      },
+      "download": {
+        "endpoint": "https://www.data.go.kr/cmm/cmm/fileDownload.do",
+        "parameters": {
+          "atchFileId": "FILE_000000002706955",
+          "fileDetailSn": "1",
+          "dataNm": "국가유산청_서울 구 용산철도병원 본관 도면 정보_20220930"
+        },
+        "sizeBytes": 20021644,
+        "sha256": "db8202140ab032c2bcccfeec3dd6f1c5cbb0e598b34df2a1b3051b869a30fca7"
+      },
+      "expected": {
+        "dwgFiles": 21,
+        "versions": [
+          "AC1021"
+        ],
+        "discipline": "architecture"
+      }
+    },
+    {
+      "id": "hwangboksa-pagoda-20061231",
+      "title": "경주 황복사지 삼층석탑 도면",
+      "publisher": "국가유산청 국립문화유산연구원",
+      "catalogUrl": "https://www.data.go.kr/data/15089746/fileData.do",
+      "license": {
+        "id": "KOGL-Type-1",
+        "name": "공공누리 제1유형(출처표시)",
+        "termsUrl": "https://www.copyright.or.kr/gov/nuri/guide/index.do"
+      },
+      "download": {
+        "endpoint": "https://www.data.go.kr/cmm/cmm/fileDownload.do",
+        "parameters": {
+          "atchFileId": "FILE_000000002918583",
+          "fileDetailSn": "1",
+          "dataNm": "국가유산청 국립문화유산연구원_경주 황복사지 삼층석탑 도면_20061231"
+        },
+        "sizeBytes": 717226,
+        "sha256": "80c489dd1a6d574eccdecd67e5be12d27edfca28013887444b0974fd2b9776e9"
+      },
+      "expected": {
+        "dwgFiles": 15,
+        "versions": [
+          "AC1032"
+        ],
+        "discipline": "architecture"
+      }
+    }
+  ]
+}

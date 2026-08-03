@@ -70,6 +70,7 @@ test("parses bounded absolute inventory options", () => {
       discipline: "mep",
       timeoutMs: 120_000,
       includeXrefs: true,
+      redistributable: false,
     },
   );
   assert.throws(
@@ -125,14 +126,53 @@ test("derives only observed Korean text, encoding and font metadata", () => {
     ),
     null,
   );
-  assert.equal(
+  assert.deepEqual(
     deriveCorpusMetadata(
       candidate,
       inspection({ primaryShx: 0, outline: 0, bigfont: 0 }),
       "architecture",
     ),
-    null,
+    {
+      path: "/private/one.dwg",
+      redistributable: false,
+      discipline: "architecture",
+      sizeClass: "large",
+      dwgVersion: "AC1024",
+      encodings: ["unicode"],
+      fontKinds: [],
+      expectedText: {
+        minimumHangulCharacters: 23,
+        maximumReplacementCharacters: 0,
+        maximumNullCharacters: 0,
+        maximumQuestionMarks: 1,
+      },
+    },
   );
+});
+
+test("creates relative paths only after an explicit redistribution assertion", async () => {
+  const candidate = {
+    inputPath: "/public/corpus/sub/one.dwg",
+    sizeClass: "small",
+    dwgVersion: "AC1018",
+  };
+  const result = await selectCorpusCases(
+    [candidate],
+    {
+      limit: 1,
+      discipline: "architecture",
+      redistributable: true,
+      rootPath: "/public/corpus",
+    },
+    async () =>
+      inspection({
+        version: "AC1018",
+        storage: "legacy",
+        codepage: "ANSI_949",
+      }),
+  );
+  assert.equal(result.manifest.cases[0].path, "sub/one.dwg");
+  assert.equal(result.manifest.cases[0].redistributable, true);
 });
 
 test("maps observed legacy Korean codepages without claiming EUC-KR", () => {
