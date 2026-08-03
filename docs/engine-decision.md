@@ -295,15 +295,16 @@ The project therefore does not treat process isolation alone as a legal
 conclusion.
 
 The repository now has a deterministic GPL package builder and a public
-Linux x64/macOS arm64 release workflow. It requires a stripped, statically
-linked adapter, validates the adapter's bounded doctor report, rejects dynamic
-LibreDWG dependencies and local build paths, and includes the exact LibreDWG
-archive, adapter source, build scripts, license texts, manifest and checksums.
-Corresponding source is therefore shipped in the same archive rather than
-delegated to an unpinned external URL. The workflow reproduces both adapter
-archives and the VSIX, rejects a GPL adapter inside the VSIX, emits combined
-checksums, and creates free GitHub build-provenance attestations. A matching
-`v<version>` tag is the only path that publishes a GitHub release.
+Linux x64/macOS arm64/Windows x64 release workflow. It requires a stripped,
+statically linked adapter, validates the adapter's bounded doctor report,
+rejects dynamic LibreDWG dependencies and local build paths, and includes the
+exact LibreDWG archive, adapter source, build scripts, license texts, manifest
+and checksums. Corresponding source is therefore shipped in the same archive
+rather than delegated to an unpinned external URL. The workflow reproduces all
+three adapter archives and the VSIX, rejects a GPL adapter inside the VSIX,
+emits combined checksums, and creates free GitHub build-provenance
+attestations. A matching `v<version>` tag is the only path that publishes a
+GitHub release.
 
 The reviewed publication rules are:
 
@@ -312,8 +313,8 @@ The reviewed publication rules are:
    `adapters/libredwg/prepare.sh`;
 3. the adapter may only be published as the separately identified
    GPL-3.0-or-later package produced by `adapters/libredwg/package.mjs`;
-4. Windows packages remain blocked until the POSIX adapter paths are ported,
-   measured and added to the qualification workflow in issue #25;
+4. Windows packages require the native path/cancellation and latest VS Code
+   display-scale qualification evidence from issue #25;
 5. every supported release must pass the procedure in
    [`docs/distribution.md`](distribution.md), including provenance and
    checksum verification.

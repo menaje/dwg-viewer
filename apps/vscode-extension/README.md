@@ -242,12 +242,13 @@ VSIX manifest. The packaged VSIX includes `LICENSE.txt` and
 
 The GPL-3.0-or-later LibreDWG adapter is never included in the VSIX, even if a
 developer has placed one under the extension's local `native/` directory. It
-is published only as a separate Linux x64 or macOS arm64 archive containing
-the exact LibreDWG source, adapter source, build scripts, license texts,
-manifest, and checksums. Release installation and provenance verification are
-documented in the
+is published only as a separate Linux x64, macOS arm64, or Windows x64 archive
+containing the exact LibreDWG source, adapter source, build scripts, license
+texts, manifest, and checksums. Release installation and provenance
+verification are documented in the
 [distribution guide](https://github.com/menaje/dwg-viewer/blob/main/docs/distribution.md).
-Windows packaging and qualification are tracked separately in issue #25.
+Windows qualification additionally covers native path isolation and the
+packaged VSIX in the latest stable VS Code at 100–200% display scales.
 
 ## Product qualification
 

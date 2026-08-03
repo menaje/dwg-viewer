@@ -51,6 +51,17 @@ function safeIdentifier(value) {
   );
 }
 
+function configuredExecutable(environmentName, fallback) {
+  const configured = process.env[environmentName]?.trim();
+  if (!configured) {
+    return fallback;
+  }
+  if (!path.isAbsolute(configured)) {
+    throw new Error(`${environmentName} must be an absolute executable path`);
+  }
+  return configured;
+}
+
 function writeString(header, offset, length, value) {
   const encoded = Buffer.from(value, "utf8");
   if (encoded.byteLength > length) {
@@ -226,7 +237,10 @@ async function assertNoDynamicLibreDwg(adapterPath, platform) {
     command = "readelf";
     args = ["-d", adapterPath];
   } else if (platform === "win32") {
-    command = "objdump";
+    command = configuredExecutable(
+      "DWG_VIEWER_OBJDUMP",
+      "objdump",
+    );
     args = ["-p", adapterPath];
   } else {
     throw new Error(`unsupported adapter target: ${platform}`);
@@ -285,7 +299,7 @@ async function extractGplLicense(sourceArchive) {
   let result;
   try {
     result = await execFileAsync(
-      "tar",
+      configuredExecutable("DWG_VIEWER_TAR", "tar"),
       [
         "-xOf",
         sourceArchive,
@@ -295,6 +309,7 @@ async function extractGplLicense(sourceArchive) {
         encoding: "utf8",
         maxBuffer: 128 * 1024,
         timeout: 5_000,
+        windowsHide: true,
       },
     );
   } catch (error) {

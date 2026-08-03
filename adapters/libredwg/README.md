@@ -194,12 +194,12 @@ packaging from the same target binary byte-identical. The included repository
 license and package metadata also let the packaged `package.mjs` run from the
 extracted source tree instead of depending on files outside the archive.
 
-GitHub's release workflow qualifies Linux x64 and macOS arm64 packages,
-reproduces the archives, verifies their extracted contents, and creates free
-build-provenance attestations. Windows is not yet a qualified target because
-the cache writer still uses POSIX temporary-file and process-isolation APIs; a
-Windows artifact must not be published until those paths are ported and
-measured in issue #25.
+GitHub's release workflow qualifies Linux x64, macOS arm64, and Windows x64
+packages, reproduces the archives, verifies their extracted contents, and
+creates free build-provenance attestations. The Windows writer uses private
+delete-on-close native temporary files and non-inheritable handles. Its
+qualification also exercises cancellation plus drive, UNC, relative, Unicode,
+normalization, and case-insensitive paths on the Windows runner.
 
 The MPL-only VSIX never bundles this executable. The complete reviewed
 publication and verification procedure is in

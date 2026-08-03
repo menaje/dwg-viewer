@@ -167,6 +167,47 @@ test("uses native Windows isolation and a path-safe piped input contract", async
   assert.match(hostSource, /createReadStream\(inputPath\)/u);
 });
 
+test("keeps Windows in the reproducible attested release set", async () => {
+  const [releaseWorkflow, distributionGuide] = await Promise.all([
+    readFile(
+      path.join(
+        import.meta.dirname,
+        "..",
+        "..",
+        ".github",
+        "workflows",
+        "release.yml",
+      ),
+      "utf8",
+    ),
+    readFile(
+      path.join(
+        import.meta.dirname,
+        "..",
+        "..",
+        "docs",
+        "distribution.md",
+      ),
+      "utf8",
+    ),
+  ]);
+  assert.match(releaseWorkflow, /runner: windows-2025/u);
+  assert.match(releaseWorkflow, /target: win32-x64/u);
+  assert.match(
+    releaseWorkflow,
+    /dwg-viewer-libredwg-0\.14-win32-x64\.tar\.gz/u,
+  );
+  assert.match(
+    releaseWorkflow,
+    /Build, diagnose, reproduce, and verify Windows package/u,
+  );
+  assert.match(distributionGuide, /Windows native-path/u);
+  assert.doesNotMatch(
+    distributionGuide,
+    /Windows artifacts are not published/u,
+  );
+});
+
 test("normalizes legacy inspection text before corpus metrics", async () => {
   const adapterSource = await readFile(
     path.join(import.meta.dirname, "libredwg_adapter.c"),

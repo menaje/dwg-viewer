@@ -331,9 +331,10 @@ Webview 디코딩은 이미지당 약 8백만 픽셀·전체 64MiB RGBA LRU로
 LibreDWG 실행 파일은 정적으로 연결하고 정확한 LibreDWG 소스·GPL
 전문·빌드 스크립트·체크섬을 동봉한 별도 GPL 패키지로 만듭니다. 같은
 바이너리와 소스로 두 번 만들면 바이트 단위로 같은 패키지가 생성됩니다.
-현재 자동 검증 대상은 Linux x64와 macOS arm64이며, POSIX 임시 파일
-경로가 남아 있는 Windows는 아직 배포 대상이 아닙니다.
-VSIX와 두 어댑터를 각각 두 번 만들어 비교하고, GPL 혼입을 검사하며,
+현재 자동 검증 대상은 Linux x64, macOS arm64와 Windows x64입니다.
+Windows는 Native 임시 파일·프로세스 격리, 드라이브·UNC·상대·한글 경로,
+최신 VS Code의 100/125/150/200% 화면 배율을 별도 검증합니다.
+VSIX와 세 어댑터를 각각 두 번 만들어 비교하고, GPL 혼입을 검사하며,
 체크섬과 무료 GitHub 빌드 증명을 생성하는 최종 절차는
 [`docs/distribution.md`](docs/distribution.md)에 정리했습니다.
 

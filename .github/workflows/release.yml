@@ -90,7 +90,7 @@ jobs:
   adapter:
     name: GPL adapter (${{ matrix.target }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     permissions:
       contents: read
       id-token: write
@@ -103,6 +103,8 @@ jobs:
             target: linux-x64
           - runner: macos-14
             target: darwin-arm64
+          - runner: windows-2025
+            target: win32-x64
 
     steps:
       - uses: actions/checkout@v7
@@ -110,7 +112,21 @@ jobs:
         with:
           node-version: 24
 
+      - uses: msys2/setup-msys2@v2
+        if: runner.os == 'Windows'
+        with:
+          msystem: UCRT64
+          update: true
+          path-type: inherit
+          install: >-
+            diffutils
+            make
+            tar
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-pkgconf
+
       - name: Build checksum-pinned static adapter
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           adapters/libredwg/prepare.sh \
@@ -118,6 +134,7 @@ jobs:
             "$RUNNER_TEMP/libredwg-adapter"
 
       - name: Run bounded self-diagnosis
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           DWG_VIEWER_ADAPTER_PROTOCOL=dwg-engine-adapter/1 \
@@ -125,6 +142,7 @@ jobs:
             "$RUNNER_TEMP/libredwg-adapter" doctor
 
       - name: Create and reproduce GPL source-complete package
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           package_path="$RUNNER_TEMP/dwg-viewer-libredwg-0.14-${{ matrix.target }}.tar.gz"
@@ -140,6 +158,7 @@ jobs:
           cmp "$package_path" "$repeated_path"
 
       - name: Verify extracted checksums and executable
+        if: runner.os != 'Windows'
         shell: bash
         run: |
           package_path="$RUNNER_TEMP/dwg-viewer-libredwg-0.14-${{ matrix.target }}.tar.gz"
@@ -153,6 +172,39 @@ jobs:
             shasum -a 256 -c SHA256SUMS
           fi
           bin/libredwg-adapter doctor
+
+      - name: Build, diagnose, reproduce, and verify Windows package
+        if: runner.os == 'Windows'
+        shell: msys2 {0}
+        run: |
+          runner_temp=$(cygpath -u "$RUNNER_TEMP")
+          build_root="$runner_temp/dwg-libredwg-build"
+          adapter_path="$runner_temp/libredwg-adapter.exe"
+          package_path="$runner_temp/dwg-viewer-libredwg-0.14-${{ matrix.target }}.tar.gz"
+          repeated_path="$runner_temp/dwg-viewer-libredwg-0.14-${{ matrix.target }}-repeated.tar.gz"
+          export DWG_VIEWER_TAR
+          export DWG_VIEWER_OBJDUMP
+          DWG_VIEWER_TAR=$(cygpath -w /usr/bin/tar.exe)
+          DWG_VIEWER_OBJDUMP=$(cygpath -w /ucrt64/bin/objdump.exe)
+          adapters/libredwg/prepare.sh "$build_root" "$adapter_path"
+          DWG_VIEWER_ADAPTER_PROTOCOL=dwg-engine-adapter/1 \
+          DWG_VIEWER_BENCHMARK_PHASE=doctor \
+            "$adapter_path" doctor
+          node adapters/libredwg/package.mjs \
+            --adapter "$adapter_path" \
+            --libredwg-source "$build_root/libredwg-0.14.tar.xz" \
+            --output "$package_path"
+          node adapters/libredwg/package.mjs \
+            --adapter "$adapter_path" \
+            --libredwg-source "$build_root/libredwg-0.14.tar.xz" \
+            --output "$repeated_path"
+          cmp "$package_path" "$repeated_path"
+          mkdir "$runner_temp/extracted"
+          tar -xzf "$package_path" -C "$runner_temp/extracted"
+          package_root=$(find "$runner_temp/extracted" -mindepth 1 -maxdepth 1 -type d)
+          cd "$package_root"
+          sha256sum -c SHA256SUMS
+          bin/libredwg-adapter.exe doctor
 
       - name: Attest adapter provenance
         uses: actions/attest@v4
@@ -198,11 +250,13 @@ jobs:
           test -f "dist/dwg-viewer-vscode-$release_version.vsix"
           test -f "dist/dwg-viewer-libredwg-0.14-linux-x64.tar.gz"
           test -f "dist/dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz"
+          test -f "dist/dwg-viewer-libredwg-0.14-win32-x64.tar.gz"
           cd dist
           sha256sum \
             "dwg-viewer-vscode-$release_version.vsix" \
             "dwg-viewer-libredwg-0.14-linux-x64.tar.gz" \
             "dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz" \
+            "dwg-viewer-libredwg-0.14-win32-x64.tar.gz" \
             > SHA256SUMS
           printf 'version=%s\n' "$release_version" >> "$GITHUB_OUTPUT"
 
@@ -228,12 +282,13 @@ jobs:
           printf '%s\n\n%s\n\n%s\n' \
             "The MPL-2.0 VSIX and GPL-3.0-or-later LibreDWG adapters are separate artifacts." \
             "Verify SHA256SUMS and the GitHub artifact attestations before installation." \
-            "This release supports Linux x64 and macOS arm64. Windows remains tracked in issue #25." \
+            "This release supports Linux x64, macOS arm64, and Windows x64." \
             > "$release_notes"
           gh release create "$GITHUB_REF_NAME" \
             "dist/dwg-viewer-vscode-${{ steps.version.outputs.version }}.vsix" \
             "dist/dwg-viewer-libredwg-0.14-linux-x64.tar.gz" \
             "dist/dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz" \
+            "dist/dwg-viewer-libredwg-0.14-win32-x64.tar.gz" \
             "dist/SHA256SUMS" \
             --verify-tag \
             --title "DWG Viewer $GITHUB_REF_NAME" \
