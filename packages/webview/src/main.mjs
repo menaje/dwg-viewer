@@ -1,4 +1,4 @@
-import { ViewportInteraction } from "./interaction.mjs?v=1.18.2";
+import { ViewportInteraction } from "./interaction.mjs?v=1.18.12";
 import {
   buildExternalLayerMap,
   buildExternalLinetypeMap,
@@ -6,13 +6,19 @@ import {
   remapLineVertexLayers,
   remapLineVertexLinetypes,
   remapTextEntityLayers,
-} from "./external-reference.mjs";
+} from "./external-reference.mjs?v=1.18.8";
 import {
   createVsCodeRangeSource,
   installWorkerRangeProxy,
   WORKER_RANGE_REQUEST,
 } from "./host-range-source.mjs";
-import { applyMaskOrderToInstanceGraph } from "./instance-graph.mjs";
+import { applyMaskOrderToInstanceGraph } from "./instance-graph.mjs?v=1.18.8";
+import {
+  buildLayerGroups,
+  isolateLayerGroup,
+  layerGroupVisibility,
+  setLayerGroupVisibility,
+} from "./layer-groups.mjs?v=1.18.11";
 import { buildMaskOrderPlan } from "./mask-order.mjs";
 import { WebviewMemoryTelemetry } from "./memory-telemetry.mjs";
 import { BlobRangeSource, TrackedRangeSource } from "./range-source.mjs";
@@ -21,17 +27,34 @@ import {
   CanvasRasterImageOverlay,
   CompositeRasterImageOverlay,
   RasterImageAssetStore,
-} from "./raster-image-overlay.mjs";
+} from "./raster-image-overlay.mjs?v=1.18.13";
 import {
   makePlotStyleLineWeights,
   makePlotStylePalette,
   plotStyleDiagnostics,
   plotStyleShownInLayout,
 } from "./cad-plot-style.mjs";
-import { ComplexLinetypeOverlay } from "./complex-linetype-overlay.mjs";
+import {
+  bytesToBase64,
+  fitCameraView,
+  makeLayoutPngZipEntries,
+  makeRasterPdf,
+  makeStoredZip,
+  pixelsForPage,
+  resolvePageGeometry,
+  sanitizeExportStem,
+  scaleCameraView,
+} from "./drawing-export.mjs?v=1.18.13";
+import {
+  MAX_REVIEW_FILLED_OCCURRENCES,
+  MAX_REVIEW_FILLED_RINGS,
+  MAX_REVIEW_FILLED_VERTICES,
+} from "./filled-object-review.mjs";
+import { createMeasurementFormat } from "./measurement-format.mjs";
+import { ComplexLinetypeOverlay } from "./complex-linetype-overlay.mjs?v=1.18.13";
 import { curveRefinementCameraKey } from "./curve-contract.mjs";
-import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.2";
-import { ReviewTools } from "./review-tools.mjs";
+import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.13";
+import { ReviewTools } from "./review-tools.mjs?v=1.18.14";
 import {
   isOutlineFontReference,
   isShxFontReference,
@@ -43,11 +66,19 @@ import {
   CompositeTextOverlay,
   registerLocalOutlineFont,
   unregisterLocalOutlineFont,
-} from "./text-overlay.mjs";
+} from "./text-overlay.mjs?v=1.18.13";
 import {
   loadExternalFirstFrame,
   loadFirstFrame,
-} from "./viewer.mjs?v=1.18.2";
+} from "./viewer.mjs?v=1.18.8";
+import {
+  addViewBookmark,
+  CameraViewHistory,
+  MAXIMUM_BOOKMARKS_PER_SCOPE,
+  normalizeViewBookmarks,
+  removeViewBookmark,
+  renameViewBookmark,
+} from "./view-navigation.mjs?v=1.18.12";
 
 const fileInput = document.querySelector("#cache-file");
 const cachePicker = document.querySelector("#cache-picker");
@@ -66,8 +97,24 @@ const canvas = document.querySelector("#drawing");
 const imageCanvas = document.querySelector("#image-overlay");
 const textCanvas = document.querySelector("#text-overlay");
 const reviewCanvas = document.querySelector("#review-overlay");
+const windowZoomGuide = document.querySelector("#window-zoom-guide");
 const reviewToolbar = document.querySelector("#review-toolbar");
 const reviewResult = document.querySelector("#review-result");
+const windowZoomButton = document.querySelector("#window-zoom");
+const viewHistoryBack = document.querySelector("#view-history-back");
+const viewHistoryForward = document.querySelector("#view-history-forward");
+const viewBookmarksToggle = document.querySelector(
+  "#view-bookmarks-toggle",
+);
+const viewBookmarkPanel = document.querySelector("#view-bookmark-panel");
+const viewBookmarkClose = document.querySelector("#view-bookmark-close");
+const viewBookmarkForm = document.querySelector("#view-bookmark-form");
+const viewBookmarkName = document.querySelector("#view-bookmark-name");
+const viewBookmarkSummary = document.querySelector(
+  "#view-bookmark-summary",
+);
+const viewBookmarkEmpty = document.querySelector("#view-bookmark-empty");
+const viewBookmarkList = document.querySelector("#view-bookmark-list");
 const layoutTabs = document.querySelector("#layout-tabs");
 const viewControls = [...document.querySelectorAll("[data-view-action]")];
 const layersToggle = document.querySelector("#layers-toggle");
@@ -77,12 +124,34 @@ const layerList = document.querySelector("#layer-list");
 const layerSummary = document.querySelector("#layer-summary");
 const layersShowAll = document.querySelector("#layers-show-all");
 const layersHideAll = document.querySelector("#layers-hide-all");
+const layersInvert = document.querySelector("#layers-invert");
+const layersRestore = document.querySelector("#layers-restore");
 const hostRetry = document.querySelector("#host-retry");
 const hostRebuild = document.querySelector("#host-rebuild");
 const hostAdapterSetup = document.querySelector("#host-adapter-setup");
 const xrefsToggle = document.querySelector("#xrefs-toggle");
 const wipeoutToggle = document.querySelector("#wipeout-toggle");
 const plotStyleToggle = document.querySelector("#plot-style-toggle");
+const exportToggle = document.querySelector("#export-toggle");
+const exportPanel = document.querySelector("#export-panel");
+const exportClose = document.querySelector("#export-close");
+const exportForm = document.querySelector("#export-form");
+const exportTarget = document.querySelector("#export-target");
+const exportFormat = document.querySelector("#export-format");
+const exportPaper = document.querySelector("#export-paper");
+const exportOrientation = document.querySelector("#export-orientation");
+const exportDpi = document.querySelector("#export-dpi");
+const exportScale = document.querySelector("#export-scale");
+const exportPlotStyle = document.querySelector("#export-plot-style");
+const exportHelp = document.querySelector("#export-help");
+const exportSummary = document.querySelector("#export-summary");
+const exportProgress = document.querySelector("#export-progress");
+const exportProgressBar = document.querySelector("#export-progress-bar");
+const exportProgressLabel = document.querySelector(
+  "#export-progress-label",
+);
+const exportStart = document.querySelector("#export-start");
+const exportCancel = document.querySelector("#export-cancel");
 const xrefPanel = document.querySelector("#xref-panel");
 const xrefSummary = document.querySelector("#xref-summary");
 const xrefStatusList = document.querySelector("#xref-status-list");
@@ -93,6 +162,8 @@ const viewerToolsTrigger = document.querySelector(
 let activeScene;
 let activeInteraction;
 let activeReviewTools;
+let activeViewHistory;
+let activeViewDocumentKey = "";
 let activeTextStatus;
 let activeTextComposite;
 let activeImageComposite;
@@ -117,8 +188,16 @@ let activeViewId;
 let viewSwitchRevision = 0;
 let activePlotStyleName = "";
 let activePlotStyleEnabled = false;
+let activeDocumentName = "drawing";
+let activeExportController;
+let nextExportSaveRequestId = 1;
+const pendingExportSaves = new Map();
+let previousLayerVisibility = null;
+let activeLayerGroups = Object.freeze([]);
+let pendingTextReveal;
 let nextPlotStyleRequestId = 1;
 let activeMemoryTelemetry;
+let viewControlsEnabled = false;
 let hatchPatternTimer;
 let fontRefreshTimer;
 let lastPatternCameraKey;
@@ -140,6 +219,19 @@ const vscodeApi =
   typeof globalThis.acquireVsCodeApi === "function"
     ? globalThis.acquireVsCodeApi()
     : null;
+const initialWebviewState = vscodeApi?.getState?.();
+let storedViewBookmarks = normalizeViewBookmarks(
+  initialWebviewState &&
+    typeof initialWebviewState === "object" &&
+    initialWebviewState.viewBookmarks,
+);
+let nextViewBookmarkId = 1;
+let activeMeasurementPreferences =
+  initialWebviewState &&
+  typeof initialWebviewState === "object" &&
+  initialWebviewState.measurementPreferences
+    ? initialWebviewState.measurementPreferences
+    : {};
 let activeHostRangeSource;
 let activeRangeMetricsSource;
 const externalHostSources = new Map();
@@ -154,9 +246,246 @@ const readyExternalMessages = new Map();
 const plotStyleTables = new Map();
 const plotStylePreferences = new Map();
 const pendingPlotStyleRequests = new Map();
+const plotStyleWaiters = new Map();
 const MAX_EXTERNAL_SOURCE_OVERVIEW_BYTES = 32 * 1024 * 1024;
 let externalSourceOverviewBytes = 0;
 let externalLoadQueue = Promise.resolve();
+
+function saveMeasurementPreferences(preferences) {
+  activeMeasurementPreferences = preferences;
+  if (!vscodeApi?.setState) {
+    return;
+  }
+  const current = vscodeApi.getState?.();
+  vscodeApi.setState({
+    ...(current && typeof current === "object" ? current : {}),
+    measurementPreferences: preferences,
+  });
+}
+
+function saveStoredViewBookmarks(bookmarks) {
+  storedViewBookmarks = normalizeViewBookmarks(bookmarks);
+  if (!vscodeApi?.setState) {
+    return;
+  }
+  const current = vscodeApi.getState?.();
+  vscodeApi.setState({
+    ...(current && typeof current === "object" ? current : {}),
+    viewBookmarks: storedViewBookmarks,
+  });
+}
+
+function activeViewBookmarkScope() {
+  if (!activeViewDocumentKey || !activeViewId) {
+    return "";
+  }
+  return (
+    `${activeViewDocumentKey.slice(0, 160)}::` +
+    String(activeViewId).slice(0, 90)
+  );
+}
+
+function currentViewBookmarks() {
+  const scope = activeViewBookmarkScope();
+  if (!scope) {
+    return [];
+  }
+  return storedViewBookmarks
+    .filter((bookmark) => bookmark.scope === scope)
+    .sort((left, right) => right.createdAt - left.createdAt);
+}
+
+function currentViewLabel() {
+  return (
+    activeScene?.views.find(({ id }) => id === activeViewId)?.label ??
+    "현재 화면"
+  );
+}
+
+function nextAutomaticBookmarkName(bookmarks) {
+  const names = new Set(bookmarks.map(({ name }) => name));
+  for (let index = 1; index <= MAXIMUM_BOOKMARKS_PER_SCOPE + 1; index += 1) {
+    const candidate = `화면 ${index}`;
+    if (!names.has(candidate)) {
+      return candidate;
+    }
+  }
+  return `화면 ${bookmarks.length + 1}`;
+}
+
+function createViewBookmarkId() {
+  const randomId = globalThis.crypto?.randomUUID?.();
+  if (randomId) {
+    return randomId;
+  }
+  const id = `view-${Date.now().toString(36)}-${nextViewBookmarkId.toString(36)}`;
+  nextViewBookmarkId += 1;
+  return id;
+}
+
+function renderViewBookmarks() {
+  const bookmarks = currentViewBookmarks();
+  const scope = activeViewBookmarkScope();
+  viewBookmarkList.replaceChildren();
+  viewBookmarkSummary.textContent = scope
+    ? `${currentViewLabel()} · ${bookmarks.length.toLocaleString()}개`
+    : "";
+  viewBookmarkEmpty.hidden = bookmarks.length > 0;
+  const saveButton = viewBookmarkForm.querySelector("button[type='submit']");
+  if (saveButton) {
+    saveButton.disabled =
+      !scope ||
+      !activeInteraction ||
+      bookmarks.length >= MAXIMUM_BOOKMARKS_PER_SCOPE;
+  }
+  const fragment = document.createDocumentFragment();
+  for (const bookmark of bookmarks) {
+    const item = document.createElement("li");
+    const input = document.createElement("input");
+    const open = document.createElement("button");
+    const remove = document.createElement("button");
+    item.className = "view-bookmark-item";
+    item.dataset.bookmarkId = bookmark.id;
+    input.type = "text";
+    input.maxLength = 64;
+    input.value = bookmark.name;
+    input.title = "이름을 수정한 뒤 Enter 또는 바깥을 선택하면 저장됩니다.";
+    input.setAttribute("aria-label", `${bookmark.name} 북마크 이름`);
+    const saveName = () => {
+      if (input.value.trim() === bookmark.name) {
+        input.value = bookmark.name;
+        return;
+      }
+      try {
+        saveStoredViewBookmarks(
+          renameViewBookmark(
+            storedViewBookmarks,
+            bookmark.id,
+            input.value,
+          ),
+        );
+        const renamed = storedViewBookmarks.find(
+          ({ id }) => id === bookmark.id,
+        );
+        input.value = renamed?.name ?? bookmark.name;
+        input.setAttribute(
+          "aria-label",
+          `${input.value} 북마크 이름`,
+        );
+        status.textContent = "화면 북마크 이름을 변경했습니다.";
+      } catch {
+        input.value = bookmark.name;
+        status.textContent = "북마크 이름은 한 글자 이상 입력하세요.";
+      }
+    };
+    input.addEventListener("blur", saveName);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        input.blur();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        input.value = bookmark.name;
+        input.blur();
+      }
+    });
+    open.type = "button";
+    open.dataset.bookmarkAction = "open";
+    open.textContent = "이동";
+    open.title = `${bookmark.name} 화면으로 이동`;
+    open.addEventListener("click", () => {
+      if (!activeInteraction || bookmark.scope !== activeViewBookmarkScope()) {
+        return;
+      }
+      activeInteraction.flushViewCommit();
+      activeInteraction.focusAt(
+        bookmark.view.origin,
+        bookmark.view.worldHeight,
+      );
+      status.textContent = `${bookmark.name} 북마크 화면으로 이동했습니다.`;
+    });
+    remove.type = "button";
+    remove.dataset.bookmarkAction = "delete";
+    remove.textContent = "삭제";
+    remove.title = `${bookmark.name} 북마크 삭제`;
+    remove.addEventListener("click", () => {
+      saveStoredViewBookmarks(
+        removeViewBookmark(storedViewBookmarks, bookmark.id),
+      );
+      renderViewBookmarks();
+      status.textContent = `${bookmark.name} 북마크를 삭제했습니다.`;
+    });
+    item.append(input, open, remove);
+    fragment.append(item);
+  }
+  viewBookmarkList.append(fragment);
+}
+
+function setViewBookmarkPanelOpen(open) {
+  const next = Boolean(open) && Boolean(activeInteraction);
+  viewBookmarkPanel.hidden = !next;
+  viewBookmarksToggle.setAttribute("aria-expanded", String(next));
+  if (next) {
+    setViewerToolsOpen(false);
+    reviewResult.hidden = true;
+    renderViewBookmarks();
+    viewBookmarkName.focus();
+  }
+}
+
+function updateViewNavigationControls() {
+  const ready = viewControlsEnabled && Boolean(activeInteraction);
+  windowZoomButton.disabled = !ready;
+  windowZoomButton.setAttribute(
+    "aria-pressed",
+    String(Boolean(activeInteraction?.windowZoomEnabled)),
+  );
+  viewHistoryBack.disabled = !ready || !activeViewHistory?.canBack;
+  viewHistoryForward.disabled =
+    !ready || !activeViewHistory?.canForward;
+  viewBookmarksToggle.disabled = !ready;
+  if (!ready) {
+    setViewBookmarkPanelOpen(false);
+  }
+}
+
+function navigateViewHistory(direction) {
+  if (!activeInteraction || !activeViewHistory) {
+    return false;
+  }
+  activeInteraction.flushViewCommit();
+  const view =
+    direction === "back"
+      ? activeViewHistory.back()
+      : activeViewHistory.forward();
+  if (!view) {
+    updateViewNavigationControls();
+    return false;
+  }
+  activeInteraction.restoreView(view);
+  updateViewNavigationControls();
+  status.textContent =
+    direction === "back"
+      ? "이전 화면으로 이동했습니다."
+      : "다음 화면으로 이동했습니다.";
+  return true;
+}
+
+function handleWindowZoomModeChange(enabled, reason) {
+  updateViewNavigationControls();
+  if (enabled) {
+    setViewBookmarkPanelOpen(false);
+    status.textContent =
+      "확대할 영역의 한쪽 모서리에서 반대쪽 모서리까지 드래그하세요. Esc로 취소합니다.";
+  } else if (reason === "completed") {
+    status.textContent = "선택한 영역을 화면에 맞춰 확대했습니다.";
+  } else if (reason === "too-small") {
+    status.textContent =
+      "영역이 너무 작아 확대하지 않았습니다. 다시 영역 확대를 선택하세요.";
+  } else if (reason === "cancelled") {
+    status.textContent = "영역 확대를 취소했습니다.";
+  }
+}
 
 function formatBytes(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -192,6 +521,12 @@ function resetPlotStyleSession() {
   plotStyleTables.clear();
   plotStylePreferences.clear();
   pendingPlotStyleRequests.clear();
+  for (const waiters of plotStyleWaiters.values()) {
+    for (const resolve of waiters) {
+      resolve(null);
+    }
+  }
+  plotStyleWaiters.clear();
   plotStyleToggle.disabled = true;
   plotStyleToggle.textContent = "출력 스타일";
   plotStyleToggle.setAttribute("aria-pressed", "false");
@@ -347,6 +682,13 @@ function handleHostPlotStyleResponse(message) {
     table: message.table,
   });
   plotStyleTables.set(pending.key, entry);
+  const waiters = plotStyleWaiters.get(pending.key);
+  if (waiters) {
+    plotStyleWaiters.delete(pending.key);
+    for (const resolve of waiters) {
+      resolve(entry);
+    }
+  }
   if (
     pending.revision !== openRevision ||
     activePlotStyleName !== pending.key ||
@@ -363,6 +705,647 @@ function handleHostPlotStyleResponse(message) {
     );
   } else {
     setPlotStyleUnavailable(pending.requestedName, entry.status);
+  }
+}
+
+function abortError() {
+  return new DOMException("Export cancelled", "AbortError");
+}
+
+function throwIfExportCancelled(signal) {
+  if (signal?.aborted) {
+    throw abortError();
+  }
+}
+
+function activeViewDescriptor() {
+  return (
+    activeScene?.views.find((view) => view.id === activeViewId) ??
+    activeScene?.activeView ??
+    null
+  );
+}
+
+function waitForPlotStyleEntry(view, signal, timeoutMs = 5_000) {
+  const key = normalizePlotStyleName(view?.layout?.styleSheet ?? "");
+  if (!key) {
+    return Promise.resolve(null);
+  }
+  const cached = plotStyleTables.get(key);
+  if (cached) {
+    return Promise.resolve(cached);
+  }
+  if (!vscodeApi || !activeHostCacheId) {
+    return Promise.resolve(null);
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const waiters = plotStyleWaiters.get(key) ?? new Set();
+    const finish = (entry) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      waiters.delete(finish);
+      if (waiters.size === 0 && plotStyleWaiters.get(key) === waiters) {
+        plotStyleWaiters.delete(key);
+      }
+      resolve(entry);
+    };
+    const onAbort = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearTimeout(timer);
+      waiters.delete(finish);
+      if (waiters.size === 0 && plotStyleWaiters.get(key) === waiters) {
+        plotStyleWaiters.delete(key);
+      }
+      reject(abortError());
+    };
+    waiters.add(finish);
+    plotStyleWaiters.set(key, waiters);
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+    }
+  });
+}
+
+function exportViewsForTarget(target) {
+  const current = activeViewDescriptor();
+  if (!current || !activeScene) {
+    return [];
+  }
+  if (target !== "layouts") {
+    return [current];
+  }
+  const layouts = activeScene.views.filter(
+    (view) => view.kind === "layout",
+  );
+  return layouts.length > 0 ? layouts : [current];
+}
+
+function exportSettingsFromForm() {
+  return Object.freeze({
+    target: exportTarget.value,
+    format: exportFormat.value,
+    paper: exportPaper.value,
+    orientation: exportOrientation.value,
+    dpi: Number(exportDpi.value),
+    scale: exportScale.value,
+    plotStyle: exportPlotStyle.checked,
+  });
+}
+
+function pageGeometryFor(view, settings) {
+  const screenAspect = Math.max(canvas.width, 1) / Math.max(canvas.height, 1);
+  return resolvePageGeometry({
+    layout: view?.kind === "layout" ? view.layout : null,
+    paper: settings.target === "screen" ? "screen" : settings.paper,
+    orientation:
+      settings.target === "screen" ? "drawing" : settings.orientation,
+    screenAspect,
+  });
+}
+
+function exportCameraForView(view, page, pixels, settings) {
+  if (settings.target === "screen") {
+    return activeInteraction.snapshot().camera;
+  }
+  const aspect = pixels.width / pixels.height;
+  const bounds =
+    view.preferredBounds ??
+    activeScene.renderer.combinedBounds ??
+    activeScene.renderer.overviewScene?.fitBounds;
+  if (!bounds) {
+    throw new Error(`${view.label}의 출력 범위를 확인할 수 없습니다.`);
+  }
+  if (
+    settings.scale === "drawing" &&
+    view.kind === "model" &&
+    view.preferredView &&
+    settings.orientation === "drawing" &&
+    settings.paper === "drawing"
+  ) {
+    return Object.freeze({
+      origin: Object.freeze([...view.preferredView.center]),
+      worldHeight: view.preferredView.height,
+    });
+  }
+  if (settings.scale === "fit" || settings.scale === "drawing") {
+    return fitCameraView(bounds, aspect);
+  }
+  const denominator = Number(settings.scale);
+  const center = view.preferredView?.center ?? [
+    bounds.min[0] * 0.5 + bounds.max[0] * 0.5,
+    bounds.min[1] * 0.5 + bounds.max[1] * 0.5,
+    0,
+  ];
+  const measurement = createMeasurementFormat(
+    activeScene.metadata.drawing.insertionUnits,
+    activeMeasurementPreferences,
+  );
+  if (!measurement.canUsePhysicalUnits) {
+    throw new Error(
+      "단위 없는 도면에서 1:N 축척을 사용하려면 측정 설정에서 실제 길이로 단위를 먼저 보정하세요.",
+    );
+  }
+  return scaleCameraView(
+    center,
+    page.heightMm,
+    denominator,
+    1 / measurement.millimetersPerDrawingUnit,
+  );
+}
+
+function setExportProgress(current, total, message) {
+  exportProgress.hidden = false;
+  exportProgressBar.max = Math.max(total, 1);
+  exportProgressBar.value = Math.min(current, total);
+  exportProgressLabel.textContent = message;
+}
+
+function setExportBusy(busy) {
+  const controls = [
+    exportTarget,
+    exportFormat,
+    exportPaper,
+    exportOrientation,
+    exportDpi,
+    exportScale,
+    exportPlotStyle,
+    exportStart,
+  ];
+  for (const control of controls) {
+    control.disabled = Boolean(busy);
+  }
+  exportCancel.hidden = !busy;
+  exportToggle.disabled = Boolean(busy) || !viewControlsEnabled;
+  exportPanel.setAttribute("aria-busy", String(Boolean(busy)));
+  dropZone.classList.toggle("export-busy", Boolean(busy));
+  for (const button of layoutTabs.querySelectorAll("button")) {
+    button.disabled = Boolean(busy);
+  }
+  if (!busy) {
+    updateExportOptions();
+  }
+}
+
+function updateExportOptions() {
+  const current = activeViewDescriptor();
+  const settings = exportSettingsFromForm();
+  const layouts = activeScene?.views.filter(
+    (view) => view.kind === "layout",
+  ) ?? [];
+  const allLayoutsOption = exportTarget.querySelector(
+    'option[value="layouts"]',
+  );
+  if (allLayoutsOption) {
+    allLayoutsOption.disabled = layouts.length === 0;
+  }
+  if (settings.target === "layouts" && layouts.length === 0) {
+    exportTarget.value = "view";
+  }
+  const screen = exportTarget.value === "screen";
+  exportPaper.disabled = screen;
+  exportOrientation.disabled = screen;
+  exportDpi.disabled = screen;
+  exportScale.disabled = screen;
+  if (!current) {
+    exportSummary.textContent = "";
+    exportHelp.textContent = "도면을 연 뒤 출력할 수 있습니다.";
+    return;
+  }
+  const page = pageGeometryFor(current, {
+    ...settings,
+    target: exportTarget.value,
+  });
+  const formatLabel =
+    exportFormat.value === "pdf"
+      ? "PDF"
+      : exportTarget.value === "layouts"
+        ? "PNG ZIP"
+        : "PNG";
+  exportSummary.textContent =
+    `${formatLabel} · ${Number(page.widthMm.toFixed(1))} × ` +
+    `${Number(page.heightMm.toFixed(1))} mm`;
+  const numericScale = Number(exportScale.value);
+  if (Number.isFinite(numericScale) && numericScale > 0) {
+    const measurement = createMeasurementFormat(
+      activeScene.metadata.drawing.insertionUnits,
+      activeMeasurementPreferences,
+    );
+    exportHelp.textContent = measurement.canUsePhysicalUnits
+      ? `DWG 단위 또는 측정 보정값을 기준으로 1:${numericScale} 축척을 적용합니다.`
+      : "단위 없는 도면입니다. 1:N 축척을 쓰려면 측정 설정에서 실제 길이로 단위를 먼저 보정하세요.";
+    return;
+  }
+  exportHelp.textContent = screen
+    ? "도면 UI와 검토 가이드는 제외하고 현재 보이는 도면 화면만 저장합니다."
+    : page.source === "drawing"
+      ? `${page.label} 용지 정보를 사용합니다. 각 배치는 서로 다른 용지 크기를 유지할 수 있습니다.`
+      : "도면에 유효한 용지 값이 없거나 용지를 직접 선택해 선택한 크기로 출력합니다.";
+}
+
+function setExportPanelOpen(open) {
+  const next = Boolean(open) && Boolean(activeScene);
+  exportPanel.hidden = !next;
+  exportToggle.setAttribute("aria-expanded", String(next));
+  if (next) {
+    setViewerToolsOpen(true);
+    layerPanel.hidden = true;
+    layersToggle.setAttribute("aria-expanded", "false");
+    fontPanel.hidden = true;
+    fontsToggle.setAttribute("aria-expanded", "false");
+    xrefPanel.hidden = true;
+    xrefsToggle.setAttribute("aria-expanded", "false");
+    updateExportOptions();
+  }
+}
+
+function canvasToBytes(canvasElement, type, quality, signal) {
+  throwIfExportCancelled(signal);
+  return new Promise((resolve, reject) => {
+    canvasElement.toBlob(
+      async (blob) => {
+        if (!blob) {
+          reject(new Error("출력 이미지를 인코딩하지 못했습니다."));
+          return;
+        }
+        try {
+          throwIfExportCancelled(signal);
+          resolve(new Uint8Array(await blob.arrayBuffer()));
+        } catch (error) {
+          reject(error);
+        }
+      },
+      type,
+      quality,
+    );
+  });
+}
+
+async function captureExportPage(
+  view,
+  page,
+  pixels,
+  settings,
+  signal,
+  warnings,
+) {
+  throwIfExportCancelled(signal);
+  const renderer = activeScene.renderer;
+  const returnCamera = activeInteraction.snapshot().camera;
+  const palette = new Uint8Array(renderer.aciPalette);
+  const lineWeights = new Int16Array(renderer.plotStyleLineWeights);
+  const plotStylesEnabled = renderer.plotStylesEnabled;
+  const lineWeightsVisible = renderer.lineWeightsVisible;
+  let plotStyleEntry = null;
+  let appliedPlotStyle = false;
+  if (settings.plotStyle && view.kind === "layout") {
+    plotStyleEntry = await waitForPlotStyleEntry(view, signal);
+  }
+  throwIfExportCancelled(signal);
+  try {
+    if (settings.plotStyle && plotStyleEntry?.status === "loaded") {
+      renderer.setPlotStyle(
+        makePlotStylePalette(plotStyleEntry.table),
+        makePlotStyleLineWeights(plotStyleEntry.table),
+      );
+      activeTextComposite?.setPalette(renderer.aciPalette);
+      renderer.setLineWeightsVisible(true);
+      appliedPlotStyle = true;
+    } else if (settings.plotStyle && view.kind === "layout") {
+      const requested = view.layout?.styleSheet?.trim();
+      if (requested) {
+        warnings.add(`${view.label}: ${requested} CTB를 적용하지 못함`);
+      }
+      renderer.clearPlotStyle();
+      activeTextComposite?.setPalette(renderer.aciPalette);
+    } else if (!settings.plotStyle) {
+      renderer.clearPlotStyle();
+      activeTextComposite?.setPalette(renderer.aciPalette);
+    }
+    const camera = exportCameraForView(view, page, pixels, settings);
+    const background =
+      settings.target === "screen" && !appliedPlotStyle
+        ? getComputedStyle(dropZone).backgroundColor || "#0e1013"
+        : "#ffffff";
+    return renderer.captureRaster(camera, {
+      width: pixels.width,
+      height: pixels.height,
+      background,
+    }).canvas;
+  } finally {
+    renderer.setLineWeightsVisible(lineWeightsVisible);
+    if (plotStylesEnabled) {
+      renderer.setPlotStyle(palette, lineWeights);
+    } else {
+      renderer.clearPlotStyle();
+    }
+    activeTextComposite?.setPalette(renderer.aciPalette);
+    renderer.redraw(returnCamera);
+  }
+}
+
+function triggerStandaloneDownload(bytes, fileName, mimeType) {
+  const blob = new Blob([bytes], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.hidden = true;
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+function saveExportBytes(bytes, format, suggestedName) {
+  const extension = format;
+  const fileName = `${sanitizeExportStem(suggestedName)}.${extension}`;
+  if (!vscodeApi) {
+    triggerStandaloneDownload(
+      bytes,
+      fileName,
+      format === "pdf"
+        ? "application/pdf"
+        : format === "png"
+          ? "image/png"
+          : "application/zip",
+    );
+    return Promise.resolve({ status: "saved", bytes: bytes.length });
+  }
+  const requestId = nextExportSaveRequestId++;
+  return new Promise((resolve, reject) => {
+    pendingExportSaves.set(requestId, { resolve, reject });
+    vscodeApi.postMessage({
+      type: "dwg-export-save/1",
+      requestId,
+      format,
+      suggestedName,
+      data: bytesToBase64(bytes),
+    });
+  });
+}
+
+async function restoreViewAfterExport({
+  scene,
+  view,
+  camera: viewCamera,
+  history,
+  reviewTool,
+  revision,
+}) {
+  if (
+    activeScene !== scene ||
+    revision !== openRevision ||
+    !view
+  ) {
+    return;
+  }
+  if (activeViewId !== view.id) {
+    await activateView(
+      scene,
+      view,
+      activeRangeMetricsSource,
+      revision,
+      { awaitReady: true },
+    );
+  }
+  activeInteraction?.restoreView(viewCamera);
+  activeViewHistory = history;
+  updateViewNavigationControls();
+  if (reviewTool && activeReviewTools && !activeReviewTools.activeTool) {
+    activeReviewTools.activate(reviewTool);
+  }
+  configurePlotStyleForView(scene, view, revision);
+  activeInteraction?.refresh();
+}
+
+async function performDrawingExport(settings, signal) {
+  if (!activeScene || !activeInteraction) {
+    throw new Error("출력할 도면이 열려 있지 않습니다.");
+  }
+  const scene = activeScene;
+  const revision = openRevision;
+  const originalView = activeViewDescriptor();
+  const originalState = {
+    scene,
+    view: originalView,
+    camera: activeInteraction.snapshot().camera,
+    history: activeViewHistory,
+    reviewTool: activeReviewTools?.activeTool ?? null,
+    revision,
+  };
+  const views = exportViewsForTarget(settings.target);
+  if (views.length === 0) {
+    throw new Error("출력할 모델 또는 배치가 없습니다.");
+  }
+  const encodedPages = [];
+  const warnings = new Set();
+  let encodedBytes = 0;
+  const maximumTotalPixels = 60_000_000;
+  try {
+    for (let index = 0; index < views.length; index += 1) {
+      throwIfExportCancelled(signal);
+      const view = views[index];
+      setExportProgress(
+        index,
+        views.length,
+        `${view.label} 화면 구성 중`,
+      );
+      if (activeViewId !== view.id) {
+        const activated = await activateView(
+          scene,
+          view,
+          activeRangeMetricsSource,
+          revision,
+          { awaitReady: true },
+        );
+        if (!activated) {
+          throw new Error(`${view.label} 배치를 구성하지 못했습니다.`);
+        }
+      }
+      throwIfExportCancelled(signal);
+      const page = pageGeometryFor(view, settings);
+      const rendererMaximum = scene.renderer.maximumRasterSize();
+      const pixels =
+        settings.target === "screen"
+          ? Object.freeze({
+              width: Math.max(1, canvas.width),
+              height: Math.max(1, canvas.height),
+              requestedWidth: Math.max(1, canvas.width),
+              requestedHeight: Math.max(1, canvas.height),
+              requestedDpi: 0,
+              effectiveDpi: 0,
+              limited: false,
+            })
+          : pixelsForPage(page, settings.dpi, {
+              maximumPixels: Math.min(
+                12_000_000,
+                Math.max(
+                  1_000_000,
+                  Math.floor(maximumTotalPixels / views.length),
+                ),
+              ),
+              maximumEdge: Math.min(
+                8_192,
+                rendererMaximum.width,
+                rendererMaximum.height,
+              ),
+            });
+      if (pixels.limited) {
+        warnings.add(
+          `${view.label}: 장치 한도에 맞춰 ${pixels.effectiveDpi.toFixed(
+            0,
+          )} DPI로 조정`,
+        );
+      }
+      setExportProgress(
+        index,
+        views.length,
+        `${view.label} ${pixels.width.toLocaleString()} × ${pixels.height.toLocaleString()} 렌더링 중`,
+      );
+      const outputCanvas = await captureExportPage(
+        view,
+        page,
+        pixels,
+        settings,
+        signal,
+        warnings,
+      );
+      throwIfExportCancelled(signal);
+      const imageBytes = await canvasToBytes(
+        outputCanvas,
+        settings.format === "pdf" ? "image/jpeg" : "image/png",
+        settings.format === "pdf" ? 0.92 : undefined,
+        signal,
+      );
+      outputCanvas.width = 1;
+      outputCanvas.height = 1;
+      encodedBytes += imageBytes.length;
+      if (encodedBytes > 64 * 1024 * 1024) {
+        throw new Error("출력 결과가 64 MiB 안전 한도를 초과했습니다.");
+      }
+      encodedPages.push(
+        Object.freeze({
+          view,
+          page,
+          pixels,
+          bytes: imageBytes,
+        }),
+      );
+      setExportProgress(
+        index + 1,
+        views.length,
+        `${view.label} 준비 완료`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+  } finally {
+    await restoreViewAfterExport(originalState);
+  }
+  throwIfExportCancelled(signal);
+
+  let bytes;
+  let outputFormat;
+  if (settings.format === "pdf") {
+    bytes = makeRasterPdf(
+      encodedPages.map(({ page, pixels, bytes: jpeg }) => ({
+        jpeg,
+        pixelWidth: pixels.width,
+        pixelHeight: pixels.height,
+        widthMm: page.widthMm,
+        heightMm: page.heightMm,
+      })),
+    );
+    outputFormat = "pdf";
+  } else if (settings.target === "layouts") {
+    bytes = makeStoredZip(
+      makeLayoutPngZipEntries(
+        encodedPages.map(({ view, bytes: data }) => ({
+          label: view.label,
+          data,
+        })),
+      ),
+    );
+    outputFormat = "zip";
+  } else {
+    bytes = encodedPages[0].bytes;
+    outputFormat = "png";
+  }
+  const base = sanitizeExportStem(activeDocumentName);
+  const suffix =
+    settings.target === "screen"
+      ? "screen"
+      : settings.target === "layouts"
+        ? "layouts"
+        : sanitizeExportStem(originalView?.label, "view");
+  setExportProgress(
+    views.length,
+    views.length,
+    "저장 위치를 선택하세요",
+  );
+  exportCancel.hidden = true;
+  const result = await saveExportBytes(
+    bytes,
+    outputFormat,
+    `${base}-${suffix}`,
+  );
+  return Object.freeze({
+    ...result,
+    warnings: Object.freeze([...warnings]),
+    pages: encodedPages.length,
+    bytes: bytes.length,
+  });
+}
+
+async function startDrawingExport() {
+  if (activeExportController) {
+    return;
+  }
+  const controller = new AbortController();
+  activeExportController = controller;
+  const settings = exportSettingsFromForm();
+  setExportBusy(true);
+  setExportProgress(0, 1, "출력을 준비하는 중");
+  status.textContent = "도면 출력 준비 중";
+  try {
+    const result = await performDrawingExport(
+      settings,
+      controller.signal,
+    );
+    const warning =
+      result.warnings.length > 0
+        ? ` · 주의 ${result.warnings.join(" · ")}`
+        : "";
+    status.textContent =
+      `${result.pages.toLocaleString()}페이지 · ${formatBytes(
+        result.bytes,
+      )} 저장 완료${warning}`;
+    exportProgressLabel.textContent = "파일 저장 완료";
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      status.textContent = "도면 출력을 취소했습니다.";
+      exportProgressLabel.textContent = "출력 취소됨";
+    } else {
+      const message =
+        error instanceof Error ? error.message : String(error);
+      status.textContent = `도면 출력 실패: ${message}`;
+      exportProgressLabel.textContent = message;
+      console.error(error);
+    }
+  } finally {
+    if (activeExportController === controller) {
+      activeExportController = undefined;
+    }
+    setExportBusy(false);
   }
 }
 
@@ -1157,16 +2140,19 @@ function renderMetrics(scene, rangeSource, viewport = null) {
 }
 
 function setControlsEnabled(enabled) {
+  viewControlsEnabled = Boolean(enabled);
   for (const control of viewControls) {
     control.disabled = !enabled;
   }
   layersToggle.disabled = !enabled;
+  exportToggle.disabled = !enabled || Boolean(activeExportController);
   wipeoutToggle.disabled = !enabled || !activeMaskStatus?.enabled;
   if (activeReviewTools) {
     activeReviewTools.setEnabled(enabled);
   } else {
     reviewToolbar.hidden = true;
   }
+  updateViewNavigationControls();
 }
 
 function updateWipeoutToggle() {
@@ -1188,7 +2174,17 @@ function updateLayerSummary() {
   }
   const visibility = activeScene.renderer.getLayerVisibility();
   const visible = visibility.filter(Boolean).length;
-  layerSummary.textContent = `${visible.toLocaleString()} / ${visibility.length.toLocaleString()} 켜짐`;
+  const xrefGroups = activeLayerGroups.filter(
+    ({ kind }) => kind === "xref",
+  ).length;
+  layerSummary.textContent = [
+    `${visible.toLocaleString()} / ${visibility.length.toLocaleString()} 켜짐`,
+    xrefGroups > 0
+      ? `외부참조 ${xrefGroups.toLocaleString()}개`
+      : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function resetLayerPanel() {
@@ -1197,51 +2193,440 @@ function resetLayerPanel() {
   layerSearch.value = "";
   layerList.replaceChildren();
   layerSummary.textContent = "";
+  previousLayerVisibility = null;
+  activeLayerGroups = Object.freeze([]);
+  layersRestore.disabled = true;
+}
+
+function syncLayerGroupCheckboxes(visibility) {
+  for (const checkbox of layerList.querySelectorAll(
+    "input[data-layer-group-index]",
+  )) {
+    const groupIndex = Number.parseInt(
+      checkbox.dataset.layerGroupIndex,
+      10,
+    );
+    const group = activeLayerGroups[groupIndex];
+    if (!group) {
+      continue;
+    }
+    const groupState = layerGroupVisibility(group, visibility);
+    checkbox.checked = groupState.checked;
+    checkbox.indeterminate = groupState.indeterminate;
+    checkbox.setAttribute(
+      "aria-checked",
+      groupState.indeterminate ? "mixed" : String(groupState.checked),
+    );
+    const count = checkbox
+      .closest(".layer-group")
+      ?.querySelector("[data-layer-group-count]");
+    if (count) {
+      count.textContent =
+        `${groupState.visible.toLocaleString()} / ` +
+        `${groupState.total.toLocaleString()}`;
+    }
+  }
+}
+
+function syncLayerCheckboxes(visibility) {
+  for (const checkbox of layerList.querySelectorAll(
+    "input[data-layer-index]",
+  )) {
+    const index = Number.parseInt(checkbox.dataset.layerIndex, 10);
+    checkbox.checked = Boolean(visibility[index]);
+  }
+  syncLayerGroupCheckboxes(visibility);
+}
+
+function applyLayerVisibilityState(
+  visibility,
+  { remember = true, message = "" } = {},
+) {
+  if (!activeScene) {
+    return false;
+  }
+  const current = activeScene.renderer.getLayerVisibility();
+  if (
+    visibility.length !== current.length ||
+    visibility.every((visible, index) => Boolean(visible) === current[index])
+  ) {
+    return false;
+  }
+  if (remember) {
+    previousLayerVisibility = current;
+    layersRestore.disabled = false;
+  }
+  const next = visibility.map(Boolean);
+  activeScene.renderer.setLayerVisibilityState(next);
+  syncLayerCheckboxes(next);
+  activeInteraction?.refresh();
+  activeReviewTools?.redraw();
+  updateLayerSummary();
+  if (message) {
+    status.textContent = message;
+  }
+  return true;
+}
+
+function createLayerItem(scene, row, visibility) {
+  const item = document.createElement("li");
+  const label = document.createElement("label");
+  const checkbox = document.createElement("input");
+  const name = document.createElement("span");
+  const fullName = row.fullName || "(이름 없음)";
+  const displayName = row.displayName || "(이름 없음)";
+  item.className = "layer-item";
+  item.dataset.layerName = row.searchText;
+  checkbox.type = "checkbox";
+  checkbox.checked = visibility[row.index];
+  checkbox.dataset.layerIndex = String(row.index);
+  checkbox.setAttribute("aria-label", `${fullName} 레이어 표시`);
+  name.className = "layer-name";
+  name.textContent = displayName;
+  if (displayName !== fullName) {
+    name.title = fullName;
+  }
+  checkbox.addEventListener("change", () => {
+    if (activeScene !== scene) {
+      return;
+    }
+    const next = scene.renderer.getLayerVisibility();
+    next[row.index] = checkbox.checked;
+    applyLayerVisibilityState(next, {
+      message: `${fullName} 레이어를 ${checkbox.checked ? "켰습니다" : "껐습니다"}.`,
+    });
+  });
+  const isolate = document.createElement("button");
+  isolate.type = "button";
+  isolate.className = "layer-isolate";
+  isolate.textContent = "단독";
+  isolate.title = `${fullName} 레이어만 보기`;
+  isolate.addEventListener("click", () => {
+    if (activeScene !== scene) {
+      return;
+    }
+    const next = visibility.map(
+      (_visible, layerIndex) => layerIndex === row.index,
+    );
+    applyLayerVisibilityState(next, {
+      message: `${fullName} 레이어만 표시합니다.`,
+    });
+  });
+  label.append(checkbox, name);
+  item.append(label, isolate);
+  return item;
+}
+
+function setLayerGroupExpanded(item, expanded) {
+  const toggle = item.querySelector("[data-layer-group-toggle]");
+  const children = item.querySelector("[data-layer-group-children]");
+  if (!toggle || !children) {
+    return;
+  }
+  toggle.setAttribute("aria-expanded", String(expanded));
+  toggle.setAttribute(
+    "aria-label",
+    `${item.dataset.layerGroupLabel ?? "그룹"} 레이어 목록 ${
+      expanded ? "접기" : "펼치기"
+    }`,
+  );
+  children.hidden = !expanded;
+  item.classList.toggle("expanded", expanded);
+}
+
+function createLayerGroupItem(
+  scene,
+  group,
+  groupIndex,
+  visibility,
+) {
+  const item = document.createElement("li");
+  const heading = document.createElement("div");
+  const toggle = document.createElement("button");
+  const chevron = document.createElement("span");
+  const name = document.createElement("span");
+  const visibilityLabel = document.createElement("label");
+  const checkbox = document.createElement("input");
+  const count = document.createElement("span");
+  const isolate = document.createElement("button");
+  const children = document.createElement("ul");
+  const groupState = layerGroupVisibility(group, visibility);
+
+  item.className = "layer-group";
+  item.dataset.layerGroupKind = group.kind;
+  item.dataset.layerGroupLabel = group.name;
+  item.dataset.layerName = group.name
+    .normalize("NFC")
+    .toLocaleLowerCase("ko-KR");
+  heading.className = "layer-group-heading";
+  toggle.type = "button";
+  toggle.className = "layer-group-toggle";
+  toggle.dataset.layerGroupToggle = "";
+  chevron.className = "layer-group-chevron";
+  chevron.textContent = "›";
+  name.className = "layer-group-name";
+  name.textContent = group.name;
+  visibilityLabel.className = "layer-group-visibility";
+  visibilityLabel.title = `${group.name} 그룹 전체 표시 또는 숨김`;
+  checkbox.type = "checkbox";
+  checkbox.checked = groupState.checked;
+  checkbox.indeterminate = groupState.indeterminate;
+  checkbox.dataset.layerGroupIndex = String(groupIndex);
+  checkbox.setAttribute("aria-label", `${group.name} 그룹 표시`);
+  checkbox.setAttribute(
+    "aria-checked",
+    groupState.indeterminate ? "mixed" : String(groupState.checked),
+  );
+  count.className = "layer-group-count";
+  count.dataset.layerGroupCount = "";
+  count.textContent =
+    `${groupState.visible.toLocaleString()} / ` +
+    `${groupState.total.toLocaleString()}`;
+  isolate.type = "button";
+  isolate.className = "layer-isolate layer-group-isolate";
+  isolate.textContent = "그룹 단독";
+  isolate.title = `${group.name} 그룹의 레이어만 보기`;
+  children.className = "layer-group-layers";
+  children.dataset.layerGroupChildren = "";
+  children.setAttribute("aria-label", `${group.name} 레이어`);
+
+  toggle.append(chevron, name);
+  visibilityLabel.append(checkbox, count);
+  heading.append(toggle, visibilityLabel, isolate);
+  for (const row of group.rows) {
+    children.append(createLayerItem(scene, row, visibility));
+  }
+  item.append(heading, children);
+  setLayerGroupExpanded(item, false);
+
+  toggle.addEventListener("click", () => {
+    setLayerGroupExpanded(
+      item,
+      toggle.getAttribute("aria-expanded") !== "true",
+    );
+  });
+  checkbox.addEventListener("change", () => {
+    if (activeScene !== scene) {
+      return;
+    }
+    applyLayerVisibilityState(
+      setLayerGroupVisibility(
+        scene.renderer.getLayerVisibility(),
+        group,
+        checkbox.checked,
+      ),
+      {
+        message: `${group.name} 그룹 레이어를 ${
+          checkbox.checked ? "모두 켰습니다" : "모두 껐습니다"
+        }.`,
+      },
+    );
+  });
+  isolate.addEventListener("click", () => {
+    if (activeScene !== scene) {
+      return;
+    }
+    applyLayerVisibilityState(
+      isolateLayerGroup(scene.renderer.getLayerVisibility(), group),
+      {
+        message: `${group.name} 그룹 레이어만 표시합니다.`,
+      },
+    );
+  });
+  return item;
 }
 
 function populateLayerPanel(scene) {
   layerList.replaceChildren();
   const visibility = scene.renderer.getLayerVisibility();
+  activeLayerGroups = buildLayerGroups(scene.metadata.layers);
   const fragment = document.createDocumentFragment();
-  for (const [index, layer] of scene.metadata.layers.entries()) {
-    const item = document.createElement("li");
-    const label = document.createElement("label");
-    const checkbox = document.createElement("input");
-    const name = document.createElement("span");
-    checkbox.type = "checkbox";
-    checkbox.checked = visibility[index];
-    checkbox.dataset.layerIndex = String(index);
-    name.className = "layer-name";
-    name.textContent = layer.name || "(이름 없음)";
-    item.dataset.layerName = name.textContent.toLocaleLowerCase();
-    checkbox.addEventListener("change", () => {
-      if (activeScene !== scene) {
-        return;
-      }
-      scene.renderer.setLayerVisibility(index, checkbox.checked);
-      activeInteraction?.refresh();
-      activeReviewTools?.redraw();
-      updateLayerSummary();
-    });
-    label.append(checkbox, name);
-    item.append(label);
-    fragment.append(item);
+  const hasExternalGroups = activeLayerGroups.some(
+    ({ kind }) => kind === "xref",
+  );
+  if (!hasExternalGroups) {
+    for (const row of activeLayerGroups[0]?.rows ?? []) {
+      fragment.append(createLayerItem(scene, row, visibility));
+    }
+  } else {
+    for (const [groupIndex, group] of activeLayerGroups.entries()) {
+      fragment.append(
+        createLayerGroupItem(
+          scene,
+          group,
+          groupIndex,
+          visibility,
+        ),
+      );
+    }
   }
   layerList.append(fragment);
+  syncLayerCheckboxes(visibility);
   updateLayerSummary();
+}
+
+function filterLayerPanel(value) {
+  const query = value.trim().normalize("NFC").toLocaleLowerCase("ko-KR");
+  for (const item of layerList.children) {
+    if (!item.classList.contains("layer-group")) {
+      item.hidden =
+        Boolean(query) && !item.dataset.layerName.includes(query);
+      continue;
+    }
+    const toggle = item.querySelector("[data-layer-group-toggle]");
+    const children = item.querySelector("[data-layer-group-children]");
+    if (!toggle || !children) {
+      continue;
+    }
+    if (!query) {
+      item.hidden = false;
+      for (const child of children.children) {
+        child.hidden = false;
+      }
+      if (item.dataset.layerExpandedBeforeSearch !== undefined) {
+        setLayerGroupExpanded(
+          item,
+          item.dataset.layerExpandedBeforeSearch === "true",
+        );
+        delete item.dataset.layerExpandedBeforeSearch;
+      }
+      continue;
+    }
+    if (item.dataset.layerExpandedBeforeSearch === undefined) {
+      item.dataset.layerExpandedBeforeSearch =
+        toggle.getAttribute("aria-expanded") === "true"
+          ? "true"
+          : "false";
+    }
+    const groupMatches = item.dataset.layerName.includes(query);
+    let matchingChildren = 0;
+    for (const child of children.children) {
+      const matches =
+        groupMatches || child.dataset.layerName.includes(query);
+      child.hidden = !matches;
+      matchingChildren += matches ? 1 : 0;
+    }
+    item.hidden = matchingChildren === 0;
+    if (matchingChildren > 0) {
+      setLayerGroupExpanded(item, true);
+    }
+  }
 }
 
 function setAllLayersVisible(visible) {
   if (!activeScene) {
     return;
   }
-  activeScene.renderer.setAllLayersVisible(visible);
-  for (const checkbox of layerList.querySelectorAll("input[type=checkbox]")) {
-    checkbox.checked = visible;
+  const next = activeScene.renderer
+    .getLayerVisibility()
+    .map(() => visible);
+  applyLayerVisibilityState(next, {
+    message: visible
+      ? "모든 레이어를 표시합니다."
+      : "모든 레이어를 숨겼습니다.",
+  });
+}
+
+function queueTextReveal(message) {
+  const handle =
+    typeof message?.handle === "string"
+      ? message.handle.trim().replace(/^0x/iu, "")
+      : "";
+  const point =
+    Array.isArray(message?.point) &&
+    message.point.length === 3 &&
+    message.point.every(Number.isFinite)
+      ? [...message.point]
+      : null;
+  if (!/^[0-9a-f]{1,16}$/iu.test(handle) || !point) {
+    return false;
   }
-  activeInteraction?.refresh();
-  activeReviewTools?.redraw();
-  updateLayerSummary();
+  pendingTextReveal = Object.freeze({
+    handle: handle.toUpperCase(),
+    kind:
+      typeof message.kind === "string"
+        ? message.kind.slice(0, 24)
+        : "문자",
+    value:
+      typeof message.value === "string"
+        ? message.value.slice(0, 500)
+        : "",
+    point: Object.freeze(point),
+    height:
+      Number.isFinite(message.height) && message.height > 0
+        ? message.height
+        : 0,
+    hidden: Boolean(message.hidden),
+  });
+  revealQueuedText();
+  return true;
+}
+
+function revealQueuedText() {
+  if (
+    !pendingTextReveal ||
+    !activeInteraction ||
+    !activeReviewTools ||
+    !activeTextStatus
+  ) {
+    return false;
+  }
+  const occurrence = activeTextComposite?.findTextOccurrence?.(
+    pendingTextReveal.handle,
+  );
+  const point = occurrence?.point ?? pendingTextReveal.point;
+  const currentWorldHeight =
+    activeInteraction.snapshot().camera.worldHeight;
+  const textHeight =
+    occurrence?.worldHeight ?? pendingTextReveal.height;
+  const desiredWorldHeight = Math.min(
+    currentWorldHeight,
+    Math.max(
+      textHeight > 0 ? textHeight * 24 : 0,
+      currentWorldHeight * 0.08,
+    ),
+  );
+  activeInteraction.focusAt(point, desiredWorldHeight);
+  activeReviewTools.showTextMatch({
+    point,
+    handle: pendingTextReveal.handle,
+    kind: pendingTextReveal.kind,
+    value: pendingTextReveal.value,
+    hidden: pendingTextReveal.hidden,
+  });
+  return true;
+}
+
+function invertLayerVisibility() {
+  if (!activeScene) {
+    return;
+  }
+  const next = activeScene.renderer
+    .getLayerVisibility()
+    .map((visible) => !visible);
+  applyLayerVisibilityState(next, {
+    message: "레이어 표시 상태를 반전했습니다.",
+  });
+}
+
+function restoreLayerVisibility() {
+  if (!activeScene || !previousLayerVisibility) {
+    return false;
+  }
+  const current = activeScene.renderer.getLayerVisibility();
+  const previous = previousLayerVisibility;
+  if (
+    previous.length !== current.length ||
+    !applyLayerVisibilityState(previous, {
+      remember: false,
+      message: "이전 레이어 표시 상태로 돌아갔습니다.",
+    })
+  ) {
+    return false;
+  }
+  previousLayerVisibility = current;
+  layersRestore.disabled = false;
+  return true;
 }
 
 function imageDiagnosticKey(cacheId, imageIndex) {
@@ -1443,7 +2828,6 @@ async function initializeImageOverlay(
   instanceGraph = activeRenderInstanceGraph ?? scene.instanceGraph,
 ) {
   if (
-    scene.reader.header.minor < 18 ||
     !activeImageAssetStore ||
     !cacheId
   ) {
@@ -1466,14 +2850,20 @@ async function initializeImageOverlay(
     activeImageComposite = new CompositeRasterImageOverlay(imageCanvas);
     scene.renderer.setImageOverlay(activeImageComposite);
   }
+  activeImageComposite.setHitTestingEnabled(
+    Boolean(activeReviewTools?.activeTool),
+  );
   const overlay = new CanvasRasterImageOverlay(imageCanvas, {
       imageEntities,
       blocks: scene.metadata.blocks,
       layers: scene.metadata.layers,
+      displayLayers: scene.metadata.layers,
       instanceGraph,
       cacheId,
       assetStore: activeImageAssetStore,
       requestAsset: requestRasterImage,
+      sourceId: "root",
+      sourceLabel: "현재 도면",
     });
   activeImageComposite.add(
     overlay,
@@ -1489,9 +2879,6 @@ async function initializeTextOverlay(
   maskOrder = activeMaskOrder,
   instanceGraph = activeRenderInstanceGraph ?? scene.instanceGraph,
 ) {
-  if (scene.reader.header.minor < 4) {
-    return;
-  }
   status.textContent = "문자 원본과 스타일 읽는 중";
   const [textEntities, styles] = await Promise.all([
     scene.reader.readTextEntities(),
@@ -1512,6 +2899,8 @@ async function initializeTextOverlay(
     instanceGraph,
     glyphCache,
     maskOrder,
+    sourceId: "root",
+    sourceLabel: "현재 도면",
     onInlineFonts: (names) =>
       requestInlineTextFonts(names, revision),
   });
@@ -1519,22 +2908,23 @@ async function initializeTextOverlay(
     activeTextComposite = new CompositeTextOverlay(textCanvas);
     scene.renderer.setTextOverlay(activeTextComposite);
   }
+  activeTextComposite.setHitTestingEnabled(
+    Boolean(activeReviewTools?.activeTool),
+  );
   activeTextComposite.add(overlay, { first: true });
-  if (scene.reader.header.minor >= 15) {
-    const complexOverlay = new ComplexLinetypeOverlay(textCanvas, {
-      vertices: scene.overview,
-      batches: scene.metadata.batches,
-      linetypes: scene.metadata.linetypes,
-      textStyles: styles,
-      layers: scene.metadata.layers,
-      instanceGraph,
-      glyphCache,
-      globalLinetypeScale:
-        scene.metadata.drawing.globalLinetypeScale,
-    });
-    if (complexOverlay.source.sourceSegments > 0) {
-      activeTextComposite.add(complexOverlay);
-    }
+  const complexOverlay = new ComplexLinetypeOverlay(textCanvas, {
+    vertices: scene.overview,
+    batches: scene.metadata.batches,
+    linetypes: scene.metadata.linetypes,
+    textStyles: styles,
+    layers: scene.metadata.layers,
+    instanceGraph,
+    glyphCache,
+    globalLinetypeScale:
+      scene.metadata.drawing.globalLinetypeScale,
+  });
+  if (complexOverlay.source.sourceSegments > 0) {
+    activeTextComposite.add(complexOverlay);
   }
   const missing = glyphCache.missingFonts(styles);
   activeTextStatus = Object.freeze({
@@ -1548,6 +2938,7 @@ async function initializeTextOverlay(
     missing.length === 0
       ? `문자 ${textEntities.length.toLocaleString()}개 표시 준비 완료`
       : `문자 ${textEntities.length.toLocaleString()}개 표시${missingFontSuffix()}(시스템 글꼴 대체)`;
+  revealQueuedText();
 }
 
 async function initializeMaskComposition(scene, revision) {
@@ -1555,17 +2946,6 @@ async function initializeMaskComposition(scene, revision) {
     maskOrder: null,
     instanceGraph: scene.instanceGraph,
   });
-  if (scene.reader.header.minor < 11) {
-    activeMaskStatus = Object.freeze({
-      enabled: false,
-      tables: 0,
-      entries: 0,
-      maximumExpandedMasks: 0,
-      buildMs: 0,
-      reason: "scene-cache-version",
-    });
-    return fallback;
-  }
   status.textContent = "가림 객체의 앞·뒤 순서를 계산하는 중";
   const started = performance.now();
   const [drawOrder, wipeouts] = await Promise.all([
@@ -1907,15 +3287,288 @@ async function createPrimitiveWorker(workerSource) {
   };
 }
 
+async function createReviewEntityWorker(workerSource) {
+  const workerHandle = await createViewerWorker(
+    "./review-entity-worker.mjs",
+  );
+  const { worker } = workerHandle;
+  const removeRangeProxy =
+    workerSource.kind === "host"
+      ? installWorkerRangeProxy(worker, workerSource.source)
+      : () => {};
+  let settled = false;
+  let rejectRequest;
+  let messageListener;
+  let errorListener;
+  const terminate = () => {
+    if (messageListener) {
+      worker.removeEventListener("message", messageListener);
+      messageListener = undefined;
+    }
+    if (errorListener) {
+      worker.removeEventListener("error", errorListener);
+      errorListener = undefined;
+    }
+    removeRangeProxy();
+    workerHandle.terminate();
+  };
+  return {
+    initialize(
+      view,
+      {
+        externalContext = null,
+        limits = null,
+      } = {},
+    ) {
+      if (settled) {
+        return Promise.reject(
+          new DOMException("채움 객체 검토 작업 취소됨", "AbortError"),
+        );
+      }
+      return new Promise((resolve, reject) => {
+        rejectRequest = reject;
+        messageListener = (event) => {
+          if (
+            settled ||
+            event.data?.type === WORKER_RANGE_REQUEST
+          ) {
+            return;
+          }
+          settled = true;
+          terminate();
+          rejectRequest = undefined;
+          if (event.data.ok) {
+            resolve(event.data);
+          } else {
+            reject(new Error(event.data.error));
+          }
+        };
+        errorListener = (event) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          terminate();
+          rejectRequest = undefined;
+          reject(
+            new Error(event.message || "채움 객체 검토 worker failed"),
+          );
+        };
+        worker.addEventListener("message", messageListener);
+        worker.addEventListener("error", errorListener);
+        worker.postMessage({
+          requestId: 1,
+          type: "initialize",
+          ...workerSourcePayload(workerSource),
+          view,
+          externalContext,
+          limits,
+        });
+      });
+    },
+    cancel() {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      terminate();
+      rejectRequest?.(
+        new DOMException("채움 객체 검토 작업 취소됨", "AbortError"),
+      );
+      rejectRequest = undefined;
+    },
+  };
+}
+
+async function loadFilledObjectReviewData(
+  workerSource,
+  scene,
+  signal,
+  {
+    externalContext = null,
+    limits = null,
+  } = {},
+) {
+  if (!workerSource || signal?.aborted) {
+    throw new DOMException("채움 객체 검토 작업 취소됨", "AbortError");
+  }
+  const worker = await createReviewEntityWorker(workerSource);
+  const cancel = () => worker.cancel();
+  signal?.addEventListener("abort", cancel, { once: true });
+  if (signal?.aborted) {
+    worker.cancel();
+  }
+  try {
+    const result = await worker.initialize(
+      scene ? hatchWorkerView(scene) : null,
+      { externalContext, limits },
+    );
+    return result.review;
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+  }
+}
+
+const MAX_REVIEW_EXTERNAL_CONTEXTS = 64;
+
+function filledReviewUsage(data) {
+  return Object.freeze({
+    occurrences:
+      data?.metrics?.occurrences ?? data?.records?.length ?? 0,
+    rings:
+      data?.metrics?.rings ?? data?.ringStarts?.length ?? 0,
+    vertices:
+      data?.metrics?.vertices ??
+      (data?.displayPoints?.length ?? 0) / 3,
+  });
+}
+
+function remainingFilledReviewLimits(usage) {
+  return Object.freeze({
+    maximumOccurrences: Math.max(
+      0,
+      MAX_REVIEW_FILLED_OCCURRENCES - usage.occurrences,
+    ),
+    maximumRings: Math.max(
+      0,
+      MAX_REVIEW_FILLED_RINGS - usage.rings,
+    ),
+    maximumVertices: Math.max(
+      0,
+      MAX_REVIEW_FILLED_VERTICES - usage.vertices,
+    ),
+  });
+}
+
+function filledReviewLimitReached(usage) {
+  return (
+    usage.occurrences >= MAX_REVIEW_FILLED_OCCURRENCES ||
+    usage.rings >= MAX_REVIEW_FILLED_RINGS ||
+    usage.vertices >= MAX_REVIEW_FILLED_VERTICES
+  );
+}
+
+async function loadFilledObjectReviewSources(
+  workerSource,
+  scene,
+  signal,
+) {
+  const sources = [];
+  const usage = {
+    occurrences: 0,
+    rings: 0,
+    vertices: 0,
+  };
+  let truncated = false;
+  let failedSources = 0;
+  const root = await loadFilledObjectReviewData(
+    workerSource,
+    scene,
+    signal,
+    { limits: remainingFilledReviewLimits(usage) },
+  );
+  const rootUsage = filledReviewUsage(root);
+  usage.occurrences += rootUsage.occurrences;
+  usage.rings += rootUsage.rings;
+  usage.vertices += rootUsage.vertices;
+  truncated ||= Boolean(root.truncated);
+  sources.push(
+    Object.freeze({
+      id: "root",
+      label: "현재 도면",
+      layers: scene.metadata.layers,
+      data: root,
+    }),
+  );
+
+  const contexts = [];
+  for (const [cacheId, attachments] of externalAttachmentsByCache) {
+    for (const attachment of attachments) {
+      if (attachment.reviewContext) {
+        contexts.push(
+          Object.freeze({
+            cacheId,
+            ...attachment,
+          }),
+        );
+      }
+    }
+  }
+  contexts.sort(
+    (left, right) =>
+      left.prefix.localeCompare(right.prefix, "ko") ||
+      left.id.localeCompare(right.id, "en"),
+  );
+  if (contexts.length > MAX_REVIEW_EXTERNAL_CONTEXTS) {
+    contexts.length = MAX_REVIEW_EXTERNAL_CONTEXTS;
+    truncated = true;
+  }
+
+  for (const context of contexts) {
+    if (signal?.aborted) {
+      throw new DOMException(
+        "채움 객체 검토 작업 취소됨",
+        "AbortError",
+      );
+    }
+    if (filledReviewLimitReached(usage)) {
+      truncated = true;
+      break;
+    }
+    const source = externalHostSources.get(context.cacheId);
+    if (!source) {
+      failedSources += 1;
+      continue;
+    }
+    try {
+      const data = await loadFilledObjectReviewData(
+        { kind: "host", source },
+        null,
+        signal,
+        {
+          externalContext: context.reviewContext,
+          limits: remainingFilledReviewLimits(usage),
+        },
+      );
+      const currentUsage = filledReviewUsage(data);
+      usage.occurrences += currentUsage.occurrences;
+      usage.rings += currentUsage.rings;
+      usage.vertices += currentUsage.vertices;
+      truncated ||= Boolean(data.truncated);
+      if (data.records.length > 0) {
+        sources.push(
+          Object.freeze({
+            id: context.id,
+            label: context.prefix,
+            layers: scene.metadata.layers,
+            data,
+          }),
+        );
+      }
+    } catch (error) {
+      if (error?.name === "AbortError" || signal?.aborted) {
+        throw error;
+      }
+      failedSources += 1;
+      console.warn(
+        `${context.prefix} 채움 객체 선택 정보 생략:`,
+        error,
+      );
+    }
+  }
+  return Object.freeze({
+    sources: Object.freeze(sources),
+    truncated,
+    failedSources,
+  });
+}
+
 async function initializePrimitives(
   workerSource,
   scene,
   revision,
   maskOrder = activeMaskOrder,
 ) {
-  if (scene.reader.header.minor < 8) {
-    return;
-  }
   activePrimitiveStatus = Object.freeze({ state: "loading" });
   status.textContent =
     "점·솔리드·3D 면·가림 객체 원본을 별도 작업 공간에서 읽는 중";
@@ -1967,9 +3620,6 @@ async function initializeHatchFills(
   revision,
   maskOrder = activeMaskOrder,
 ) {
-  if (scene.reader.header.minor < 6) {
-    return;
-  }
   activeHatchStatus = Object.freeze({ state: "loading" });
   status.textContent = "해치 원본을 별도 작업 공간에서 읽는 중";
   const worker = await createHatchWorker(workerSource);
@@ -2022,10 +3672,7 @@ async function initializeHatchFills(
 }
 
 function scheduleHatchPatterns(scene, camera, revision) {
-  if (
-    scene.reader.header.minor < 7 ||
-    activeHatchStatus?.state !== "ready"
-  ) {
+  if (activeHatchStatus?.state !== "ready") {
     return;
   }
   const cameraKey = patternCameraKey(camera);
@@ -2320,7 +3967,6 @@ function discoverExternalReferences(scene, cacheId, depth = 0) {
   if (
     !vscodeApi ||
     !cacheId ||
-    scene.reader.header.minor < 12 ||
     discoveredXrefCaches.has(cacheId)
   ) {
     return;
@@ -2510,19 +4156,17 @@ async function addExternalText(
   composedInstanceGraph,
   layerMap,
   overview = null,
+  sourceId = "external",
+  sourceLabel = "외부 참조",
+  linetypeMap = null,
 ) {
   const revision = openRevision;
   const rootScene = activeScene;
   const textComposite = activeTextComposite;
-  if (
-    !rootScene ||
-    !textComposite ||
-    externalScene.reader.header.minor < 4
-  ) {
+  if (!rootScene || !textComposite) {
     return;
   }
-  const needsComplexOverlay =
-    overview?.vertices && externalScene.reader.header.minor >= 15;
+  const needsComplexOverlay = Boolean(overview?.vertices);
   const [textEntities, styles, rootStyles] = await Promise.all([
     externalScene.reader.readTextEntities(),
     externalScene.reader.readTextStyles(),
@@ -2537,13 +4181,19 @@ async function addExternalText(
   ) {
     return;
   }
-  const remapped = remapTextEntityLayers(textEntities, layerMap);
+  const remapped = remapTextEntityLayers(
+    textEntities,
+    layerMap,
+    linetypeMap,
+  );
   const overlay = new CanvasTextOverlay(textCanvas, {
     textEntities: remapped,
     blocks: externalScene.metadata.blocks,
     layers: rootScene.metadata.layers,
     instanceGraph: composedInstanceGraph,
     glyphCache,
+    sourceId,
+    sourceLabel,
     onInlineFonts: (names) =>
       requestInlineTextFonts(names, revision),
   });
@@ -2575,16 +4225,13 @@ async function addExternalImages(
   sceneId,
   composedInstanceGraph,
   layerMap,
+  sourceLabel,
 ) {
   const revision = openRevision;
   const rootScene = activeScene;
   const store = activeImageAssetStore;
   const composite = activeImageComposite;
-  if (
-    !rootScene ||
-    !store ||
-    externalScene.reader.header.minor < 18
-  ) {
+  if (!rootScene || !store) {
     return;
   }
   const imageEntities =
@@ -2602,15 +4249,25 @@ async function addExternalImages(
     activeImageComposite = new CompositeRasterImageOverlay(imageCanvas);
     rootScene.renderer.setImageOverlay(activeImageComposite);
   }
+  activeImageComposite.setHitTestingEnabled(
+    Boolean(activeReviewTools?.activeTool),
+  );
   const overlay = new CanvasRasterImageOverlay(imageCanvas, {
       imageEntities,
       blocks: externalScene.metadata.blocks,
       layers: externalScene.metadata.layers,
+      displayLayers: rootScene.metadata.layers,
       instanceGraph: composedInstanceGraph,
       cacheId,
       assetStore: store,
       requestAsset: requestRasterImage,
       layerMap,
+      linetypeMap: buildExternalLinetypeMap(
+        rootScene.metadata.linetypes,
+        externalScene.metadata.linetypes,
+      ),
+      sourceId: sceneId,
+      sourceLabel,
     });
   activeImageComposite.add(overlay);
   return rootScene.renderer.setSupplementalBounds(
@@ -2652,16 +4309,17 @@ async function handleExternalCacheReady(message) {
       loaded.scene.metadata.layers,
       prefix,
     );
+    const linetypeMap = buildExternalLinetypeMap(
+      activeScene.metadata.linetypes,
+      loaded.scene.metadata.linetypes,
+    );
     const composed = composeExternalInstanceGraph(
       parentContext.instanceGraph,
       message.parentBlockIndex,
       loaded.scene.instanceGraph,
       loaded.scene.metadata.batches,
       layerMap,
-      buildExternalLinetypeMap(
-        activeScene.metadata.linetypes,
-        loaded.scene.metadata.linetypes,
-      ),
+      linetypeMap,
     );
     if (composed.instanceGraph.instanceCount === 0) {
       continue;
@@ -2676,10 +4334,6 @@ async function handleExternalCacheReady(message) {
       composed.batches.some((batch) => batch.lodLevel === 0)
     ) {
       const overviewBuffer = loaded.scene.overview.buffer.slice(0);
-      const linetypeMap = buildExternalLinetypeMap(
-        activeScene.metadata.linetypes,
-        loaded.scene.metadata.linetypes,
-      );
       remapLineVertexLayers(
         overviewBuffer,
         layerMap,
@@ -2734,21 +4388,28 @@ async function handleExternalCacheReady(message) {
           recordSize: loaded.scene.overview.recordSize,
         }),
       });
-      activeReviewTools?.addSource(sceneId, {
-        id: sceneId,
-        label: prefix,
-        batches: mountedOverview.batches,
-        vertices: mountedOverview.vertices,
-        instanceGraph: composed.instanceGraph,
-        layers: activeScene.metadata.layers,
-        reader: loaded.scene.reader,
-      });
     }
+    activeReviewTools?.addSource(sceneId, {
+      id: sceneId,
+      label: prefix,
+      batches: mountedOverview?.batches ?? [],
+      vertices: mountedOverview?.vertices,
+      instanceGraph: composed.instanceGraph,
+      layers: activeScene.metadata.layers,
+      blocks: loaded.scene.metadata.blocks,
+      linetypes: activeScene.metadata.linetypes,
+      layerMap,
+      linetypeMap,
+      reader: loaded.scene.reader,
+    });
     await addExternalText(
       loaded.scene,
       composed.instanceGraph,
       layerMap,
       mountedOverview,
+      sceneId,
+      prefix,
+      linetypeMap,
     );
     const imageFit = await addExternalImages(
       loaded.scene,
@@ -2756,6 +4417,7 @@ async function handleExternalCacheReady(message) {
       sceneId,
       composed.instanceGraph,
       layerMap,
+      prefix,
     );
     lastFit = imageFit ?? lastFit;
     childContexts.push({
@@ -2763,9 +4425,24 @@ async function handleExternalCacheReady(message) {
       prefix,
       instanceGraph: composed.instanceGraph,
       overview: mountedOverview,
+      reviewContext: Object.freeze({
+        parentBlockIndex: message.parentBlockIndex,
+        parentInstances:
+          parentContext.instanceGraph.instancesByBlock.get(
+            message.parentBlockIndex,
+          ),
+        parentClipNodes:
+          parentContext.instanceGraph.clipNodes ?? Object.freeze([]),
+        parentLayerVisibilityRows:
+          parentContext.instanceGraph.layerVisibilityRows ??
+          Object.freeze([]),
+        layerMap,
+        linetypeMap,
+      }),
     });
   }
   externalAttachmentsByCache.set(message.cacheId, childContexts);
+  activeReviewTools?.refreshFilledObjects();
   if (lastFit) {
     activeInteraction.updateFit(lastFit.camera);
   } else {
@@ -2841,6 +4518,7 @@ function installInteraction(
 ) {
   activeReviewTools?.dispose();
   activeReviewTools = undefined;
+  activeViewHistory = new CameraViewHistory(render.camera);
   const interactionScene = Object.freeze({
     ...scene,
     instanceGraph,
@@ -2903,6 +4581,16 @@ function installInteraction(
     onReviewSelection(sourceId, candidates) {
       activeReviewTools?.setDetailSelection(sourceId, candidates);
     },
+    onViewCommit(view) {
+      activeViewHistory?.commit(view);
+      updateViewNavigationControls();
+    },
+    onViewReplace(view) {
+      activeViewHistory?.replace(view);
+      updateViewNavigationControls();
+    },
+    onWindowZoomModeChange: handleWindowZoomModeChange,
+    windowZoomGuide,
   });
   activeReviewTools = new ReviewTools({
     canvas,
@@ -2915,13 +4603,65 @@ function installInteraction(
       activeInteraction?.snapshot().render.camera ?? render.camera,
     getLayerVisibility: () => scene.renderer.getLayerVisibility(),
     onFit: () => activeInteraction?.reset(),
-    onReviewModeChange: (enabled) =>
-      activeInteraction?.setReviewEnabled(enabled),
+    findOverlayCandidates({ x, y, snapKinds, tolerancePixels }) {
+      return [
+        activeTextComposite?.hitTest(x, y, {
+          snapKinds,
+          tolerancePixels,
+        }),
+        activeImageComposite?.hitTest(x, y, {
+          snapKinds,
+          tolerancePixels,
+        }),
+      ].filter(Boolean);
+    },
+    onIsolateLayer(layerIndex) {
+      const visibility = scene.renderer.getLayerVisibility();
+      if (
+        !Number.isSafeInteger(layerIndex) ||
+        layerIndex < 0 ||
+        layerIndex >= visibility.length
+      ) {
+        return false;
+      }
+      return applyLayerVisibilityState(
+        visibility.map((_visible, index) => index === layerIndex),
+      );
+    },
+    onRestoreLayers: restoreLayerVisibility,
+    measurementPreferences: activeMeasurementPreferences,
+    onMeasurementPreferencesChange: saveMeasurementPreferences,
+    loadFilledObjects({ signal }) {
+      if (
+        revision !== openRevision ||
+        activeScene !== scene ||
+        !activeCurveWorkerSource
+      ) {
+        return Promise.resolve(null);
+      }
+      return loadFilledObjectReviewSources(
+        activeCurveWorkerSource,
+        scene,
+        signal,
+      );
+    },
+    onReviewModeChange(enabled) {
+      if (enabled) {
+        activeInteraction?.setWindowZoomEnabled(false);
+        setViewBookmarkPanelOpen(false);
+      }
+      activeTextComposite?.setHitTestingEnabled(enabled);
+      activeImageComposite?.setHitTestingEnabled(enabled);
+      activeInteraction?.setReviewEnabled(enabled);
+      activeInteraction?.refresh();
+    },
     onStatus(message) {
       status.textContent = message;
     },
   });
   activeReviewTools.setCamera(render.camera);
+  updateViewNavigationControls();
+  renderViewBookmarks();
   return interactionScene;
 }
 
@@ -2932,15 +4672,24 @@ function updateLayoutTabSelection() {
       String(button.dataset.viewId === activeViewId),
     );
   }
+  if (!activeExportController) {
+    updateExportOptions();
+  }
 }
 
-async function activateView(scene, view, source, revision) {
+async function activateView(
+  scene,
+  view,
+  source,
+  revision,
+  { awaitReady = false } = {},
+) {
   if (
     revision !== openRevision ||
     activeScene !== scene ||
     view.id === activeViewId
   ) {
-    return;
+    return view.id === activeViewId;
   }
   const switchRevision = ++viewSwitchRevision;
   for (const button of layoutTabs.querySelectorAll("button")) {
@@ -2951,6 +4700,9 @@ async function activateView(scene, view, source, revision) {
   activeReviewTools = undefined;
   activeInteraction?.dispose();
   activeInteraction = undefined;
+  activeViewHistory = undefined;
+  setViewBookmarkPanelOpen(false);
+  updateViewNavigationControls();
   invalidatePendingCurveRefinement();
   activeCurveStatus = undefined;
   try {
@@ -2983,6 +4735,7 @@ async function activateView(scene, view, source, revision) {
     activeRenderInstanceGraph = instanceGraph;
     activeViewId = view.id;
     updateLayoutTabSelection();
+    renderViewBookmarks();
     activeTextStatus = undefined;
     activeTextComposite = new CompositeTextOverlay(textCanvas);
     scene.renderer.setTextOverlay(activeTextComposite);
@@ -3000,7 +4753,7 @@ async function activateView(scene, view, source, revision) {
     }
     activeInteraction.refresh();
     activeInteraction.scheduleDetail(0);
-    initializeTextOverlay(
+    const textReady = initializeTextOverlay(
       scene,
       revision,
       activeMaskOrder,
@@ -3011,7 +4764,7 @@ async function activateView(scene, view, source, revision) {
       }
       console.error(error);
     });
-    initializeImageOverlay(
+    const imageReady = initializeImageOverlay(
       scene,
       revision,
       activeHostCacheId ?? `local-${revision}`,
@@ -3022,10 +4775,23 @@ async function activateView(scene, view, source, revision) {
       }
       console.error(error);
     });
-    remountExternalReferences(revision, switchRevision).catch(
-      console.error,
-    );
+    const referencesReady = remountExternalReferences(
+      revision,
+      switchRevision,
+    ).catch(console.error);
+    if (awaitReady) {
+      await Promise.all([textReady, imageReady, referencesReady]);
+      if (
+        revision !== openRevision ||
+        switchRevision !== viewSwitchRevision ||
+        activeScene !== scene
+      ) {
+        return false;
+      }
+      activeInteraction?.refresh();
+    }
     status.textContent = `${view.label} 표시 완료`;
+    return true;
   } catch (error) {
     if (
       revision === openRevision &&
@@ -3034,6 +4800,7 @@ async function activateView(scene, view, source, revision) {
       status.textContent = `${view.label} 표시 실패: ${error.message}`;
       console.error(error);
     }
+    return false;
   } finally {
     if (
       revision === openRevision &&
@@ -3049,6 +4816,7 @@ async function activateView(scene, view, source, revision) {
 function populateLayoutTabs(scene, source, revision) {
   layoutTabs.replaceChildren();
   activeViewId = scene.activeView.id;
+  renderViewBookmarks();
   if (scene.views.length <= 1) {
     layoutTabs.hidden = true;
     dropZone.classList.remove("has-layout-tabs");
@@ -3077,9 +4845,14 @@ function populateLayoutTabs(scene, source, revision) {
 }
 
 async function openCache(source, workerSource) {
+  activeExportController?.abort();
+  activeExportController = undefined;
+  setExportPanelOpen(false);
   const revision = ++openRevision;
   viewSwitchRevision += 1;
   activeViewId = undefined;
+  activeViewHistory = undefined;
+  setViewBookmarkPanelOpen(false);
   layoutTabs.replaceChildren();
   layoutTabs.hidden = true;
   dropZone.classList.remove("has-layout-tabs");
@@ -3228,6 +5001,7 @@ async function openCache(source, workerSource) {
     }
     activeMaskOrder = maskState.maskOrder;
     activeRenderInstanceGraph = maskState.instanceGraph;
+    activeViewId = scene.activeView.id;
     renderMetrics(activeScene, source);
     installInteraction(
       scene,
@@ -3301,6 +5075,11 @@ async function openCache(source, workerSource) {
 
 function openFile(file) {
   activeHostCacheId = undefined;
+  activeDocumentName =
+    typeof file?.name === "string" && file.name ? file.name : "drawing";
+  activeViewDocumentKey =
+    `blob:${String(file?.name ?? "cache").normalize("NFC").slice(0, 120)}:` +
+    `${Number(file?.size) || 0}:${Number(file?.lastModified) || 0}`;
   glyphCache.configureLegacyEncodings({});
   return openCache(
     new TrackedRangeSource(new BlobRangeSource(file)),
@@ -3311,6 +5090,11 @@ function openFile(file) {
 function openHostedCache(message) {
   glyphCache.configureLegacyEncodings(message.bigFontEncodings);
   activeHostCacheId = message.cacheId;
+  activeDocumentName =
+    typeof message.documentName === "string" && message.documentName
+      ? message.documentName
+      : "drawing";
+  activeViewDocumentKey = "host-document";
   const source = createVsCodeRangeSource(vscodeApi, {
     cacheId: message.cacheId,
     size: message.size,
@@ -3321,9 +5105,32 @@ function openHostedCache(message) {
   );
 }
 
+function closeViewerPanels() {
+  layerPanel.hidden = true;
+  layersToggle.setAttribute("aria-expanded", "false");
+  fontPanel.hidden = true;
+  fontsToggle.setAttribute("aria-expanded", "false");
+  xrefPanel.hidden = true;
+  xrefsToggle.setAttribute("aria-expanded", "false");
+  exportPanel.hidden = true;
+  exportToggle.setAttribute("aria-expanded", "false");
+}
+
+function viewerToolSurfaceContains(target) {
+  return (
+    pageHeader.contains(target) ||
+    [layerPanel, fontPanel, xrefPanel, exportPanel].some(
+      (panel) => !panel.hidden && panel.contains(target),
+    )
+  );
+}
+
 function setViewerToolsOpen(open) {
   if (!pageHeader || !viewerToolsTrigger) {
     return;
+  }
+  if (!open) {
+    closeViewerPanels();
   }
   pageHeader.classList.toggle("tools-open", open);
   viewerToolsTrigger.setAttribute("aria-expanded", String(open));
@@ -3390,6 +5197,37 @@ if (vscodeApi) {
   setHostedState("preparing");
   window.addEventListener("message", (event) => {
     const message = event.data;
+    if (message?.type === "dwg-export-save-result/1") {
+      const pending = pendingExportSaves.get(message.requestId);
+      if (!pending) {
+        return;
+      }
+      pendingExportSaves.delete(message.requestId);
+      if (message.status === "saved") {
+        pending.resolve({
+          status: "saved",
+          bytes:
+            Number.isSafeInteger(message.bytes) && message.bytes >= 0
+              ? message.bytes
+              : 0,
+        });
+      } else if (message.status === "cancelled") {
+        pending.reject(abortError());
+      } else {
+        pending.reject(
+          new Error(
+            typeof message.message === "string"
+              ? message.message
+              : "출력 파일을 저장하지 못했습니다.",
+          ),
+        );
+      }
+      return;
+    }
+    if (message?.type === "dwg-reveal-text/1") {
+      queueTextReveal(message);
+      return;
+    }
     if (message?.type === "dwg-font-read-response/1") {
       void handleHostFontResponse(message);
       return;
@@ -3587,9 +5425,83 @@ for (const control of viewControls) {
       case "fit":
         activeInteraction.reset();
         break;
+      case "window": {
+        const enabling = !activeInteraction.windowZoomEnabled;
+        if (enabling && activeReviewTools?.activeTool) {
+          activeReviewTools.activate(null);
+        }
+        activeInteraction.setWindowZoomEnabled(enabling, {
+          reason: enabling ? "" : "cancelled",
+        });
+        break;
+      }
+      case "previous":
+        navigateViewHistory("back");
+        break;
+      case "next":
+        navigateViewHistory("forward");
+        break;
+      case "bookmarks":
+        if (activeInteraction.windowZoomEnabled) {
+          activeInteraction.setWindowZoomEnabled(false, {
+            reason: "cancelled",
+          });
+        }
+        setViewBookmarkPanelOpen(viewBookmarkPanel.hidden);
+        break;
     }
   });
 }
+
+viewBookmarkForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  if (!activeInteraction) {
+    return;
+  }
+  const scope = activeViewBookmarkScope();
+  const bookmarks = currentViewBookmarks();
+  if (!scope || bookmarks.length >= MAXIMUM_BOOKMARKS_PER_SCOPE) {
+    status.textContent =
+      "현재 모델 또는 배치에는 화면 북마크를 더 저장할 수 없습니다.";
+    return;
+  }
+  activeInteraction.flushViewCommit();
+  const name =
+    viewBookmarkName.value.trim() ||
+    nextAutomaticBookmarkName(bookmarks);
+  try {
+    saveStoredViewBookmarks(
+      addViewBookmark(storedViewBookmarks, {
+        id: createViewBookmarkId(),
+        scope,
+        name,
+        view: activeInteraction.snapshot().camera,
+      }),
+    );
+    viewBookmarkName.value = "";
+    renderViewBookmarks();
+    status.textContent = `${name.slice(0, 64)} 북마크를 저장했습니다.`;
+  } catch {
+    status.textContent = "현재 화면 북마크를 저장하지 못했습니다.";
+  }
+});
+
+viewBookmarkClose.addEventListener("click", () => {
+  setViewBookmarkPanelOpen(false);
+});
+
+reviewToolbar.addEventListener("click", (event) => {
+  if (
+    !(event.target instanceof Element) ||
+    !event.target.closest("[data-review-tool], [data-review-action]")
+  ) {
+    return;
+  }
+  setViewBookmarkPanelOpen(false);
+  if (activeInteraction?.windowZoomEnabled) {
+    activeInteraction.setWindowZoomEnabled(false);
+  }
+});
 
 viewerToolsTrigger.addEventListener("click", (event) => {
   event.stopPropagation();
@@ -3602,15 +5514,28 @@ document.addEventListener("pointerdown", (event) => {
   if (
     pageHeader.classList.contains("tools-open") &&
     event.target instanceof Node &&
-    !pageHeader.contains(event.target)
+    !viewerToolSurfaceContains(event.target)
   ) {
     setViewerToolsOpen(false);
+  }
+  if (
+    !viewBookmarkPanel.hidden &&
+    event.target instanceof Node &&
+    !viewBookmarkPanel.contains(event.target) &&
+    !viewBookmarksToggle.contains(event.target)
+  ) {
+    setViewBookmarkPanelOpen(false);
   }
 });
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
+    if (activeExportController) {
+      activeExportController.abort();
+      event.preventDefault();
+    }
     setViewerToolsOpen(false);
+    setViewBookmarkPanelOpen(false);
   }
 });
 
@@ -3619,10 +5544,13 @@ layersToggle.addEventListener("click", () => {
   layerPanel.hidden = !opening;
   layersToggle.setAttribute("aria-expanded", String(opening));
   if (opening) {
+    setViewerToolsOpen(true);
     fontPanel.hidden = true;
     fontsToggle.setAttribute("aria-expanded", "false");
     xrefPanel.hidden = true;
     xrefsToggle.setAttribute("aria-expanded", "false");
+    exportPanel.hidden = true;
+    exportToggle.setAttribute("aria-expanded", "false");
     layerSearch.focus();
   }
 });
@@ -3632,10 +5560,13 @@ fontsToggle.addEventListener("click", () => {
   fontPanel.hidden = !opening;
   fontsToggle.setAttribute("aria-expanded", String(opening));
   if (opening) {
+    setViewerToolsOpen(true);
     layerPanel.hidden = true;
     layersToggle.setAttribute("aria-expanded", "false");
     xrefPanel.hidden = true;
     xrefsToggle.setAttribute("aria-expanded", "false");
+    exportPanel.hidden = true;
+    exportToggle.setAttribute("aria-expanded", "false");
   }
 });
 
@@ -3644,12 +5575,48 @@ xrefsToggle.addEventListener("click", () => {
   xrefPanel.hidden = !opening;
   xrefsToggle.setAttribute("aria-expanded", String(opening));
   if (opening) {
+    setViewerToolsOpen(true);
     layerPanel.hidden = true;
     layersToggle.setAttribute("aria-expanded", "false");
     fontPanel.hidden = true;
     fontsToggle.setAttribute("aria-expanded", "false");
+    exportPanel.hidden = true;
+    exportToggle.setAttribute("aria-expanded", "false");
   }
 });
+
+exportToggle.addEventListener("click", () => {
+  setExportPanelOpen(exportPanel.hidden);
+});
+
+exportClose.addEventListener("click", () => {
+  if (activeExportController) {
+    activeExportController.abort();
+    return;
+  }
+  setExportPanelOpen(false);
+});
+
+exportForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void startDrawingExport();
+});
+
+exportCancel.addEventListener("click", () => {
+  activeExportController?.abort();
+});
+
+for (const control of [
+  exportTarget,
+  exportFormat,
+  exportPaper,
+  exportOrientation,
+  exportDpi,
+  exportScale,
+  exportPlotStyle,
+]) {
+  control.addEventListener("change", updateExportOptions);
+}
 
 wipeoutToggle.addEventListener("click", () => {
   if (!activeScene || !activeMaskStatus?.enabled) {
@@ -3711,10 +5678,7 @@ hostFontFolder.addEventListener("click", () => {
 });
 
 layerSearch.addEventListener("input", () => {
-  const query = layerSearch.value.trim().toLocaleLowerCase();
-  for (const item of layerList.children) {
-    item.hidden = Boolean(query) && !item.dataset.layerName.includes(query);
-  }
+  filterLayerPanel(layerSearch.value);
 });
 
 layersShowAll.addEventListener("click", () => {
@@ -3723,6 +5687,14 @@ layersShowAll.addEventListener("click", () => {
 
 layersHideAll.addEventListener("click", () => {
   setAllLayersVisible(false);
+});
+
+layersInvert.addEventListener("click", () => {
+  invertLayerVisibility();
+});
+
+layersRestore.addEventListener("click", () => {
+  restoreLayerVisibility();
 });
 
 hostRetry.addEventListener("click", () => {
@@ -3747,6 +5719,12 @@ hostAdapterSetup.addEventListener("click", () => {
 });
 
 window.addEventListener("beforeunload", () => {
+  activeExportController?.abort();
+  activeExportController = undefined;
+  for (const pending of pendingExportSaves.values()) {
+    pending.reject(abortError());
+  }
+  pendingExportSaves.clear();
   openRevision += 1;
   patternRequestRevision += 1;
   if (hatchPatternTimer !== undefined) {

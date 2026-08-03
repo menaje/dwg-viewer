@@ -110,11 +110,6 @@ self.addEventListener("message", async (event) => {
       : new BlobRangeSource(file);
     const rangeSource = new TrackedRangeSource(messageSource);
     const reader = await SceneCacheReader.open(rangeSource);
-    if (reader.header.minor < 3) {
-      throw new Error(
-        "curve refinement requires Scene Cache v1.3 or newer",
-      );
-    }
     if (
       !metadata ||
       !Array.isArray(metadata.layers) ||

@@ -106,7 +106,7 @@ test("repository Webview CSS keeps host-only controls hidden", async () => {
   );
   assert.match(
     repositoryStyles,
-    /body\[data-host="vscode"\]\s+header\s*\{[\s\S]*?right:\s*max\(0\.85rem,\s*env\(safe-area-inset-right\)\);[\s\S]*?width:\s*2\.95rem;[\s\S]*?height:\s*2\.95rem;/u,
+    /body\[data-host="vscode"\]\s+header\s*\{[\s\S]*?right:\s*2rem;[\s\S]*?width:\s*2\.95rem;[\s\S]*?height:\s*2\.95rem;/u,
   );
   assert.match(
     repositoryStyles,
@@ -148,10 +148,43 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
     /id="viewer-tools-trigger"[^>]*aria-expanded="false"/u,
   );
   assert.match(template, /id="review-toolbar"/u);
+  assert.match(template, /id="window-zoom"/u);
+  assert.match(template, /id="view-history-back"/u);
+  assert.match(template, /id="view-history-forward"/u);
+  assert.match(template, /id="view-bookmarks-toggle"/u);
+  assert.match(template, /id="view-bookmark-panel"/u);
+  assert.match(template, /id="export-toggle"/u);
+  assert.match(template, /id="export-panel"/u);
+  assert.match(template, /id="export-target"/u);
+  assert.match(template, /id="export-format"/u);
+  assert.match(template, /id="export-paper"/u);
+  assert.match(template, /id="export-orientation"/u);
+  assert.match(template, /id="export-scale"/u);
+  assert.match(template, /id="export-plot-style"/u);
   assert.match(template, /data-review-tool="distance"/u);
+  assert.match(template, /data-review-action="settings"/u);
+  assert.match(template, />측정 설정</u);
   assert.match(template, /id="review-result"/u);
+  assert.match(
+    template,
+    /id="host-rebuild"[^>]*hidden[^>]*>\s*다시 그리기/u,
+  );
+  assert.doesNotMatch(template, /캐시 다시 만들기/u);
   assert.match(mainModule, /setViewerToolsOpen/u);
+  assert.match(
+    mainModule,
+    /if\s*\(!open\)\s*\{\s*closeViewerPanels\(\);/u,
+  );
+  assert.match(mainModule, /viewerToolSurfaceContains/u);
   assert.match(mainModule, /new ReviewTools/u);
+  assert.match(mainModule, /new CameraViewHistory/u);
+  assert.match(mainModule, /normalizeViewBookmarks/u);
+  assert.match(mainModule, /focusAt\(\s*bookmark\.view\.origin/u);
+  assert.match(mainModule, /measurementPreferences/u);
+  assert.match(mainModule, /vscodeApi\.setState/u);
+  assert.match(mainModule, /makeRasterPdf/u);
+  assert.match(mainModule, /makeStoredZip/u);
+  assert.match(mainModule, /type: "dwg-export-save\/1"/u);
   assert.match(mainModule, /code\.startsWith\("ADAPTER_"\)/u);
   assert.match(mainModule, /type: "dwg-adapter-select\/1"/u);
   assert.match(mainModule, /type: "dwg-font-file-select\/1"/u);
@@ -163,6 +196,12 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   const manifest = JSON.parse(manifestText) as {
     contributes?: {
       commands?: Array<{ command?: string }>;
+      menus?: {
+        "view/title"?: Array<{
+          command?: string;
+          toggled?: string;
+        }>;
+      };
       configuration?: {
         properties?: Record<
           string,
@@ -176,6 +215,23 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   );
   assert.equal(commands.has("dwgViewer.selectLibreDwgAdapter"), true);
   assert.equal(commands.has("dwgViewer.diagnoseLibreDwgAdapter"), true);
+  assert.equal(commands.has("dwgViewer.searchWorkspaceText"), true);
+  assert.equal(
+    commands.has("dwgViewer.toggleTextSearchRegularExpression"),
+    true,
+  );
+  assert.deepEqual(
+    manifest.contributes?.menus?.["view/title"]?.find(
+      ({ command }) =>
+        command === "dwgViewer.toggleTextSearchRegularExpression",
+    ),
+    {
+      command: "dwgViewer.toggleTextSearchRegularExpression",
+      when: "view == dwgViewer.textSearch",
+      group: "navigation@3",
+      toggled: "dwgViewer.textSearchRegularExpressionEnabled",
+    },
+  );
   assert.deepEqual(
     manifest.contributes?.configuration?.properties?.[
       "dwgViewer.progressivePreview"
@@ -203,6 +259,18 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
       },
       description:
         "Map a DWG-requested BigFont name to auto glyph probing, strict EUC-KR, Windows CP949/UHC, or Johab CP1361 codes.",
+    },
+  );
+  assert.deepEqual(
+    manifest.contributes?.configuration?.properties?.[
+      "dwgViewer.textSearchUseRegularExpression"
+    ],
+    {
+      type: "boolean",
+      default: false,
+      scope: "window",
+      description:
+        "Use a bounded JavaScript regular expression by default in workspace DWG text search. The Explorer view toggle is retained per workspace.",
     },
   );
 });

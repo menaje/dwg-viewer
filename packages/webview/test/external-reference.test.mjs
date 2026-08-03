@@ -27,14 +27,22 @@ function collection(...matrices) {
 }
 
 test("composes child model and block instances with the parent XREF insert", () => {
+  const outer = {
+    ...collection(translationMat4(100, 20, 0)),
+    handles: new BigUint64Array([700n]),
+  };
+  const inner = {
+    ...collection(translationMat4(5, 6, 0)),
+    handles: new BigUint64Array([300n]),
+  };
   const parent = {
     instancesByBlock: new Map([
-      [7, collection(translationMat4(100, 20, 0))],
+      [7, outer],
     ]),
   };
   const child = {
     instancesByBlock: new Map([
-      [3, collection(translationMat4(5, 6, 0))],
+      [3, inner],
     ]),
   };
   const batches = [
@@ -54,6 +62,8 @@ test("composes child model and block instances with the parent XREF insert", () 
   assert.equal(block.data[13], 26);
   assert.equal(model.measurementData[12], 100);
   assert.equal(block.measurementData[12], 105);
+  assert.equal(model.handles[0], 700n);
+  assert.equal(block.handles[0], 300n);
 });
 
 test("resolves child root ByBlock and Layer 0 inheritance through an XREF", () => {
@@ -149,12 +159,13 @@ test("maps and rewrites XREF linetype codes without changing other style bits", 
   assert.equal(view.getUint32(28, true) & (1 << 16), 1 << 16);
 });
 
-test("remaps text layers without copying the source text table", () => {
+test("remaps text layers and linetypes without copying the source table", () => {
   let lazyValueReads = 0;
   const source = {
     length: 1,
     readDisplayRecord(_index, target) {
       target.layerIndex = 1;
+      target.linetypeCode = 3;
       return target;
     },
     readValue() {
@@ -162,18 +173,22 @@ test("remaps text layers without copying the source text table", () => {
       return "면적";
     },
     get() {
-      return { layerIndex: 1, value: "면적" };
+      return { layerIndex: 1, linetypeCode: 3, value: "면적" };
     },
   };
   const remapped = remapTextEntityLayers(
     source,
     new Uint32Array([3, 9]),
+    new Uint16Array([0, 1, 2, 8]),
   );
 
-  assert.equal(remapped.readDisplayRecord(0, {}).layerIndex, 9);
+  const display = remapped.readDisplayRecord(0, {});
+  assert.equal(display.layerIndex, 9);
+  assert.equal(display.linetypeCode, 8);
   assert.equal(remapped.readValue(0), "면적");
   assert.equal(lazyValueReads, 1);
   assert.equal(remapped.get(0).layerIndex, 9);
+  assert.equal(remapped.get(0).linetypeCode, 8);
   assert.equal(remapped.get(0).value, "면적");
 });
 
@@ -217,6 +232,42 @@ test("keeps a parent context for a child that contains only nested XREFs", () =>
     composed.instanceGraph.instancesByBlock.get(-1).data[12],
     10,
   );
+});
+
+test("drops unused line batches but keeps a text-only child block context", () => {
+  const composed = composeExternalInstanceGraph(
+    {
+      instancesByBlock: new Map([
+        [7, collection(translationMat4(100, 20, 0))],
+      ]),
+    },
+    7,
+    {
+      instancesByBlock: new Map([
+        [4, collection(translationMat4(5, 6, 0))],
+      ]),
+      modelBlockIndices: new Set([0]),
+    },
+    [
+      {
+        id: 0,
+        kind: GpuLineBatchKind.BlockDefinition,
+        blockIndex: 3,
+      },
+      {
+        id: 1,
+        kind: GpuLineBatchKind.BlockDefinition,
+        blockIndex: 5,
+      },
+    ],
+  );
+
+  assert.deepEqual(composed.batches, []);
+  assert.equal(composed.instanceGraph.instanceCount, 2);
+  const textBlock = composed.instanceGraph.instancesByBlock.get(4);
+  assert.equal(textBlock.count, 1);
+  assert.equal(textBlock.data[12], 105);
+  assert.equal(textBlock.data[13], 26);
 });
 
 test("combines parent and child XCLIP chains for an external reference", () => {

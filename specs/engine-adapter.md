@@ -1,8 +1,8 @@
 # DWG engine adapter protocol v1
 
-Status: accepted engine decision. The built-in acadrust adapter, LibreDWG
-inspection/conversion adapter and ACadSharp inspection preflight are
-implemented. LibreDWG 0.14 is selected; see
+Status: accepted engine decision. The LibreDWG inspection/conversion adapter
+and ACadSharp inspection preflight are implemented. The former built-in
+acadrust adapter has been retired and removed. LibreDWG 0.14 is selected; see
 [`docs/engine-decision.md`](../docs/engine-decision.md).
 
 ## Purpose
@@ -151,8 +151,8 @@ implemented, the runner applies the peak-RSS gate to the inspection process.
 Exceeding the hard limit rejects the candidate immediately; otherwise the
 decision remains `incomplete` until conversion wall time and memory exist.
 
-The built-in acadrust benchmark refuses to run from a debug build. External
-adapters are responsible for identifying and using their optimized build.
+The benchmark runner requires an explicit external adapter. Adapters are
+responsible for identifying and using their optimized build.
 
 ## Privacy
 

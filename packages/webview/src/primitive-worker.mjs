@@ -34,9 +34,6 @@ self.addEventListener(
         : new BlobRangeSource(file);
       const rangeSource = new TrackedRangeSource(messageSource);
       const reader = await SceneCacheReader.open(rangeSource);
-      if (reader.header.minor < 8) {
-        throw new Error("deferred primitive display requires Scene Cache v1.8");
-      }
       const [source, layers, blocks, inserts, insertClips] = await Promise.all([
         reader.readPrimitiveSource(),
         reader.readLayers(),

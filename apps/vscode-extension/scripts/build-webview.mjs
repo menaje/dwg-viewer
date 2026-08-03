@@ -46,6 +46,13 @@ await Promise.all([
     entryPoints: [path.join(webviewRoot, "src", "curve-worker.mjs")],
     outfile: path.join(sourceOutput, "curve-worker.mjs"),
   }),
+  build({
+    ...shared,
+    entryPoints: [
+      path.join(webviewRoot, "src", "review-entity-worker.mjs"),
+    ],
+    outfile: path.join(sourceOutput, "review-entity-worker.mjs"),
+  }),
   copyFile(
     path.join(webviewRoot, "styles.css"),
     path.join(mediaRoot, "styles.css"),
@@ -59,6 +66,7 @@ for (const workerName of [
   "hatch-worker.mjs",
   "primitive-worker.mjs",
   "curve-worker.mjs",
+  "review-entity-worker.mjs",
 ]) {
   const bundledWorker = await readFile(
     path.join(sourceOutput, workerName),

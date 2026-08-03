@@ -1,7 +1,11 @@
 # Scene Cache v1.18
 
-Status: source geometry/text writer, resolved DIMENSION picture-block
-instances, bounded HATCH rings and asynchronous solid/gradient fill,
+Status: current and exclusive. Product writers and readers accept exactly
+major 1, minor 18. References to lower minor versions below describe the
+additive format history only and do not define supported runtime inputs.
+The current implementation includes source geometry/text writing, resolved
+DIMENSION picture-block instances, bounded HATCH rings and asynchronous
+solid/gradient fill,
 viewport-clipped pattern, POINT marker, SOLID fill/outline and 3DFACE
 wireframe paths, plus lossless WIPEOUT source, frame display and normalized
 draw-order tables, original XREF paths, INSERT/XREF spatial clips and
@@ -133,8 +137,8 @@ display metadata and exact clip vertices; drawing metadata offset 12 stores
 the drawing-wide frame setting. Version 1.11 adds kinds 44–45 for normalized
 `SORTENTSTABLE` ownership and entity/sort-handle pairs. Version 1.12 uses the
 last eight bytes of the unchanged 64-byte block record for the original XREF
-path. The validator continues to accept older v1 caches, while a v1.12 writer
-retains that path unchanged. Version 1.13 adds kinds 46–47 for bounded
+path. At that milestone, the v1.12 writer retained the path unchanged.
+Version 1.13 adds kinds 46–47 for bounded
 `SPATIAL_FILTER`/XCLIP boundaries associated with INSERT records. A v1.13
 writer emits 36 sections. Version 1.14 expands the drawing display settings
 without adding a section. Version 1.15 adds kinds 48–49, extends drawing
@@ -168,7 +172,7 @@ coordinates without replacing these source-precision records.
 
 ## Drawing record
 
-Kind 1 contains one 160-byte record in v1.17 and later:
+In v1.18, kind 1 contains one 160-byte record:
 
 | Offset | Type | Field |
 | ---: | --- | --- |
@@ -194,7 +198,8 @@ Kind 1 contains one 160-byte record in v1.17 and later:
 Before v1.10, offset 12 is reserved and must be zero. Versions 1.10–1.13 use
 only its WIPEOUT value; v1.14 adds the three display bits. Versions before
 v1.15 end at byte 80, v1.15–v1.16 end at byte 104, and v1.17 adds the saved
-view suffix. Readers expose unavailable values through stable defaults.
+view suffix. Those shorter historical records are not accepted by the current
+reader, which requires the complete 160-byte v1.18 record.
 
 ## String-table sections
 
@@ -842,7 +847,7 @@ generated artifacts and must not be committed.
 
 ## LibreDWG qualification writer
 
-The optional LibreDWG adapter currently writes a valid v1.18 cache
+The selected LibreDWG adapter writes a valid v1.18 cache
 to measure the direct object-to-cache boundary. It preserves layer/block UTF-8
 names and source records for LINE, ARC, CIRCLE, INSERT/MINSERT,
 LWPOLYLINE/2D/3D POLYLINE, ELLIPSE and SPLINE, including the four SPLINE value

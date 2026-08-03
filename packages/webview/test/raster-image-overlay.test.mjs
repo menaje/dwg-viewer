@@ -340,3 +340,43 @@ test("draws IMAGE placement with clipping and CAD display adjustments", () => {
   assert.equal(drawn.alpha, 0.9);
   assert.equal(drawn.filter, "brightness(0.8) contrast(1.2)");
 });
+
+test("selects visible IMAGE bounds and exposes its insertion point", () => {
+  const canvas = fakeCanvas();
+  const overlay = new CanvasRasterImageOverlay(canvas, {
+    imageEntities: imageTable(visibleRecord),
+    blocks: [{ index: 0, handle: 100n }],
+    layers: [{ name: "0" }],
+    instanceGraph: modelGraph(),
+    cacheId: "root",
+    sourceId: "root",
+    sourceLabel: "현재 도면",
+    hitTestingEnabled: true,
+    assetStore: {
+      lookup: () => ({ status: "missing" }),
+      snapshot: () => ({}),
+    },
+  });
+
+  overlay.redraw(camera, [true]);
+  const selected = overlay.hitTest(300, 250, {
+    snapKinds: ["entity"],
+  });
+  const insertion = overlay.hitTest(250, 400, {
+    snapKinds: ["insertion"],
+  });
+
+  assert.equal(selected.entityType, "image");
+  assert.equal(selected.sourceKindName, "이미지");
+  assert.equal(selected.handle, 901n);
+  assert.equal(selected.layerName, "0");
+  assert.equal(selected.entityRecord.path, String.raw`.\image\도면.png`);
+  assert.deepEqual(selected.displayPolygon, [
+    [-0.5, 2.5, 0],
+    [3.5, 2.5, 0],
+    [3.5, -0.5, 0],
+    [-0.5, -0.5, 0],
+  ]);
+  assert.equal(insertion.kind, "insertion");
+  assert.deepEqual(insertion.displayPoint, [0, 0, 0]);
+});

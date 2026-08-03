@@ -26,6 +26,14 @@ test("resolves nested block instances without copying block geometry", async () 
   assert.equal(graph.instanceCount, 2);
   assert.equal(graph.instancesByBlock.get(1).length, 1);
   assert.equal(graph.instancesByBlock.get(2).length, 1);
+  assert.equal(
+    graph.instancesByBlock.get(1).handles[0],
+    inserts.find((insert) => insert.blockIndex === 1).handle,
+  );
+  assert.equal(
+    graph.instancesByBlock.get(2).handles[0],
+    inserts.find((insert) => insert.blockIndex === 2).handle,
+  );
   assert.deepEqual(graph.diagnostics, {
     invalidOwner: 0,
     invalidTarget: 0,
@@ -50,7 +58,7 @@ test("resolves nested block instances without copying block geometry", async () 
 
 test("propagates an INSERT XCLIP through nested block instances", async () => {
   const reader = await SceneCacheReader.open(
-    new MemoryRangeSource(makeFixtureCache({ minorVersion: 13 })),
+    new MemoryRangeSource(makeFixtureCache()),
   );
   const metadata = await reader.readRenderMetadata();
   const graph = buildInstanceGraph(metadata.blocks, metadata.inserts, {
@@ -192,6 +200,8 @@ test("dimension picture references inherit their owner's world transform", () =>
   const ownerMatrix = graph.instancesByBlock.get(1).data;
   const pictureMatrix = graph.instancesByBlock.get(2).data;
   assert.equal(graph.instanceCount, 2);
+  assert.equal(graph.instancesByBlock.get(1).handles[0], 201n);
+  assert.equal(graph.instancesByBlock.get(2).handles[0], 202n);
   assert.deepEqual([...pictureMatrix], [...ownerMatrix]);
   assert.deepEqual(transformPoint(pictureMatrix, [7, 8, 0]), [97, 188, 0]);
 });

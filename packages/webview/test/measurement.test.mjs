@@ -162,6 +162,54 @@ test("snaps to endpoints, midpoints, and nearest points through a spatial index"
   assert.deepEqual(nearest.measurementPoint, [7, 0, 0]);
 });
 
+test("reports whole-object length and area for a closed polyline", () => {
+  const index = new OverviewSnapIndex([
+    source({
+      segments: [
+        {
+          first: [0, 0, 0],
+          last: [3, 0, 0],
+          handle: 99n,
+          sourceKind: 1,
+        },
+        {
+          first: [3, 0, 0],
+          last: [3, 4, 0],
+          handle: 99n,
+          sourceKind: 1,
+        },
+        {
+          first: [3, 4, 0],
+          last: [0, 4, 0],
+          handle: 99n,
+          sourceKind: 1,
+        },
+        {
+          first: [0, 4, 0],
+          last: [0, 0, 0],
+          handle: 99n,
+          sourceKind: 1,
+        },
+      ],
+    }),
+  ], {
+    layerZeroIndex: 0,
+    getLayerVisibility: () => [true, true],
+  });
+
+  const selected = index.find([1, 0.02, 0], camera, {
+    snapKinds: ["nearest"],
+  });
+
+  assert.deepEqual(selected.objectMeasurement, {
+    length: 14,
+    area: 12,
+    closed: true,
+    segments: 4,
+    approximated: false,
+  });
+});
+
 test("uses an 18 CSS pixel snap aperture", () => {
   const index = new OverviewSnapIndex([
     source({
@@ -365,9 +413,164 @@ test("uses exact ARC geometry for midpoint and nearest snaps", () => {
   assert.ok(Math.abs(midpoint.measurementPoint[0] - expected) < 1e-9);
   assert.ok(Math.abs(midpoint.measurementPoint[1] - expected) < 1e-9);
   assert.equal(midpoint.approximated, false);
+  assert.deepEqual(
+    midpoint.curveMeasurement.measurementCenter,
+    [0, 0, 0],
+  );
+  assert.equal(midpoint.curveMeasurement.majorRadius, 10);
+  assert.equal(midpoint.curveMeasurement.minorRadius, 10);
 
   const nearest = index.find([7.2, 7.2, 0], curveCamera, {
     snapKinds: ["nearest"],
   });
   assert.ok(Math.abs(Math.hypot(...nearest.measurementPoint.slice(0, 2)) - 10) < 1e-7);
+});
+
+test("snaps to line intersections before nearby segments", () => {
+  const index = new OverviewSnapIndex([
+    source({
+      segments: [
+        {
+          first: [0, 5, 0],
+          last: [10, 5, 0],
+          handle: 21n,
+        },
+        {
+          first: [5, 0, 0],
+          last: [5, 10, 0],
+          handle: 22n,
+        },
+      ],
+    }),
+  ], {
+    layerZeroIndex: 0,
+    getLayerVisibility: () => [true, true],
+  });
+
+  const hit = index.find([5.03, 5.02, 0], camera, {
+    snapKinds: ["intersection", "nearest"],
+  });
+
+  assert.equal(hit.kind, "intersection");
+  assert.deepEqual(hit.displayPoint, [5, 5, 0]);
+  assert.deepEqual(
+    new Set([hit.handle, hit.relatedHandle]),
+    new Set([21n, 22n]),
+  );
+});
+
+test("snaps perpendicular from the previous measurement point", () => {
+  const index = new OverviewSnapIndex([
+    source({
+      segments: [
+        {
+          first: [0, 0, 0],
+          last: [10, 0, 0],
+          handle: 31n,
+        },
+      ],
+    }),
+  ], {
+    layerZeroIndex: 0,
+    getLayerVisibility: () => [true, true],
+  });
+
+  const hit = index.find([4.02, 0.03, 0], camera, {
+    snapKinds: ["perpendicular", "nearest"],
+    referencePoint: [4, 5, 0],
+  });
+
+  assert.equal(hit.kind, "perpendicular");
+  assert.deepEqual(hit.displayPoint, [4, 0, 0]);
+  assert.deepEqual(hit.measurementPoint, [4, 0, 0]);
+});
+
+test("snaps to exact curve centers and reports full circle properties", () => {
+  const exactCurves = new Map([
+    [
+      41n,
+      {
+        kind: "circle",
+        handle: 41n,
+        ownerHandle: 0n,
+        layerIndex: 0,
+        color: 0,
+        lineWeight: -1,
+        linetypeCode: 2,
+        center: [5, 5, 0],
+        radius: 2,
+        startParameter: 0,
+        endParameter: Math.PI * 2,
+        normal: [0, 0, 1],
+      },
+    ],
+  ]);
+  const index = new OverviewSnapIndex([
+    source({
+      segments: [
+        {
+          first: [7, 5, 0],
+          last: [5, 7, 0],
+          handle: 41n,
+          sourceKind: 5,
+        },
+        {
+          first: [5, 7, 0],
+          last: [3, 5, 0],
+          handle: 41n,
+          sourceKind: 5,
+        },
+      ],
+      exactCurves,
+    }),
+  ], {
+    layerZeroIndex: 0,
+    getLayerVisibility: () => [true, true],
+  });
+
+  const hit = index.find([5.02, 5.01, 0], camera, {
+    snapKinds: ["center"],
+  });
+
+  assert.equal(hit.kind, "center");
+  assert.deepEqual(hit.measurementPoint, [5, 5, 0]);
+  assert.equal(hit.curveMeasurement.closed, true);
+  assert.ok(Math.abs(hit.curveMeasurement.length - Math.PI * 4) < 1e-9);
+  assert.ok(Math.abs(hit.curveMeasurement.area - Math.PI * 4) < 1e-9);
+});
+
+test("snaps to block insertion points and keeps insert metadata", () => {
+  const blockInstances = collection(
+    translationMat4(5, 4, 0),
+    translationMat4(5, 4, 0),
+    { layerIndex: 1 },
+  );
+  blockInstances.handles = new BigUint64Array([51n]);
+  blockInstances.colors = new Uint32Array([0]);
+  blockInstances.lineWeights = new Int16Array([-1]);
+  blockInstances.linetypeCodes = new Uint16Array([2]);
+  const insertSource = source({
+    segments: [{ first: [0, 0, 0], last: [1, 0, 0] }],
+  });
+  insertSource.blocks = [
+    { index: 0, handle: 100n, name: "*Model_Space", basePoint: [0, 0, 0] },
+    { index: 1, handle: 200n, name: "문틀", basePoint: [2, 3, 0] },
+  ];
+  insertSource.instanceGraph.instancesByBlock.set(1, blockInstances);
+  const index = new OverviewSnapIndex([insertSource], {
+    layerZeroIndex: 0,
+    getLayerVisibility: () => [true, true],
+  });
+
+  const hit = index.find([7.02, 7.01, 0], camera, {
+    snapKinds: ["insertion"],
+  });
+
+  assert.equal(hit.kind, "insertion");
+  assert.equal(hit.entityType, "block");
+  assert.equal(hit.blockName, "문틀");
+  assert.equal(hit.handle, 51n);
+  assert.deepEqual(hit.insertionPoint, [7, 7, 0]);
+  assert.deepEqual(hit.transform.scale, [1, 1, 1]);
+  assert.equal(hit.transform.rotation, 0);
 });

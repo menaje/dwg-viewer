@@ -1,9 +1,9 @@
-import { GpuLineBatchKind } from "./scene-cache.mjs";
+import { GpuLineBatchKind } from "./scene-cache.mjs?v=1.18.8";
 import {
   multiplyMat4,
   transformPoint,
 } from "./math.mjs";
-import { createClipNode } from "./instance-graph.mjs";
+import { createClipNode } from "./instance-graph.mjs?v=1.18.8";
 
 const MATRIX_VALUES = 16;
 const MODEL_BLOCK_INDEX = -1;
@@ -80,6 +80,7 @@ function composeCollections(
   const linetypeCodes = new Uint16Array(count);
   const linetypeInherited = new Uint8Array(count);
   const visibilityRows = new Uint32Array(count);
+  const handles = new BigUint64Array(count);
   const clipCache = new Map();
   let cursor = 0;
   for (let outerIndex = 0; outerIndex < outer.count; outerIndex += 1) {
@@ -201,6 +202,10 @@ function composeCollections(
           : 0;
       visibilityRows[cursor] =
         outer.visibilityRows?.[outerIndex] ?? 0;
+      handles[cursor] =
+        inner.handles?.[innerIndex] ??
+        outer.handles?.[outerIndex] ??
+        0n;
       cursor += 1;
     }
   }
@@ -221,6 +226,7 @@ function composeCollections(
     linetypeCodes,
     linetypeInherited,
     visibilityRows,
+    handles,
     count,
     length: count,
   });
@@ -257,6 +263,7 @@ export function composeExternalInstanceGraph(
           linetypeCodes: new Uint16Array(0),
           linetypeInherited: new Uint8Array(0),
           visibilityRows: new Uint32Array(0),
+          handles: new BigUint64Array(0),
           count: 0,
           length: 0,
         }),
@@ -298,6 +305,8 @@ export function composeExternalInstanceGraph(
       outer.linetypeInherited ?? new Uint8Array(outer.count),
     visibilityRows:
       outer.visibilityRows ?? new Uint32Array(outer.count),
+    handles:
+      outer.handles ?? new BigUint64Array(outer.count),
     count: outer.count,
     length: outer.count,
   });
@@ -321,20 +330,27 @@ export function composeExternalInstanceGraph(
     instancesByBlock.set(blockIndex, composed);
     instanceCount += composed.count;
   }
-  const batches = childBatches.map((batch) =>
-    batch.kind === GpuLineBatchKind.BlockDefinition
-      ? batch
-      : Object.freeze({
-          ...batch,
-          kind: GpuLineBatchKind.BlockDefinition,
-          blockIndex: MODEL_BLOCK_INDEX,
-        }),
-  );
+  const batches = childBatches
+    .map((batch) =>
+      batch.kind === GpuLineBatchKind.BlockDefinition
+        ? batch
+        : Object.freeze({
+            ...batch,
+            kind: GpuLineBatchKind.BlockDefinition,
+            blockIndex: MODEL_BLOCK_INDEX,
+          }),
+    )
+    .filter(
+      (batch) =>
+        (instancesByBlock.get(batch.blockIndex)?.count ?? 0) > 0,
+    );
   return Object.freeze({
     batches: Object.freeze(batches),
     instanceGraph: Object.freeze({
       instancesByBlock,
-      modelBlockIndices: new Set(),
+      modelBlockIndices: new Set(
+        childInstanceGraph.modelBlockIndices ?? [],
+      ),
       rootInstances: modelInstances,
       clipNodes: Object.freeze(clipNodes),
       layerVisibilityRows:
@@ -433,7 +449,11 @@ export function remapLineVertexLinetypes(
   return buffer;
 }
 
-export function remapTextEntityLayers(textEntities, layerMap) {
+export function remapTextEntityLayers(
+  textEntities,
+  layerMap,
+  linetypeMap = null,
+) {
   if (
     !textEntities ||
     !Number.isSafeInteger(textEntities.length) ||
@@ -448,11 +468,17 @@ export function remapTextEntityLayers(textEntities, layerMap) {
       : layerIndex < layerMap.length
         ? layerMap[layerIndex]
         : layerMap[0];
+  const mapLinetype = (linetypeCode) =>
+    linetypeMap instanceof Uint16Array &&
+    linetypeCode < linetypeMap.length
+      ? linetypeMap[linetypeCode]
+      : linetypeCode;
   return Object.freeze({
     length: textEntities.length,
     readDisplayRecord(index, target) {
       const record = textEntities.readDisplayRecord(index, target);
       record.layerIndex = mapLayer(record.layerIndex);
+      record.linetypeCode = mapLinetype(record.linetypeCode);
       return record;
     },
     readValue(index) {
@@ -465,6 +491,7 @@ export function remapTextEntityLayers(textEntities, layerMap) {
       return Object.freeze({
         ...record,
         layerIndex: mapLayer(record.layerIndex),
+        linetypeCode: mapLinetype(record.linetypeCode),
       });
     },
   });

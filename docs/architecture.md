@@ -15,8 +15,9 @@ DWG
 ```
 
 The engine decision is now accepted: LibreDWG 0.14 is the primary parser and
-converter for continued product development. `acadrust` remains a cross-engine
-regression oracle but misses the reference drawing's memory hard gate.
+converter for continued product development. The former acadrust comparison
+engine was retired and removed after failing the reference drawing's memory
+hard gate.
 ACadSharp 3.6.51 is excluded because its parser-only preflight peaks around
 1.45 GB, above the 800 MB hard limit. The complete evidence and GPL
 distribution boundary are recorded in
@@ -24,6 +25,10 @@ distribution boundary are recorded in
 The engine/backend capability, progress and cache-isolation boundary is
 recorded in
 [`scene-engine.md`](../specs/scene-engine.md).
+
+The product writer, preview writer, benchmark validator and Webview reader now
+accept only Scene Cache v1.18. Lower version numbers in the milestone evidence
+below are historical development records, not supported runtime formats.
 
 LibreDWG passes the conversion time and memory targets and matches the
 normalized geometry and Korean text fingerprint. It renders LINE and
@@ -195,7 +200,8 @@ the converter gone 286 ms after disposal. Three prior stable full runs added
 
 On the macOS arm64 reference environment, the current process-isolated
 LibreDWG 0.14 inspection measured 810 ms median wall time and 591,380,480 bytes
-median peak RSS. The acadrust baseline measured 878 ms and 935,641,088 bytes.
+median peak RSS. The retired acadrust candidate had measured 878 ms and
+935,641,088 bytes.
 After normalizing
 LibreDWG's separate block markers, owned vertices, table records and attached
 attributes, the drawing summary, entity-type counts, Hangul counts and
@@ -236,9 +242,9 @@ maximums were 2,957 ms and 591,740,928 bytes. The deterministic
 175,985,184-byte cache adds
 6,390 resolved pattern-definition records and 12,020 dash values. Those two
 sections add 556,320 bytes over v1.6 while the line overview and detail
-batches remain unchanged. The corresponding acadrust conversion measured
-7,642 ms median and 969,310,208 bytes median peak RSS, confirming that it still
-fails the memory hard gate while LibreDWG passes both conversion gates.
+batches remain unchanged. The retired acadrust candidate measured 7,642 ms
+median and 969,310,208 bytes median peak RSS, confirming the reason it was
+removed while LibreDWG passes both conversion gates.
 
 The Scene Cache v1.8 POINT/SOLID milestone measured 2,986 ms median conversion
 wall time and 591,511,552 bytes median peak RSS; measured maximums were
@@ -284,8 +290,8 @@ draw-order table records and 54,667 fixed 16-byte entity/sort-handle pairs.
 The deterministic cache grows by exactly 895,072 bytes to 177,049,408 bytes
 while kinds 1–43 remain byte-identical to v1.10. Tables are normalized by
 block owner/table handle and entries by entity/sort handle because source
-entry enumeration order has no draw-order meaning. The acadrust oracle and
-LibreDWG writer produce byte-identical kind-44 and kind-45 payloads.
+entry enumeration order has no draw-order meaning. The archived cross-engine
+qualification produced byte-identical kind-44 and kind-45 payloads.
 
 Three isolated conversions completed in 2,983 / 2,999 / 3,009 ms with
 591,773,696 / 591,822,848 / 591,822,848 bytes peak RSS (minimum / median /
@@ -302,9 +308,10 @@ and 1,452,392,448 bytes median peak RSS; measured maximums were 4,098 ms and
 fingerprints, but parser memory alone exceeds the hard limit by more than
 650 MB. No ACadSharp cache writer is planned.
 
-Cross-engine conversion of public LibreDWG fixtures covers every HATCH mode.
+The archived cross-engine qualification of public LibreDWG fixtures covered
+every HATCH mode.
 `example_2018.dwg` produces one pattern HATCH, two definition lines and four
-dash values; kinds 37–38 are byte-identical between acadrust and LibreDWG. Its
+dash values; kinds 37–38 were byte-identical between the compared engines. Its
 46 POINT and 15 SOLID records also produce byte-identical kind-39 and kind-40
 payloads. The fixture's nine DIMENSION picture blocks resolve in both engines
 and produce 19 total kind-13 records: ten source INSERTs plus nine dimension
@@ -424,8 +431,9 @@ The external sort keeps either one 8,192-record run or its small merge windows
 resident, while two private unnamed files consume about 312 MB of temporary
 disk at peak for the reference drawing and disappear on close.
 
-The parser itself accounts for almost all measured RSS: the current v1.11
-conversion maximum is only 8,177,152 bytes below the 600,000,000-byte target.
+At the measured v1.11 milestone, the parser itself accounted for almost all
+RSS: the conversion maximum was only 8,177,152 bytes below the
+600,000,000-byte target.
 Therefore future LibreDWG coverage must retain streaming or disk-backed
 bounded passes; a whole-drawing geometry vector would erase the margin.
 

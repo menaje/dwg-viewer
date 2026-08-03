@@ -7,7 +7,7 @@ import {
 import { readJsHeapSnapshot } from "./memory-telemetry.mjs";
 import { calculateRasterImageBounds } from "./raster-image-overlay.mjs";
 import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.2";
-import { SceneCacheReader } from "./scene-cache.mjs?v=1.18.2";
+import { SceneCacheReader } from "./scene-cache.mjs?v=1.18.8";
 
 function now() {
   return globalThis.performance?.now?.() ?? Date.now();
@@ -165,9 +165,7 @@ export async function loadFirstFrame(
   onProgress("첫 화면 4MiB 이하 버퍼 읽는 중");
   const [overview, imageEntities] = await Promise.all([
     reader.readOverviewVertices(),
-    reader.header.minor >= 18
-      ? reader.readImageEntities()
-      : Promise.resolve(null),
+    reader.readImageEntities(),
   ]);
   const overviewAt = now();
   const imageBounds = imageEntities
@@ -260,9 +258,7 @@ export async function loadExternalFirstFrame(
   onProgress("참조도면 첫 화면 버퍼 읽는 중");
   const [overview, imageEntities] = await Promise.all([
     reader.readOverviewVertices(),
-    reader.header.minor >= 18
-      ? reader.readImageEntities()
-      : Promise.resolve(null),
+    reader.readImageEntities(),
   ]);
   return Object.freeze({
     reader,

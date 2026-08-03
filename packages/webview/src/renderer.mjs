@@ -1013,14 +1013,204 @@ function selectInteractiveInstanceIndices(
     : EMPTY_INSTANCE_INDICES;
 }
 
-function clearOverlayCanvas(overlay) {
-  const canvas = overlay?.canvas;
-  const context = canvas?.getContext?.("2d", { alpha: true });
-  if (!canvas || !context) {
+function overlayCameraTransform(anchor, camera, width, height) {
+  if (
+    !anchor ||
+    !camera ||
+    !Array.isArray(anchor.origin) ||
+    !Array.isArray(camera.origin) ||
+    !Number.isFinite(anchor.worldWidth) ||
+    anchor.worldWidth <= 0 ||
+    !Number.isFinite(anchor.worldHeight) ||
+    anchor.worldHeight <= 0 ||
+    !Number.isFinite(camera.worldWidth) ||
+    camera.worldWidth <= 0 ||
+    !Number.isFinite(camera.worldHeight) ||
+    camera.worldHeight <= 0 ||
+    !Number.isFinite(width) ||
+    width <= 0 ||
+    !Number.isFinite(height) ||
+    height <= 0
+  ) {
+    throw new TypeError("overlay camera transform requires valid cameras");
+  }
+  const scaleX = anchor.worldWidth / camera.worldWidth;
+  const scaleY = anchor.worldHeight / camera.worldHeight;
+  return Object.freeze({
+    scaleX,
+    scaleY,
+    translateX:
+      width * 0.5 * (1 - scaleX) +
+      ((anchor.origin[0] - camera.origin[0]) / camera.worldWidth) *
+        width,
+    translateY:
+      height * 0.5 * (1 - scaleY) -
+      ((anchor.origin[1] - camera.origin[1]) / camera.worldHeight) *
+        height,
+  });
+}
+
+function resetOverlayTransform(overlay) {
+  const style = overlay?.canvas?.style;
+  if (!style) {
+    return false;
+  }
+  style.transform = "";
+  style.transformOrigin = "";
+  style.willChange = "";
+  return true;
+}
+
+function releaseOverlaySnapshot(snapshot) {
+  if (!snapshot) {
     return;
   }
+  snapshot.width = 1;
+  snapshot.height = 1;
+}
+
+function createOverlaySnapshotCanvas(canvas, width, height) {
+  let snapshot = null;
+  if (typeof globalThis.OffscreenCanvas === "function") {
+    snapshot = new globalThis.OffscreenCanvas(width, height);
+  } else {
+    snapshot = canvas?.ownerDocument?.createElement?.("canvas") ?? null;
+    if (snapshot) {
+      snapshot.width = width;
+      snapshot.height = height;
+    }
+  }
+  return snapshot;
+}
+
+function captureOverlaySnapshot(overlay, previous = null) {
+  const canvas = overlay?.canvas;
+  if (
+    !canvas ||
+    canvas.width <= 0 ||
+    canvas.height <= 0 ||
+    canvas.clientWidth <= 0 ||
+    canvas.clientHeight <= 0
+  ) {
+    releaseOverlaySnapshot(previous);
+    return null;
+  }
+  const width = Math.max(1, Math.round(canvas.clientWidth));
+  const height = Math.max(1, Math.round(canvas.clientHeight));
+  const snapshot =
+    previous ?? createOverlaySnapshotCanvas(canvas, width, height);
+  const context = snapshot?.getContext?.("2d", { alpha: true });
+  if (!snapshot || !context) {
+    releaseOverlaySnapshot(previous);
+    return null;
+  }
+  if (snapshot.width !== width || snapshot.height !== height) {
+    snapshot.width = width;
+    snapshot.height = height;
+  }
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  context.clearRect(0, 0, width, height);
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.drawImage(
+    canvas,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+    0,
+    0,
+    width,
+    height,
+  );
+  return snapshot;
+}
+
+function drawOverlaySnapshot(overlay, snapshot, anchor, camera) {
+  const canvas = overlay?.canvas;
+  if (
+    !canvas ||
+    !snapshot ||
+    !anchor ||
+    canvas.clientWidth <= 0 ||
+    canvas.clientHeight <= 0 ||
+    snapshot.width <= 0 ||
+    snapshot.height <= 0
+  ) {
+    return false;
+  }
+  resetOverlayTransform(overlay);
+  if (
+    canvas.width !== snapshot.width ||
+    canvas.height !== snapshot.height
+  ) {
+    canvas.width = snapshot.width;
+    canvas.height = snapshot.height;
+  }
+  const context = canvas.getContext?.("2d", { alpha: true });
+  if (!context) {
+    return false;
+  }
+  const transform = overlayCameraTransform(
+    anchor,
+    camera,
+    canvas.clientWidth,
+    canvas.clientHeight,
+  );
+  const backingScaleX = canvas.width / canvas.clientWidth;
+  const backingScaleY = canvas.height / canvas.clientHeight;
   context.setTransform(1, 0, 0, 1, 0, 0);
   context.clearRect(0, 0, canvas.width, canvas.height);
+  context.globalAlpha = 1;
+  context.globalCompositeOperation = "source-over";
+  context.filter = "none";
+  context.imageSmoothingEnabled = true;
+  context.imageSmoothingQuality = "high";
+  context.setTransform(
+    transform.scaleX * (canvas.width / snapshot.width),
+    0,
+    0,
+    transform.scaleY * (canvas.height / snapshot.height),
+    transform.translateX * backingScaleX,
+    transform.translateY * backingScaleY,
+  );
+  context.drawImage(snapshot, 0, 0);
+  context.setTransform(1, 0, 0, 1, 0, 0);
+  return true;
+}
+
+function retainOverlayForCamera(
+  overlay,
+  snapshot,
+  anchor,
+  camera,
+) {
+  if (drawOverlaySnapshot(overlay, snapshot, anchor, camera)) {
+    return true;
+  }
+  const canvas = overlay?.canvas;
+  const style = canvas?.style;
+  if (
+    !canvas ||
+    !style ||
+    !anchor ||
+    canvas.clientWidth <= 0 ||
+    canvas.clientHeight <= 0
+  ) {
+    return false;
+  }
+  const transform = overlayCameraTransform(
+    anchor,
+    camera,
+    canvas.clientWidth,
+    canvas.clientHeight,
+  );
+  style.transformOrigin = "0 0";
+  style.willChange = "transform";
+  style.transform =
+    `matrix(${transform.scaleX},0,0,${transform.scaleY},` +
+    `${transform.translateX},${transform.translateY})`;
+  return true;
 }
 
 function modelOwnerHandle(blocks) {
@@ -1419,6 +1609,12 @@ export class WebGlLineRenderer {
     this.primitiveMetrics = null;
     this.imageOverlay = null;
     this.textOverlay = null;
+    this.imageOverlaySnapshot = null;
+    this.textOverlaySnapshot = null;
+    this.imageOverlayCamera = null;
+    this.textOverlayCamera = null;
+    this.lastImageMetrics = null;
+    this.lastTextMetrics = null;
     this.maskOrder = null;
     this.wipeoutMasksVisible = true;
     this.lineWeightsVisible = false;
@@ -2077,19 +2273,44 @@ export class WebGlLineRenderer {
     this.uploadLayerTexture();
   }
 
+  setLayerVisibilityState(visibility) {
+    if (
+      !Array.isArray(visibility) ||
+      visibility.length !== this.layerVisibility.length
+    ) {
+      throw new RangeError("invalid layer visibility state");
+    }
+    for (let index = 0; index < visibility.length; index += 1) {
+      this.layerVisibility[index] = Boolean(visibility[index]);
+    }
+    this.uploadLayerTexture();
+  }
+
   setTextOverlay(overlay) {
     if (this.textOverlay && this.textOverlay !== overlay) {
+      resetOverlayTransform(this.textOverlay);
       this.textOverlay.dispose();
     }
+    releaseOverlaySnapshot(this.textOverlaySnapshot);
     this.textOverlay = overlay ?? null;
+    this.textOverlaySnapshot = null;
+    this.textOverlayCamera = null;
+    this.lastTextMetrics = null;
+    resetOverlayTransform(this.textOverlay);
     this.textOverlay?.setMaskVisibility?.(this.wipeoutMasksVisible);
   }
 
   setImageOverlay(overlay) {
     if (this.imageOverlay && this.imageOverlay !== overlay) {
+      resetOverlayTransform(this.imageOverlay);
       this.imageOverlay.dispose();
     }
+    releaseOverlaySnapshot(this.imageOverlaySnapshot);
     this.imageOverlay = overlay ?? null;
+    this.imageOverlaySnapshot = null;
+    this.imageOverlayCamera = null;
+    this.lastImageMetrics = null;
+    resetOverlayTransform(this.imageOverlay);
   }
 
   setWipeoutMasksVisible(visible) {
@@ -2447,10 +2668,22 @@ export class WebGlLineRenderer {
     this.gl.deleteBuffer(resource.vertexBuffer);
   }
 
-  resize() {
+  resize(targetSize = null) {
     const ratio = Math.min(globalThis.devicePixelRatio ?? 1, 2);
-    const width = Math.max(1, Math.round(this.canvas.clientWidth * ratio));
-    const height = Math.max(1, Math.round(this.canvas.clientHeight * ratio));
+    const width = targetSize
+      ? targetSize.width
+      : Math.max(1, Math.round(this.canvas.clientWidth * ratio));
+    const height = targetSize
+      ? targetSize.height
+      : Math.max(1, Math.round(this.canvas.clientHeight * ratio));
+    if (
+      !Number.isSafeInteger(width) ||
+      width <= 0 ||
+      !Number.isSafeInteger(height) ||
+      height <= 0
+    ) {
+      throw new RangeError("render target size must use positive integers");
+    }
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width;
       this.canvas.height = height;
@@ -2459,11 +2692,11 @@ export class WebGlLineRenderer {
     return { width, height };
   }
 
-  cameraForView(view = this.overviewScene?.camera) {
+  cameraForView(view = this.overviewScene?.camera, targetSize = null) {
     if (!view || !Array.isArray(view.origin)) {
       throw new TypeError("cannot resolve an invalid camera view");
     }
-    const size = this.resize();
+    const size = this.resize(targetSize);
     return makeCameraFromView(
       view.origin,
       view.worldHeight,
@@ -2749,9 +2982,9 @@ export class WebGlLineRenderer {
     this.combinedBounds = combined;
   }
 
-  fitCamera() {
+  fitCamera(targetSize = null) {
     if (this.overviewScene?.preferredView) {
-      const size = this.resize();
+      const size = this.resize(targetSize);
       return makeCameraFromView(
         this.overviewScene.preferredView.origin,
         this.overviewScene.preferredView.worldHeight,
@@ -2759,14 +2992,14 @@ export class WebGlLineRenderer {
         size.height,
       );
     }
-    return this.fitAllCamera();
+    return this.fitAllCamera(targetSize);
   }
 
-  fitAllCamera() {
+  fitAllCamera(targetSize = null) {
     if (!this.combinedBounds || !boundsAreFinite(this.combinedBounds)) {
       throw new Error("viewer has no finite fitted bounds");
     }
-    const size = this.resize();
+    const size = this.resize(targetSize);
     return makeCamera(
       this.combinedBounds,
       size.width,
@@ -3339,13 +3572,17 @@ export class WebGlLineRenderer {
 
   redraw(
     view = this.overviewScene?.camera,
-    { interactive = false } = {},
+    {
+      interactive = false,
+      targetSize = null,
+      updateOverlaySnapshots = targetSize === null,
+    } = {},
   ) {
     if (!this.overviewScene || !view) {
       throw new Error("cannot redraw before the overview is initialized");
     }
     const gl = this.gl;
-    const camera = this.cameraForView(view);
+    const camera = this.cameraForView(view, targetSize);
     let cachedDetailGpuBytes = 0;
     for (const entry of this.detailResources.values()) {
       cachedDetailGpuBytes += entry.byteLength;
@@ -3437,7 +3674,6 @@ export class WebGlLineRenderer {
     };
 
     const maskCompositionEnabled =
-      !interactive &&
       this.wipeoutMasksVisible &&
       Boolean(this.maskOrder) &&
       Boolean(this.wipeoutMaskScene?.resource);
@@ -3455,10 +3691,9 @@ export class WebGlLineRenderer {
     gl.bindTexture(gl.TEXTURE_2D, this.layerTexture);
 
     if (
-      !interactive &&
-      (this.wipeoutMaskScene?.resource ||
-        this.solidFillScene?.resource ||
-        this.hatchFillScene?.resource)
+      this.wipeoutMaskScene?.resource ||
+      this.solidFillScene?.resource ||
+      this.hatchFillScene?.resource
     ) {
       gl.useProgram(this.fillProgram);
       gl.uniformMatrix4fv(
@@ -3531,10 +3766,9 @@ export class WebGlLineRenderer {
       }
     }
     if (
-      interactive ||
-      (!this.wipeoutMaskScene?.resource &&
-        !this.solidFillScene?.resource &&
-        !this.hatchFillScene?.resource)
+      !this.wipeoutMaskScene?.resource &&
+      !this.solidFillScene?.resource &&
+      !this.hatchFillScene?.resource
     ) {
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -3568,7 +3802,9 @@ export class WebGlLineRenderer {
       this.curveReplacementEnabledLocation,
       curveRefinementActive ? 1 : 0,
     );
-    const linePasses = this.lineWeightsVisible
+    const linePasses = interactive
+      ? [[0, 0, 0]]
+      : this.lineWeightsVisible
       ? [
           [0, 0, 0],
           [0.75, 0, 1.5],
@@ -3640,7 +3876,7 @@ export class WebGlLineRenderer {
         camera,
         this.clipLocations,
       );
-      if (!interactive && this.hatchPatternScene?.resource) {
+      if (this.hatchPatternScene?.resource) {
         for (const batch of this.hatchPatternScene.batches) {
           this.drawBatch(
             batch,
@@ -3655,7 +3891,7 @@ export class WebGlLineRenderer {
           );
         }
       }
-      if (!interactive && this.solidOutlineScene?.resource) {
+      if (this.solidOutlineScene?.resource) {
         for (const batch of this.solidOutlineScene.batches) {
           this.drawBatch(
             batch,
@@ -3704,45 +3940,15 @@ export class WebGlLineRenderer {
             },
           );
         }
-        if (!interactive) {
-          for (const [batchId, candidate] of scene.detailSelections) {
-            const entry = scene.detailResources.get(batchId);
-            if (!entry) {
-              continue;
-            }
-            this.drawBatch(
-              entry.batch,
-              entry.resource,
-              scene.instanceGraph,
-              camera,
-              metrics,
-              {
-                detail: true,
-                firstVertex: 0,
-                instanceIndices: candidate.instanceIndices,
-              },
-            );
-            if (linePassIndex === 0) {
-              metrics.detailBatches += 1;
-            }
-          }
-        }
-      }
-      this.bindClipTexture(
-        this.overviewScene.instanceGraph,
-        camera,
-        this.clipLocations,
-      );
-      if (!interactive) {
-        for (const [batchId, candidate] of this.detailSelections) {
-          const entry = this.detailResources.get(batchId);
+        for (const [batchId, candidate] of scene.detailSelections) {
+          const entry = scene.detailResources.get(batchId);
           if (!entry) {
             continue;
           }
           this.drawBatch(
             entry.batch,
             entry.resource,
-            this.overviewScene.instanceGraph,
+            scene.instanceGraph,
             camera,
             metrics,
             {
@@ -3754,6 +3960,32 @@ export class WebGlLineRenderer {
           if (linePassIndex === 0) {
             metrics.detailBatches += 1;
           }
+        }
+      }
+      this.bindClipTexture(
+        this.overviewScene.instanceGraph,
+        camera,
+        this.clipLocations,
+      );
+      for (const [batchId, candidate] of this.detailSelections) {
+        const entry = this.detailResources.get(batchId);
+        if (!entry) {
+          continue;
+        }
+        this.drawBatch(
+          entry.batch,
+          entry.resource,
+          this.overviewScene.instanceGraph,
+          camera,
+          metrics,
+          {
+            detail: true,
+            firstVertex: 0,
+            instanceIndices: candidate.instanceIndices,
+          },
+        );
+        if (linePassIndex === 0) {
+          metrics.detailBatches += 1;
         }
       }
       if (curveRefinementActive) {
@@ -3773,7 +4005,7 @@ export class WebGlLineRenderer {
         }
       }
     }
-    if (!interactive && this.pointScene?.resource) {
+    if (this.pointScene?.resource) {
       gl.useProgram(this.pointProgram);
       gl.uniformMatrix4fv(
         this.pointProjectionLocation,
@@ -3816,15 +4048,54 @@ export class WebGlLineRenderer {
     }
     gl.bindVertexArray(null);
     if (interactive) {
-      clearOverlayCanvas(this.imageOverlay);
-      clearOverlayCanvas(this.textOverlay);
-      metrics.images = null;
-      metrics.text = null;
+      metrics.images = this.lastImageMetrics;
+      metrics.text = this.lastTextMetrics;
+      metrics.retainedImageOverlay = retainOverlayForCamera(
+        this.imageOverlay,
+        this.imageOverlaySnapshot,
+        this.imageOverlayCamera,
+        camera,
+      );
+      metrics.retainedTextOverlay = retainOverlayForCamera(
+        this.textOverlay,
+        this.textOverlaySnapshot,
+        this.textOverlayCamera,
+        camera,
+      );
     } else {
-      metrics.images =
-        this.imageOverlay?.redraw(camera, this.layerVisibility) ?? null;
-      metrics.text =
-        this.textOverlay?.redraw(camera, this.layerVisibility) ?? null;
+      resetOverlayTransform(this.imageOverlay);
+      resetOverlayTransform(this.textOverlay);
+      const overlayOptions = targetSize
+        ? { size: targetSize }
+        : undefined;
+      this.lastImageMetrics =
+        this.imageOverlay?.redraw(
+          camera,
+          this.layerVisibility,
+          overlayOptions,
+        ) ?? null;
+      this.lastTextMetrics =
+        this.textOverlay?.redraw(
+          camera,
+          this.layerVisibility,
+          overlayOptions,
+        ) ?? null;
+      if (updateOverlaySnapshots) {
+        this.imageOverlaySnapshot = captureOverlaySnapshot(
+          this.imageOverlay,
+          this.imageOverlaySnapshot,
+        );
+        this.textOverlaySnapshot = captureOverlaySnapshot(
+          this.textOverlay,
+          this.textOverlaySnapshot,
+        );
+        this.imageOverlayCamera = this.imageOverlay ? camera : null;
+        this.textOverlayCamera = this.textOverlay ? camera : null;
+      }
+      metrics.images = this.lastImageMetrics;
+      metrics.text = this.lastTextMetrics;
+      metrics.retainedImageOverlay = false;
+      metrics.retainedTextOverlay = false;
     }
     metrics.instanceScratchBytes = this.instanceScratch.byteLength;
     metrics.instanceBufferBytes = this.instanceBufferBytes;
@@ -3866,6 +4137,86 @@ export class WebGlLineRenderer {
     return Object.freeze(metrics);
   }
 
+  maximumRasterSize() {
+    const dimensions = this.gl.getParameter(this.gl.MAX_VIEWPORT_DIMS);
+    return Object.freeze({
+      width: Math.max(1, Number(dimensions?.[0]) || 1),
+      height: Math.max(1, Number(dimensions?.[1]) || 1),
+    });
+  }
+
+  captureRaster(
+    view = this.overviewScene?.camera,
+    {
+      width,
+      height,
+      background = "#ffffff",
+    } = {},
+  ) {
+    const maximum = this.maximumRasterSize();
+    if (
+      !Number.isSafeInteger(width) ||
+      width <= 0 ||
+      width > maximum.width ||
+      !Number.isSafeInteger(height) ||
+      height <= 0 ||
+      height > maximum.height
+    ) {
+      throw new RangeError(
+        `raster output must fit within ${maximum.width} × ${maximum.height}`,
+      );
+    }
+    const metrics = this.redraw(view, {
+      interactive: false,
+      targetSize: { width, height },
+      updateOverlaySnapshots: false,
+    });
+    const pixels = new Uint8Array(width * height * 4);
+    this.gl.finish();
+    this.gl.readPixels(
+      0,
+      0,
+      width,
+      height,
+      this.gl.RGBA,
+      this.gl.UNSIGNED_BYTE,
+      pixels,
+    );
+    const rowBytes = width * 4;
+    const row = new Uint8Array(rowBytes);
+    for (let top = 0, bottom = height - 1; top < bottom; top += 1, bottom -= 1) {
+      const topOffset = top * rowBytes;
+      const bottomOffset = bottom * rowBytes;
+      row.set(pixels.subarray(topOffset, topOffset + rowBytes));
+      pixels.copyWithin(topOffset, bottomOffset, bottomOffset + rowBytes);
+      pixels.set(row, bottomOffset);
+    }
+    const output = this.canvas.ownerDocument.createElement("canvas");
+    output.width = width;
+    output.height = height;
+    const context = output.getContext("2d", { alpha: true });
+    if (!context) {
+      throw new Error("cannot create the raster output canvas");
+    }
+    const imageData = new ImageData(
+      new Uint8ClampedArray(pixels.buffer),
+      width,
+      height,
+    );
+    context.putImageData(imageData, 0, 0);
+    context.globalCompositeOperation = "destination-over";
+    if (this.imageOverlay?.canvas) {
+      context.drawImage(this.imageOverlay.canvas, 0, 0, width, height);
+    }
+    context.fillStyle = background;
+    context.fillRect(0, 0, width, height);
+    context.globalCompositeOperation = "source-over";
+    if (this.textOverlay?.canvas) {
+      context.drawImage(this.textOverlay.canvas, 0, 0, width, height);
+    }
+    return Object.freeze({ canvas: output, metrics });
+  }
+
   dispose() {
     for (const resource of [...this.vertexResources]) {
       this.deleteVertices(resource);
@@ -3890,10 +4241,20 @@ export class WebGlLineRenderer {
     this.curveReplacementHandles.clear();
     this.externalScenes.clear();
     this.supplementalBounds.clear();
+    resetOverlayTransform(this.imageOverlay);
     this.imageOverlay?.dispose();
     this.imageOverlay = null;
+    releaseOverlaySnapshot(this.imageOverlaySnapshot);
+    this.imageOverlaySnapshot = null;
+    resetOverlayTransform(this.textOverlay);
     this.textOverlay?.dispose();
     this.textOverlay = null;
+    releaseOverlaySnapshot(this.textOverlaySnapshot);
+    this.textOverlaySnapshot = null;
+    this.imageOverlayCamera = null;
+    this.textOverlayCamera = null;
+    this.lastImageMetrics = null;
+    this.lastTextMetrics = null;
     this.hatchFillScene = null;
     this.hatchPatternScene = null;
     this.pointScene = null;
@@ -3930,6 +4291,7 @@ export {
   makeCameraFromView,
   patchCurveReplacementMarkers,
   patchLineMaskBuckets,
+  overlayCameraTransform,
   selectInteractiveInstanceIndices,
   makeClipTexturePayload,
 };

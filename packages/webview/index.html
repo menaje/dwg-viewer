@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DWG Scene Cache Viewer</title>
-    <link rel="stylesheet" href="./styles.css?v=1.18.2" />
+    <link rel="stylesheet" href="./styles.css?v=1.18.14" />
   </head>
   <body>
     <main>
@@ -74,6 +74,16 @@
             >
               출력 스타일
             </button>
+            <button
+              id="export-toggle"
+              type="button"
+              disabled
+              aria-expanded="false"
+              aria-controls="export-panel"
+              title="현재 화면 또는 배치를 PNG/PDF로 저장"
+            >
+              PNG/PDF
+            </button>
             <button type="button" data-view-action="zoom-in" disabled aria-label="확대">+</button>
           </nav>
           <label id="font-file-button" class="file-button secondary">
@@ -88,7 +98,7 @@
             재시도
           </button>
           <button id="host-rebuild" class="host-action" type="button" hidden>
-            캐시 다시 만들기
+            다시 그리기
           </button>
           <button id="host-adapter-setup" class="host-action" type="button" hidden>
             변환기 선택·진단
@@ -100,13 +110,35 @@
         <canvas id="drawing"></canvas>
         <canvas id="text-overlay" aria-hidden="true"></canvas>
         <canvas id="review-overlay" aria-hidden="true"></canvas>
+        <div
+          id="window-zoom-guide"
+          class="window-zoom-guide"
+          aria-hidden="true"
+          hidden
+        ></div>
         <nav
           id="review-toolbar"
           class="review-toolbar"
           aria-label="도면 검토 도구"
           hidden
         >
-          <button type="button" data-review-tool="select" aria-pressed="false" title="객체 선택 및 기본 속성">
+          <button id="window-zoom" type="button" data-view-action="window" aria-pressed="false" title="사각 영역을 지정하여 확대">
+            <span class="review-tool-icon" aria-hidden="true">⌗</span>
+            <span class="review-tool-label">영역 확대</span>
+          </button>
+          <button id="view-history-back" type="button" data-view-action="previous" title="이전 화면으로 이동" disabled>
+            <span class="review-tool-icon" aria-hidden="true">↶</span>
+            <span class="review-tool-label">이전 화면</span>
+          </button>
+          <button id="view-history-forward" type="button" data-view-action="next" title="다음 화면으로 이동" disabled>
+            <span class="review-tool-icon" aria-hidden="true">↷</span>
+            <span class="review-tool-label">다음 화면</span>
+          </button>
+          <button id="view-bookmarks-toggle" type="button" data-view-action="bookmarks" aria-expanded="false" aria-controls="view-bookmark-panel" title="화면 북마크 저장 및 관리">
+            <span class="review-tool-icon" aria-hidden="true">☆</span>
+            <span class="review-tool-label">화면 북마크</span>
+          </button>
+          <button class="review-section-start" type="button" data-review-tool="select" aria-pressed="false" title="객체 선택 및 기본 속성">
             <span class="review-tool-icon" aria-hidden="true">⌁</span>
             <span class="review-tool-label">객체 선택</span>
           </button>
@@ -114,9 +146,33 @@
             <span class="review-tool-icon" aria-hidden="true">↔</span>
             <span class="review-tool-label">거리 측정</span>
           </button>
+          <button type="button" data-review-tool="path" aria-pressed="false" title="여러 구간의 누적 거리">
+            <span class="review-tool-icon" aria-hidden="true">∑</span>
+            <span class="review-tool-label">누적 거리</span>
+          </button>
+          <button type="button" data-review-tool="area" aria-pressed="false" title="여러 점으로 면적과 둘레 측정">
+            <span class="review-tool-icon" aria-hidden="true">▱</span>
+            <span class="review-tool-label">면적·둘레</span>
+          </button>
+          <button type="button" data-review-tool="angle" aria-pressed="false" title="세 점으로 각도 측정">
+            <span class="review-tool-icon" aria-hidden="true">∠</span>
+            <span class="review-tool-label">각도 측정</span>
+          </button>
+          <button type="button" data-review-tool="radius" aria-pressed="false" title="호·원·타원의 반지름과 지름">
+            <span class="review-tool-icon" aria-hidden="true">⌀</span>
+            <span class="review-tool-label">반지름·지름</span>
+          </button>
           <button type="button" data-review-tool="coordinate" aria-pressed="false" title="선택한 점의 좌표">
             <span class="review-tool-icon" aria-hidden="true">＋</span>
             <span class="review-tool-label">점 좌표</span>
+          </button>
+          <button type="button" data-review-action="finish" title="현재 다점 측정 완료 (Enter)" hidden>
+            <span class="review-tool-icon" aria-hidden="true">✓</span>
+            <span class="review-tool-label">측정 완료</span>
+          </button>
+          <button type="button" data-review-action="settings" title="측정 단위와 표시 정밀도 설정">
+            <span class="review-tool-icon" aria-hidden="true">⚙</span>
+            <span class="review-tool-label">측정 설정</span>
           </button>
           <button type="button" data-review-action="fit" title="도면 전체 보기">
             <span class="review-tool-icon" aria-hidden="true">□</span>
@@ -133,6 +189,52 @@
             <button type="button" data-review-action="close" aria-label="검토 결과 닫기">×</button>
           </div>
           <div class="review-result-content" data-review-content></div>
+          <div
+            class="review-result-actions"
+            data-review-result-actions
+            hidden
+          >
+            <button type="button" data-review-action="isolate-layer">
+              이 레이어만 보기
+            </button>
+            <button type="button" data-review-action="restore-layers">
+              레이어 복원
+            </button>
+          </div>
+        </aside>
+        <aside
+          id="view-bookmark-panel"
+          class="view-bookmark-panel"
+          aria-label="화면 북마크"
+          hidden
+        >
+          <div class="view-bookmark-heading">
+            <div>
+              <strong>화면 북마크</strong>
+              <span id="view-bookmark-summary"></span>
+            </div>
+            <button
+              id="view-bookmark-close"
+              type="button"
+              aria-label="화면 북마크 닫기"
+            >
+              ×
+            </button>
+          </div>
+          <form id="view-bookmark-form" class="view-bookmark-form">
+            <input
+              id="view-bookmark-name"
+              type="text"
+              maxlength="64"
+              placeholder="이름을 비우면 자동으로 지정"
+              autocomplete="off"
+            />
+            <button type="submit">현재 화면 저장</button>
+          </form>
+          <p id="view-bookmark-empty" class="view-bookmark-empty">
+            현재 모델 또는 배치에 저장된 화면이 없습니다.
+          </p>
+          <ul id="view-bookmark-list" class="view-bookmark-list"></ul>
         </aside>
         <nav
           id="layout-tabs"
@@ -148,12 +250,14 @@
           <input
             id="layer-search"
             type="search"
-            placeholder="레이어 이름 검색"
+            placeholder="레이어 또는 외부참조 검색"
             autocomplete="off"
           />
           <div class="layer-actions">
             <button id="layers-show-all" type="button">전체 켜기</button>
             <button id="layers-hide-all" type="button">전체 끄기</button>
+            <button id="layers-invert" type="button">반전</button>
+            <button id="layers-restore" type="button" disabled>이전 상태</button>
           </div>
           <ul id="layer-list"></ul>
         </aside>
@@ -180,6 +284,92 @@
           </p>
           <ul id="xref-status-list"></ul>
         </aside>
+        <aside id="export-panel" class="export-panel" aria-label="도면 PNG/PDF 출력" hidden>
+          <div class="export-panel-heading">
+            <div>
+              <strong>도면 출력</strong>
+              <span id="export-summary"></span>
+            </div>
+            <button id="export-close" type="button" aria-label="도면 출력 닫기">×</button>
+          </div>
+          <form id="export-form" class="export-form">
+            <label>
+              <span>범위</span>
+              <select id="export-target">
+                <option value="screen">현재 화면</option>
+                <option value="view" selected>현재 탭 전체</option>
+                <option value="layouts">전체 배치</option>
+              </select>
+            </label>
+            <label>
+              <span>형식</span>
+              <select id="export-format">
+                <option value="png">PNG</option>
+                <option value="pdf" selected>PDF</option>
+              </select>
+            </label>
+            <label>
+              <span>용지</span>
+              <select id="export-paper">
+                <option value="drawing" selected>도면 설정 우선</option>
+                <option value="a4">A4</option>
+                <option value="a3">A3</option>
+                <option value="a2">A2</option>
+                <option value="a1">A1</option>
+                <option value="a0">A0</option>
+                <option value="letter">Letter</option>
+                <option value="legal">Legal</option>
+              </select>
+            </label>
+            <label>
+              <span>방향</span>
+              <select id="export-orientation">
+                <option value="drawing" selected>도면 설정</option>
+                <option value="portrait">세로</option>
+                <option value="landscape">가로</option>
+              </select>
+            </label>
+            <label>
+              <span>해상도</span>
+              <select id="export-dpi">
+                <option value="96">96 DPI</option>
+                <option value="150" selected>150 DPI</option>
+                <option value="300">300 DPI</option>
+              </select>
+            </label>
+            <label>
+              <span>축척</span>
+              <select id="export-scale">
+                <option value="drawing" selected>저장 화면 / 배치 전체</option>
+                <option value="fit">용지에 맞춤</option>
+                <option value="1">1:1</option>
+                <option value="2">1:2</option>
+                <option value="5">1:5</option>
+                <option value="10">1:10</option>
+                <option value="20">1:20</option>
+                <option value="50">1:50</option>
+                <option value="100">1:100</option>
+              </select>
+            </label>
+            <label class="export-checkbox">
+              <input id="export-plot-style" type="checkbox" checked />
+              <span>배치 CTB 출력 스타일 적용</span>
+            </label>
+            <p id="export-help">
+              배치에 저장된 용지 크기와 CTB를 먼저 사용합니다. 값이 없을 때만 선택한 용지로 대체합니다.
+            </p>
+            <div id="export-progress" class="export-progress" hidden>
+              <progress id="export-progress-bar" max="1" value="0"></progress>
+              <span id="export-progress-label"></span>
+            </div>
+            <div class="export-actions">
+              <button id="export-start" class="export-primary" type="submit">
+                파일 저장
+              </button>
+              <button id="export-cancel" type="button" hidden>취소</button>
+            </div>
+          </form>
+        </aside>
         <div class="empty-state">
           <strong>생성된 DWG 캐시를 여기에 놓으세요.</strong>
           <span>원본 DWG는 전송하지 않으며 브라우저가 필요한 범위만 읽습니다.</span>
@@ -195,6 +385,6 @@
         }
       }
     </script>
-    <script type="module" src="./src/main.mjs?v=1.18.2"></script>
+    <script type="module" src="./src/main.mjs?v=1.18.14"></script>
   </body>
 </html>

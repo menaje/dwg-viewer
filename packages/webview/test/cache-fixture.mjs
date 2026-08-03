@@ -1,6 +1,7 @@
 import {
   ARC_RECORD_SIZE,
   CACHE_HEADER_FLAG_PREVIEW,
+  CACHE_VERSION_MINOR,
   CIRCLE_RECORD_SIZE,
   DIRECTORY_ENTRY_SIZE,
   DRAW_ORDER_ENTRY_RECORD_SIZE,
@@ -21,13 +22,18 @@ import {
   IMAGE_ENTITY_RECORD_SIZE,
   INSERT_CLIP_RECORD_SIZE,
   INSERT_CLIP_VERTEX_RECORD_SIZE,
-  LEGACY_GPU_LINE_VERTEX_RECORD_SIZE,
   LAYOUT_RECORD_SIZE,
+  LINE_RECORD_SIZE,
   LINETYPE_DASH_RECORD_SIZE,
   LINETYPE_RECORD_SIZE,
   POINT_ENTITY_RECORD_SIZE,
+  POLYLINE_HEADER_RECORD_SIZE,
+  POLYLINE_VERTEX_RECORD_SIZE,
   SectionKind,
   SOLID_ENTITY_RECORD_SIZE,
+  SPLINE_HEADER_RECORD_SIZE,
+  SPLINE_POINT_RECORD_SIZE,
+  SPLINE_SCALAR_RECORD_SIZE,
   TEXT_COLUMN_HEIGHT_RECORD_SIZE,
   TEXT_ENTITY_RECORD_SIZE,
   TEXT_STYLE_RECORD_SIZE,
@@ -42,6 +48,16 @@ const encoder = new TextEncoder();
 
 function alignUp(value, alignment = 8) {
   return Math.ceil(value / alignment) * alignment;
+}
+
+function makeEmptySection(kind, recordSize) {
+  return {
+    kind,
+    recordSize,
+    recordCount: 0,
+    flags: 0,
+    buffer: new ArrayBuffer(0),
+  };
 }
 
 function writeU64(view, offset, value) {
@@ -115,12 +131,10 @@ function makeEllipseSection() {
 
 function makeDrawingSection(
   rawDisplaySettings = 0,
-  minorVersion = 2,
   globalLinetypeScale = 1,
   savedModelView = null,
 ) {
-  const recordSize =
-    minorVersion >= 17 ? 160 : minorVersion >= 15 ? 104 : 80;
+  const recordSize = 160;
   const buffer = new ArrayBuffer(recordSize);
   const view = new DataView(buffer);
   view.setUint32(0, 1032, true);
@@ -129,12 +143,10 @@ function makeDrawingSection(
   writeU64(view, 24, 5);
   writeVec3(view, 32, [0, 0, 0]);
   writeVec3(view, 56, [200, 200, 0]);
-  if (minorVersion >= 15) {
-    view.setFloat64(80, globalLinetypeScale, true);
-    view.setFloat64(88, 1, true);
-    view.setUint32(96, 1, true);
-  }
-  if (minorVersion >= 17 && savedModelView) {
+  view.setFloat64(80, globalLinetypeScale, true);
+  view.setFloat64(88, 1, true);
+  view.setUint32(96, 1, true);
+  if (savedModelView) {
     writeVec3(view, 104, savedModelView.center);
     view.setFloat64(128, savedModelView.height, true);
     view.setFloat64(136, savedModelView.width, true);
@@ -253,7 +265,7 @@ function makeLayerSection() {
   };
 }
 
-function makeBlockSection(minorVersion) {
+function makeBlockSection() {
   const rows = [
     {
       handle: 100,
@@ -276,7 +288,7 @@ function makeBlockSection(minorVersion) {
   ];
   const encodedRows = rows.map((row) => ({
     name: encoder.encode(row.name),
-    xrefPath: encoder.encode(minorVersion >= 12 ? row.xrefPath : ""),
+    xrefPath: encoder.encode(row.xrefPath),
   }));
   const stringOffset = 16 + rows.length * 64;
   const stringBytes = encodedRows.reduce(
@@ -303,20 +315,18 @@ function makeBlockSection(minorVersion) {
     stringCursor += encoded.name.byteLength;
     view.setUint32(offset + 16, 1, true);
     view.setUint32(offset + 20, row.handle === 100 ? 0 : 1, true);
-    if (minorVersion >= 12 && row.xrefPath) {
+    if (row.xrefPath) {
       view.setUint32(offset + 24, 1 << 2, true);
     }
     writeVec3(view, offset + 32, row.basePoint);
-    if (minorVersion >= 12) {
-      view.setUint32(offset + 56, stringCursor, true);
-      view.setUint32(offset + 60, encoded.xrefPath.byteLength, true);
-      new Uint8Array(
-        buffer,
-        stringOffset + stringCursor,
-        encoded.xrefPath.byteLength,
-      ).set(encoded.xrefPath);
-      stringCursor += encoded.xrefPath.byteLength;
-    }
+    view.setUint32(offset + 56, stringCursor, true);
+    view.setUint32(offset + 60, encoded.xrefPath.byteLength, true);
+    new Uint8Array(
+      buffer,
+      stringOffset + stringCursor,
+      encoded.xrefPath.byteLength,
+    ).set(encoded.xrefPath);
+    stringCursor += encoded.xrefPath.byteLength;
   });
   return {
     kind: SectionKind.Blocks,
@@ -1125,11 +1135,8 @@ function writeVertex(view, offset, position, handle) {
   view.setUint32(offset + 20, handle, true);
 }
 
-function makeVertexSection(minorVersion) {
-  const recordSize =
-    minorVersion >= 15
-      ? GPU_LINE_VERTEX_RECORD_SIZE
-      : LEGACY_GPU_LINE_VERTEX_RECORD_SIZE;
+function makeVertexSection() {
+  const recordSize = GPU_LINE_VERTEX_RECORD_SIZE;
   const buffer = new ArrayBuffer(recordSize * 6);
   const view = new DataView(buffer);
   const rows = [
@@ -1143,10 +1150,8 @@ function makeVertexSection(minorVersion) {
   rows.forEach(([position, handle], index) => {
     const offset = index * recordSize;
     writeVertex(view, offset, position, handle);
-    if (minorVersion >= 15) {
-      view.setUint32(offset + 28, 2 << 5, true);
-      view.setFloat32(offset + 32, index % 2, true);
-    }
+    view.setUint32(offset + 28, 2 << 5, true);
+    view.setFloat32(offset + 32, index % 2, true);
   });
   return {
     kind: SectionKind.GpuLineVertices,
@@ -1459,10 +1464,8 @@ function makeInsertClipVertexSection() {
 }
 
 export function makeFixtureCache({
-  minorVersion = 2,
+  minorVersion = CACHE_VERSION_MINOR,
   preview = false,
-  includeText = minorVersion >= 4,
-  includeHatch = minorVersion >= 6,
   faceRecordCount = 5,
   wipeoutFrame = 1,
   lineWeightDisplay = false,
@@ -1475,77 +1478,71 @@ export function makeFixtureCache({
 } = {}) {
   const sections = [
     makeDrawingSection(
-      minorVersion >= 14
-        ? wipeoutFrame |
-            (lineWeightDisplay ? 1 << 2 : 0) |
-            (fillMode ? 1 << 3 : 0) |
-            (modelSpaceActive ? 1 << 4 : 0)
-        : minorVersion >= 10
-          ? wipeoutFrame
-          : 0,
-      minorVersion,
+      wipeoutFrame |
+        (lineWeightDisplay ? 1 << 2 : 0) |
+        (fillMode ? 1 << 3 : 0) |
+        (modelSpaceActive ? 1 << 4 : 0),
       globalLinetypeScale,
       savedModelView,
     ),
     makeLayerSection(),
-    makeBlockSection(minorVersion),
+    makeBlockSection(),
+    makeTextStyleSection(),
+    makeEmptySection(SectionKind.Lines, LINE_RECORD_SIZE),
     ...(includeReviewCurves
-      ? [makeArcSection(), makeCircleSection(), makeEllipseSection()]
-      : []),
-    ...(includeText ? [makeTextStyleSection()] : []),
+      ? [makeArcSection(), makeCircleSection()]
+      : [
+          makeEmptySection(SectionKind.Arcs, ARC_RECORD_SIZE),
+          makeEmptySection(SectionKind.Circles, CIRCLE_RECORD_SIZE),
+        ]),
     makeInsertSection(),
-    ...(includeText
-      ? [makeTextEntitySection(), makeTextColumnHeightSection()]
-      : []),
+    makeEmptySection(
+      SectionKind.PolylineHeaders,
+      POLYLINE_HEADER_RECORD_SIZE,
+    ),
+    makeEmptySection(
+      SectionKind.PolylineVertices,
+      POLYLINE_VERTEX_RECORD_SIZE,
+    ),
+    ...(includeReviewCurves
+      ? [makeEllipseSection()]
+      : [makeEmptySection(SectionKind.Ellipses, ELLIPSE_RECORD_SIZE)]),
+    makeEmptySection(SectionKind.SplineHeaders, SPLINE_HEADER_RECORD_SIZE),
+    makeEmptySection(SectionKind.SplineKnots, SPLINE_SCALAR_RECORD_SIZE),
+    makeEmptySection(SectionKind.SplineWeights, SPLINE_SCALAR_RECORD_SIZE),
+    makeEmptySection(
+      SectionKind.SplineControlPoints,
+      SPLINE_POINT_RECORD_SIZE,
+    ),
+    makeEmptySection(SectionKind.SplineFitPoints, SPLINE_POINT_RECORD_SIZE),
+    makeTextEntitySection(),
+    makeTextColumnHeightSection(),
     makeBatchSection(),
-    makeVertexSection(minorVersion),
-    ...(includeHatch
-      ? [
-          makeHatchEntitySection(),
-          makeHatchLoopSection(),
-          makeHatchVertexSection(),
-          makeHatchGradientColorSection(),
-          makeHatchSeedPointSection(),
-          ...(minorVersion >= 7
-            ? [
-                makeHatchPatternLineSection(),
-                makeHatchPatternDashSection(),
-              ]
-            : []),
-        ]
-      : []),
-    ...(minorVersion >= 8
-      ? [makePointEntitySection(), makeSolidEntitySection()]
-      : []),
-    ...(minorVersion >= 9
-      ? [makeFaceEntitySection(faceRecordCount)]
-      : []),
-    ...(minorVersion >= 10
-      ? [
-          makeWipeoutEntitySection(wipeoutRecordCount),
-          makeWipeoutClipVertexSection(),
-        ]
-      : []),
-    ...(minorVersion >= 11
-      ? [makeDrawOrderTableSection(), makeDrawOrderEntrySection()]
-      : []),
-    ...(minorVersion >= 13
-      ? [makeInsertClipSection(), makeInsertClipVertexSection()]
-      : []),
-    ...(minorVersion >= 15
-      ? [makeLinetypeSection(), makeLinetypeDashSection()]
-      : []),
-    ...(minorVersion >= 16
-      ? [
-          makeLayoutSection(),
-          makeViewportSection(),
-          makeViewportFrozenLayerSection(),
-          makeViewportClipVertexSection(),
-        ]
-      : []),
-    ...(minorVersion >= 18
-      ? [makeImageEntitySection(), makeImageClipVertexSection()]
-      : []),
+    makeVertexSection(),
+    makeHatchEntitySection(),
+    makeHatchLoopSection(),
+    makeHatchVertexSection(),
+    makeHatchGradientColorSection(),
+    makeHatchSeedPointSection(),
+    makeHatchPatternLineSection(),
+    makeHatchPatternDashSection(),
+    makePointEntitySection(),
+    makeSolidEntitySection(),
+    makeFaceEntitySection(faceRecordCount),
+    makeWipeoutEntitySection(wipeoutRecordCount),
+    makeWipeoutClipVertexSection(),
+    makeDrawOrderTableSection(),
+    makeDrawOrderEntrySection(),
+    makeInsertClipSection(),
+    makeInsertClipVertexSection(),
+    makeLinetypeSection(),
+    makeLinetypeDashSection(),
+    makeLayoutSection(),
+    makeViewportSection(),
+    makeViewportFrozenLayerSection(),
+    makeViewportClipVertexSection(),
+    makeImageEntitySection(),
+    makeImageClipVertexSection(),
   ];
   const directoryOffset = HEADER_SIZE;
   const directoryLength = sections.length * DIRECTORY_ENTRY_SIZE;

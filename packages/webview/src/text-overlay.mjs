@@ -1,6 +1,6 @@
 import {
   TextEntityKind,
-} from "./scene-cache.mjs";
+} from "./scene-cache.mjs?v=1.18.8";
 import {
   decodeCadColor,
   decodeCadOpacity,
@@ -647,6 +647,64 @@ function worldPointToScreen(point, camera, width, height) {
   ];
 }
 
+function screenPointInPolygon(point, polygon) {
+  let inside = false;
+  let previous = polygon.at(-1);
+  for (const current of polygon) {
+    const crosses =
+      (current[1] > point[1]) !== (previous[1] > point[1]) &&
+      point[0] <
+        ((previous[0] - current[0]) * (point[1] - current[1])) /
+          (previous[1] - current[1]) +
+          current[0];
+    if (crosses) {
+      inside = !inside;
+    }
+    previous = current;
+  }
+  return inside;
+}
+
+function screenSegmentDistance(point, first, last) {
+  const dx = last[0] - first[0];
+  const dy = last[1] - first[1];
+  const lengthSquared = dx * dx + dy * dy;
+  const parameter =
+    lengthSquared <= Number.EPSILON
+      ? 0
+      : Math.max(
+          0,
+          Math.min(
+            1,
+            ((point[0] - first[0]) * dx +
+              (point[1] - first[1]) * dy) /
+              lengthSquared,
+          ),
+        );
+  return Math.hypot(
+    point[0] - (first[0] + dx * parameter),
+    point[1] - (first[1] + dy * parameter),
+  );
+}
+
+function screenPolygonDistance(point, polygon) {
+  if (screenPointInPolygon(point, polygon)) {
+    return 0;
+  }
+  let distance = Infinity;
+  for (let index = 0; index < polygon.length; index += 1) {
+    distance = Math.min(
+      distance,
+      screenSegmentDistance(
+        point,
+        polygon[index],
+        polygon[(index + 1) % polygon.length],
+      ),
+    );
+  }
+  return distance;
+}
+
 export class CanvasTextOverlay {
   constructor(
     canvas,
@@ -666,6 +724,9 @@ export class CanvasTextOverlay {
       palette = DEFAULT_ACI_PALETTE,
       drawingBackground = DEFAULT_DRAWING_BACKGROUND,
       onInlineFonts = null,
+      sourceId = "root",
+      sourceLabel = "현재 도면",
+      hitTestingEnabled = false,
     },
   ) {
     const context = canvas.getContext("2d", { alpha: true });
@@ -697,6 +758,10 @@ export class CanvasTextOverlay {
         : DEFAULT_DRAWING_BACKGROUND;
     this.onInlineFonts =
       typeof onInlineFonts === "function" ? onInlineFonts : null;
+    this.sourceId = String(sourceId || "root");
+    this.sourceLabel = String(sourceLabel || "현재 도면");
+    this.hitTestingEnabled = Boolean(hitTestingEnabled);
+    this.hitOccurrences = [];
     this.reportedInlineFontKeys = new Set();
     this.configuredMaskOrder = maskOrder?.enabled ? maskOrder : null;
     this.maskOrder = this.configuredMaskOrder;
@@ -746,10 +811,170 @@ export class CanvasTextOverlay {
     this.palette = new Uint8Array(palette);
   }
 
-  resize() {
+  setHitTestingEnabled(enabled) {
+    this.hitTestingEnabled = Boolean(enabled);
+    if (!this.hitTestingEnabled) {
+      this.hitOccurrences = [];
+    }
+    return this.hitTestingEnabled;
+  }
+
+  findTextOccurrence(handle) {
+    const normalized = String(handle ?? "")
+      .trim()
+      .replace(/^0x/iu, "");
+    if (!/^[0-9a-f]{1,16}$/iu.test(normalized)) {
+      return null;
+    }
+    const expected = BigInt(`0x${normalized}`);
+    const sourceCount = Math.min(
+      this.textEntities.length,
+      this.maximumSourceTexts,
+    );
+    for (let textIndex = 0; textIndex < sourceCount; textIndex += 1) {
+      const record =
+        typeof this.textEntities.readDisplayRecord === "function"
+          ? this.textEntities.readDisplayRecord(
+              textIndex,
+              this.displayRecord,
+            )
+          : this.textEntities.get(textIndex);
+      if (record.handle !== expected) {
+        continue;
+      }
+      const ownerBlockIndex = this.blockIndexByHandle.get(
+        record.ownerHandle,
+      );
+      const instances = instancesForText(
+        record,
+        ownerBlockIndex,
+        this.instanceGraph,
+      );
+      if (instances.count === 0) {
+        return null;
+      }
+      const localMatrix = cadTextEntityMatrix(record, record.style);
+      const instanceMatrix =
+        instances.count === 1 && instances === IDENTITY_INSTANCES
+          ? instances.data
+          : instances.data.subarray(0, 16);
+      const worldMatrix = multiplyMat4(instanceMatrix, localMatrix);
+      const point = [
+        worldMatrix[12],
+        worldMatrix[13],
+        worldMatrix[14],
+      ];
+      const worldHeight = Math.max(
+        Math.hypot(worldMatrix[0], worldMatrix[1], worldMatrix[2]),
+        Math.hypot(worldMatrix[4], worldMatrix[5], worldMatrix[6]),
+      );
+      if (
+        !point.every(Number.isFinite) ||
+        !Number.isFinite(worldHeight) ||
+        worldHeight <= 0
+      ) {
+        return null;
+      }
+      return Object.freeze({
+        point: Object.freeze(point),
+        worldHeight,
+        kind: record.kind,
+      });
+    }
+    return null;
+  }
+
+  hitTest(
+    x,
+    y,
+    {
+      snapKinds = ["entity"],
+      tolerancePixels = 6,
+    } = {},
+  ) {
+    const enabled = new Set(snapKinds);
+    if (
+      (!enabled.has("entity") && !enabled.has("insertion")) ||
+      !Number.isFinite(x) ||
+      !Number.isFinite(y)
+    ) {
+      return null;
+    }
+    const scaleX =
+      Math.max(this.canvas.width, 1) /
+      Math.max(this.canvas.clientWidth, 1);
+    const scaleY =
+      Math.max(this.canvas.height, 1) /
+      Math.max(this.canvas.clientHeight, 1);
+    const point = [x * scaleX, y * scaleY];
+    const tolerance =
+      Math.max(scaleX, scaleY) * Math.max(tolerancePixels, 0);
+    let best = null;
+    for (
+      let index = this.hitOccurrences.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const occurrence = this.hitOccurrences[index];
+      const deviceDistance = screenPolygonDistance(
+        point,
+        occurrence.screenPolygon,
+      );
+      if (deviceDistance > tolerance) {
+        continue;
+      }
+      const distancePixels =
+        deviceDistance / Math.max(scaleX, scaleY);
+      if (best && distancePixels >= best.distancePixels) {
+        continue;
+      }
+      const fullRecord =
+        typeof this.textEntities.get === "function"
+          ? this.textEntities.get(occurrence.textIndex)
+          : Object.freeze({
+              ...occurrence.record,
+              value:
+                typeof this.textEntities.readValue === "function"
+                  ? this.textEntities.readValue(occurrence.textIndex)
+                  : "",
+              tag: "",
+              prompt: "",
+            });
+      const names = ["TEXT", "MTEXT", "ATTDEF", "ATTRIB"];
+      best = Object.freeze({
+        kind: enabled.has("entity") ? "entity" : "insertion",
+        displayPoint: occurrence.displayPoint,
+        measurementPoint: occurrence.measurementPoint,
+        displayPolygon: occurrence.displayPolygon,
+        measurementPolygon: occurrence.measurementPolygon,
+        distancePixels,
+        coordinateSpace: occurrence.coordinateSpace,
+        handle: fullRecord.handle,
+        layerIndex: occurrence.layerIndex,
+        layerName: this.layers[occurrence.layerIndex]?.name ?? "",
+        sourceKind: null,
+        sourceKindName: names[fullRecord.kind] ?? "문자",
+        entityType: "text",
+        entityRecord: fullRecord,
+        color: fullRecord.color,
+        lineWeight: fullRecord.lineWeight,
+        linetypeCode: fullRecord.linetypeCode,
+        approximated: false,
+        sourceId: this.sourceId,
+        sourceLabel: this.sourceLabel,
+      });
+    }
+    return best;
+  }
+
+  resize(size = null) {
     const ratio = Math.min(globalThis.devicePixelRatio ?? 1, 2);
-    const width = Math.max(1, Math.round(this.canvas.clientWidth * ratio));
-    const height = Math.max(1, Math.round(this.canvas.clientHeight * ratio));
+    const width = size
+      ? size.width
+      : Math.max(1, Math.round(this.canvas.clientWidth * ratio));
+    const height = size
+      ? size.height
+      : Math.max(1, Math.round(this.canvas.clientHeight * ratio));
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width;
       this.canvas.height = height;
@@ -757,8 +982,8 @@ export class CanvasTextOverlay {
     return { width, height };
   }
 
-  redraw(camera, layerVisibility, { clear = true } = {}) {
-    const { width, height } = this.resize();
+  redraw(camera, layerVisibility, { clear = true, size = null } = {}) {
+    const { width, height } = this.resize(size);
     const context = this.context;
     context.setTransform(1, 0, 0, 1, 0, 0);
     if (clear) {
@@ -783,6 +1008,7 @@ export class CanvasTextOverlay {
       xclipOperations: 0,
       truncated: false,
     };
+    this.hitOccurrences = [];
     const screenMasks = this.#screenMasks(
       camera,
       width,
@@ -812,9 +1038,9 @@ export class CanvasTextOverlay {
           : this.textEntities.get(textIndex);
       metrics.visitedSourceTexts += 1;
       if (
-        record.kind === TextEntityKind.AttributeDefinition ||
         (record.commonFlags & 1) !== 0 ||
-        (record.kind === TextEntityKind.Attribute &&
+        ((record.kind === TextEntityKind.AttributeDefinition ||
+          record.kind === TextEntityKind.Attribute) &&
           (record.sourceFlags & 1) !== 0)
       ) {
         continue;
@@ -945,7 +1171,7 @@ export class CanvasTextOverlay {
           height,
           metrics,
         );
-        this.#drawOccurrence(
+        const localBounds = this.#drawOccurrence(
           record,
           richLines,
           worldMatrix,
@@ -958,6 +1184,86 @@ export class CanvasTextOverlay {
           byBlockColor,
           byBlockOpacity,
         );
+        if (this.hitTestingEnabled && localBounds) {
+          const localPolygon = [
+            [localBounds.left, localBounds.top, 0],
+            [localBounds.right, localBounds.top, 0],
+            [localBounds.right, localBounds.bottom, 0],
+            [localBounds.left, localBounds.bottom, 0],
+          ];
+          const displayPolygon = localPolygon.map((point) =>
+            transformPoint(worldMatrix, point),
+          );
+          const measurementData =
+            instances.measurementData ?? instances.data;
+          const measurementInstanceMatrix =
+            instances.count === 1 && instances === IDENTITY_INSTANCES
+              ? measurementData
+              : measurementData.subarray(
+                  instanceOffset,
+                  instanceOffset + 16,
+                );
+          const measurementMatrix = multiplyMat4(
+            measurementInstanceMatrix,
+            localMatrix,
+          );
+          const measurementPolygon = localPolygon.map((point) =>
+            transformPoint(measurementMatrix, point),
+          );
+          const screenPolygon = displayPolygon.map((point) =>
+            worldPointToScreen(point, camera, width, height),
+          );
+          if (
+            screenPolygon.flat().every(Number.isFinite) &&
+            displayPolygon.flat().every(Number.isFinite) &&
+            measurementPolygon.flat().every(Number.isFinite)
+          ) {
+            this.hitOccurrences.push(
+              Object.freeze({
+                textIndex,
+                layerIndex,
+                record: Object.freeze({
+                  handle: record.handle,
+                  ownerHandle: record.ownerHandle,
+                  kind: record.kind,
+                  color: record.color,
+                  lineWeight: record.lineWeight,
+                  linetypeCode: record.linetypeCode,
+                  height: record.height,
+                  rotation: record.rotation,
+                  style: record.style,
+                }),
+                displayPoint: Object.freeze([
+                  worldMatrix[12],
+                  worldMatrix[13],
+                  worldMatrix[14],
+                ]),
+                measurementPoint: Object.freeze([
+                  measurementMatrix[12],
+                  measurementMatrix[13],
+                  measurementMatrix[14],
+                ]),
+                displayPolygon: Object.freeze(
+                  displayPolygon.map((point) =>
+                    Object.freeze(point),
+                  ),
+                ),
+                measurementPolygon: Object.freeze(
+                  measurementPolygon.map((point) =>
+                    Object.freeze(point),
+                  ),
+                ),
+                screenPolygon: Object.freeze(
+                  screenPolygon.map((point) =>
+                    Object.freeze(point),
+                  ),
+                ),
+                coordinateSpace:
+                  instances.coordinateSpaceIds?.[instanceIndex] ?? 1,
+              }),
+            );
+          }
+        }
         if (maskClipped) {
           context.restore();
         }
@@ -2064,6 +2370,18 @@ export class CanvasTextOverlay {
         }
       }
     }
+    const selectionWidth = Math.max(
+      blockWidth,
+      textAlignmentWidth,
+      0.35,
+    );
+    const selectionHeight = Math.max(blockHeight, 1);
+    return Object.freeze({
+      left: blockLeft,
+      right: blockLeft + selectionWidth,
+      top: verticalOffset + 1.15,
+      bottom: verticalOffset + 1 - selectionHeight,
+    });
   }
 
   dispose() {
@@ -2078,6 +2396,7 @@ export class CompositeTextOverlay {
     this.canvas = canvas;
     this.overlays = [];
     this.maskVisibility = true;
+    this.hitTestingEnabled = false;
     this.palette = new Uint8Array(DEFAULT_ACI_PALETTE);
   }
 
@@ -2087,6 +2406,7 @@ export class CompositeTextOverlay {
     }
     overlay.setMaskVisibility?.(this.maskVisibility);
     overlay.setPalette?.(this.palette);
+    overlay.setHitTestingEnabled?.(this.hitTestingEnabled);
     if (first) {
       this.overlays.unshift(overlay);
     } else {
@@ -2113,7 +2433,39 @@ export class CompositeTextOverlay {
     }
   }
 
-  redraw(camera, layerVisibility) {
+  setHitTestingEnabled(enabled) {
+    this.hitTestingEnabled = Boolean(enabled);
+    for (const overlay of this.overlays) {
+      overlay.setHitTestingEnabled?.(this.hitTestingEnabled);
+    }
+    return this.hitTestingEnabled;
+  }
+
+  findTextOccurrence(handle) {
+    for (const overlay of this.overlays) {
+      const occurrence = overlay.findTextOccurrence?.(handle);
+      if (occurrence) {
+        return occurrence;
+      }
+    }
+    return null;
+  }
+
+  hitTest(x, y, options) {
+    let best = null;
+    for (let index = this.overlays.length - 1; index >= 0; index -= 1) {
+      const candidate = this.overlays[index].hitTest?.(x, y, options);
+      if (
+        candidate &&
+        (!best || candidate.distancePixels < best.distancePixels)
+      ) {
+        best = candidate;
+      }
+    }
+    return best;
+  }
+
+  redraw(camera, layerVisibility, { size = null } = {}) {
     const metrics = {
       sourceTexts: 0,
       visitedSourceTexts: 0,
@@ -2131,6 +2483,10 @@ export class CompositeTextOverlay {
       truncated: false,
     };
     if (this.overlays.length === 0) {
+      if (size) {
+        this.canvas.width = size.width;
+        this.canvas.height = size.height;
+      }
       const context = this.canvas.getContext("2d", { alpha: true });
       context?.clearRect(0, 0, this.canvas.width, this.canvas.height);
       return Object.freeze(metrics);
@@ -2138,6 +2494,7 @@ export class CompositeTextOverlay {
     this.overlays.forEach((overlay, index) => {
       const current = overlay.redraw(camera, layerVisibility, {
         clear: index === 0,
+        size,
       });
       for (const name of [
         "sourceTexts",

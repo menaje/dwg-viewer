@@ -496,8 +496,16 @@ export class ComplexLinetypeOverlay {
     this.palette = new Uint8Array(palette);
   }
 
-  redraw(camera, layerVisibility, { clear = false } = {}) {
+  redraw(camera, layerVisibility, { clear = false, size = null } = {}) {
     const context = this.context;
+    if (
+      size &&
+      (this.canvas.width !== size.width ||
+        this.canvas.height !== size.height)
+    ) {
+      this.canvas.width = size.width;
+      this.canvas.height = size.height;
+    }
     const width = this.canvas.width;
     const height = this.canvas.height;
     if (clear) {

@@ -1,4 +1,6 @@
-use std::fs;
+use std::collections::BTreeSet;
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -8,13 +10,16 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::duration_ms;
-use crate::engine::{ACADRUST_ENGINE_ID, ACADRUST_ENGINE_LICENSE, ACADRUST_ENGINE_VERSION};
-use crate::scene_cache::validate_scene_cache;
-
 pub const ADAPTER_PROTOCOL: &str = "dwg-engine-adapter/1";
 pub const DEFAULT_MEASURED_RUNS: usize = 3;
 pub const DEFAULT_WARMUP_RUNS: usize = 1;
 
+const CACHE_MAGIC: [u8; 8] = *b"DWGSCN1\0";
+const CACHE_VERSION_MAJOR: u16 = 1;
+const CACHE_VERSION_MINOR: u16 = 18;
+const CACHE_HEADER_SIZE: usize = 64;
+const CACHE_DIRECTORY_ENTRY_SIZE: usize = 40;
+const CACHE_SECTION_COUNT: usize = 44;
 const MAX_MEASURED_RUNS: usize = 20;
 const MAX_WARMUP_RUNS: usize = 10;
 const MAX_IDENTITY_BYTES: usize = 128;
@@ -45,7 +50,7 @@ impl BenchmarkScope {
 
 #[derive(Debug, Clone)]
 pub struct BenchmarkOptions {
-    pub adapter_executable: Option<PathBuf>,
+    pub adapter_executable: PathBuf,
     pub engine_id: String,
     pub engine_version: Option<String>,
     pub engine_license: Option<String>,
@@ -53,21 +58,6 @@ pub struct BenchmarkOptions {
     pub warmup_runs: usize,
     pub scope: BenchmarkScope,
     pub include_input_name: bool,
-}
-
-impl Default for BenchmarkOptions {
-    fn default() -> Self {
-        Self {
-            adapter_executable: None,
-            engine_id: ACADRUST_ENGINE_ID.to_owned(),
-            engine_version: Some(ACADRUST_ENGINE_VERSION.to_owned()),
-            engine_license: Some(ACADRUST_ENGINE_LICENSE.to_owned()),
-            measured_runs: DEFAULT_MEASURED_RUNS,
-            warmup_runs: DEFAULT_WARMUP_RUNS,
-            scope: BenchmarkScope::All,
-            include_input_name: false,
-        }
-    }
 }
 
 #[derive(Debug, Serialize)]
@@ -99,7 +89,6 @@ pub struct BenchmarkEngine {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdapterKind {
-    BuiltIn,
     External,
 }
 
@@ -415,9 +404,6 @@ fn validate_options(options: &BenchmarkOptions) -> Result<()> {
     if let Some(license) = &options.engine_license {
         validate_identity("engine license", license, false)?;
     }
-    if options.adapter_executable.is_none() && cfg!(debug_assertions) {
-        anyhow::bail!("the built-in adapter benchmark requires a release build");
-    }
     Ok(())
 }
 
@@ -439,19 +425,16 @@ fn validate_identity(label: &str, value: &str, restricted: bool) -> Result<()> {
 }
 
 fn resolve_adapter(options: &BenchmarkOptions) -> Result<Adapter> {
-    let (executable, kind) = match &options.adapter_executable {
-        Some(path) => (path.clone(), AdapterKind::External),
-        None => (
-            std::env::current_exe().context("cannot locate the current benchmark executable")?,
-            AdapterKind::BuiltIn,
-        ),
-    };
+    let executable = options.adapter_executable.clone();
     let metadata = fs::metadata(&executable)
         .with_context(|| format!("cannot read adapter metadata: {}", executable.display()))?;
     if !metadata.is_file() {
         anyhow::bail!("adapter is not a file: {}", executable.display());
     }
-    Ok(Adapter { executable, kind })
+    Ok(Adapter {
+        executable,
+        kind: AdapterKind::External,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -519,14 +502,8 @@ fn run_adapter(
         if !cache_metadata.is_file() {
             anyhow::bail!("convert adapter output is not a regular cache file");
         }
-        let validation =
-            validate_scene_cache(path).context("convert adapter created an invalid scene cache")?;
-        if validation.source_size != input_size {
-            anyhow::bail!(
-                "converted cache source size mismatch: expected {input_size}, recorded {}",
-                validation.source_size
-            );
-        }
+        validate_scene_cache_v118(path, input_size)
+            .context("convert adapter created an invalid Scene Cache v1.18")?;
         Some(cache_metadata.len())
     } else {
         None
@@ -604,6 +581,17 @@ fn parse_observation(
         }
         if report.pointer("/cache/validated").and_then(Value::as_bool) != Some(true) {
             anyhow::bail!("adapter report cache.validated must be true");
+        }
+        if report
+            .pointer("/cache/format_major")
+            .and_then(Value::as_u64)
+            != Some(u64::from(CACHE_VERSION_MAJOR))
+            || report
+                .pointer("/cache/format_minor")
+                .and_then(Value::as_u64)
+                != Some(u64::from(CACHE_VERSION_MINOR))
+        {
+            anyhow::bail!("adapter report must identify Scene Cache v1.18");
         }
     }
 
@@ -803,6 +791,153 @@ fn evaluate_gate(observed: Option<MetricSummary>, target: u64, hard_limit: u64) 
     }
 }
 
+fn validate_scene_cache_v118(path: &Path, expected_source_size: u64) -> Result<()> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("cannot read cache metadata: {}", path.display()))?;
+    if !metadata.is_file() {
+        anyhow::bail!("cache is not a regular file");
+    }
+
+    let mut file =
+        File::open(path).with_context(|| format!("cannot open cache: {}", path.display()))?;
+    let mut header = [0_u8; CACHE_HEADER_SIZE];
+    file.read_exact(&mut header)
+        .context("cannot read Scene Cache header")?;
+    if header[..CACHE_MAGIC.len()] != CACHE_MAGIC {
+        anyhow::bail!("invalid Scene Cache magic");
+    }
+    let major = read_u16(&header, 8);
+    let minor = read_u16(&header, 10);
+    if major != CACHE_VERSION_MAJOR || minor != CACHE_VERSION_MINOR {
+        anyhow::bail!(
+            "unsupported Scene Cache version {major}.{minor}; expected \
+             {CACHE_VERSION_MAJOR}.{CACHE_VERSION_MINOR}"
+        );
+    }
+    if read_u32(&header, 12) != CACHE_HEADER_SIZE as u32 {
+        anyhow::bail!("unexpected Scene Cache header size");
+    }
+    let section_count = usize::try_from(read_u32(&header, 16))
+        .context("Scene Cache section count exceeds usize")?;
+    if section_count != CACHE_SECTION_COUNT {
+        anyhow::bail!(
+            "Scene Cache v1.18 must contain {CACHE_SECTION_COUNT} sections, found {section_count}"
+        );
+    }
+    if read_u32(&header, 20) != CACHE_DIRECTORY_ENTRY_SIZE as u32 {
+        anyhow::bail!("unexpected Scene Cache directory-entry size");
+    }
+    if read_u32(&header, 24) != 0 || read_u32(&header, 28) != 0 {
+        anyhow::bail!("benchmark conversion cache must be canonical");
+    }
+
+    let directory_offset = read_u64(&header, 32);
+    let recorded_file_size = read_u64(&header, 40);
+    let recorded_source_size = read_u64(&header, 48);
+    if recorded_file_size != metadata.len() {
+        anyhow::bail!(
+            "Scene Cache size mismatch: header={recorded_file_size}, file={}",
+            metadata.len()
+        );
+    }
+    if recorded_source_size != expected_source_size {
+        anyhow::bail!(
+            "Scene Cache source size mismatch: expected {expected_source_size}, recorded {recorded_source_size}"
+        );
+    }
+
+    let directory_length = (section_count as u64)
+        .checked_mul(CACHE_DIRECTORY_ENTRY_SIZE as u64)
+        .context("Scene Cache directory length overflow")?;
+    let directory_end = directory_offset
+        .checked_add(directory_length)
+        .context("Scene Cache directory end overflow")?;
+    if directory_offset < CACHE_HEADER_SIZE as u64 || directory_end > recorded_file_size {
+        anyhow::bail!("Scene Cache directory is outside the file");
+    }
+    let body_start = align_up_8(directory_end).context("Scene Cache body offset overflow")?;
+
+    let mut directory = vec![0_u8; usize::try_from(directory_length)?];
+    file.seek(SeekFrom::Start(directory_offset))
+        .context("cannot seek to Scene Cache directory")?;
+    file.read_exact(&mut directory)
+        .context("cannot read Scene Cache directory")?;
+
+    let mut kinds = BTreeSet::new();
+    let mut ranges = Vec::with_capacity(section_count);
+    for index in 0..section_count {
+        let offset = index * CACHE_DIRECTORY_ENTRY_SIZE;
+        let entry = &directory[offset..offset + CACHE_DIRECTORY_ENTRY_SIZE];
+        let kind = read_u32(entry, 0);
+        let record_size = read_u32(entry, 4);
+        let section_offset = read_u64(entry, 8);
+        let byte_length = read_u64(entry, 16);
+        let record_count = read_u64(entry, 24);
+        let flags = read_u32(entry, 32);
+        let reserved = read_u32(entry, 36);
+
+        if !is_current_section_kind(kind) || !kinds.insert(kind) {
+            anyhow::bail!("Scene Cache contains an unexpected or duplicate section {kind}");
+        }
+        if record_size == 0 || flags & !1 != 0 || reserved != 0 {
+            anyhow::bail!("Scene Cache section {kind} has invalid metadata");
+        }
+        let records_length = u64::from(record_size)
+            .checked_mul(record_count)
+            .context("Scene Cache record length overflow")?;
+        if (flags == 0 && records_length != byte_length)
+            || (flags == 1
+                && records_length
+                    .checked_add(16)
+                    .is_none_or(|minimum| byte_length < minimum))
+        {
+            anyhow::bail!("Scene Cache section {kind} has an invalid byte length");
+        }
+        let section_end = section_offset
+            .checked_add(byte_length)
+            .context("Scene Cache section end overflow")?;
+        if section_offset < body_start
+            || section_offset % 8 != 0
+            || section_end > recorded_file_size
+        {
+            anyhow::bail!("Scene Cache section {kind} has an invalid range");
+        }
+        ranges.push((section_offset, section_end, kind));
+    }
+
+    ranges.sort_unstable_by_key(|range| range.0);
+    for pair in ranges.windows(2) {
+        if pair[0].1 > pair[1].0 {
+            anyhow::bail!(
+                "Scene Cache sections {} and {} overlap",
+                pair[0].2,
+                pair[1].2
+            );
+        }
+    }
+    Ok(())
+}
+
+fn is_current_section_kind(kind: u32) -> bool {
+    matches!(kind, 1..=4 | 10..=23 | 30..=55)
+}
+
+fn align_up_8(value: u64) -> Option<u64> {
+    value.checked_add(7).map(|value| value & !7)
+}
+
+fn read_u16(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes(bytes[offset..offset + 2].try_into().expect("bounded slice"))
+}
+
+fn read_u32(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("bounded slice"))
+}
+
+fn read_u64(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes(bytes[offset..offset + 8].try_into().expect("bounded slice"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -929,10 +1064,60 @@ mod tests {
     #[test]
     fn invalid_run_counts_are_rejected() {
         let options = BenchmarkOptions {
+            adapter_executable: PathBuf::from("adapter"),
+            engine_id: "libredwg".to_owned(),
+            engine_version: Some("0.14".to_owned()),
+            engine_license: Some("GPL-3.0-or-later".to_owned()),
             measured_runs: 0,
-            ..BenchmarkOptions::default()
+            warmup_runs: 0,
+            scope: BenchmarkScope::All,
+            include_input_name: false,
         };
         assert!(validate_options(&options).is_err());
+    }
+
+    fn write_test_scene_cache(path: &Path, source_size: u64, minor: u16) {
+        let directory_offset = CACHE_HEADER_SIZE as u64;
+        let directory_length = (CACHE_SECTION_COUNT * CACHE_DIRECTORY_ENTRY_SIZE) as u64;
+        let file_size = align_up_8(directory_offset + directory_length).unwrap();
+        let mut bytes = vec![0_u8; usize::try_from(file_size).unwrap()];
+        bytes[..8].copy_from_slice(&CACHE_MAGIC);
+        bytes[8..10].copy_from_slice(&CACHE_VERSION_MAJOR.to_le_bytes());
+        bytes[10..12].copy_from_slice(&minor.to_le_bytes());
+        bytes[12..16].copy_from_slice(&(CACHE_HEADER_SIZE as u32).to_le_bytes());
+        bytes[16..20].copy_from_slice(&(CACHE_SECTION_COUNT as u32).to_le_bytes());
+        bytes[20..24].copy_from_slice(&(CACHE_DIRECTORY_ENTRY_SIZE as u32).to_le_bytes());
+        bytes[32..40].copy_from_slice(&directory_offset.to_le_bytes());
+        bytes[40..48].copy_from_slice(&file_size.to_le_bytes());
+        bytes[48..56].copy_from_slice(&source_size.to_le_bytes());
+
+        let kinds = (1_u32..=4)
+            .chain(10..=23)
+            .chain(30..=55)
+            .collect::<Vec<_>>();
+        assert_eq!(kinds.len(), CACHE_SECTION_COUNT);
+        for (index, kind) in kinds.into_iter().enumerate() {
+            let offset = CACHE_HEADER_SIZE + index * CACHE_DIRECTORY_ENTRY_SIZE;
+            bytes[offset..offset + 4].copy_from_slice(&kind.to_le_bytes());
+            bytes[offset + 4..offset + 8].copy_from_slice(&1_u32.to_le_bytes());
+            bytes[offset + 8..offset + 16].copy_from_slice(&file_size.to_le_bytes());
+        }
+        fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn structural_validation_accepts_only_scene_cache_v118() {
+        let workspace = BenchmarkWorkspace::create().unwrap();
+        let current = workspace.path.join("current.cache");
+        write_test_scene_cache(&current, 3, CACHE_VERSION_MINOR);
+        validate_scene_cache_v118(&current, 3).unwrap();
+
+        let legacy = workspace.path.join("legacy.cache");
+        write_test_scene_cache(&legacy, 3, 14);
+        assert!(validate_scene_cache_v118(&legacy, 3)
+            .unwrap_err()
+            .to_string()
+            .contains("expected 1.18"));
     }
 
     #[cfg(unix)]
@@ -944,7 +1129,7 @@ mod tests {
         let input = fixture_workspace.path.join("fixture.dwg");
         fs::write(&input, b"dwg").unwrap();
         let source_cache = fixture_workspace.path.join("fixture.dwg.fixture.cache");
-        crate::scene_cache::write_test_scene_cache(&source_cache, 3).unwrap();
+        write_test_scene_cache(&source_cache, 3, CACHE_VERSION_MINOR);
         let adapter = fixture_workspace.path.join("fake-adapter.sh");
         fs::write(
             &adapter,
@@ -956,7 +1141,7 @@ fi
 if [ "$1" = "convert" ]; then
   cp "$2.fixture.cache" "$3"
   cache_size=$(wc -c < "$3" | tr -d ' ')
-  printf '%s\n' '{"schema":"dwg-scene-cache/1","status":"ok","input":{"size_bytes":3},"cache":{"size_bytes":'"$cache_size"',"validated":true},"coverage":{},"gpu_lines":{},"hatch_fills":{},"performance":{"parse_ms":1,"write_ms":2,"total_ms":3,"peak_rss_bytes":100},"diagnostics":0}'
+  printf '%s\n' '{"schema":"dwg-scene-cache/1","status":"ok","input":{"size_bytes":3},"cache":{"format_major":1,"format_minor":18,"size_bytes":'"$cache_size"',"validated":true},"coverage":{},"gpu_lines":{},"hatch_fills":{},"performance":{"parse_ms":1,"write_ms":2,"total_ms":3,"peak_rss_bytes":100},"diagnostics":0}'
   exit 0
 fi
 exit 2
@@ -970,7 +1155,7 @@ exit 2
         let report = benchmark_engine(
             &input,
             &BenchmarkOptions {
-                adapter_executable: Some(adapter),
+                adapter_executable: adapter,
                 engine_id: "fake".to_owned(),
                 engine_version: Some("1".to_owned()),
                 engine_license: Some("MIT".to_owned()),
@@ -1011,7 +1196,7 @@ exit 2
         let error = benchmark_engine(
             &input,
             &BenchmarkOptions {
-                adapter_executable: Some(adapter),
+                adapter_executable: adapter,
                 engine_id: "fake".to_owned(),
                 engine_version: None,
                 engine_license: None,

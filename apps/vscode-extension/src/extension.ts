@@ -32,6 +32,10 @@ import {
 import { renderWebviewHtml } from "./webview-html";
 import { XrefController } from "./xref-controller";
 import { ImageReferenceChannel } from "./image-reference-channel";
+import {
+  WorkspaceTextSearchController,
+  type WorkspaceTextMatch,
+} from "./workspace-text-search";
 
 const VIEW_TYPE = "dwgViewer.dwg";
 const ADD_SHX_FONT_FOLDERS_COMMAND = "dwgViewer.addShxFontFolders";
@@ -236,20 +240,80 @@ interface HostMessage {
   type?: unknown;
   code?: unknown;
   cacheId?: unknown;
+  data?: unknown;
   firstFrameMs?: unknown;
+  format?: unknown;
   kind?: unknown;
   requestId?: unknown;
   name?: unknown;
+  suggestedName?: unknown;
 }
 
 class DwgEditorProvider
   implements vscode.CustomReadonlyEditorProvider<DwgDocument>
 {
+  private readonly panels = new Map<
+    string,
+    Set<vscode.WebviewPanel>
+  >();
+  private readonly pendingTextMatches = new Map<
+    string,
+    WorkspaceTextMatch
+  >();
+
   constructor(
     private readonly context: vscode.ExtensionContext,
     private readonly output: vscode.OutputChannel,
     private readonly qualification?: QualificationReporter,
   ) {}
+
+  private documentKey(uri: vscode.Uri): string {
+    return uri.toString(true);
+  }
+
+  private textMatchMessage(
+    match: WorkspaceTextMatch,
+  ): Readonly<Record<string, unknown>> {
+    return {
+      type: "dwg-reveal-text/1",
+      handle: match.handle,
+      kind: match.kind,
+      value: (match.value || match.tag || match.prompt).slice(0, 500),
+      point: [...match.insertionPoint],
+      height: Number.isFinite(match.height) ? match.height : 0,
+      hidden: match.hidden,
+    };
+  }
+
+  private postPendingTextMatch(
+    uri: vscode.Uri,
+    panel: vscode.WebviewPanel,
+  ): Thenable<boolean> | undefined {
+    const match = this.pendingTextMatches.get(this.documentKey(uri));
+    return match
+      ? panel.webview.postMessage(this.textMatchMessage(match))
+      : undefined;
+  }
+
+  async revealTextMatch(match: WorkspaceTextMatch): Promise<void> {
+    const key = this.documentKey(match.uri);
+    this.pendingTextMatches.set(key, match);
+    await vscode.commands.executeCommand(
+      "vscode.openWith",
+      match.uri,
+      VIEW_TYPE,
+      { preview: true },
+    );
+    const panels = this.panels.get(key);
+    if (!panels || panels.size === 0) {
+      return;
+    }
+    await Promise.allSettled(
+      [...panels].map((panel) =>
+        panel.webview.postMessage(this.textMatchMessage(match)),
+      ),
+    );
+  }
 
   openCustomDocument(
     uri: vscode.Uri,
@@ -267,6 +331,20 @@ class DwgEditorProvider
     webviewPanel: vscode.WebviewPanel,
     token: vscode.CancellationToken,
   ): Promise<void> {
+    const documentKey = this.documentKey(document.uri);
+    let documentPanels = this.panels.get(documentKey);
+    if (!documentPanels) {
+      documentPanels = new Set();
+      this.panels.set(documentKey, documentPanels);
+    }
+    documentPanels.add(webviewPanel);
+    webviewPanel.onDidDispose(() => {
+      const panels = this.panels.get(documentKey);
+      panels?.delete(webviewPanel);
+      if (panels?.size === 0) {
+        this.panels.delete(documentKey);
+      }
+    });
     const qualificationSession = randomBytes(8).toString("hex");
     const emitQualification = (
       event: string,
@@ -318,6 +396,7 @@ class DwgEditorProvider
     let activeCacheId: string | undefined;
     let activeCacheReused = false;
     let activeEngine: SceneEngineDescriptor | undefined;
+    let exportSaveInFlight = false;
     let activeCacheReadyMessage:
       | Readonly<Record<string, unknown>>
       | undefined;
@@ -751,6 +830,7 @@ class DwgEditorProvider
         activeCacheReadyMessage = {
           type: "dwg-cache-ready/1",
           cacheId: prepared.cacheId,
+          documentName: path.basename(document.uri.fsPath),
           size: prepared.size,
           reused: prepared.reused,
           engineId: prepared.engine.engineId,
@@ -849,6 +929,10 @@ class DwgEditorProvider
             } else if (progressivePreview) {
               requestStart(false);
             }
+            void this.postPendingTextMatch(
+              document.uri,
+              webviewPanel,
+            );
             break;
           }
           case "dwg-cache-retry/1":
@@ -857,6 +941,115 @@ class DwgEditorProvider
           case "dwg-cache-rebuild/1":
             requestStart(true);
             break;
+          case "dwg-export-save/1": {
+            const requestId =
+              typeof raw.requestId === "number" &&
+              Number.isSafeInteger(raw.requestId)
+                ? raw.requestId
+                : 0;
+            const format =
+              raw.format === "png" ||
+              raw.format === "pdf" ||
+              raw.format === "zip"
+                ? raw.format
+                : "";
+            const data =
+              typeof raw.data === "string" ? raw.data : "";
+            const maximumBase64Length =
+              Math.ceil((64 * 1024 * 1024 * 4) / 3) + 4;
+            if (
+              !requestId ||
+              !format ||
+              !data ||
+              data.length > maximumBase64Length ||
+              exportSaveInFlight
+            ) {
+              void webviewPanel.webview.postMessage({
+                type: "dwg-export-save-result/1",
+                requestId,
+                status: "error",
+                message: exportSaveInFlight
+                  ? "다른 출력 파일을 저장하고 있습니다."
+                  : "출력 파일 데이터가 올바르지 않습니다.",
+              });
+              break;
+            }
+            const extension = format;
+            const requestedStem =
+              typeof raw.suggestedName === "string"
+                ? raw.suggestedName
+                    .normalize("NFC")
+                    .replace(/\.[^.\\/]+$/u, "")
+                    .replace(/[<>:"/\\|?*\u0000-\u001f]/gu, "_")
+                    .replace(/[.\s]+$/gu, "")
+                    .trim()
+                    .slice(0, 120)
+                : "";
+            const documentStem = path
+              .basename(document.uri.fsPath, path.extname(document.uri.fsPath))
+              .slice(0, 120);
+            const fileName = `${requestedStem || documentStem || "drawing"}.${extension}`;
+            exportSaveInFlight = true;
+            void Promise.resolve(
+              vscode.window.showSaveDialog({
+                defaultUri: vscode.Uri.file(
+                  path.join(path.dirname(document.uri.fsPath), fileName),
+                ),
+                title: "DWG Viewer 출력 파일 저장",
+                saveLabel: "저장",
+                filters:
+                  format === "pdf"
+                    ? { "PDF 문서": ["pdf"] }
+                    : format === "png"
+                      ? { "PNG 이미지": ["png"] }
+                      : { "PNG 배치 묶음": ["zip"] },
+              }),
+            )
+              .then(async (selected) => {
+                if (!selected) {
+                  await webviewPanel.webview.postMessage({
+                    type: "dwg-export-save-result/1",
+                    requestId,
+                    status: "cancelled",
+                  });
+                  return;
+                }
+                const bytes = Buffer.from(data, "base64");
+                if (bytes.length === 0 || bytes.length > 64 * 1024 * 1024) {
+                  throw new Error("출력 파일이 64 MiB 제한을 초과했습니다.");
+                }
+                await vscode.workspace.fs.writeFile(selected, bytes);
+                this.output.appendLine(
+                  `[EXPORT_SAVED] format=${format} bytes=${bytes.length}`,
+                );
+                await webviewPanel.webview.postMessage({
+                  type: "dwg-export-save-result/1",
+                  requestId,
+                  status: "saved",
+                  bytes: bytes.length,
+                });
+                void vscode.window.showInformationMessage(
+                  `DWG Viewer: ${path.basename(selected.fsPath || selected.path)} 저장 완료`,
+                );
+              })
+              .catch((error: unknown) => {
+                const message =
+                  error instanceof Error
+                    ? error.message
+                    : "출력 파일을 저장하지 못했습니다.";
+                this.output.appendLine("[EXPORT_SAVE_FAILED]");
+                return webviewPanel.webview.postMessage({
+                  type: "dwg-export-save-result/1",
+                  requestId,
+                  status: "error",
+                  message: message.slice(0, 300),
+                });
+              })
+              .finally(() => {
+                exportSaveInFlight = false;
+              });
+            break;
+          }
           case "dwg-adapter-select/1":
             void Promise.resolve(
               vscode.commands.executeCommand<boolean>(
@@ -1155,8 +1348,14 @@ export function activate(context: vscode.ExtensionContext): void {
     output,
     qualificationReporter,
   );
+  const textSearch = new WorkspaceTextSearchController(
+    context,
+    output,
+    (match) => provider.revealTextMatch(match),
+  );
   context.subscriptions.push(
     output,
+    textSearch,
     vscode.commands.registerCommand(
       ADD_SHX_FONT_FOLDERS_COMMAND,
       addShxFontFolders,

@@ -29,7 +29,10 @@
     "onCustomEditor:dwgViewer.dwg",
     "onCommand:dwgViewer.addShxFontFolders",
     "onCommand:dwgViewer.selectLibreDwgAdapter",
-    "onCommand:dwgViewer.diagnoseLibreDwgAdapter"
+    "onCommand:dwgViewer.diagnoseLibreDwgAdapter",
+    "onCommand:dwgViewer.searchWorkspaceText",
+    "onCommand:dwgViewer.toggleTextSearchRegularExpression",
+    "onView:dwgViewer.textSearch"
   ],
   "contributes": {
     "commands": [
@@ -44,8 +47,52 @@
       {
         "command": "dwgViewer.diagnoseLibreDwgAdapter",
         "title": "DWG Viewer: LibreDWG 변환기 진단"
+      },
+      {
+        "command": "dwgViewer.searchWorkspaceText",
+        "title": "DWG Viewer: 워크스페이스 도면 문자 검색",
+        "icon": "$(search)"
+      },
+      {
+        "command": "dwgViewer.refreshWorkspaceTextSearch",
+        "title": "DWG Viewer: 도면 문자 검색 다시 실행",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "dwgViewer.toggleTextSearchRegularExpression",
+        "title": "DWG Viewer: 도면 문자 검색 정규식 사용",
+        "icon": "$(regex)"
       }
     ],
+    "views": {
+      "explorer": [
+        {
+          "id": "dwgViewer.textSearch",
+          "name": "DWG 문자 검색",
+          "when": "workspaceFolderCount > 0"
+        }
+      ]
+    },
+    "menus": {
+      "view/title": [
+        {
+          "command": "dwgViewer.searchWorkspaceText",
+          "when": "view == dwgViewer.textSearch",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dwgViewer.refreshWorkspaceTextSearch",
+          "when": "view == dwgViewer.textSearch",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dwgViewer.toggleTextSearchRegularExpression",
+          "when": "view == dwgViewer.textSearch",
+          "group": "navigation@3",
+          "toggled": "dwgViewer.textSearchRegularExpressionEnabled"
+        }
+      ]
+    },
     "customEditors": [
       {
         "viewType": "dwgViewer.dwg",
@@ -133,6 +180,40 @@
           "maxItems": 31,
           "uniqueItems": true,
           "description": "Absolute folders searched recursively and within fixed limits when a JPG or PNG drawing image is not found at its stored path."
+        },
+        "dwgViewer.textSearchMaximumFiles": {
+          "type": "integer",
+          "default": 100,
+          "minimum": 1,
+          "maximum": 500,
+          "scope": "window",
+          "description": "Maximum number of workspace DWG files inspected by one text search."
+        },
+        "dwgViewer.textSearchMaximumResults": {
+          "type": "integer",
+          "default": 2000,
+          "minimum": 1,
+          "maximum": 10000,
+          "scope": "window",
+          "description": "Maximum number of DWG text search results retained in the Explorer view."
+        },
+        "dwgViewer.textSearchMatchCase": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "Match letter case in workspace DWG text search."
+        },
+        "dwgViewer.textSearchWholeWord": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "Match whole words only in workspace DWG text search."
+        },
+        "dwgViewer.textSearchUseRegularExpression": {
+          "type": "boolean",
+          "default": false,
+          "scope": "window",
+          "description": "Use a bounded JavaScript regular expression by default in workspace DWG text search. The Explorer view toggle is retained per workspace."
         }
       }
     }

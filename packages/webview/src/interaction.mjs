@@ -4,6 +4,11 @@ import { DetailStreamer } from "./detail-streamer.mjs";
 const DETAIL_DEBOUNCE_MS = 650;
 const DETAIL_ZOOM_THRESHOLD = 0;
 const WHEEL_ZOOM_RATE = 0.0015;
+const VIEW_COMMIT_DEBOUNCE_MS = 220;
+
+function clamp(value, minimum, maximum) {
+  return Math.min(Math.max(value, minimum), maximum);
+}
 
 export class ViewportInteraction {
   constructor(
@@ -16,6 +21,10 @@ export class ViewportInteraction {
       onReviewBatch = () => false,
       onReviewBatchEvicted = () => {},
       onReviewSelection = () => {},
+      onViewCommit = () => {},
+      onViewReplace = () => {},
+      onWindowZoomModeChange = () => {},
+      windowZoomGuide = null,
     } = {},
   ) {
     this.scene = scene;
@@ -27,12 +36,19 @@ export class ViewportInteraction {
     this.onReviewBatch = onReviewBatch;
     this.onReviewBatchEvicted = onReviewBatchEvicted;
     this.onReviewSelection = onReviewSelection;
+    this.onViewCommit = onViewCommit;
+    this.onViewReplace = onViewReplace;
+    this.onWindowZoomModeChange = onWindowZoomModeChange;
+    this.windowZoomGuide = windowZoomGuide;
     this.reviewEnabled = false;
     this.lastRender = scene.render;
     this.frameRequest = null;
     this.frameInteractive = false;
     this.detailTimer = null;
     this.drag = null;
+    this.windowDrag = null;
+    this.windowZoomEnabled = false;
+    this.viewCommitTimer = null;
     this.abortController = new AbortController();
     this.detailStreamer = new DetailStreamer(
       scene.reader,
@@ -82,6 +98,7 @@ export class ViewportInteraction {
         );
         this.scheduleRender();
         this.scheduleDetail();
+        this.scheduleViewCommit();
       },
       { passive: false, signal },
     );
@@ -91,11 +108,26 @@ export class ViewportInteraction {
         if (event.button !== 0) {
           return;
         }
+        this.flushViewCommit();
+        if (this.windowZoomEnabled) {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          const point = this.canvasPoint(event);
+          this.canvas.setPointerCapture(event.pointerId);
+          this.windowDrag = {
+            pointerId: event.pointerId,
+            start: point,
+            current: point,
+          };
+          this.updateWindowZoomGuide();
+          return;
+        }
         this.canvas.setPointerCapture(event.pointerId);
         this.drag = {
           pointerId: event.pointerId,
           x: event.clientX,
           y: event.clientY,
+          changed: false,
         };
         this.canvas.classList.add("panning");
       },
@@ -104,6 +136,15 @@ export class ViewportInteraction {
     this.canvas.addEventListener(
       "pointermove",
       (event) => {
+        if (
+          this.windowDrag &&
+          this.windowDrag.pointerId === event.pointerId
+        ) {
+          event.preventDefault();
+          this.windowDrag.current = this.canvasPoint(event);
+          this.updateWindowZoomGuide();
+          return;
+        }
         if (!this.drag || this.drag.pointerId !== event.pointerId) {
           return;
         }
@@ -111,6 +152,7 @@ export class ViewportInteraction {
         const deltaY = event.clientY - this.drag.y;
         this.drag.x = event.clientX;
         this.drag.y = event.clientY;
+        this.drag.changed ||= deltaX !== 0 || deltaY !== 0;
         this.camera.panByPixels(
           deltaX,
           deltaY,
@@ -126,15 +168,62 @@ export class ViewportInteraction {
       this.canvas.addEventListener(
         eventName,
         (event) => {
+          if (
+            this.windowDrag &&
+            this.windowDrag.pointerId === event.pointerId
+          ) {
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            const drag = this.windowDrag;
+            this.windowDrag = null;
+            this.hideWindowZoomGuide();
+            if (this.canvas.hasPointerCapture(event.pointerId)) {
+              this.canvas.releasePointerCapture(event.pointerId);
+            }
+            const view =
+              eventName === "pointerup"
+                ? this.camera.focusScreenRect(
+                    drag.start.x,
+                    drag.start.y,
+                    drag.current.x,
+                    drag.current.y,
+                    drag.start.width,
+                    drag.start.height,
+                  )
+                : null;
+            if (view) {
+              this.cancelScheduledRender();
+              this.lastRender = this.scene.renderer.redraw(view);
+              this.syncDetailRenderCamera(this.lastRender.camera);
+              this.scheduleDetail(0);
+              this.emit(this.detailSnapshot());
+              this.commitView();
+              this.setWindowZoomEnabled(false, {
+                reason: "completed",
+              });
+            } else {
+              this.setWindowZoomEnabled(false, {
+                reason:
+                  eventName === "pointercancel"
+                    ? "cancelled"
+                    : "too-small",
+              });
+            }
+            return;
+          }
           if (!this.drag || this.drag.pointerId !== event.pointerId) {
             return;
           }
+          const changed = this.drag.changed;
           this.drag = null;
           this.canvas.classList.remove("panning");
           if (this.canvas.hasPointerCapture(event.pointerId)) {
             this.canvas.releasePointerCapture(event.pointerId);
           }
           this.scheduleDetail(0);
+          if (changed) {
+            this.commitView();
+          }
         },
         { signal },
       );
@@ -147,20 +236,35 @@ export class ViewportInteraction {
       },
       { signal },
     );
+    document.addEventListener(
+      "keydown",
+      (event) => {
+        if (!this.windowZoomEnabled || event.key !== "Escape") {
+          return;
+        }
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        this.setWindowZoomEnabled(false, { reason: "cancelled" });
+      },
+      { capture: true, signal },
+    );
   }
 
   reset() {
+    this.flushViewCommit();
     if (typeof this.scene.renderer.fitAllCamera === "function") {
       this.camera.updateFit(this.scene.renderer.fitAllCamera(), {
         resetIfFitted: false,
       });
     }
     this.camera.reset();
-    this.scheduleRender();
+    this.scheduleRender({ interactive: false });
     this.scheduleDetail(0);
+    this.commitView();
   }
 
   zoomBy(factor) {
+    this.flushViewCommit();
     this.camera.zoomAt(
       factor,
       this.canvas.clientWidth * 0.5,
@@ -170,6 +274,30 @@ export class ViewportInteraction {
     );
     this.scheduleRender();
     this.scheduleDetail();
+    this.commitView();
+  }
+
+  focusAt(point, worldHeight, { commit = true } = {}) {
+    if (commit) {
+      this.flushViewCommit();
+    }
+    this.camera.focus(point, worldHeight);
+    this.cancelScheduledRender();
+    this.lastRender = this.scene.renderer.redraw(this.camera.view());
+    this.syncDetailRenderCamera(this.lastRender.camera);
+    this.scheduleDetail(0);
+    this.emit(this.detailSnapshot());
+    if (commit) {
+      this.commitView();
+    }
+    return this.snapshot();
+  }
+
+  restoreView(view) {
+    this.setWindowZoomEnabled(false);
+    return this.focusAt(view?.origin, view?.worldHeight, {
+      commit: false,
+    });
   }
 
   refresh() {
@@ -190,13 +318,127 @@ export class ViewportInteraction {
   }
 
   updateFit(fitCamera) {
+    this.flushViewCommit();
     this.cancelScheduledRender();
     this.camera.updateFit(fitCamera);
     this.lastRender = this.scene.renderer.redraw(this.camera.view());
     this.syncDetailRenderCamera(this.lastRender.camera);
     this.scheduleDetail(0);
     this.emit(this.detailSnapshot());
+    this.onViewReplace(this.camera.view());
     return this.snapshot();
+  }
+
+  canvasPoint(event) {
+    const bounds = this.canvas.getBoundingClientRect();
+    const width = Math.max(this.canvas.clientWidth, 1);
+    const height = Math.max(this.canvas.clientHeight, 1);
+    return Object.freeze({
+      x: clamp(
+        ((event.clientX - bounds.left) / Math.max(bounds.width, 1)) *
+          width,
+        0,
+        width,
+      ),
+      y: clamp(
+        ((event.clientY - bounds.top) / Math.max(bounds.height, 1)) *
+          height,
+        0,
+        height,
+      ),
+      width,
+      height,
+    });
+  }
+
+  updateWindowZoomGuide() {
+    if (!this.windowZoomGuide || !this.windowDrag) {
+      return;
+    }
+    const canvasBounds = this.canvas.getBoundingClientRect();
+    const parentBounds =
+      this.windowZoomGuide.parentElement?.getBoundingClientRect() ??
+      canvasBounds;
+    const scaleX = canvasBounds.width / this.windowDrag.start.width;
+    const scaleY = canvasBounds.height / this.windowDrag.start.height;
+    const left =
+      canvasBounds.left -
+      parentBounds.left +
+      Math.min(this.windowDrag.start.x, this.windowDrag.current.x) *
+        scaleX;
+    const top =
+      canvasBounds.top -
+      parentBounds.top +
+      Math.min(this.windowDrag.start.y, this.windowDrag.current.y) *
+        scaleY;
+    const width =
+      Math.abs(this.windowDrag.current.x - this.windowDrag.start.x) *
+      scaleX;
+    const height =
+      Math.abs(this.windowDrag.current.y - this.windowDrag.start.y) *
+      scaleY;
+    Object.assign(this.windowZoomGuide.style, {
+      left: `${left}px`,
+      top: `${top}px`,
+      width: `${width}px`,
+      height: `${height}px`,
+    });
+    this.windowZoomGuide.hidden = false;
+  }
+
+  hideWindowZoomGuide() {
+    if (this.windowZoomGuide) {
+      this.windowZoomGuide.hidden = true;
+    }
+  }
+
+  setWindowZoomEnabled(enabled, { reason = "" } = {}) {
+    const next = Boolean(enabled);
+    const changed = this.windowZoomEnabled !== next;
+    this.windowZoomEnabled = next;
+    if (!next) {
+      if (this.windowDrag) {
+        const pointerId = this.windowDrag.pointerId;
+        this.windowDrag = null;
+        if (this.canvas.hasPointerCapture(pointerId)) {
+          this.canvas.releasePointerCapture(pointerId);
+        }
+      }
+      this.hideWindowZoomGuide();
+    } else {
+      this.flushViewCommit();
+      this.drag = null;
+      this.canvas.classList.remove("panning");
+    }
+    this.canvas.classList.toggle("zoom-window", next);
+    if (changed || reason) {
+      this.onWindowZoomModeChange(next, reason);
+    }
+    return next;
+  }
+
+  scheduleViewCommit() {
+    if (this.viewCommitTimer !== null) {
+      clearTimeout(this.viewCommitTimer);
+    }
+    this.viewCommitTimer = setTimeout(() => {
+      this.viewCommitTimer = null;
+      this.commitView();
+    }, VIEW_COMMIT_DEBOUNCE_MS);
+  }
+
+  flushViewCommit() {
+    if (this.viewCommitTimer === null) {
+      return false;
+    }
+    clearTimeout(this.viewCommitTimer);
+    this.viewCommitTimer = null;
+    this.commitView();
+    return true;
+  }
+
+  commitView() {
+    this.onViewCommit(this.camera.view());
   }
 
   addExternalDetailSource(id, reader, batches, instanceGraph) {
@@ -390,18 +632,26 @@ export class ViewportInteraction {
       clearTimeout(this.detailTimer);
       this.detailTimer = null;
     }
+    if (this.viewCommitTimer !== null) {
+      clearTimeout(this.viewCommitTimer);
+      this.viewCommitTimer = null;
+    }
     this.detailStreamer.dispose();
     for (const streamer of this.externalDetailStreamers.values()) {
       streamer.dispose();
     }
     this.externalDetailStreamers.clear();
     this.reviewEnabled = false;
-    this.canvas.classList.remove("panning");
+    this.windowDrag = null;
+    this.windowZoomEnabled = false;
+    this.hideWindowZoomGuide();
+    this.canvas.classList.remove("panning", "zoom-window");
   }
 }
 
 export {
   DETAIL_DEBOUNCE_MS,
   DETAIL_ZOOM_THRESHOLD,
+  VIEW_COMMIT_DEBOUNCE_MS,
   WHEEL_ZOOM_RATE,
 };

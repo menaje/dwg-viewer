@@ -91,6 +91,28 @@ export class CameraController2D {
     return this.view();
   }
 
+  focus(point, worldHeight = this.worldHeight) {
+    if (
+      !Array.isArray(point) ||
+      point.length < 2 ||
+      !Number.isFinite(point[0]) ||
+      !Number.isFinite(point[1])
+    ) {
+      throw new TypeError("camera focus requires a finite point");
+    }
+    this.origin = [
+      point[0],
+      point[1],
+      Number.isFinite(point[2]) ? point[2] : this.origin[2],
+    ];
+    this.worldHeight = clamp(
+      requirePositive(worldHeight, "camera focus world height"),
+      this.minimumWorldHeight,
+      this.maximumWorldHeight,
+    );
+    return this.view();
+  }
+
   panByPixels(deltaX, deltaY, width, height) {
     requirePositive(width, "camera viewport width");
     requirePositive(height, "camera viewport height");
@@ -121,6 +143,55 @@ export class CameraController2D {
     this.origin[1] += oldOffsetY - newOffsetY;
     this.worldHeight = newHeight;
     return this.view();
+  }
+
+  focusScreenRect(
+    startX,
+    startY,
+    endX,
+    endY,
+    width,
+    height,
+    { minimumPixels = 8, padding = 1.04 } = {},
+  ) {
+    for (const [value, label] of [
+      [startX, "rectangle start x"],
+      [startY, "rectangle start y"],
+      [endX, "rectangle end x"],
+      [endY, "rectangle end y"],
+    ]) {
+      if (!Number.isFinite(value)) {
+        throw new RangeError(`${label} must be finite`);
+      }
+    }
+    requirePositive(width, "camera viewport width");
+    requirePositive(height, "camera viewport height");
+    requirePositive(minimumPixels, "rectangle minimum pixels");
+    requirePositive(padding, "rectangle padding");
+    const rectangleWidth = Math.abs(endX - startX);
+    const rectangleHeight = Math.abs(endY - startY);
+    if (
+      rectangleWidth < minimumPixels ||
+      rectangleHeight < minimumPixels
+    ) {
+      return null;
+    }
+    const worldPerPixel = this.worldHeight / height;
+    const aspect = width / height;
+    const centerX = (startX + endX) * 0.5;
+    const centerY = (startY + endY) * 0.5;
+    const nextOrigin = [
+      this.origin[0] +
+        (centerX / width - 0.5) * aspect * this.worldHeight,
+      this.origin[1] +
+        (0.5 - centerY / height) * this.worldHeight,
+      this.origin[2],
+    ];
+    const selectedWorldHeight = Math.max(
+      rectangleHeight * worldPerPixel,
+      (rectangleWidth * worldPerPixel) / aspect,
+    );
+    return this.focus(nextOrigin, selectedWorldHeight * padding);
   }
 }
 

@@ -18,11 +18,11 @@ layout tabs on hover, focus or an explicit click.
 - Limits each detail read to 512 KiB.
 - Resolves nested INSERT, MINSERT and DIMENSION picture-block references while
   keeping block geometry shared.
-- Reads v1.12 original XREF paths, composes each child model/block instance
+- Reads current original XREF paths, composes each child model/block instance
   under its parent INSERT and preserves shared geometry across repeated inserts.
-- Reads v1.13 INSERT/XREF spatial clips, propagates nested clip chains through
+- Reads current INSERT/XREF spatial clips, propagates nested clip chains through
   shared instances and applies one boundary to WebGL geometry and Canvas text.
-- Reads v1.14-v1.18 linetype, saved-view, layout, VIEWPORT and raster IMAGE
+- Reads the v1.18 linetype, saved-view, layout, VIEWPORT and raster IMAGE
   sections and
   allows every paper-space tab to be selected without duplicating model data.
 - Opens each tab at its saved CAD view while the `전체 보기` action fits the
@@ -57,6 +57,34 @@ layout tabs on hover, focus or an explicit click.
   shader memory as tracked GPU bytes.
 - Searches Hangul layer names and toggles individual or all layers without
   rereading geometry or rebuilding GPU buffers.
+- Derives root and XREF layer groups at runtime from each drawing's layer
+  records and DWG-dependent `reference|layer` names. It does not assume a
+  sample reference name and accepts arbitrary Unicode and nested references.
+- Fits a dragged rectangular region, records wheel and pan gestures as bounded
+  previous/next view-history steps, and stores named camera bookmarks
+  independently for model space and each layout.
+- Isolates one layer, inverts all layer visibility, and restores the previous
+  visibility state with one renderer update.
+- Keeps completed measurement guides visible for object/cumulative distance,
+  polygon area/perimeter, three-point angle, and exact arc/circle/ellipse
+  radius/diameter review tools.
+- Selects HATCH, SOLID and 3DFACE objects from the current drawing and resolved
+  nested XREFs through one bounded, on-demand index. External candidates keep
+  their composed transforms, root layer mapping and visibility, Layer 0
+  inheritance and XCLIP chains without assuming any reference filename.
+- Converts every measured length, area, radius and coordinate from the DWG
+  insertion unit to a selectable display unit with automatic or fixed
+  precision. Unitless drawings require an explicit two-point calibration
+  before physical units such as mm, m or in can be selected.
+- Exports the current screen, the complete current tab or every paper-space
+  layout as PNG/PDF without viewer chrome. It reads each layout's arbitrary
+  paper dimensions and rotation at runtime, falls back to a user-selected
+  preset only when needed, derives 1:N scale from the DWG insertion unit or
+  explicit measurement calibration, and can apply the layout CTB to output
+  without changing the saved viewer state.
+- Packages multi-layout PNG output with portable ASCII entry names and a UTF-8
+  `layout-names.txt` map so native ZIP tools retain arbitrary Unicode layout
+  labels across macOS, Windows and Linux.
 - Displays bounded first-pass chords for arcs, circles, ellipses, polyline
   bulges, NURBS splines and HATCH boundaries emitted by the converter.
 - Starts a persistent worker after the first line frame and range-reads the
@@ -76,10 +104,10 @@ layout tabs on hover, focus or an explicit click.
 - Caps one pattern result at 250,000 segments (16 MiB of line vertices),
   65,536 segments per HATCH and eight million boundary intersection tests.
 - Terminates the previous HATCH worker when another cache is selected.
-- Range-reads v1.8 POINT/SOLID, v1.9 3DFACE and v1.10 WIPEOUT source only
+- Range-reads the current v1.18 POINT/SOLID/3DFACE/WIPEOUT source sections only
   after the first line frame, preserving shared block instances without
   expanding geometry per INSERT.
-- Range-reads normalized v1.11 `SORTENTSTABLE` tables and entries only on
+- Range-reads the current v1.18 normalized `SORTENTSTABLE` tables and entries on
   demand. The first frame reads neither draw-order section.
 - Collapses the preserved sort keys to WIPEOUT-only order events, recursively
   includes nested/DIMENSION/MINSERT mask spans and attaches one compact order
@@ -163,13 +191,16 @@ pnpm --filter @dwg-viewer/webview check
 Tests cover bounded range reads, cache validation, nested/DIMENSION block
 transforms, invalid targets, cycles and instance/depth caps, large-coordinate
 camera rebasing, camera controls, viewport detail selection, GPU resource
-ranges, layer visibility, XREF instance/layer/text composition, aggregate XREF
-GPU budgets and LRU eviction/request coalescing.
+ranges, layer visibility, arbitrary Unicode/nested XREF layer grouping,
+rectangle camera fitting, bounded branching view history, bookmark-state
+validation, XREF instance/layer/text composition, aggregate XREF GPU budgets,
+bounded root/XREF filled-object selection with layer and clip filtering, and
+LRU eviction/request coalescing.
 They also cover delayed Korean text reads, strict EUC-KR, CP949 and Johab
 mapping, per-BigFont overrides, SHX/BigFont cache limits and the
-v1.7 HATCH range, triangulation, dashed-pattern, block-clipping,
-large-coordinate and render-order contracts, plus v1.8 POINT/SOLID, v1.9
-3DFACE and v1.10 WIPEOUT range, WCS/OCS, clip-boundary, frame-setting,
-instance-sharing and GPU-budget behavior, plus v1.11 draw-order normalization,
+current v1.18 HATCH range, triangulation, dashed-pattern, block-clipping,
+large-coordinate and render-order contracts, plus POINT/SOLID/3DFACE/WIPEOUT
+range, WCS/OCS, clip-boundary, frame-setting, instance-sharing and GPU-budget
+behavior, plus draw-order normalization,
 contiguous ranges, lazy reads, nested/array mask buckets, depth composition,
 HATCH/primitive bucket packing and Canvas text clipping.

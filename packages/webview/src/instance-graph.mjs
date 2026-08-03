@@ -41,6 +41,7 @@ const ROOT_INSTANCES = Object.freeze({
   linetypeCodes: new Uint16Array([2]),
   linetypeInherited: new Uint8Array([1]),
   visibilityRows: new Uint32Array([0]),
+  handles: new BigUint64Array([0n]),
   count: 1,
   length: 1,
 });
@@ -64,6 +65,7 @@ class MatrixCollectionBuilder {
     this.linetypeCodeChunks = [];
     this.linetypeInheritedChunks = [];
     this.visibilityRowChunks = [];
+    this.handleChunks = [];
     this.count = 0;
   }
 
@@ -84,6 +86,7 @@ class MatrixCollectionBuilder {
     visibilityRow = 0,
     measurementMatrix = matrix,
     coordinateSpace = CoordinateSpaceKind.Model,
+    handle = 0n,
   ) {
     const chunkIndex = Math.floor(this.count / MATRICES_PER_CHUNK);
     const indexInChunk = this.count % MATRICES_PER_CHUNK;
@@ -136,6 +139,9 @@ class MatrixCollectionBuilder {
       this.visibilityRowChunks[chunkIndex] = new Uint32Array(
         MATRICES_PER_CHUNK,
       );
+      this.handleChunks[chunkIndex] = new BigUint64Array(
+        MATRICES_PER_CHUNK,
+      );
     }
     this.chunks[chunkIndex].set(matrix, indexInChunk * MATRIX_VALUES);
     this.measurementChunks[chunkIndex].set(
@@ -163,6 +169,8 @@ class MatrixCollectionBuilder {
     this.linetypeInheritedChunks[chunkIndex][indexInChunk] =
       linetypeInherited ? 1 : 0;
     this.visibilityRowChunks[chunkIndex][indexInChunk] = visibilityRow;
+    this.handleChunks[chunkIndex][indexInChunk] =
+      typeof handle === "bigint" && handle >= 0n ? handle : 0n;
     this.count += 1;
   }
 
@@ -185,6 +193,7 @@ class MatrixCollectionBuilder {
     const linetypeCodes = new Uint16Array(this.count);
     const linetypeInherited = new Uint8Array(this.count);
     const visibilityRows = new Uint32Array(this.count);
+    const handles = new BigUint64Array(this.count);
     let destination = 0;
     let maskDestination = 0;
     for (let index = 0; index < this.chunks.length; index += 1) {
@@ -336,6 +345,16 @@ class MatrixCollectionBuilder {
         ),
         index * MATRICES_PER_CHUNK,
       );
+      handles.set(
+        this.handleChunks[index].subarray(
+          0,
+          Math.min(
+            this.handleChunks[index].length,
+            handles.length - index * MATRICES_PER_CHUNK,
+          ),
+        ),
+        index * MATRICES_PER_CHUNK,
+      );
     }
     const result = {
       data,
@@ -355,6 +374,7 @@ class MatrixCollectionBuilder {
       linetypeCodes,
       linetypeInherited,
       visibilityRows,
+      handles,
     };
     if (maskBases) {
       result.maskBases = maskBases;
@@ -527,6 +547,7 @@ export function buildInstanceGraph(
     visibilityRow,
     measurementMatrix,
     coordinateSpace,
+    handle,
   ) => {
     let builder = instanceBuilders.get(blockIndex);
     if (!builder) {
@@ -550,6 +571,7 @@ export function buildInstanceGraph(
       visibilityRow,
       measurementMatrix,
       coordinateSpace,
+      handle,
     );
     instanceCount += 1;
     if (instanceCount >= maximumInstances) {
@@ -741,6 +763,7 @@ export function buildInstanceGraph(
           parentVisibilityRow,
           measurement,
           parentCoordinateSpace,
+          insert.handle,
         );
 
         const nested = insertsByOwner.get(target.index);
@@ -863,6 +886,7 @@ export function buildInstanceGraph(
       visibilityRow,
       measurementMatrix,
       coordinateSpace,
+      0n,
     ];
     if (context.modelSpace) {
       modelInstanceBuilder.add(...rootValues);

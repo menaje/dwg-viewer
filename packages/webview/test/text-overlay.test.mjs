@@ -121,7 +121,7 @@ function fakeCanvas() {
 
 async function textScene() {
   const reader = await SceneCacheReader.open(
-    new MemoryRangeSource(makeFixtureCache({ minorVersion: 4 })),
+    new MemoryRangeSource(makeFixtureCache()),
   );
   const metadata = await reader.readRenderMetadata();
   return {
@@ -189,6 +189,56 @@ test("removes MTEXT controls without losing Korean or line breaks", () => {
     [...plainCadTextLines("한".repeat(5_000), false)[0]].length,
     4_096,
   );
+});
+
+test("finds a text occurrence by handle for workspace search navigation", async () => {
+  const scene = await textScene();
+  const overlay = new CanvasTextOverlay(fakeCanvas(), {
+    textEntities: scene.textEntities,
+    blocks: scene.metadata.blocks,
+    layers: scene.metadata.layers,
+    instanceGraph: scene.instanceGraph,
+    glyphCache: { getGlyph: () => undefined },
+  });
+
+  const occurrence = overlay.findTextOccurrence("12C");
+
+  assert.deepEqual(occurrence.point, [101, 201, 0]);
+  assert.equal(occurrence.worldHeight, 0.5);
+  assert.equal(overlay.findTextOccurrence("FFFF"), null);
+});
+
+test("selects rendered text by its screen footprint", async () => {
+  const scene = await textScene();
+  const canvas = fakeCanvas();
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: scene.textEntities,
+    blocks: scene.metadata.blocks,
+    layers: scene.metadata.layers,
+    instanceGraph: scene.instanceGraph,
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+    sourceId: "root",
+    sourceLabel: "현재 도면",
+    hitTestingEnabled: true,
+  });
+
+  overlay.redraw(camera, scene.metadata.layers.map(() => true));
+  const selected = overlay.hitTest(242, 296, {
+    snapKinds: ["entity"],
+  });
+  const insertion = overlay.hitTest(240, 300, {
+    snapKinds: ["insertion"],
+  });
+
+  assert.equal(selected.entityType, "text");
+  assert.equal(selected.sourceId, "root");
+  assert.equal(selected.sourceLabel, "현재 도면");
+  assert.equal(selected.handle, 300n);
+  assert.equal(selected.sourceKindName, "TEXT");
+  assert.equal(selected.entityRecord.value, "한글");
+  assert.equal(insertion.kind, "insertion");
+  assert.deepEqual(insertion.displayPoint, [101, 201, 0]);
 });
 
 test("wraps MTEXT to its stored paragraph width", () => {
@@ -298,6 +348,114 @@ test("falls back to system Korean text within a hard glyph budget", async () => 
     canvas.calls.transforms.some(
       ([a, b, c, d]) => a > 0 && b === 0 && c === 0 && d > 0,
     ),
+  );
+});
+
+test("renders visible block ATTDEF text and skips only invisible definitions", () => {
+  const canvas = fakeCanvas();
+  const baseRecord = {
+    ownerHandle: 200n,
+    layerIndex: 0,
+    color: (2 << 30) | 7,
+    commonFlags: 0,
+    kind: 2,
+    flags: 0,
+    insertionPoint: [0, 0, 0],
+    alignmentPoint: [0, 0, 0],
+    normal: [0, 0, 1],
+    height: 1,
+    widthFactor: 1,
+    rotation: 0,
+    obliqueAngle: 0,
+    lineSpacingFactor: 1,
+    sourceFlags: 0,
+    horizontalAlignment: 0,
+    verticalAlignment: 0,
+    generationFlags: 0,
+    attachment: 0,
+    mtextType: 0,
+    valueByteLength: 1,
+    style: { fontFile: "arial.ttf", flags: 0, widthFactor: 1 },
+  };
+  const records = [
+    {
+      ...baseRecord,
+      handle: 10n,
+    },
+    {
+      ...baseRecord,
+      handle: 11n,
+      insertionPoint: [2, 0, 0],
+      sourceFlags: 1 << 1,
+    },
+    {
+      ...baseRecord,
+      handle: 12n,
+      insertionPoint: [4, 0, 0],
+      sourceFlags: 1,
+    },
+    {
+      ...baseRecord,
+      handle: 13n,
+      insertionPoint: [6, 0, 0],
+      commonFlags: 1,
+    },
+  ];
+  const values = ["A", "B", "C", "D"];
+  const overlay = new CanvasTextOverlay(canvas, {
+    textEntities: {
+      length: records.length,
+      readDisplayRecord(index, target) {
+        const record = records[index];
+        Object.assign(target, record);
+        target.insertionPoint = [...record.insertionPoint];
+        target.alignmentPoint = [...record.alignmentPoint];
+        target.normal = [...record.normal];
+        return target;
+      },
+      readValue(index) {
+        return values[index];
+      },
+    },
+    blocks: [
+      {
+        index: 0,
+        handle: 100n,
+        name: "*Model_Space",
+        basePoint: [0, 0, 0],
+      },
+      {
+        index: 1,
+        handle: 200n,
+        name: "TITLE",
+        basePoint: [0, 0, 0],
+      },
+    ],
+    layers: [{ color: (2 << 30) | 7 }],
+    instanceGraph: {
+      instancesByBlock: new Map([
+        [
+          1,
+          {
+            data: translationMat4(104, 201, 0),
+            count: 1,
+            length: 1,
+          },
+        ],
+      ]),
+      modelBlockIndices: new Set([0]),
+    },
+    glyphCache: { getGlyph: () => undefined },
+    minimumPixelHeight: 0.1,
+  });
+
+  const metrics = overlay.redraw(camera, [true]);
+
+  assert.equal(metrics.visitedSourceTexts, 4);
+  assert.equal(metrics.visibleOccurrences, 2);
+  assert.deepEqual(
+    canvas.calls.fillTextArguments.map(([value]) => value),
+    ["A", "B"],
   );
 });
 

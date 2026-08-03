@@ -5,7 +5,7 @@ import {
   includePoint,
   transformPoint,
 } from "./math.mjs";
-import { effectiveClipBounds } from "./instance-graph.mjs";
+import { effectiveClipBounds } from "./instance-graph.mjs?v=1.18.8";
 
 const NO_LAYER = 0xffffffff;
 const DEFAULT_MAXIMUM_SOURCE_IMAGES = 65_536;
@@ -19,10 +19,12 @@ const DEFAULT_SCREEN_DECODE_OVERSAMPLE = 1.5;
 const DEFAULT_DECODE_UPGRADE_FACTOR = 1.5;
 const IDENTITY_INSTANCES = Object.freeze({
   data: identityMat4(),
+  measurementData: identityMat4(),
   clipIds: new Uint32Array([0]),
   layerIndices: new Uint32Array([NO_LAYER]),
   opacities: new Float32Array([1]),
   visibilityRows: new Uint32Array([0]),
+  coordinateSpaceIds: new Uint8Array([1]),
   count: 1,
   length: 1,
 });
@@ -522,6 +524,71 @@ function screenBounds(points) {
   });
 }
 
+function screenPointInPolygon(point, polygon) {
+  let inside = false;
+  for (
+    let current = 0, previous = polygon.length - 1;
+    current < polygon.length;
+    previous = current, current += 1
+  ) {
+    const [currentX, currentY] = polygon[current];
+    const [previousX, previousY] = polygon[previous];
+    const crosses =
+      currentY > point[1] !== previousY > point[1] &&
+      point[0] <
+        ((previousX - currentX) * (point[1] - currentY)) /
+          (previousY - currentY) +
+          currentX;
+    if (crosses) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+function screenSegmentDistance(point, first, last) {
+  const deltaX = last[0] - first[0];
+  const deltaY = last[1] - first[1];
+  const lengthSquared = deltaX * deltaX + deltaY * deltaY;
+  const parameter =
+    lengthSquared <= Number.EPSILON
+      ? 0
+      : Math.max(
+          0,
+          Math.min(
+            1,
+            ((point[0] - first[0]) * deltaX +
+              (point[1] - first[1]) * deltaY) /
+              lengthSquared,
+          ),
+        );
+  return Math.hypot(
+    point[0] - (first[0] + parameter * deltaX),
+    point[1] - (first[1] + parameter * deltaY),
+  );
+}
+
+function screenPolygonDistance(point, polygon) {
+  if (polygon.length < 3) {
+    return Number.POSITIVE_INFINITY;
+  }
+  if (screenPointInPolygon(point, polygon)) {
+    return 0;
+  }
+  let distance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < polygon.length; index += 1) {
+    distance = Math.min(
+      distance,
+      screenSegmentDistance(
+        point,
+        polygon[index],
+        polygon[(index + 1) % polygon.length],
+      ),
+    );
+  }
+  return distance;
+}
+
 function boundaryPoints(record, imageEntities) {
   if (record.clipVertexCount === 0) {
     return [];
@@ -700,6 +767,11 @@ export class CanvasRasterImageOverlay {
       assetStore,
       requestAsset = () => false,
       layerMap = null,
+      linetypeMap = null,
+      displayLayers = layers,
+      sourceId = "root",
+      sourceLabel = "현재 도면",
+      hitTestingEnabled = false,
       maximumSourceImages = DEFAULT_MAXIMUM_SOURCE_IMAGES,
       maximumOccurrences = DEFAULT_MAXIMUM_OCCURRENCES,
       minimumScreenDimension = DEFAULT_MINIMUM_SCREEN_DIMENSION,
@@ -731,6 +803,13 @@ export class CanvasRasterImageOverlay {
     this.assetStore = assetStore;
     this.requestAsset = requestAsset;
     this.layerMap = layerMap instanceof Uint32Array ? layerMap : null;
+    this.linetypeMap =
+      linetypeMap instanceof Uint16Array ? linetypeMap : null;
+    this.displayLayers = displayLayers;
+    this.sourceId = sourceId;
+    this.sourceLabel = sourceLabel;
+    this.hitTestingEnabled = Boolean(hitTestingEnabled);
+    this.hitOccurrences = [];
     this.maximumSourceImages = positiveSafeInteger(
       maximumSourceImages,
       "source image limit",
@@ -774,10 +853,14 @@ export class CanvasRasterImageOverlay {
     });
   }
 
-  resize() {
+  resize(size = null) {
     const ratio = Math.min(globalThis.devicePixelRatio ?? 1, 2);
-    const width = Math.max(1, Math.round(this.canvas.clientWidth * ratio));
-    const height = Math.max(1, Math.round(this.canvas.clientHeight * ratio));
+    const width = size
+      ? size.width
+      : Math.max(1, Math.round(this.canvas.clientWidth * ratio));
+    const height = size
+      ? size.height
+      : Math.max(1, Math.round(this.canvas.clientHeight * ratio));
     if (this.canvas.width !== width || this.canvas.height !== height) {
       this.canvas.width = width;
       this.canvas.height = height;
@@ -785,8 +868,17 @@ export class CanvasRasterImageOverlay {
     return { width, height };
   }
 
-  redraw(camera, layerVisibility, { clear = true } = {}) {
-    const { width, height } = this.resize();
+  setHitTestingEnabled(enabled) {
+    this.hitTestingEnabled = Boolean(enabled);
+    if (!this.hitTestingEnabled) {
+      this.hitOccurrences = [];
+    }
+    return this.hitTestingEnabled;
+  }
+
+  redraw(camera, layerVisibility, { clear = true, size = null } = {}) {
+    const { width, height } = this.resize(size);
+    this.hitOccurrences = [];
     const context = this.context;
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.globalAlpha = 1;
@@ -874,26 +966,50 @@ export class CanvasRasterImageOverlay {
         const right = record.size[0] - 0.5;
         const bottom = -0.5;
         const top = record.size[1] - 0.5;
+        const displayTopLeft = imageWorldPoint(
+          record,
+          left,
+          top,
+          matrix,
+        );
+        const displayTopRight = imageWorldPoint(
+          record,
+          right,
+          top,
+          matrix,
+        );
+        const displayBottomLeft = imageWorldPoint(
+          record,
+          left,
+          bottom,
+          matrix,
+        );
+        const displayBottomRight = imageWorldPoint(
+          record,
+          right,
+          bottom,
+          matrix,
+        );
         const topLeft = worldToScreen(
-          imageWorldPoint(record, left, top, matrix),
+          displayTopLeft,
           camera,
           width,
           height,
         );
         const topRight = worldToScreen(
-          imageWorldPoint(record, right, top, matrix),
+          displayTopRight,
           camera,
           width,
           height,
         );
         const bottomLeft = worldToScreen(
-          imageWorldPoint(record, left, bottom, matrix),
+          displayBottomLeft,
           camera,
           width,
           height,
         );
         const bottomRight = worldToScreen(
-          imageWorldPoint(record, right, bottom, matrix),
+          displayBottomRight,
           camera,
           width,
           height,
@@ -914,6 +1030,94 @@ export class CanvasRasterImageOverlay {
           continue;
         }
         metrics.visibleOccurrences += 1;
+        if (this.hitTestingEnabled) {
+        const measurementData =
+          instances.measurementData ?? instances.data;
+        const measurementMatrix =
+          instances === IDENTITY_INSTANCES
+            ? measurementData
+            : measurementData.subarray(
+                matrixOffset,
+                matrixOffset + 16,
+              );
+        const displayPolygon = [
+          displayTopLeft,
+          displayTopRight,
+          displayBottomRight,
+          displayBottomLeft,
+        ];
+        const measurementPolygon = [
+          imageWorldPoint(record, left, top, measurementMatrix),
+          imageWorldPoint(record, right, top, measurementMatrix),
+          imageWorldPoint(record, right, bottom, measurementMatrix),
+          imageWorldPoint(record, left, bottom, measurementMatrix),
+        ];
+        const screenPolygon = [
+          topLeft,
+          topRight,
+          bottomRight,
+          bottomLeft,
+        ];
+        const displayPoint = transformPoint(
+          matrix,
+          record.insertionPoint,
+        );
+        const measurementPoint = transformPoint(
+          measurementMatrix,
+          record.insertionPoint,
+        );
+        const screenInsertion = worldToScreen(
+          displayPoint,
+          camera,
+          width,
+          height,
+        );
+        if (
+          measurementPolygon.flat().every(Number.isFinite) &&
+          displayPoint.every(Number.isFinite) &&
+          measurementPoint.every(Number.isFinite) &&
+          screenInsertion.every(Number.isFinite)
+        ) {
+          this.hitOccurrences.push(
+            Object.freeze({
+              imageIndex,
+              layerIndex,
+              record: Object.freeze({
+                handle: record.handle,
+                ownerHandle: record.ownerHandle,
+                color: record.color,
+                lineWeight: record.lineWeight,
+                linetypeCode: record.linetypeCode,
+                brightness: record.brightness,
+                contrast: record.contrast,
+                fade: record.fade,
+                clippingEnabled: record.clippingEnabled,
+                size: Object.freeze([...record.size]),
+              }),
+              displayPoint: Object.freeze(displayPoint),
+              measurementPoint: Object.freeze(measurementPoint),
+              displayPolygon: Object.freeze(
+                displayPolygon.map((point) =>
+                  Object.freeze(point),
+                ),
+              ),
+              measurementPolygon: Object.freeze(
+                measurementPolygon.map((point) =>
+                  Object.freeze(point),
+                ),
+              ),
+              screenPolygon: Object.freeze(
+                screenPolygon.map((point) =>
+                  Object.freeze(point),
+                ),
+              ),
+              screenInsertion: Object.freeze(screenInsertion),
+              coordinateSpace:
+                instances.coordinateSpaceIds?.[instanceIndex] ?? 1,
+            }),
+          );
+        }
+        }
         const asset = this.assetStore.lookup(
           this.cacheId,
           imageIndex,
@@ -1011,6 +1215,91 @@ export class CanvasRasterImageOverlay {
     return this.lastMetrics;
   }
 
+  hitTest(
+    x,
+    y,
+    {
+      snapKinds = ["entity"],
+      tolerancePixels = 6,
+    } = {},
+  ) {
+    const enabled = new Set(snapKinds);
+    if (
+      (!enabled.has("entity") && !enabled.has("insertion")) ||
+      !Number.isFinite(x) ||
+      !Number.isFinite(y)
+    ) {
+      return null;
+    }
+    const scaleX =
+      Math.max(this.canvas.width, 1) /
+      Math.max(this.canvas.clientWidth, 1);
+    const scaleY =
+      Math.max(this.canvas.height, 1) /
+      Math.max(this.canvas.clientHeight, 1);
+    const scale = Math.max(scaleX, scaleY);
+    const point = [x * scaleX, y * scaleY];
+    const tolerance = scale * Math.max(tolerancePixels, 0);
+    let best = null;
+    for (
+      let index = this.hitOccurrences.length - 1;
+      index >= 0;
+      index -= 1
+    ) {
+      const occurrence = this.hitOccurrences[index];
+      const deviceDistance = enabled.has("entity")
+        ? screenPolygonDistance(point, occurrence.screenPolygon)
+        : Math.hypot(
+            point[0] - occurrence.screenInsertion[0],
+            point[1] - occurrence.screenInsertion[1],
+          );
+      if (deviceDistance > tolerance) {
+        continue;
+      }
+      const distancePixels = deviceDistance / scale;
+      if (best && distancePixels >= best.distancePixels) {
+        continue;
+      }
+      const fullRecord =
+        typeof this.imageEntities.get === "function"
+          ? this.imageEntities.get(occurrence.imageIndex)
+          : Object.freeze({
+              ...occurrence.record,
+              path: this.imageEntities.readPath(
+                occurrence.imageIndex,
+              ),
+            });
+      best = Object.freeze({
+        kind: enabled.has("entity") ? "entity" : "insertion",
+        displayPoint: occurrence.displayPoint,
+        measurementPoint: occurrence.measurementPoint,
+        displayPolygon: occurrence.displayPolygon,
+        measurementPolygon: occurrence.measurementPolygon,
+        distancePixels,
+        coordinateSpace: occurrence.coordinateSpace,
+        handle: fullRecord.handle,
+        layerIndex: occurrence.layerIndex,
+        layerName:
+          this.displayLayers[occurrence.layerIndex]?.name ?? "",
+        sourceKind: null,
+        sourceKindName: "이미지",
+        entityType: "image",
+        entityRecord: fullRecord,
+        color: fullRecord.color,
+        lineWeight: fullRecord.lineWeight,
+        linetypeCode:
+          this.linetypeMap &&
+          fullRecord.linetypeCode < this.linetypeMap.length
+            ? this.linetypeMap[fullRecord.linetypeCode]
+            : fullRecord.linetypeCode,
+        approximated: false,
+        sourceId: this.sourceId,
+        sourceLabel: this.sourceLabel,
+      });
+    }
+    return best;
+  }
+
   #applyImageClip(
     record,
     matrix,
@@ -1099,6 +1388,7 @@ export class CompositeRasterImageOverlay {
   constructor(canvas) {
     this.canvas = canvas;
     this.overlays = [];
+    this.hitTestingEnabled = false;
   }
 
   add(overlay, { first = false } = {}) {
@@ -1107,6 +1397,7 @@ export class CompositeRasterImageOverlay {
         "composite raster image overlay requires a drawable overlay",
       );
     }
+    overlay.setHitTestingEnabled?.(this.hitTestingEnabled);
     if (first) {
       this.overlays.unshift(overlay);
     } else {
@@ -1115,7 +1406,7 @@ export class CompositeRasterImageOverlay {
     return overlay;
   }
 
-  redraw(camera, layerVisibility) {
+  redraw(camera, layerVisibility, { size = null } = {}) {
     const metrics = {
       sourceImages: 0,
       visitedSourceImages: 0,
@@ -1130,6 +1421,10 @@ export class CompositeRasterImageOverlay {
       memory: null,
     };
     if (this.overlays.length === 0) {
+      if (size) {
+        this.canvas.width = size.width;
+        this.canvas.height = size.height;
+      }
       const context = this.canvas.getContext("2d", { alpha: true });
       context?.clearRect(0, 0, this.canvas.width, this.canvas.height);
       return Object.freeze(metrics);
@@ -1137,6 +1432,7 @@ export class CompositeRasterImageOverlay {
     this.overlays.forEach((overlay, index) => {
       const current = overlay.redraw(camera, layerVisibility, {
         clear: index === 0,
+        size,
       });
       for (const name of [
         "sourceImages",
@@ -1155,6 +1451,28 @@ export class CompositeRasterImageOverlay {
       metrics.memory = current.memory ?? metrics.memory;
     });
     return Object.freeze(metrics);
+  }
+
+  setHitTestingEnabled(enabled) {
+    this.hitTestingEnabled = Boolean(enabled);
+    for (const overlay of this.overlays) {
+      overlay.setHitTestingEnabled?.(this.hitTestingEnabled);
+    }
+    return this.hitTestingEnabled;
+  }
+
+  hitTest(x, y, options) {
+    let best = null;
+    for (let index = this.overlays.length - 1; index >= 0; index -= 1) {
+      const candidate = this.overlays[index].hitTest?.(x, y, options);
+      if (
+        candidate &&
+        (!best || candidate.distancePixels < best.distancePixels)
+      ) {
+        best = candidate;
+      }
+    }
+    return best;
   }
 
   dispose() {

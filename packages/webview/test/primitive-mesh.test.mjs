@@ -14,9 +14,9 @@ import {
 } from "../src/scene-cache.mjs";
 import { makeFixtureCache } from "./cache-fixture.mjs";
 
-async function primitiveFixture(minorVersion = 8) {
+async function primitiveFixture() {
   const reader = await SceneCacheReader.open(
-    new MemoryRangeSource(makeFixtureCache({ minorVersion })),
+    new MemoryRangeSource(makeFixtureCache()),
   );
   const [source, metadata] = await Promise.all([
     reader.readPrimitiveSource(),
@@ -72,7 +72,15 @@ test("builds instanced POINT markers and FILLMODE-aware SOLID meshes", async () 
   assert.equal(result.metrics.pointVertices, 1);
   assert.equal(result.metrics.solidFillVertices, 6);
   assert.equal(result.metrics.solidOutlineVertices, 6);
-  assert.equal(result.metrics.gpuBytes, 13 * PRIMITIVE_VERTEX_STRIDE);
+  assert.equal(result.metrics.pointGpuBytes, PRIMITIVE_VERTEX_STRIDE);
+  assert.equal(
+    result.metrics.solidFillGpuBytes,
+    6 * PRIMITIVE_VERTEX_STRIDE,
+  );
+  assert.equal(
+    result.metrics.solidOutlineGpuBytes,
+    6 * PRIMITIVE_VERTEX_STRIDE,
+  );
 
   assert.equal(
     result.points.batches[0].kind,
@@ -100,7 +108,7 @@ test("builds instanced POINT markers and FILLMODE-aware SOLID meshes", async () 
 });
 
 test("renders visible 3DFACE edges in the shared surface buffer", async () => {
-  const { source, metadata, instanceGraph } = await primitiveFixture(9);
+  const { source, metadata, instanceGraph } = await primitiveFixture();
   const result = buildPrimitiveMeshes(
     source,
     metadata.blocks,
@@ -131,7 +139,7 @@ test("renders visible 3DFACE edges in the shared surface buffer", async () => {
 });
 
 test("renders WIPEOUT polygon, rectangular and full-image frames without masks", async () => {
-  const { source, metadata, instanceGraph } = await primitiveFixture(10);
+  const { source, metadata, instanceGraph } = await primitiveFixture();
   const result = buildPrimitiveMeshes(
     source,
     metadata.blocks,
@@ -191,7 +199,7 @@ test("renders WIPEOUT polygon, rectangular and full-image frames without masks",
 });
 
 test("keeps WIPEOUT masks deferred and omits frames when the setting is off", async () => {
-  const { source, metadata, instanceGraph } = await primitiveFixture(10);
+  const { source, metadata, instanceGraph } = await primitiveFixture();
   const result = buildPrimitiveMeshes(
     source,
     metadata.blocks,
@@ -211,7 +219,7 @@ test("keeps WIPEOUT masks deferred and omits frames when the setting is off", as
 
 test("triangulates WIPEOUT masks with compressed draw-order buckets", async () => {
   const reader = await SceneCacheReader.open(
-    new MemoryRangeSource(makeFixtureCache({ minorVersion: 11 })),
+    new MemoryRangeSource(makeFixtureCache()),
   );
   const [source, metadata, drawOrder] = await Promise.all([
     reader.readPrimitiveSource(),
@@ -275,7 +283,7 @@ test("stops each deferred primitive stream at its GPU budget", async () => {
 });
 
 test("stops 3DFACE edges at the shared surface GPU budget", async () => {
-  const { source, metadata, instanceGraph } = await primitiveFixture(9);
+  const { source, metadata, instanceGraph } = await primitiveFixture();
   const result = buildPrimitiveMeshes(
     source,
     metadata.blocks,
@@ -297,7 +305,7 @@ test("stops 3DFACE edges at the shared surface GPU budget", async () => {
 });
 
 test("stops WIPEOUT frames at the shared surface GPU budget", async () => {
-  const { source, metadata, instanceGraph } = await primitiveFixture(10);
+  const { source, metadata, instanceGraph } = await primitiveFixture();
   const result = buildPrimitiveMeshes(
     source,
     metadata.blocks,

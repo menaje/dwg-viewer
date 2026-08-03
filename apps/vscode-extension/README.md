@@ -156,7 +156,7 @@ fallback when no local file exists.
 
 ## External references
 
-Scene Cache v1.12 and later retain each DWG XREF's original path. The extension tries,
+Scene Cache v1.18 retains each DWG XREF's original path. The extension tries,
 in order, a saved manual mapping, an absolute path valid on the current
 platform, a path relative to the parent drawing, and the adjacent `xref`
 folder. It then performs a bounded basename search and ranks candidates by
@@ -177,6 +177,12 @@ prefix. Optional project roots are configured as absolute paths:
   ]
 }
 ```
+
+The object-selection review tool includes HATCH, SOLID and 3DFACE candidates
+from every resolved root or nested XREF. Selection preserves composed INSERT
+transforms, XCLIP boundaries, root-layer visibility and child Layer 0
+inheritance, and reports the source reference without relying on a sample
+filename such as `xtitle`.
 
 Search is limited to 32 roots, depth 8, 50,000 entries and 256 candidates.
 Symlink directories and the whole disk are not traversed. Conversion and
@@ -199,7 +205,22 @@ eagerly decoding every source at full resolution.
 - Read-only model-space viewing
 - Memory-balanced first open with an optional progressive Native overview
 - Bounded cache range reads (maximum 8 MiB per request)
-- Layer visibility, pan, zoom, hatch, and text
+- Layer visibility with isolate, invert and previous-state restore, grouped
+  dynamically from each drawing's root and XREF-dependent layer records
+- Drag-window zoom, bounded previous/next view history, and persistent named
+  view bookmarks scoped independently to model space and each layout
+- Pan, zoom, hatch, text, object distance, cumulative distance,
+  area/perimeter, three-point angle and radius/diameter measurement
+- Persistent measurement display unit and precision settings, including
+  explicit two-point physical-unit calibration for unitless drawings
+- Native save-dialog export of the current screen, current tab or all layouts
+  to PNG/PDF, preserving arbitrary per-layout paper sizes and optionally
+  applying the layout CTB; all-layout PNG output is a portable ZIP with a
+  UTF-8 layout-name map
+- Explorer **DWG 문자 검색** view for workspace-wide `TEXT`, `MTEXT`,
+  `ATTRIB`, and `ATTDEF` search with literal and bounded regular-expression
+  modes; selecting a result opens, centers, and highlights the source text
+  in the drawing
 - Automatic and manual cross-platform DWG XREF resolution
 - Lazy cross-platform JPG/PNG IMAGE resolution and manual replacement
 - Shared-instance XREF linework, layer visibility, text, and detail streaming

@@ -9,11 +9,15 @@ Build the runner once so measured child processes do not include compilation:
 cargo build --release -p dwg-converter
 mkdir -p benchmarks/results
 target/release/dwg-converter benchmark /path/to/drawing.dwg \
+  --adapter /absolute/path/to/libredwg-adapter \
+  --engine-id libredwg \
+  --engine-version 0.14 \
+  --engine-license GPL-3.0-or-later \
   --runs 3 \
   --warmup-runs 1 \
   --scope all \
   --pretty \
-  --output benchmarks/results/acadrust.json
+  --output benchmarks/results/libredwg.json
 ```
 
 Every warmup and measured phase runs in a new process. Conversion caches are
@@ -48,17 +52,8 @@ coverage requirements.
 External adapters must implement
 [`specs/engine-adapter.md`](../specs/engine-adapter.md).
 
-Compare the normalized inspection fingerprints without exposing drawing text
-or absolute bounds:
-
-```bash
-jq --slurp -f benchmarks/compare-inspection.jq \
-  benchmarks/results/acadrust.json \
-  benchmarks/results/libredwg.json
-```
-
-Parser diagnostics are intentionally excluded from compatibility equality
-because engines classify recoverable warnings differently.
+The retired acadrust adapter is no longer built or accepted as an implicit
+benchmark target. Every run must identify an explicit external adapter.
 
 ## Korean encoding regression
 

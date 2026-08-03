@@ -16,7 +16,7 @@ import { makeFixtureCache } from "./cache-fixture.mjs";
 
 async function hatchFixture() {
   const reader = await SceneCacheReader.open(
-    new MemoryRangeSource(makeFixtureCache({ minorVersion: 6 })),
+    new MemoryRangeSource(makeFixtureCache()),
   );
   const metadata = await reader.readRenderMetadata();
   const source = await reader.readHatchSource();

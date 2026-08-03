@@ -98,9 +98,6 @@ self.addEventListener("message", async (event) => {
       : new BlobRangeSource(file);
     const rangeSource = new TrackedRangeSource(messageSource);
     const reader = await SceneCacheReader.open(rangeSource);
-    if (reader.header.minor < 6) {
-      throw new Error("HATCH fills require Scene Cache v1.6");
-    }
     const [
       source,
       layers,
@@ -148,16 +145,15 @@ self.addEventListener("message", async (event) => {
       maskOrder,
     };
     const instanceGraph = patternInstanceGraph(patternState, view);
-    const pattern =
-      reader.header.minor >= 7 && camera
-        ? buildHatchPatternMesh(
-            source,
-            blocks,
-            instanceGraph,
-            camera,
-            { maskOrder },
-          )
-        : null;
+    const pattern = camera
+      ? buildHatchPatternMesh(
+          source,
+          blocks,
+          instanceGraph,
+          camera,
+          { maskOrder },
+        )
+      : null;
     const transfers = [fill.vertices.buffer];
     if (pattern) {
       transfers.push(pattern.vertices.buffer);
@@ -168,7 +164,7 @@ self.addEventListener("message", async (event) => {
         ok: true,
         fill,
         pattern,
-        supportsPatterns: reader.header.minor >= 7,
+        supportsPatterns: true,
         reads: rangeSource.snapshot(),
       },
       transfers,

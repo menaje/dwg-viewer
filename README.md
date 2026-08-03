@@ -4,10 +4,10 @@
 VS Code 읽기 전용 뷰어입니다.
 
 엔진 비교 결과 GNU LibreDWG 0.14를 주 엔진 경로로 선택했습니다.
-`acadrust`는 교차 회귀 기준으로 유지하고, ACadSharp 3.6.51은 파싱만으로
-메모리 하드 한도를 넘어 대형 도면 경로에서 제외했습니다. 결정 근거와
-GPL 배포 경계는 [`docs/engine-decision.md`](docs/engine-decision.md)에
-정리되어 있습니다.
+이전에 비교 기준으로 사용하던 acadrust 변환기는 폐기·제거했습니다.
+ACadSharp 3.6.51도 파싱만으로 메모리 하드 한도를 넘어 대형 도면
+경로에서 제외했습니다. 결정 근거와 GPL 배포 경계는
+[`docs/engine-decision.md`](docs/engine-decision.md)에 정리되어 있습니다.
 브라우저 기반 Webview 프로토타입은 캐시 전체를 메모리에 올리지 않고
 첫 화면용 버퍼만 읽어 WebGL2로 그린 뒤 한글 문자 원본을 별도 범위로
 읽습니다. HATCH 원본과 채움·패턴 선도 첫 선 화면 이후 별도 워커에서
@@ -22,24 +22,6 @@ GPL 배포 경계는 [`docs/engine-decision.md`](docs/engine-decision.md)에
 - 한글과 대형 도면 성능을 초기 합격 조건으로 다룹니다.
 - 유료 SDK나 비공개 렌더링 엔진을 사용하지 않습니다.
 
-## DWG 검사기
-
-Rust 1.88 이상이 필요합니다.
-
-```bash
-cargo run --release -p dwg-converter -- inspect /path/to/drawing.dwg --pretty
-```
-
-기본 보고서는 도면 파일명과 실제 문자 샘플을 숨깁니다. 로컬 진단에만
-필요하다면 다음 옵션을 명시적으로 사용합니다.
-
-```bash
-cargo run --release -p dwg-converter -- inspect /path/to/drawing.dwg \
-  --pretty \
-  --include-input-name \
-  --text-samples 5
-```
-
 ## 도면 엔진 벤치마크
 
 `benchmark` 명령은 검사와 변환을 각각 독립 프로세스로 반복해 벽시계
@@ -49,11 +31,15 @@ cargo run --release -p dwg-converter -- inspect /path/to/drawing.dwg \
 
 ```bash
 cargo build --release -p dwg-converter
-target/release/dwg-converter benchmark /path/to/drawing.dwg --pretty
+target/release/dwg-converter benchmark /path/to/drawing.dwg \
+  --adapter /absolute/path/to/libredwg-adapter \
+  --engine-version 0.14 \
+  --engine-license GPL-3.0-or-later \
+  --pretty
 ```
 
 비공개 결과는 Git에서 제외되는 `benchmarks/results/`에만 저장합니다.
-LibreDWG 후보는 전역 설치 없이
+선택된 LibreDWG 어댑터는 전역 설치 없이
 [`adapters/libredwg`](adapters/libredwg/README.md)에서 준비할 수 있습니다.
 실제 LibreDWG 0.14 WASM Worker 후보의 재현 방법과 탈락 근거는
 [`adapters/libredwg/wasm`](adapters/libredwg/wasm/README.md)에 있습니다.
@@ -62,42 +48,15 @@ ACadSharp 파서 탈락 결과도
 모든 후보는 같은 [`engine-adapter`](specs/engine-adapter.md) 계약으로
 연결해 비교합니다.
 
-LibreDWG의 현재 직접 변환기는 LINE, LWPOLYLINE/2D·3D POLYLINE,
-ARC, CIRCLE, ELLIPSE, SPLINE과 HATCH 경계를 화면 버퍼로 만듭니다.
-원호·원·타원과 폴리라인 불지는 회전당 최대 16개, SPLINE은 엔티티당
-최대 256개 선분으로 제한하고, 지원되는 독립 곡선의 정밀 원본 레코드와
-knot·weight·control/fit point는 별도로 보존합니다. Scene Cache v1.4는
-TEXT, MTEXT, ATTDEF, ATTRIB과 문자 스타일·SHX/BigFont 파일명을 UTF-8로
-함께 보존하고, v1.5는 HATCH당 최대 65,536개의 제한형 경계 미리보기를
-추가합니다. v1.6은 닫힌 HATCH 경계, 패턴·그라데이션 메타데이터, 색상과
-시드 점을 제한형 원본 레코드로 보존하고, Webview에서 솔리드와
-그라데이션을 채웁니다. v1.7은 패턴 정의선과 dash 풀을 보존하고
-화면 기반 패턴 선을 생성합니다. v1.8은 POINT의 WCS 좌표와
-PDMODE/PDSIZE, SOLID의 OCS 네 모서리와 FILLMODE를 보존하고 첫 화면 뒤
-표시합니다. 해석 가능한 DIMENSION은 별도 형상을 만들지 않고 도면이
-가진 익명 그림 블록을 기존 블록 인스턴스 흐름에 연결합니다. v1.9는
-3DFACE의 WCS 네 꼭짓점과 가장자리 숨김 비트를 보존하고 기본 선화
-뷰에서 보이는 가장자리만 지연 표시합니다. v1.10은 WIPEOUT의 이미지
-기준 벡터, 표시 속성, 원본 클립 경계와 전역 프레임 설정을 보존하고,
-설정이 켜진 프레임만 첫 화면 뒤 안전하게 표시합니다. 실제 배경 가림은
-블록 내부 그리기 순서가 준비될 때까지 명시적으로 보류합니다. v1.11은
-`SORTENTSTABLE`의 블록 소유자, 엔티티 핸들과 정렬 핸들을 결정적이고
-제한된 두 섹션으로 보존하며 첫 화면에서는 읽지 않습니다. v1.12는
-블록 레코드에 DWG가 저장한 XREF 원본 경로를 UTF-8로 보존합니다.
-v1.13은 INSERT/XREF의 `SPATIAL_FILTER` 경계와 역변환된 블록 내부
-좌표를 보존합니다. Webview는 이 범위를 중첩 블록에 상속해 선·채움·
-POINT·문자를 같은 경계로 자르고, 숨겨진 형상이 전체보기 범위와 상세
-스트리밍을 부풀리지 않도록 합니다.
-v1.14~v1.17은 레이어별 선종류와 복합 선종류, 저장된 뷰와 다중
-레이아웃/뷰포트, XLINE·MULTILEADER·LEADER 및 OLE2FRAME 외곽선
-표시를 추가합니다. OLE에 포함된 Excel·그림 본문은 아직 해석하지
-않고 실제 회전된 삽입 범위만 안전한 대체 표시로 그립니다.
-v1.18은 IMAGE/IMAGEDEF의 JPG·PNG 경로, 삽입점과 U/V 축, 원본 픽셀
-크기, 밝기·대비·페이드와 클립 경계를 보존합니다. Webview는 현재
-화면에 걸치는 이미지만 요청하고 압축 전송과 디코딩 메모리를 각각
-제한합니다. 이미지의 실제 변환·클립 범위도 `전체 보기`에 포함하고,
-화면에서 차지하는 픽셀 크기에 맞춰 디코딩한 뒤 확대할 때만 단계적으로
-더 선명한 비트맵으로 교체합니다.
+LibreDWG 직접 변환기는 Scene Cache v1.18만 생성합니다. LINE,
+LWPOLYLINE/2D·3D POLYLINE, ARC, CIRCLE, ELLIPSE, SPLINE과 HATCH
+경계를 화면 버퍼와 정밀 원본으로 보존합니다. TEXT, MTEXT, ATTDEF,
+ATTRIB, SHX/BigFont, POINT, SOLID, 3DFACE, WIPEOUT, 도면 순서,
+XREF 경로·공간 클립, 선종류, 저장된 뷰, 다중 레이아웃·뷰포트,
+IMAGE/IMAGEDEF도 같은 현재 스키마에 포함합니다. OLE2FRAME은 실제
+삽입 외곽선을 표시하지만 포함된 Excel·그림 본문은 아직 해석하지
+않습니다. Webview는 현재 화면과 교차하는 JPG·PNG만 요청하고 이미지
+전송·디코딩 메모리를 제한합니다.
 LibreDWG의 `ANSI_949` 문자열은 캐시에 쓰기 전에 UTF-8로 변환하므로
 한글 레이어·블록·문자 때문에 Webview 열기가 중단되지 않습니다. 비공개
 코퍼스용 익명 검사도 같은 변환 뒤 한글·손상 문자를 집계합니다.
@@ -115,7 +74,7 @@ MTEXT는 저장된 WCS X축, 부착점, 폭, 열 수·폭·간격·높이와 배
 적용합니다. 비-Z OCS와 모든 justification 조합의 외부 기준 이미지
 대조는 계속 보완합니다.
 
-## 최소 Scene Cache 생성
+## Scene Cache v1.18
 
 현재 캐시 작성기는 LINE, ARC, CIRCLE, INSERT, 해석 가능한 DIMENSION
 그림 블록 참조, LWPOLYLINE/POLYLINE, ELLIPSE, SPLINE과 네 문자 계열을
@@ -135,23 +94,9 @@ POINT·SOLID·3DFACE·WIPEOUT 원본은 첫 화면 범위에 포함하지 않으
 별도 워커가 공유 블록 인스턴스를 유지한 채 최대 32MiB의 GPU 버퍼로
 변환합니다. WIPEOUT 프레임은 SOLID/3DFACE와 8MiB 외곽선 버퍼를
 공유하고, 가림 채움은 도면 순서 지원 전까지 생성하지 않습니다.
-기존 출력은 안전을 위해 덮어쓰지 않습니다.
-
-```bash
-cargo run --release -p dwg-converter -- convert \
-  /path/to/drawing.dwg \
-  /path/to/drawing.dwg.cache \
-  --pretty
-```
-
-생성 직후 헤더, 섹션 범위, 중복, 레코드 크기와 문자열 테이블을 자동
-검증합니다. 기존 캐시를 별도로 검사할 수도 있습니다.
-
-```bash
-cargo run --release -p dwg-converter -- validate-cache \
-  /path/to/drawing.dwg.cache \
-  --pretty
-```
+LibreDWG 어댑터는 기존 출력을 덮어쓰지 않으며 생성 직후 헤더, 섹션
+범위, 중복, 레코드 크기와 문자열 테이블을 검증합니다. 제품 Webview와
+벤치마크 도구는 v1.18 이외의 캐시를 거부합니다.
 
 캐시 형식은 [`specs/scene-cache.md`](specs/scene-cache.md)에 정의되어
 있습니다. 생성된 캐시에도 도면 정보가 포함될 수 있으므로 Git에 올리지
@@ -174,9 +119,22 @@ python3 -m http.server 4173 --bind 127.0.0.1 --directory packages/webview
 4MiB의 첫 화면 정점만 범위 읽기합니다. 블록 형상은 한 번만 GPU에
 올리고 변환 행렬로 반복 배치합니다. 휠 또는 화면 버튼으로 확대하고
 마우스로 이동하면 화면과 교차하는 LOD 1 청크만 추가로 읽습니다.
+사각 영역을 드래그해 확대하고, 이동·확대 작업의 이전/다음 화면을
+오갈 수 있습니다. 현재 화면은 사용자가 정한 이름으로 북마크하며
+모델 공간과 각 배치별로 분리해 저장합니다.
 레이어 패널에서는 한글 이름을 검색하고 개별 또는 전체 레이어를
-켜고 끌 수 있습니다. 이때 형상을 다시 읽거나 GPU에 다시 올리지 않고
-작은 레이어 가시성 텍스처만 갱신합니다.
+켜고 끌 수 있습니다. 현재 도면과 외부참조 그룹은 특정 샘플 이름이나
+설정값이 아니라, 열 때마다 해당 DWG의 레이어 테이블과 외부참조 종속
+레이어 표기(`참조명|레이어명`)에서 동적으로 만듭니다. 임의의 한글·영문·
+혼합 참조명과 중첩 참조를 그대로 처리합니다. 가시성을 바꿀 때는 형상을
+다시 읽거나 GPU에 다시 올리지 않고 작은 레이어 가시성 텍스처만
+갱신합니다.
+
+객체 선택은 현재 도면뿐 아니라 연결된 임의 이름의 중첩 외부참조에서
+HATCH·SOLID·3DFACE를 함께 찾습니다. 외부참조의 INSERT 변환, XCLIP,
+루트 레이어 매핑과 가시성, 자식 Layer 0 상속을 그대로 적용하며
+`xtitle` 같은 샘플 파일명이나 특정 도면 속성을 기본값으로 가정하지
+않습니다.
 
 인스턴스 행렬은 draw call마다 새 배열을 만들지 않고 최대 16,384개짜리
 하나의 점진 확장 작업 버퍼를 재사용합니다. 화면 지표에는 Chromium이
@@ -205,6 +163,13 @@ VS Code 확장에서는 도면이 실제로 요구한 SHX/BigFont/TTF/OTF만 첫
 동점·누락 시 `출력 선택`에서 현재 도면용 CTB를 직접 고를 수 있고, 출력
 색상·선굵기는 해당 레이아웃에만 선택적으로 적용하며 Model 화면에는
 강제하지 않습니다.
+
+`PNG/PDF`에서는 현재 화면, 현재 탭 전체 또는 모든 배치를 저장할 수
+있습니다. 각 배치가 가진 임의 용지 크기와 회전값을 우선 사용하고 값이
+없을 때만 선택한 규격 용지로 대체합니다. 1:N 축척은 DWG 삽입 단위나
+사용자가 측정 설정에서 보정한 실제 단위를 사용하며, 단위 없는 도면을
+임의로 mm로 해석하지 않습니다. 전체 배치 PNG는 운영체제 기본 압축
+도구와 호환되는 ZIP 파일명과 원래 유니코드 배치명 매핑을 함께 저장합니다.
 
 BigFont 한글 코드는 기본적으로 파일명을 추측하지 않고 실제 글리프를
 `EUC-KR → CP949/UHC → Johab/CP1361` 순서로 확인합니다. EUC-KR의
@@ -246,7 +211,7 @@ SOLID·3DFACE·WIPEOUT이 공유하는 외곽선은 8MiB로 각각 제한하고,
 프로세스에 계속 보관하지 않고 HATCH 원본 처리와의 순간 메모리
 중첩도 피합니다.
 
-WIPEOUT 마스크는 v1.11 정렬표를 첫 화면 이후에만 읽어 블록별
+WIPEOUT 마스크는 Scene Cache 정렬표를 첫 화면 이후에만 읽어 블록별
 앞·뒤 순서로 압축합니다. 중첩 INSERT, DIMENSION 그림 블록과 MINSERT
 배열은 기존 인스턴스 행렬을 복사하지 않고 순서 기준값 하나만
 덧붙입니다. WebGL 깊이 버퍼와 Canvas 문자 클리핑이 같은 순서를
@@ -280,7 +245,7 @@ pnpm --filter dwg-viewer-vscode package:vsix
 최대 4개로 제한됩니다. 편집기를 닫거나 진행 알림에서 취소하면 변환
 프로세스, 임시 파일, 캐시 파일 핸들과 대기 중 요청을 정리합니다.
 
-Scene Cache v1.12 이상 도면의 외부 DWG 참조는 먼저 사용자가 저장한 수동
+Scene Cache v1.18 도면의 외부 DWG 참조는 먼저 사용자가 저장한 수동
 연결, 현재 운영체제에서 유효한 원본 절대경로, 도면 기준 상대경로,
 도면 옆 `xref` 폴더를 확인합니다. 없으면 파일명이 같은 후보를 도면
 폴더와 등록한 검색 폴더 안에서만 찾고, 원본 경로의 바로 위 폴더·그 위

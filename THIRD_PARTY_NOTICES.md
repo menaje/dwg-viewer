@@ -1,12 +1,5 @@
 # Third-party notices
 
-## acadrust
-
-- Project: https://github.com/hakanaktt/acadrust
-- Version: 0.4.1
-- License: Mozilla Public License 2.0
-- Usage: native DWG parsing candidate
-
 ## Optional dependency: GNU LibreDWG
 
 - Project: https://www.gnu.org/software/libredwg/

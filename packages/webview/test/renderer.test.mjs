@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   calculateOverviewBounds,
   makeClipTexturePayload,
+  overlayCameraTransform,
   patchCurveReplacementMarkers,
   patchLineMaskBuckets,
   selectInteractiveInstanceIndices,
@@ -296,6 +297,30 @@ test("culls offscreen and sub-pixel instances during interaction", () => {
   assert.deepEqual([...tiny], []);
 });
 
+test("maps a retained Canvas overlay from its stable camera to the interaction camera", () => {
+  const transform = overlayCameraTransform(
+    {
+      origin: [0, 0, 0],
+      worldWidth: 20,
+      worldHeight: 10,
+    },
+    {
+      origin: [2, -1, 0],
+      worldWidth: 10,
+      worldHeight: 5,
+    },
+    200,
+    100,
+  );
+
+  assert.deepEqual(transform, {
+    scaleX: 2,
+    scaleY: 2,
+    translateX: -140,
+    translateY: -70,
+  });
+});
+
 test("culls offscreen layout instances in a full-quality redraw", () => {
   const { gl, calls } = makeFakeGl();
   const canvas = {
@@ -569,6 +594,12 @@ test("redraws overview and independently uploaded detail vertex ranges", () => {
   assert.throws(() => renderer.setLayerVisibility(2, true), /invalid layer/);
   renderer.setAllLayersVisible(false);
   assert.deepEqual(renderer.getLayerVisibility(), [false, false]);
+  renderer.setLayerVisibilityState([true, false]);
+  assert.deepEqual(renderer.getLayerVisibility(), [true, false]);
+  assert.throws(
+    () => renderer.setLayerVisibilityState([true]),
+    /invalid layer visibility state/,
+  );
   assert.ok(
     calls.shaderSources.some((source) =>
       source.includes("resolvedLayerIndex() < uint(u_layerCount)"),
@@ -616,8 +647,161 @@ test("redraws overview and independently uploaded detail vertex ranges", () => {
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },
     { mode: gl.LINES, first: 0, count: 2, instances: 1 },
   ]);
+  const interactive = renderer.redraw(
+    {
+      ...first.camera,
+      origin: [first.camera.origin[0] + 0.5, first.camera.origin[1], 0],
+    },
+    { interactive: true },
+  );
+  assert.equal(interactive.drawCalls, 2);
+  assert.equal(interactive.detailBatches, 1);
+  assert.equal(interactive.detailDrawCalls, 1);
 
   assert.equal(renderer.deleteDetailBatch(detail.id), true);
+  renderer.dispose();
+});
+
+test("retains and camera-transforms Canvas overlays during interaction", () => {
+  const { gl } = makeFakeGl();
+  const canvas = {
+    clientWidth: 200,
+    clientHeight: 100,
+    width: 0,
+    height: 0,
+    getContext(name) {
+      return name === "webgl2" ? gl : null;
+    },
+  };
+  const renderer = new WebGlLineRenderer(canvas);
+  const first = renderer.renderOverview({
+    batches: [
+      batch({
+        id: 0,
+        kind: GpuLineBatchKind.ModelOverview,
+        lodLevel: 0,
+        firstVertex: 0,
+      }),
+    ],
+    layers: [{ color: 0, flags: 0 }],
+    instanceGraph: { instancesByBlock: new Map() },
+    vertices: {
+      buffer: new ArrayBuffer(72),
+      byteLength: 72,
+      vertexCount: 2,
+    },
+  });
+  const makeOverlay = (kind) => {
+    const redraws = [];
+    const liveContext = {
+      clearRects: [],
+      drawImages: [],
+      transforms: [],
+      setTransform(...values) {
+        this.transforms.push(values);
+      },
+      clearRect(...values) {
+        this.clearRects.push(values);
+      },
+      drawImage(...values) {
+        this.drawImages.push(values);
+      },
+    };
+    const snapshotCanvases = [];
+    return {
+      canvas: {
+        clientWidth: 200,
+        clientHeight: 100,
+        width: 400,
+        height: 200,
+        style: {},
+        getContext(name) {
+          return name === "2d" ? liveContext : null;
+        },
+        ownerDocument: {
+          createElement(name) {
+            assert.equal(name, "canvas");
+            const context = {
+              clearRects: [],
+              drawImages: [],
+              transforms: [],
+              setTransform(...values) {
+                this.transforms.push(values);
+              },
+              clearRect(...values) {
+                this.clearRects.push(values);
+              },
+              drawImage(...values) {
+                this.drawImages.push(values);
+              },
+            };
+            const snapshot = {
+              width: 0,
+              height: 0,
+              getContext(contextName) {
+                return contextName === "2d" ? context : null;
+              },
+              context,
+            };
+            snapshotCanvases.push(snapshot);
+            return snapshot;
+          },
+        },
+      },
+      redraw(camera) {
+        redraws.push(camera);
+        return Object.freeze({ kind, redraws: redraws.length });
+      },
+      dispose() {},
+      liveContext,
+      redraws,
+      snapshotCanvases,
+    };
+  };
+  const imageOverlay = makeOverlay("image");
+  const textOverlay = makeOverlay("text");
+  renderer.setImageOverlay(imageOverlay);
+  renderer.setTextOverlay(textOverlay);
+  renderer.redraw(first.camera);
+  const movedView = {
+    ...first.camera,
+    origin: [first.camera.origin[0] + 1, first.camera.origin[1] - 0.5, 0],
+    worldHeight: first.camera.worldHeight * 0.5,
+  };
+
+  const interactive = renderer.redraw(movedView, { interactive: true });
+
+  assert.equal(imageOverlay.redraws.length, 1);
+  assert.equal(textOverlay.redraws.length, 1);
+  assert.equal(interactive.retainedImageOverlay, true);
+  assert.equal(interactive.retainedTextOverlay, true);
+  assert.deepEqual(interactive.images, { kind: "image", redraws: 1 });
+  assert.deepEqual(interactive.text, { kind: "text", redraws: 1 });
+  assert.equal(imageOverlay.snapshotCanvases.length, 1);
+  assert.equal(textOverlay.snapshotCanvases.length, 1);
+  assert.equal(imageOverlay.liveContext.drawImages.length, 1);
+  assert.equal(textOverlay.liveContext.drawImages.length, 1);
+  assert.equal(
+    imageOverlay.liveContext.drawImages[0][0],
+    imageOverlay.snapshotCanvases[0],
+  );
+  assert.equal(
+    textOverlay.liveContext.drawImages[0][0],
+    textOverlay.snapshotCanvases[0],
+  );
+  assert.equal(imageOverlay.canvas.width, 200);
+  assert.equal(imageOverlay.canvas.height, 100);
+  assert.equal(imageOverlay.canvas.style.transform, "");
+  assert.equal(textOverlay.canvas.style.transform, "");
+
+  const settled = renderer.redraw(movedView);
+
+  assert.equal(imageOverlay.redraws.length, 2);
+  assert.equal(textOverlay.redraws.length, 2);
+  assert.equal(settled.retainedImageOverlay, false);
+  assert.equal(settled.retainedTextOverlay, false);
+  assert.equal(imageOverlay.canvas.style.transform, "");
+  assert.equal(textOverlay.canvas.style.transform, "");
   renderer.dispose();
 });
 
@@ -956,8 +1140,8 @@ test("draws HATCH fills then patterns before boundary geometry", () => {
     interactive: true,
   });
   assert.equal(interactive.interactive, true);
-  assert.equal(interactive.hatchFillDrawCalls, 0);
-  assert.equal(interactive.hatchPatternDrawCalls, 0);
+  assert.equal(interactive.hatchFillDrawCalls, 1);
+  assert.equal(interactive.hatchPatternDrawCalls, 1);
   renderer.dispose();
 });
 
@@ -1122,6 +1306,12 @@ test("draws deferred SOLID fills and outlines before POINT markers", () => {
       source.includes("gl_PointCoord"),
     ),
   );
+  const interactive = renderer.redraw(first.camera, {
+    interactive: true,
+  });
+  assert.equal(interactive.solidFillDrawCalls, 1);
+  assert.equal(interactive.solidOutlineDrawCalls, 1);
+  assert.equal(interactive.pointDrawCalls, 1);
   renderer.dispose();
 });
 
@@ -1231,6 +1421,10 @@ test("patches line buckets and draws WIPEOUT masks before depth-tested geometry"
       source.includes("a_maskBase + float(a_style >> 17u)"),
     ),
   );
+  const interactive = renderer.redraw(first.camera, {
+    interactive: true,
+  });
+  assert.equal(interactive.wipeoutMaskDrawCalls, 1);
 
   renderer.setWipeoutMasksVisible(false);
   const withoutMasks = renderer.redraw(first.camera);

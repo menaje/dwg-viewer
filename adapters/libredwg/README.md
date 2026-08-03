@@ -1,9 +1,8 @@
 # LibreDWG engine adapter
 
-This optional process-isolated adapter measures LibreDWG with the same
-`dwg-engine-adapter/1` inspection and conversion contract used by the built-in
-acadrust engine. It traverses LibreDWG's object model directly instead of
-creating a full JSON dump.
+This process-isolated adapter implements the `dwg-engine-adapter/1` inspection
+and conversion contract. It traverses LibreDWG's object model directly instead
+of creating a full JSON dump.
 
 The `convert` path writes Scene Cache v1.18 without a whole-drawing intermediate
 model. It repeatedly traverses LibreDWG objects and streams sections and
@@ -95,9 +94,9 @@ This is a deliberately partial conversion milestone:
 
 This writer is the selected primary engine path, but its remaining source
 families and exact text layout are not yet release-ready. Its large-drawing
-detail batches use the same group-local midpoint quantization and 16-bit XY
-Morton key as the acadrust writer, with original source order as the
-deterministic tie breaker. The current 36-byte vertex record caps the
+detail batches use group-local midpoint quantization and a 16-bit XY Morton
+key, with original source order as the deterministic tie breaker. The current
+36-byte vertex record caps the
 first-frame overview at 58,254 segments and 4 MiB. Each detail GPU batch is
 capped at 7,281 segments (524,232 bytes), below the Webview's 512 KiB
 range-read limit.
@@ -236,10 +235,10 @@ the adapter process so all transient memory is reclaimed when the process
 exits.
 
 LibreDWG exposes block markers, polyline vertices and attached attributes as
-separate raw entities, while acadrust folds them into their owners. The adapter
-keeps raw counts under `drawing.raw_*` and `embedded_text`, but normalizes the
-main `drawing.entities`, `drawing.objects`, `entity_types` and `text` fields to
-the shared logical inspection contract.
+separate raw entities. The adapter keeps raw counts under `drawing.raw_*` and
+`embedded_text`, but normalizes the main `drawing.entities`,
+`drawing.objects`, `entity_types` and `text` fields to the shared logical
+inspection contract.
 
 On the private 24 MB reference drawing, the Scene Cache v1.8 milestone had a
 2,986 ms median process wall time and 591,511,552-byte median peak RSS across
@@ -290,8 +289,7 @@ gates passed.
 Scene Cache v1.11 adds 508 normalized draw-order table records and 54,667
 entity/sort-handle pairs. Two directory entries plus the new bodies grow the
 deterministic cache by exactly 895,072 bytes to 177,049,408 bytes; kinds 1–43
-remain byte-identical to v1.10. The acadrust oracle produces byte-identical
-kind-44 and kind-45 payloads. Three isolated conversions completed in
+remain byte-identical to v1.10. Three isolated conversions completed in
 2,983 / 2,999 / 3,009 ms with
 591,773,696 / 591,822,848 / 591,822,848 bytes peak RSS (minimum / median /
 maximum), passing both gates with deterministic output.

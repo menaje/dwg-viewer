@@ -8,15 +8,13 @@ use clap::{Parser, Subcommand, ValueEnum};
 use dwg_converter::benchmark::{
     benchmark_engine, BenchmarkOptions, BenchmarkScope, DEFAULT_MEASURED_RUNS, DEFAULT_WARMUP_RUNS,
 };
-use dwg_converter::scene_cache::{convert_dwg, validate_scene_cache, ConvertOptions};
-use dwg_converter::{inspect_dwg, InspectOptions};
 use serde::Serialize;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "dwg-converter",
     version,
-    about = "Inspect DWG files and prepare packed scene data"
+    about = "Benchmark a process-isolated DWG engine adapter"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -25,70 +23,17 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Parse a DWG and emit a privacy-conscious JSON report.
-    Inspect {
-        /// Input DWG path.
-        input: PathBuf,
-
-        /// Also write the JSON report to this path.
-        #[arg(short, long)]
-        output: Option<PathBuf>,
-
-        /// Format JSON for human reading.
-        #[arg(long)]
-        pretty: bool,
-
-        /// Include the source file name in the report.
-        #[arg(long)]
-        include_input_name: bool,
-
-        /// Include up to this many Hangul text samples. Defaults to zero.
-        #[arg(long, default_value_t = 0)]
-        text_samples: usize,
-
-        /// Include up to this many parser diagnostic samples.
-        #[arg(long, default_value_t = 20)]
-        notification_samples: usize,
-    },
-
-    /// Parse a DWG and write the minimal packed scene-cache format.
-    Convert {
-        /// Input DWG path.
-        input: PathBuf,
-
-        /// Destination cache path. Existing files are never overwritten.
-        output: PathBuf,
-
-        /// Format the JSON conversion report for human reading.
-        #[arg(long)]
-        pretty: bool,
-
-        /// Include the source file name in the report.
-        #[arg(long)]
-        include_input_name: bool,
-    },
-
-    /// Validate cache bounds, directories and record sizes.
-    ValidateCache {
-        /// Scene-cache path.
-        cache: PathBuf,
-
-        /// Format the JSON validation report for human reading.
-        #[arg(long)]
-        pretty: bool,
-    },
-
-    /// Benchmark a process-isolated DWG engine adapter.
+    /// Benchmark an external DWG engine adapter.
     Benchmark {
         /// Input DWG path.
         input: PathBuf,
 
-        /// External adapter executable. Defaults to this acadrust converter.
+        /// External adapter executable.
         #[arg(long)]
-        adapter: Option<PathBuf>,
+        adapter: PathBuf,
 
         /// Stable engine identifier for the report.
-        #[arg(long, default_value = "acadrust")]
+        #[arg(long, default_value = "libredwg")]
         engine_id: String,
 
         /// Engine version for the report.
@@ -168,58 +113,6 @@ fn main() -> ExitCode {
 
 fn run(cli: Cli) -> Result<()> {
     match cli.command {
-        Command::Inspect {
-            input,
-            output,
-            pretty,
-            include_input_name,
-            text_samples,
-            notification_samples,
-        } => {
-            let options = InspectOptions {
-                include_input_name,
-                notification_samples,
-                text_samples,
-            };
-            let report = inspect_dwg(&input, &options)?;
-            let json = if pretty {
-                serde_json::to_string_pretty(&report)
-            } else {
-                serde_json::to_string(&report)
-            }
-            .context("cannot serialize inspection report")?;
-
-            if let Some(output_path) = output {
-                std::fs::write(&output_path, json.as_bytes())
-                    .with_context(|| format!("cannot write report: {}", output_path.display()))?;
-            }
-            println!("{json}");
-        }
-        Command::Convert {
-            input,
-            output,
-            pretty,
-            include_input_name,
-        } => {
-            let report = convert_dwg(&input, &output, &ConvertOptions { include_input_name })?;
-            let json = if pretty {
-                serde_json::to_string_pretty(&report)
-            } else {
-                serde_json::to_string(&report)
-            }
-            .context("cannot serialize conversion report")?;
-            println!("{json}");
-        }
-        Command::ValidateCache { cache, pretty } => {
-            let report = validate_scene_cache(&cache)?;
-            let json = if pretty {
-                serde_json::to_string_pretty(&report)
-            } else {
-                serde_json::to_string(&report)
-            }
-            .context("cannot serialize validation report")?;
-            println!("{json}");
-        }
         Command::Benchmark {
             input,
             adapter,
@@ -233,31 +126,19 @@ fn run(cli: Cli) -> Result<()> {
             pretty,
             include_input_name,
         } => {
-            if adapter.is_none() && engine_id != "acadrust" {
-                anyhow::bail!("the built-in adapter is acadrust; use --adapter for another engine");
-            }
             if let Some(output_path) = &output {
                 preflight_new_report(output_path)?;
             }
-            let mut options = BenchmarkOptions {
+            let options = BenchmarkOptions {
                 adapter_executable: adapter,
                 engine_id,
+                engine_version,
+                engine_license,
                 measured_runs: runs,
                 warmup_runs,
                 scope: scope.into(),
                 include_input_name,
-                ..BenchmarkOptions::default()
             };
-            if engine_version.is_some() {
-                options.engine_version = engine_version;
-            } else if options.adapter_executable.is_some() {
-                options.engine_version = None;
-            }
-            if engine_license.is_some() {
-                options.engine_license = engine_license;
-            } else if options.adapter_executable.is_some() {
-                options.engine_license = None;
-            }
 
             let report = benchmark_engine(&input, &options)?;
             let json = if pretty {

@@ -13,9 +13,9 @@ development. It is the only measured candidate that satisfies both the
 large-drawing conversion target and hard limits while preserving the required
 logical entities, blocks and Korean text.
 
-`acadrust` 0.4.1 remains a cross-engine test oracle and an MPL-only reference
-implementation. It is not the default large-drawing engine because it exceeds
-the memory hard limit.
+`acadrust` 0.4.1 was used during the original comparison but exceeded the
+memory hard limit. Its parser, writer and dependency have since been retired
+and removed from the repository.
 
 ACadSharp 3.6.51 is rejected for the large-drawing path. Its inspect-only
 adapter is retained so the result can be reproduced, but a second Scene Cache
@@ -142,8 +142,8 @@ Scene Cache v1.11 adds kinds 44–45 for normalized draw-order tables and
 entity/sort-handle pairs. The reference drawing contains 508 tables and
 54,667 entries. Two directory entries, 20,320 table bytes and 874,672 entry
 bytes grow the cache by exactly 895,072 bytes (0.51%) to 177,049,408 bytes;
-kinds 1–43 remain byte-identical to v1.10. The built-in acadrust oracle and
-LibreDWG writer produce byte-identical kind-44 and kind-45 payloads.
+kinds 1–43 remain byte-identical to v1.10. The archived cross-engine
+qualification produced byte-identical kind-44 and kind-45 payloads.
 
 Three isolated conversions completed in 2,983 / 2,999 / 3,009 ms with
 591,773,696 / 591,822,848 / 591,822,848 bytes peak RSS (minimum / median /
@@ -306,7 +306,7 @@ engineering distribution policy, not legal advice.
   composition and Canvas text clipping within their measured order/GPU
   limits; retain the source/frame path as the safe fallback.
 - Continue Korean SHX/BigFont and exact MTEXT/OCS work in issues #5 and #7.
-- Use acadrust only for public cross-engine fixtures and regression oracles.
+- Keep the retired acadrust implementation out of product and test builds.
 - Keep the ACadSharp inspection adapter, package lock and parser preflight test;
   do not build an ACadSharp Scene Cache converter unless a future release
   materially changes the measured memory architecture.
