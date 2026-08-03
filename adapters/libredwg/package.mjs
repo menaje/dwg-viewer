@@ -295,16 +295,28 @@ async function readBoundedRegularFile(filePath, maximumBytes, label) {
   return readFile(filePath);
 }
 
+export function licenseExtractionArguments(
+  sourceArchive,
+  platform = process.platform,
+) {
+  const archivePath =
+    platform === "win32"
+      ? sourceArchive.replaceAll("\\", "/")
+      : sourceArchive;
+  return [
+    ...(platform === "win32" ? ["--force-local"] : []),
+    "-xOf",
+    archivePath,
+    `libredwg-${LIBREDWG_VERSION}/COPYING`,
+  ];
+}
+
 async function extractGplLicense(sourceArchive) {
   let result;
   try {
     result = await execFileAsync(
       configuredExecutable("DWG_VIEWER_TAR", "tar"),
-      [
-        "-xOf",
-        sourceArchive,
-        `libredwg-${LIBREDWG_VERSION}/COPYING`,
-      ],
+      licenseExtractionArguments(sourceArchive),
       {
         encoding: "utf8",
         maxBuffer: 128 * 1024,

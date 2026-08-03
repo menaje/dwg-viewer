@@ -14,6 +14,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import {
   createDeterministicTarGzip,
+  licenseExtractionArguments,
   LIBREDWG_SOURCE_SHA256,
   LIBREDWG_VERSION,
 } from "./package.mjs";
@@ -82,6 +83,29 @@ test("rejects traversal, absolute, backslash, and duplicate archive paths", () =
         { name: "same", data: Buffer.alloc(0), mode: 0o644 },
       ]),
     /duplicate archive path/u,
+  );
+});
+
+test("forces local GNU tar handling for Windows drive archives", () => {
+  assert.deepEqual(
+    licenseExtractionArguments(
+      String.raw`D:\a\_temp\libredwg-0.14.tar.xz`,
+      "win32",
+    ),
+    [
+      "--force-local",
+      "-xOf",
+      "D:/a/_temp/libredwg-0.14.tar.xz",
+      "libredwg-0.14/COPYING",
+    ],
+  );
+  assert.deepEqual(
+    licenseExtractionArguments("/tmp/libredwg-0.14.tar.xz", "linux"),
+    [
+      "-xOf",
+      "/tmp/libredwg-0.14.tar.xz",
+      "libredwg-0.14/COPYING",
+    ],
   );
 });
 
