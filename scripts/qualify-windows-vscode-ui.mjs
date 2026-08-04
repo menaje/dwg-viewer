@@ -383,6 +383,18 @@ export function parseDistanceMeasurementRows(rows) {
   });
 }
 
+export function viewportZoomFromStatus(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const match = /^(\d+(?:\.\d+)?)×(?:\s|$)/u.exec(value.trim());
+  if (!match) {
+    return null;
+  }
+  const zoom = Number(match[1]);
+  return Number.isFinite(zoom) && zoom > 0 ? zoom : null;
+}
+
 async function surfaceSnapshot(frame) {
   return frame.evaluate(() => {
     const snapshot = (selector) => {
@@ -634,10 +646,40 @@ async function qualifyReviewInteractions(frame) {
     true,
   );
 
+  await openViewerTools(frame);
+  await frame.locator('[data-view-action="zoom-in"]').click();
+  await frame.waitForFunction(
+    () => {
+      const match = /^(\d+(?:\.\d+)?)×(?:\s|$)/u.exec(
+        document.querySelector("#status")?.textContent?.trim() ?? "",
+      );
+      return match !== null && Number(match[1]) > 1.01;
+    },
+    undefined,
+    { timeout: 15_000 },
+  );
+  const zoomedStatus =
+    (await frame.locator("#status").textContent()) ?? "";
+  assert.ok(viewportZoomFromStatus(zoomedStatus) > 1.01);
+
   await frame.locator('[data-review-action="fit"]').click();
-  assert.match(
-    (await frame.locator("#status").textContent()) ?? "",
-    /화면을 맞췄습니다/u,
+  await frame.waitForFunction(
+    () => {
+      const match = /^(\d+(?:\.\d+)?)×(?:\s|$)/u.exec(
+        document.querySelector("#status")?.textContent?.trim() ?? "",
+      );
+      return (
+        match !== null &&
+        Math.abs(Number(match[1]) - 1) <= 0.01
+      );
+    },
+    undefined,
+    { timeout: 15_000 },
+  );
+  const fittedStatus =
+    (await frame.locator("#status").textContent()) ?? "";
+  assert.ok(
+    Math.abs(viewportZoomFromStatus(fittedStatus) - 1) <= 0.01,
   );
   await clearReview(frame);
 
@@ -653,6 +695,10 @@ async function qualifyReviewInteractions(frame) {
     ),
     distanceValues: distanceMeasurement.values,
     fit: true,
+    fitZoom: {
+      before: viewportZoomFromStatus(zoomedStatus),
+      after: viewportZoomFromStatus(fittedStatus),
+    },
     clear: true,
     observedSnapLabels: points.map((point) => {
       const match = /스냅\s*\n?([^\n]+)/u.exec(point.content);

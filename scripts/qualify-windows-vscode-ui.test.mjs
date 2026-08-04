@@ -14,6 +14,7 @@ import {
   parseDistanceMeasurementRows,
   parseVSCodeVersionOutput,
   rectIsContained,
+  viewportZoomFromStatus,
   WINDOWS_UI_CLEANUP_OPTIONS,
   WINDOWS_UI_EXTENSION_ID,
 } from "./qualify-windows-vscode-ui.mjs";
@@ -29,6 +30,15 @@ test("reads the installed VS Code CLI product version", () => {
     () => parseVSCodeVersionOutput("stable\ncommit\nx64\n"),
     /invalid product version/u,
   );
+});
+
+test("reads only a positive leading viewport zoom status", () => {
+  assert.equal(
+    viewportZoomFromStatus("1.43× · 화면 상세 2개"),
+    1.43,
+  );
+  assert.equal(viewportZoomFromStatus("화면을 맞췄습니다."), null);
+  assert.equal(viewportZoomFromStatus("0× · invalid"), null);
 });
 
 test("parses only the bounded Windows UI qualification inputs", () => {
