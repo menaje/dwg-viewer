@@ -910,21 +910,26 @@ async function runScale({
   }
 }
 
-async function productVersion(vscodeExecutablePath) {
-  const packagePath = path.join(
-    path.dirname(vscodeExecutablePath),
-    "resources",
-    "app",
-    "package.json",
-  );
-  const manifest = JSON.parse(await readFile(packagePath, "utf8"));
-  if (
-    typeof manifest.version !== "string" ||
-    !/^\d+\.\d+\.\d+(?:[-+].*)?$/u.test(manifest.version)
-  ) {
+export function parseVSCodeVersionOutput(output) {
+  if (typeof output !== "string") {
+    throw new TypeError("VS Code version output must be a string");
+  }
+  const version = output
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .find((line) => line.length > 0);
+  if (!version || !/^\d+\.\d+\.\d+(?:[-+].*)?$/u.test(version)) {
     throw new Error("downloaded VS Code has an invalid product version");
   }
-  return manifest.version;
+  return version;
+}
+
+async function productVersion(downloadOptions) {
+  const { stdout } = await runVSCodeCommand(
+    ["--version"],
+    downloadOptions,
+  );
+  return parseVSCodeVersionOutput(stdout);
 }
 
 export async function qualifyWindowsVsCodeUi(options) {
@@ -968,6 +973,7 @@ export async function qualifyWindowsVsCodeUi(options) {
     };
     const vscodeExecutablePath =
       await downloadAndUnzipVSCode(downloadOptions);
+    const vscodeVersion = await productVersion(downloadOptions);
     await runVSCodeCommand(
       [
         `--user-data-dir=${installUserData}`,
@@ -1020,7 +1026,7 @@ export async function qualifyWindowsVsCodeUi(options) {
         architecture: process.arch,
         os: "windows-2025-runner",
         vscodeChannel: "stable",
-        vscodeVersion: await productVersion(vscodeExecutablePath),
+        vscodeVersion,
         packagedVsixInstalled: true,
       },
       input: {

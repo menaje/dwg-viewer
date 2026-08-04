@@ -12,10 +12,24 @@ import {
   parseWindowsUiArguments,
   parseCoordinateMeasurementRows,
   parseDistanceMeasurementRows,
+  parseVSCodeVersionOutput,
   rectIsContained,
   WINDOWS_UI_CLEANUP_OPTIONS,
   WINDOWS_UI_EXTENSION_ID,
 } from "./qualify-windows-vscode-ui.mjs";
+
+test("reads the installed VS Code CLI product version", () => {
+  assert.equal(
+    parseVSCodeVersionOutput(
+      "1.131.0\r\n07b4ff1883f94da91f6d698744fc7c3638b59720\r\nx64\r\n",
+    ),
+    "1.131.0",
+  );
+  assert.throws(
+    () => parseVSCodeVersionOutput("stable\ncommit\nx64\n"),
+    /invalid product version/u,
+  );
+});
 
 test("parses only the bounded Windows UI qualification inputs", () => {
   const options = parseWindowsUiArguments([
