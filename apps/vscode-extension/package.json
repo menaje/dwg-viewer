@@ -1,7 +1,7 @@
 {
   "name": "dwg-viewer-vscode",
   "displayName": "DWG Viewer",
-  "description": "Free, local-first, read-only DWG viewing in VS Code",
+  "description": "Local-first DWG viewing with Korean CAD fonts, XREFs, measurements, text search, layouts, and PNG/PDF export",
   "version": "0.1.0",
   "publisher": "menaje",
   "license": "MPL-2.0",
@@ -22,7 +22,11 @@
     "dwg",
     "cad",
     "viewer",
-    "libredwg"
+    "libredwg",
+    "shx",
+    "bigfont",
+    "xref",
+    "measurement"
   ],
   "main": "./dist/src/extension.js",
   "activationEvents": [

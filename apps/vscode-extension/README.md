@@ -1,274 +1,185 @@
 # DWG Viewer for VS Code
 
-Free, local-first, read-only DWG viewing inside VS Code.
+Open, inspect, search, measure, and export DWG drawings without leaving
+VS Code.
 
-The extension uses an immersive viewer shell: the drawing fills the editor
-without the development frame or performance dashboard. Its top-right tool
-shelf and bottom layout tabs stay folded until hovered, keyboard-focused or
-explicitly opened. The repository's standalone Webview remains the diagnostic
-and performance-development surface.
+DWG Viewer is a free, local-first, read-only viewer built for large drawings,
+Korean SHX/BigFont text, external references, and paper-space layouts. Your
+drawings and fonts stay on your computer.
 
-This early build opens `.dwg` files with a native Custom Editor, converts them
-to the project scene-cache format on the local machine, and streams only the
-ranges required by the Webview. Drawing data is never uploaded.
+> This is an early public release. Editing and DWG saving are not available,
+> and the separately distributed LibreDWG converter must be connected once
+> before opening a drawing.
 
-## Native converter
+## Highlights
 
-The extension deliberately does not bundle the GPL-licensed LibreDWG adapter in
-the MPL-licensed VSIX. Build or extract the repository's separate GPL package,
-then run **DWG Viewer: LibreDWG 변환기 선택** and select the executable. The
-extension checks the engine version, GPL declaration, protocol and Scene Cache
-compatibility before saving the setting.
+### Private and read-only
 
-The same path can be set manually:
+- Drawing conversion, font handling, XREF discovery, and rendering happen
+  locally.
+- The original DWG is never modified or uploaded.
+- A private local cache makes repeat opens faster.
 
-```json
-{
-  "dwgViewer.libredwgAdapterPath": "/absolute/path/to/libredwg-adapter"
-}
-```
+### Korean CAD text support
 
-For local development only, `DWG_VIEWER_LIBREDWG_ADAPTER` can provide the same
-absolute path. A separately distributed adapter may also be placed at
-`native/<platform>-<architecture>/libredwg-adapter`.
+- Displays `TEXT`, `MTEXT`, `ATTRIB`, and `ATTDEF` content.
+- Resolves SHX and BigFont files requested by the drawing.
+- Detects legacy EUC-KR, CP949/UHC, and Johab/CP1361 BigFont encodings.
+- Lets you connect missing or renamed fonts and falls back to an installed
+  Korean font when possible.
 
-Run **DWG Viewer: LibreDWG 변환기 진단** at any time to repeat the bounded
-five-second self-test. Diagnosis runs only on request and is not added to the
-normal drawing-open or cached first-frame path. If an adapter is missing, the
-viewer error screen exposes the same select-and-diagnose action.
+### Comfortable navigation on mouse and trackpad
 
-The first open creates a private cache under VS Code's extension storage.
-The default memory-balanced path finishes the Native conversion before
-initializing Webview content. This avoids overlapping LibreDWG's parser
-footprint with a fully initialized Webview renderer. Subsequent opens reuse
-the canonical cache until the drawing or converter changes.
+- Click-drag or two-finger scroll to pan.
+- Use the mouse wheel or a trackpad pinch to zoom around the pointer.
+- Drag a window to zoom, return to the fitted view, move through previous and
+  next views, and save named view bookmarks.
+- Compact icon tools reveal their names on hover or keyboard focus.
+- In-viewer controls follow the VS Code environment language for English and
+  Korean.
 
-An explicit speed-first mode can display a bounded line overview while full
-detail continues:
+### Layers, XREFs, and images
 
-```json
-{
-  "dwgViewer.progressivePreview": true
-}
-```
+- Search layers, toggle visibility, isolate a layer group, invert visibility,
+  and restore the previous state.
+- Layers are grouped from the current drawing and its actual XREF records.
+- Resolves DWG XREFs and JPG/PNG image references across Windows, macOS, and
+  Linux path formats.
+- Ambiguous or missing references can be selected manually and remembered at
+  the source, filename, or folder-mapping level.
 
-This option is off by default because it trades memory for about two seconds
-of first-frame latency. On the 24,680,147-byte reference drawing, a stabilized
-VS Code host reached the balanced first frame in 3.736–3.795 seconds with
-530.4–595.7 MB incremental physical memory across four isolated runs. The
-progressive mode reached a frame in 1.824 seconds but used 664.7 MB; during an
-immediate cold-start overlap it reached 919.4 MB and failed the 800 MB hard
-limit. Both modes keep the same validated canonical cache.
+### Inspection and measurement
 
-## Engine boundary
+- Select drawing objects to inspect their type, layer, color, and relevant CAD
+  properties.
+- Measure distance, cumulative distance, area and perimeter, three-point
+  angles, radius, and diameter.
+- Calibrate a unitless drawing from two known points, then choose display units
+  and precision.
+- Search `TEXT`, `MTEXT`, `ATTRIB`, and `ATTDEF` across workspace DWGs from the
+  Explorer **DWG 문자 검색** view. Selecting a result opens, centers, and
+  highlights it.
 
-LibreDWG Native runs behind the versioned `dwg-scene-engine/1` interface.
-Engine and backend capabilities, bounded progress phases, conversion options
-and implementation revision are part of the cache contract. Native and any
-future reworked WASM Worker receive separate cache identities and would still
-feed the same range reader and renderer.
+### Layouts and export
 
-WASM is not a selectable backend in this build. The actual LibreDWG 0.14
-MEMFS prototype produced byte-identical output on a small public fixture and
-proved Worker termination, but failed the 800 MB total-memory hard gate and
-did not complete that fixture in a real Chromium Worker within 30 seconds. On
-the large reference drawing, all string tables matched Native but text
-placement, GPU line and HATCH geometry sections were not byte-identical.
-The common cache path retains a WASM-shaped contract test only; a redesigned
-disk-backed candidate must repeat every geometry, Korean text, cancellation,
-memory, performance, license and package gate before any setting or fallback
-is added.
+- Switch between model space and paper-space layouts.
+- Preserve layout paper size, rotation, viewports, and frozen layers.
+- Export the current screen, current tab, or all layouts to PNG or PDF.
+- Optionally apply a referenced CTB to a layout for plot colors and
+  lineweights.
+- All-layout PNG export produces a portable ZIP with the original Unicode
+  layout-name mapping.
 
-## SHX and Korean BigFont folders
+## Get started
 
-After the first geometry frame, the extension reads the drawing's text styles
-and resolves only the SHX, BigFont, TTF and OTF filenames those styles request.
-An existing stored relative or native absolute path is tried first, followed
-by the drawing folder, bounded project/package roots and finally configured
-fallback folders. Additional local folders can be added from the viewer's
-**글꼴 → 글꼴 폴더 추가** action, from the command palette command
-**DWG Viewer: SHX 글꼴 폴더 추가**, or in settings:
+### Requirements
 
-```json
-{
-  "dwgViewer.shxFontDirectories": [
-    "/absolute/path/to/cad-fonts"
-  ]
-}
-```
+- VS Code 1.125 or newer
+- Linux x64, macOS arm64, or Windows x64
+- The separately distributed LibreDWG adapter for your platform
 
-Folders are indexed non-recursively, in priority order, only until a requested
-name is found, and never before the first frame. A requested CAD font can be
-mapped to a replacement filename in those folders, or to an explicitly
-configured absolute file:
+### Installation
 
-```json
-{
-  "dwgViewer.shxFontMappings": {
-    "whgtxt.shx": "korean.shx",
-    "oldfont.shx": "/absolute/path/to/replacement.shx"
-  }
-}
-```
+1. Download `dwg-viewer-vscode-<version>.vsix` and the matching
+   `dwg-viewer-libredwg-0.14-<platform>.tar.gz` from
+   [GitHub Releases](https://github.com/menaje/dwg-viewer/releases).
+2. In VS Code, run **Extensions: Install from VSIX...** and select the VSIX.
+3. Extract the adapter archive into a folder controlled by your user account.
+4. Run **DWG Viewer: LibreDWG 변환기 선택** and select
+   `bin/libredwg-adapter`, or `bin\libredwg-adapter.exe` on Windows.
+5. Open a `.dwg` file from the Explorer.
 
-The font panel reports connected, substituted, ambiguous, missing, unreadable,
-malformed and over-budget fonts without exposing resolved absolute paths to
-the Webview. An unresolved row offers a native file picker and keeps the
-selected mapping only for the current drawing session. Font requests are
-isolated to the active cache, served serially, and capped at 128 files, 32 MiB
-per file and 64 MiB transferred per drawing. Parsed fonts and compiled glyphs
-remain under the Webview's separate byte-bounded caches.
+The extension checks the selected converter before saving it. You can repeat
+that check at any time with **DWG Viewer: LibreDWG 변환기 진단**.
 
-Layout CTB files use the same stored-path, drawing, bounded project and
-configured-folder order. Equal-rank matches are never selected implicitly.
-The **출력 선택** action lets the user choose a CTB for the current drawing,
-and CTB colors and lineweights are applied only to a layout that references
-that output style.
+For checksums, provenance verification, macOS security approval, and
+platform-specific commands, see the
+[distribution and installation guide](https://github.com/menaje/dwg-viewer/blob/main/docs/distribution.md).
 
-Legacy Korean BigFont codes default to glyph-based automatic probing: strict
-EUC-KR first, then the CP949/UHC extension, then Johab/CP1361. The viewer does
-not infer an encoding from a font filename. If a font contains ambiguous code
-slots, configure the requested DWG BigFont name explicitly:
+## Everyday use
 
-```json
-{
-  "dwgViewer.shxBigFontEncodings": {
-    "ksc.shx": "euc-kr",
-    "whgtxt.shx": "cp949",
-    "hanjohab.shx": "johab"
-  }
-}
-```
+- **Pan:** click-drag or use a two-finger trackpad scroll.
+- **Zoom:** use the mouse wheel, trackpad pinch, or window-zoom tool.
+- **Find a tool:** hover its icon or move keyboard focus to it.
+- **Manage layers:** open the left layer panel and search or change visibility.
+- **Inspect or measure:** choose a tool, then select points or objects in the
+  drawing.
+- **Switch layouts:** use the tabs along the bottom edge of the viewer.
+- **Search drawing text:** use the Explorer **DWG 문자 검색** view.
+- **Export:** open **PNG/PDF**, choose a scope, and select output options.
 
-The accepted values are `auto`, `euc-kr`, `cp949`, and `johab`, with at most
-128 mappings per window. The font panel displays the effective choice. Strict
-EUC-KR and CP949 are separate, and the Johab path covers all 11,172 modern
-Hangul syllables, 892 KS X 1001 symbols, 4,888 Hanja, and the CP1361 `®` and
-`€` additions. Compatibility and archaic Jamo without an explicit CP1361
-slot still use a direct Unicode glyph or the system-font fallback.
+The tool shelf and layout tabs remain compact until hovered, keyboard-focused,
+or explicitly opened so the drawing can use most of the editor.
 
-Visible MTEXT inline `\f` font runs are discovered after the first geometry
-frame. A filename is resolved directly; a family name tries the matching TTF
-in the drawing, bounded project and configured font folders. The request is
-deduplicated and shares the same 128-request, 32 MiB-per-file and 64 MiB
-per-drawing limits as text-style fonts. An installed system family remains the
-fallback when no local file exists.
+## What the viewer displays
 
-## External references
+- Lines, polylines, arcs, circles, ellipses, and splines
+- Blocks, repeated block instances, dimension picture blocks, and nested XREFs
+- Solid, gradient, and patterned HATCH content
+- POINT, SOLID, 3DFACE, and WIPEOUT content
+- CAD text, attributes, Korean SHX/BigFont glyphs, and common MTEXT formatting
+- Model space, multiple layouts, viewports, and per-viewport layer freezing
+- JPG/PNG IMAGE references and XCLIP boundaries
+- Linetypes, colors, transparency, lineweights, and optional layout CTB styles
 
-Scene Cache v1.18 retains each DWG XREF's original path. The extension tries,
-in order, a saved manual mapping, an absolute path valid on the current
-platform, a path relative to the parent drawing, and the adjacent `xref`
-folder. It then performs a bounded basename search and ranks candidates by
-matching parent, grandparent and further trailing path segments. Equally
-ranked files are never selected silently; the **외부 참조** panel offers a
-manual file picker.
+The viewer loads drawing detail and referenced images as they become useful on
+screen, which keeps large drawings responsive without eagerly decoding every
+resource.
 
-The resolver understands Windows drive, UNC, POSIX and relative paths on both
-Windows and macOS, including leading `..`, Unicode normalization and
-case-insensitive comparison where required. A manual selection can be saved
-for only that source reference, the same basename, or the original directory
-prefix. Optional project roots are configured as absolute paths:
+## Fonts and missing references
 
-```json
-{
-  "dwgViewer.xrefSearchDirectories": [
-    "/absolute/path/to/project-drawings"
-  ]
-}
-```
+After the first drawing frame, the viewer looks only for fonts requested by
+the drawing. It checks stored paths, the drawing folder, bounded project
+locations, and folders you add through **글꼴 → 글꼴 폴더 추가** or
+**DWG Viewer: SHX 글꼴 폴더 추가**.
 
-The object-selection review tool includes HATCH, SOLID and 3DFACE candidates
-from every resolved root or nested XREF. Selection preserves composed INSERT
-transforms, XCLIP boundaries, root-layer visibility and child Layer 0
-inheritance, and reports the source reference without relying on a sample
-filename such as `xtitle`.
+The font panel distinguishes connected, substituted, ambiguous, missing,
+unreadable, and malformed files. You can choose a replacement without exposing
+its absolute path to the drawing Webview.
 
-Search is limited to 32 roots, depth 8, 50,000 entries and 256 candidates.
-Symlink directories and the whole disk are not traversed. Conversion and
-Webview loading are serialized; cycles, nesting beyond depth 8 and more than
-64 references are rejected. External overview source, overview GPU and detail
-GPU data each have a 32 MiB aggregate limit.
+XREFs and images follow a similar local-first flow. The viewer tries portable
+path alternatives and a bounded project search, then asks you when it cannot
+choose safely. It never searches the whole disk or silently chooses between
+equally ranked files.
 
-Scene Cache v1.18 raster IMAGE references reuse the same portable-path and
-bounded parent-folder search rules. The host currently transfers JPG/JPEG and
-PNG only, with a 32 MiB file limit, 100-million-pixel source limit, 256
-references and 64 MiB unique compressed-transfer budget per open drawing.
-`dwgViewer.imageSearchDirectories` adds absolute project image roots. Missing
-or ambiguous images appear in the same **외부 참조** panel for manual
-selection. The Webview decodes only visible references at their current
-screen size, then upgrades the bitmap after a meaningful zoom instead of
-eagerly decoding every source at full resolution.
+## Current limitations
 
-## Current scope
+- Viewing is read-only; editing, overwriting, and Save As are not available.
+- The LibreDWG adapter is a required separate download.
+- Embedded OLE content such as an Excel sheet is not rendered; its placement
+  frame may still be shown.
+- External raster images currently support JPG/JPEG and PNG.
+- Missing fonts, XREFs, and images must be connected to the correct local
+  files by the user.
 
-- Read-only model-space viewing
-- Memory-balanced first open with an optional progressive Native overview
-- Bounded cache range reads (maximum 8 MiB per request)
-- Layer visibility with isolate, invert and previous-state restore, grouped
-  dynamically from each drawing's root and XREF-dependent layer records
-- Drag-window zoom, bounded previous/next view history, and persistent named
-  view bookmarks scoped independently to model space and each layout
-- Pan, zoom, hatch, text, object distance, cumulative distance,
-  area/perimeter, three-point angle and radius/diameter measurement
-- Persistent measurement display unit and precision settings, including
-  explicit two-point physical-unit calibration for unitless drawings
-- Native save-dialog export of the current screen, current tab or all layouts
-  to PNG/PDF, preserving arbitrary per-layout paper sizes and optionally
-  applying the layout CTB; all-layout PNG output is a portable ZIP with a
-  UTF-8 layout-name map
-- Explorer **DWG 문자 검색** view for workspace-wide `TEXT`, `MTEXT`,
-  `ATTRIB`, and `ATTDEF` search with literal and bounded regular-expression
-  modes; selecting a result opens, centers, and highlights the source text
-  in the drawing
-- Automatic and manual cross-platform DWG XREF resolution
-- Lazy cross-platform JPG/PNG IMAGE resolution and manual replacement
-- Shared-instance XREF linework, layer visibility, text, and detail streaming
-- Delayed SHX/BigFont discovery, mapping, diagnostics, and Korean fallback
-- Conversion cancellation when the editor closes
-- Retry and forced cache rebuild
+## Privacy, license, and source
 
-The initial integration milestone is recorded in GitHub issue #19; product
-qualification and release completion continue in issue #6.
+The VSIX is licensed under MPL-2.0. Its complete source form is available in
+the [menaje/dwg-viewer repository](https://github.com/menaje/dwg-viewer),
+along with build scripts and third-party notices.
 
-## License, source, and release artifacts
+The GPL-3.0-or-later LibreDWG adapter is never included in the VSIX. It is
+published as a separate platform archive with its corresponding source,
+licenses, build scripts, manifest, and checksums. This separation is why the
+converter must be selected after installing the extension.
 
-The VSIX is distributed under MPL-2.0. Its complete source form, build scripts,
-license notice, and third-party notices are available in the
-[menaje/dwg-viewer repository](https://github.com/menaje/dwg-viewer). A
-versioned release is built from the Git tag with the same `v<version>` as the
-VSIX manifest. The packaged VSIX includes `LICENSE.txt` and
-`THIRD_PARTY_NOTICES.md`.
-
-The GPL-3.0-or-later LibreDWG adapter is never included in the VSIX, even if a
-developer has placed one under the extension's local `native/` directory. It
-is published only as a separate Linux x64, macOS arm64, or Windows x64 archive
-containing the exact LibreDWG source, adapter source, build scripts, license
-texts, manifest, and checksums. Release installation and provenance
-verification are documented in the
+Release artifacts are reproducibly built and include SHA-256 checksums and
+GitHub build-provenance attestations. Details are in the
 [distribution guide](https://github.com/menaje/dwg-viewer/blob/main/docs/distribution.md).
-Windows qualification additionally covers native path isolation and the
-packaged VSIX in the latest stable VS Code at 100–200% display scales.
 
-## Product qualification
+## For contributors and integrations
 
-Build the VSIX first, then run the isolated VS Code qualification with an
-absolute CLI path, runtime path, adapter and private drawing:
+User documentation stays separate from implementation contracts:
+
+- [Architecture](https://github.com/menaje/dwg-viewer/blob/main/docs/architecture.md)
+- [Engine decision](https://github.com/menaje/dwg-viewer/blob/main/docs/engine-decision.md)
+- [Viewer Core](https://github.com/menaje/dwg-viewer/tree/main/packages/viewer-core)
+- [Render protocol](https://github.com/menaje/dwg-viewer/tree/main/packages/render-protocol)
+- [Viewer UI](https://github.com/menaje/dwg-viewer/tree/main/packages/viewer-ui)
+
+Run the full repository verification with:
 
 ```bash
-pnpm --filter dwg-viewer-vscode package:vsix
-pnpm --filter dwg-viewer-vscode qualify:host -- \
-  --code "/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code" \
-  --runtime "/Applications/Visual Studio Code.app/Contents/MacOS/Code" \
-  --adapter /absolute/path/to/libredwg-adapter \
-  --drawing /absolute/path/to/reference.dwg \
-  --vsix apps/vscode-extension/dwg-viewer-vscode-0.1.0.vsix \
-  --output benchmarks/results/vscode-product.json
+pnpm install --frozen-lockfile
+pnpm check
 ```
-
-The runner installs the packaged extension into a private VS Code instance,
-waits for the host to stabilize, samples the complete process tree, measures
-de-duplicated physical memory on macOS or proportional set size on Linux, and
-checks cancellation cleanup. Reports contain source size and numeric metrics,
-not drawing paths or text. Add `--progressive-preview` only to qualify the
-speed-first option.
