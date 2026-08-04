@@ -21,7 +21,7 @@
     "kind": "github-release-and-packages",
     "published": true,
     "releaseStage": "prerelease",
-    "tagPublicationApproved": true,
+    "tagPublicationApproved": false,
     "automaticStablePromotion": false,
     "tag": "viewer-core-v0.1.2",
     "releaseUrl": "https://github.com/menaje/dwg-viewer/releases/tag/viewer-core-v0.1.2",
