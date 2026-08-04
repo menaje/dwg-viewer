@@ -1635,7 +1635,7 @@ body[data-host="vscode"] .export-panel {
   body[data-host="vscode"] header:hover,
   body[data-host="vscode"] header:focus-within,
   body[data-host="vscode"] header.tools-open {
-    width: calc(100vw - 1.7rem);
+    width: calc(100vw - 2rem);
   }
 
   body[data-host="vscode"] .view-controls {

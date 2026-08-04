@@ -112,6 +112,10 @@ test("repository Webview CSS keeps host-only controls hidden", async () => {
     repositoryStyles,
     /header\.tools-open\s*\{[\s\S]*?width:\s*min\(52rem,\s*calc\(100vw\s*-\s*2rem\)\);/u,
   );
+  assert.doesNotMatch(
+    repositoryStyles,
+    /calc\(100vw\s*-\s*1\.7rem\)/u,
+  );
   assert.match(
     repositoryStyles,
     /body\[data-host="vscode"\]\s+\.review-toolbar\s*\{[\s\S]*?width:\s*2\.75rem;[\s\S]*?opacity:\s*0\.72;/u,

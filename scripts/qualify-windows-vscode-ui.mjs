@@ -409,6 +409,7 @@ async function surfaceSnapshot(frame) {
       viewport: { width: innerWidth, height: innerHeight },
       devicePixelRatio,
       host: document.body.dataset.host ?? "",
+      header: snapshot("header"),
       trigger: snapshot("#viewer-tools-trigger"),
       toolbar: snapshot("#viewer-toolbar"),
       reviewToolbar: snapshot("#review-toolbar"),
@@ -463,6 +464,36 @@ async function openViewerTools(frame) {
     await trigger.click();
   }
   assert.equal(await trigger.getAttribute("aria-expanded"), "true");
+  await frame.evaluate(async () => {
+    const header = document.querySelector("header");
+    if (!(header instanceof HTMLElement)) {
+      throw new Error("viewer header is missing");
+    }
+    await new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(resolve));
+    });
+    await Promise.allSettled(
+      header
+        .getAnimations()
+        .map((animation) => animation.finished),
+    );
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+  await frame.waitForFunction(
+    () => {
+      const header = document.querySelector("header");
+      const toolbar = document.querySelector("#viewer-toolbar");
+      return (
+        header instanceof HTMLElement &&
+        header.classList.contains("tools-open") &&
+        toolbar instanceof HTMLElement &&
+        getComputedStyle(toolbar).visibility === "visible" &&
+        toolbar.getBoundingClientRect().width > 0
+      );
+    },
+    undefined,
+    { timeout: 5_000 },
+  );
 }
 
 export function candidatePositions(width, height) {
@@ -701,6 +732,7 @@ async function captureWidth({
   );
   assert.equal(surfaces.host, "vscode");
   for (const name of [
+    "header",
     "trigger",
     "toolbar",
     "reviewToolbar",
