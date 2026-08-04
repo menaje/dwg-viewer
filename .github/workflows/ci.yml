@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
 
 permissions:
@@ -45,11 +45,11 @@ jobs:
       - name: Check Viewer UI contracts
         run: pnpm --filter @menaje/viewer-ui check
       - name: Check DWG Scene source
-        run: pnpm --filter @dwg-viewer/dwg-scene-source check
+        run: pnpm --filter @menaje/dwg-scene-source check
       - name: Check native document adapter contract
         run: pnpm --filter @dwg-viewer/native-document-adapter check
       - name: Check Webview
-        run: pnpm --filter @dwg-viewer/webview check
+        run: pnpm --filter @menaje/viewer-webgl check
       - name: Check VS Code extension
         run: pnpm --filter dwg-viewer-vscode check
       - name: Qualify Viewer-owned package and standalone boundary

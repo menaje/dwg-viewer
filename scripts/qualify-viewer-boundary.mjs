@@ -472,11 +472,15 @@ async function validateProductEntrypoints() {
   assert.match(browserHtml, /src\/main\.mjs/u);
   assert.match(
     webviewMain,
-    /DwgSceneCacheSource[\s\S]*@dwg-viewer\/dwg-scene-source/u,
+    /DwgSceneCacheSource[\s\S]*@menaje\/dwg-scene-source/u,
   );
   assert.match(
     webviewMain,
     /openViewerRuntime[\s\S]*@menaje\/viewer-core/u,
+  );
+  assert.match(
+    webviewMain,
+    /mountDwgWebGlPresentation[\s\S]*@menaje\/viewer-webgl/u,
   );
   assert.match(
     extensionBuilder,
@@ -487,7 +491,7 @@ async function validateProductEntrypoints() {
     /joinPath\(mediaRoot, ["']src["'], ["']main\.mjs["']\)/u,
   );
   for (const dependency of [
-    "@dwg-viewer/dwg-scene-source",
+    "@menaje/dwg-scene-source",
     "@menaje/viewer-render-protocol",
     "@menaje/viewer-core",
     "@menaje/viewer-ui",

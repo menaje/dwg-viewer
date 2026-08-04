@@ -45,7 +45,7 @@ importers:
 
   packages/native-document-adapter:
     dependencies:
-      '@dwg-viewer/dwg-scene-source':
+      '@menaje/dwg-scene-source':
         specifier: workspace:^
         version: link:../dwg-scene-source
 
@@ -61,7 +61,7 @@ importers:
 
   packages/webview:
     dependencies:
-      '@dwg-viewer/dwg-scene-source':
+      '@menaje/dwg-scene-source':
         specifier: workspace:^
         version: link:../dwg-scene-source
       '@menaje/viewer-core':

@@ -5,7 +5,7 @@ import test from "node:test";
 import {
   MemoryRangeSource,
   SceneCacheReader,
-} from "@dwg-viewer/dwg-scene-source";
+} from "@menaje/dwg-scene-source";
 
 import {
   NativeAdapterErrorCode,

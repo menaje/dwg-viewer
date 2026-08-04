@@ -1,4 +1,28 @@
-# Webview renderer
+# `@menaje/viewer-webgl`
+
+Host-neutral Viewer Core presentation mount와 DWG Scene Cache WebGL2
+renderer입니다. 공개 entrypoint는 DOM을 자동 탐색하거나
+`acquireVsCodeApi()`를 호출하지 않습니다. `mountWebGlPresentation()`은
+제품이 주입한 scene loader를, `mountDwgWebGlPresentation()`은
+`@menaje/dwg-scene-source` range layer를 사용합니다.
+
+`src/main.mjs`, `index.html`과 `styles.css`는 독립 DWG Viewer 제품 shell과
+개발·검증 harness입니다. 이 bootstrap과 `dwg-*` Host message는 공개
+embedding 계약이 아니며 package export map에 노출되지 않습니다.
+
+```js
+import {
+  mountDwgWebGlPresentation,
+} from "@menaje/viewer-webgl";
+
+const runtime = await openViewerRuntime(source, {
+  host,
+  mount: (context) =>
+    mountDwgWebGlPresentation(context, { canvas }),
+});
+```
+
+## DWG Viewer product shell
 
 Scene Cache v1.18 range reader, WebGL2 line/fill/point renderer, bounded CAD
 text overlay and lazy raster IMAGE overlay for the VS Code Webview.
@@ -310,7 +334,7 @@ shared `packages/dwg-scene-source` package. The file stays local to the browser.
 ## Test
 
 ```bash
-pnpm --filter @dwg-viewer/webview check
+pnpm --filter @menaje/viewer-webgl check
 ```
 
 Tests cover bounded range reads, cache validation, nested/DIMENSION block

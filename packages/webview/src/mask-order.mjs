@@ -1,4 +1,4 @@
-import earcut, { deviation } from "../node_modules/earcut/src/earcut.js";
+import earcut, { deviation } from "earcut";
 
 // Bits 17–31 carry converter diagnostics that the shaders do not consume.
 // Mask-enabled GPU payloads replace them while preserving mode/weight and

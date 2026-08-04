@@ -1,4 +1,4 @@
-import earcut, { deviation } from "../node_modules/earcut/src/earcut.js";
+import earcut, { deviation } from "earcut";
 
 import { decodeCadColor } from "./cad-color.mjs";
 import {

@@ -1,8 +1,31 @@
 {
-  "name": "@dwg-viewer/webview",
+  "name": "@menaje/viewer-webgl",
   "version": "0.1.0",
-  "private": true,
+  "description": "Embeddable WebGL2 presentation for Viewer Core with DWG Scene Cache support",
+  "license": "MPL-2.0",
+  "private": false,
   "type": "module",
+  "exports": {
+    ".": "./src/public-api.mjs",
+    "./dwg": "./src/dwg-presentation.mjs",
+    "./renderer": "./src/renderer.mjs",
+    "./render-delta": "./src/render-delta-adapter.mjs"
+  },
+  "files": [
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "src"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/menaje/dwg-viewer.git",
+    "directory": "packages/webview"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://npm.pkg.github.com"
+  },
   "imports": {
     "#shx-parser": "@mlightcad/shx-parser/dist/index.es.js"
   },
@@ -11,7 +34,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@dwg-viewer/dwg-scene-source": "workspace:^",
+    "@menaje/dwg-scene-source": "workspace:^",
     "@menaje/viewer-render-protocol": "workspace:^",
     "@menaje/viewer-core": "workspace:^",
     "@menaje/viewer-ui": "workspace:^",

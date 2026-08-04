@@ -152,6 +152,8 @@ SHX/BigFont 한글, 외부참조(XREF), 배치(Layout)를 실무에서 편하게
 - [`@menaje/viewer-core`](packages/viewer-core/README.md)
 - [`@menaje/viewer-render-protocol`](packages/render-protocol/README.md)
 - [`@menaje/viewer-ui`](packages/viewer-ui/README.md)
+- [`@menaje/dwg-scene-source`](packages/dwg-scene-source/README.md)
+- [`@menaje/viewer-webgl`](packages/webview/README.md)
 
 저장소 전체 검증은 다음 명령으로 실행합니다.
 

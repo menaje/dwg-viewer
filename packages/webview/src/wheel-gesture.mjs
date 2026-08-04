@@ -1,4 +1,4 @@
-import { WHEEL_ZOOM_RATE } from "../../viewer-core/src/viewport-interaction.mjs";
+import { WHEEL_ZOOM_RATE } from "@menaje/viewer-core/interaction";
 
 const PINCH_ZOOM_RATE = 0.008;
 const WHEEL_GESTURE_IDLE_MS = 180;

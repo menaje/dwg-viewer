@@ -1,1 +1,1 @@
-export * from "../../viewer-core/src/batch-cache.mjs";
+export * from "@menaje/viewer-core/batch-cache";

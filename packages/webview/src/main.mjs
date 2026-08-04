@@ -1,12 +1,14 @@
 import {
   DwgSceneCacheSource,
   createSceneCacheRevisionId,
-} from "@dwg-viewer/dwg-scene-source";
+} from "@menaje/dwg-scene-source";
 import {
-  createRenderLayerRangeSource,
   openViewerRuntime,
-  ViewerSelectionController,
 } from "@menaje/viewer-core";
+import {
+  mountDwgWebGlPresentation,
+  WebGlLineRenderer,
+} from "@menaje/viewer-webgl";
 
 import { ViewportInteraction } from "./interaction.mjs?v=1.18.12";
 import {
@@ -63,7 +65,6 @@ import {
 import { createMeasurementFormat } from "./measurement-format.mjs";
 import { ComplexLinetypeOverlay } from "./complex-linetype-overlay.mjs?v=1.18.13";
 import { curveRefinementCameraKey } from "./curve-contract.mjs";
-import { WebGlLineRenderer } from "./renderer.mjs?v=1.18.14";
 import { ReviewTools } from "./review-tools.mjs?v=1.18.16";
 import {
   isOutlineFontReference,
@@ -79,7 +80,6 @@ import {
 } from "./text-overlay.mjs?v=1.18.14";
 import {
   loadExternalFirstFrame,
-  loadFirstFrame,
 } from "./viewer.mjs?v=1.18.8";
 import {
   addViewBookmark,
@@ -5208,40 +5208,17 @@ async function openCache(source, workerSource, cacheSha256) {
     const renderSource = createDwgRenderSource(source, cacheSha256);
     runtime = await openViewerRuntime(renderSource, {
       host: createWebviewViewerHost(),
-      async mount({ sourceSession, snapshot, host }) {
-        const rangeSource = createRenderLayerRangeSource(
-          sourceSession,
-          snapshot,
-        );
-        try {
-          const scene = await loadFirstFrame(rangeSource, canvas, {
-            renderer,
-            onProgress(message) {
-              if (revision === openRevision) {
-                status.textContent = message;
-              }
-            },
-          });
-          const selectionController =
-            new ViewerSelectionController({
-              host,
-              snapshot,
-              projectSelection: projectDwgSelection,
-            });
-          return Object.freeze({
-            scene,
-            rangeSource,
-            selectionController,
-            dispose() {
-              selectionController.dispose();
-              renderer.dispose();
-            },
-          });
-        } catch (error) {
-          renderer.dispose();
-          throw error;
-        }
-      },
+      mount: (context) =>
+        mountDwgWebGlPresentation(context, {
+          canvas,
+          renderer,
+          projectSelection: projectDwgSelection,
+          onProgress(message) {
+            if (revision === openRevision) {
+              status.textContent = message;
+            }
+          },
+        }),
     });
     const { scene, rangeSource } = runtime.presentation;
     if (revision !== openRevision) {

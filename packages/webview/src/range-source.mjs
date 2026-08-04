@@ -1,1 +1,1 @@
-export * from "../../dwg-scene-source/src/range-source.mjs";
+export * from "@menaje/dwg-scene-source/range-source";

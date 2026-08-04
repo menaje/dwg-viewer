@@ -61,7 +61,7 @@ The public Webview suite fixes the legacy Korean mapping contract without
 committing private drawings or proprietary SHX files:
 
 ```bash
-pnpm --filter @dwg-viewer/webview test
+pnpm --filter @menaje/viewer-webgl test
 ```
 
 It distinguishes the 2,350 modern Hangul syllables available through strict

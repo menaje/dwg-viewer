@@ -1,0 +1,203 @@
+name: Viewer WebGL packages
+
+on:
+  push:
+    tags:
+      - "viewer-webgl-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.12.0
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://npm.pkg.github.com
+          scope: "@menaje"
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate package versions from one manifest source
+        id: version
+        shell: bash
+        run: |
+          webgl_version=$(node -p "require('./packages/webview/package.json').version")
+          source_version=$(node -p "require('./packages/dwg-scene-source/package.json').version")
+          compatibility_version=$(node -p "require('./compatibility/viewer-webgl.json').viewerWebGl.version")
+          publication_approved=$(node -p "require('./compatibility/viewer-webgl.json').distribution.tagPublicationApproved")
+          test "$webgl_version" = "$source_version"
+          test "$webgl_version" = "$compatibility_version"
+          test "$publication_approved" = "true"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "viewer-webgl-v$webgl_version"
+          fi
+          printf 'version=%s\n' "$webgl_version" >> "$GITHUB_OUTPUT"
+
+      - name: Validate source, renderer, product bundle, and public boundary
+        run: |
+          pnpm --filter @menaje/dwg-scene-source check
+          pnpm --filter @menaje/viewer-webgl check
+          pnpm --filter dwg-viewer-vscode check
+          pnpm run qualify:viewer-boundary
+
+      - name: Pack reproducible public artifacts
+        shell: bash
+        run: |
+          mkdir -p \
+            "$RUNNER_TEMP/viewer-webgl-release" \
+            "$RUNNER_TEMP/viewer-webgl-repeat" \
+            "$RUNNER_TEMP/viewer-webgl-dependencies"
+          for package_directory in \
+            packages/dwg-scene-source \
+            packages/webview
+          do
+            pnpm --dir "$package_directory" pack \
+              --pack-destination "$RUNNER_TEMP/viewer-webgl-release"
+            pnpm --dir "$package_directory" pack \
+              --pack-destination "$RUNNER_TEMP/viewer-webgl-repeat"
+          done
+          for package_directory in \
+            packages/render-protocol \
+            packages/viewer-core \
+            packages/viewer-ui
+          do
+            pnpm --dir "$package_directory" pack \
+              --pack-destination "$RUNNER_TEMP/viewer-webgl-dependencies"
+          done
+          for artifact in \
+            "$RUNNER_TEMP/viewer-webgl-release"/*.tgz \
+            "$RUNNER_TEMP/viewer-webgl-repeat"/*.tgz \
+            "$RUNNER_TEMP/viewer-webgl-dependencies"/*.tgz
+          do
+            node scripts/normalize-npm-package-archive.mjs "$artifact"
+          done
+          for artifact in "$RUNNER_TEMP/viewer-webgl-release"/*.tgz; do
+            cmp \
+              "$artifact" \
+              "$RUNNER_TEMP/viewer-webgl-repeat/$(basename "$artifact")"
+          done
+          cd "$RUNNER_TEMP/viewer-webgl-release"
+          sha256sum *.tgz > SHA256SUMS
+
+      - name: Verify immutable artifact manifest
+        shell: bash
+        run: |
+          expected_tag="viewer-webgl-v${{ steps.version.outputs.version }}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            expected_tag="$GITHUB_REF_NAME"
+          fi
+          node scripts/verify-viewer-webgl-artifacts.mjs \
+            "$RUNNER_TEMP/viewer-webgl-release" \
+            "$expected_tag"
+
+      - name: Verify clean artifact-only install
+        shell: bash
+        run: |
+          consumer="$RUNNER_TEMP/viewer-webgl-consumer"
+          mkdir "$consumer"
+          cd "$consumer"
+          npm init --yes
+          npm install --ignore-scripts \
+            "$RUNNER_TEMP/viewer-webgl-dependencies"/*.tgz \
+            "$RUNNER_TEMP/viewer-webgl-release"/*.tgz
+          node --input-type=module <<'NODE'
+          import {
+            ViewerWebGlApi,
+            ViewerWebGlVersion,
+            mountDwgWebGlPresentation,
+            mountWebGlPresentation,
+          } from "@menaje/viewer-webgl";
+          import {
+            DwgSceneCacheSource,
+          } from "@menaje/dwg-scene-source";
+
+          if (
+            ViewerWebGlApi !== "menaje-viewer-webgl/0.1" ||
+            ViewerWebGlVersion !==
+              process.env.VIEWER_WEBGL_VERSION ||
+            typeof mountWebGlPresentation !== "function" ||
+            typeof mountDwgWebGlPresentation !== "function" ||
+            typeof DwgSceneCacheSource !== "function"
+          ) {
+            throw new Error(
+              "public Viewer WebGL package identity mismatch",
+            );
+          }
+          NODE
+        env:
+          VIEWER_WEBGL_VERSION: ${{ steps.version.outputs.version }}
+
+      - name: Publish GitHub npm packages
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for package_directory in \
+            packages/dwg-scene-source \
+            packages/webview
+          do
+            package_name=$(node -p "require('./$package_directory/package.json').name")
+            package_version=$(node -p "require('./$package_directory/package.json').version")
+            if npm view \
+              "$package_name@$package_version" \
+              version \
+              --registry=https://npm.pkg.github.com >/dev/null 2>&1
+            then
+              continue
+            fi
+            pnpm --dir "$package_directory" publish \
+              --no-git-checks \
+              --access public \
+              --registry=https://npm.pkg.github.com
+          done
+
+      - name: Attest public package artifacts
+        uses: actions/attest@v4
+        with:
+          subject-path: ${{ runner.temp }}/viewer-webgl-release/*.tgz
+
+      - name: Upload public package artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: viewer-webgl-packages
+          path: |
+            ${{ runner.temp }}/viewer-webgl-release/*.tgz
+            ${{ runner.temp }}/viewer-webgl-release/SHA256SUMS
+          if-no-files-found: error
+
+      - name: Publish tagged GitHub release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          release_notes="$RUNNER_TEMP/viewer-webgl-release-notes.md"
+          printf '%s\n\n%s\n\n%s\n\n%s\n' \
+            "Prerelease: embeddable WebGL2 presentation and DWG Scene Cache source packages for Viewer Core consumers." \
+            "The standalone DWG Viewer now uses the same public mount contract that another host can bundle without installing the DWG Viewer extension." \
+            "The package manifest is the single version source; the workflow derives and validates this tag instead of requiring repeated manual version input." \
+            "Consumers must pin the release artifacts and verify SHA256SUMS and GitHub artifact attestations." \
+            > "$release_notes"
+          gh release create "$GITHUB_REF_NAME" \
+            "$RUNNER_TEMP/viewer-webgl-release"/*.tgz \
+            "$RUNNER_TEMP/viewer-webgl-release/SHA256SUMS" \
+            --verify-tag \
+            --prerelease \
+            --title "Viewer WebGL v${{ steps.version.outputs.version }}" \
+            --notes-file "$release_notes"

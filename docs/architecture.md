@@ -41,11 +41,15 @@ window, and consumer manifests are recorded in
 [`compatibility/viewer-core.json`](../compatibility/viewer-core.json).
 The canonical Scene Cache reader and bounded range sources now live in
 `packages/dwg-scene-source`; the legacy Webview paths are compatibility
-re-exports. `DwgSceneCacheSource` and the Browser mock source pass the common
-source lifecycle fixture. Both the standalone Browser file path and VS Code
-cache channel now open `DwgSceneCacheSource` through the same Viewer Core
-runtime and mount the existing renderer through a snapshot-bound range
-projection. The source-neutral 2D camera is now canonical in Viewer Core with
+re-exports. The public `@menaje/dwg-scene-source` package exposes that
+host-neutral source, while `@menaje/viewer-webgl` exposes generic and DWG
+presentation mounts plus the WebGL renderer adapters. It does not export the
+standalone product's HTML/bootstrap or its private `dwg-*` Host messages.
+`DwgSceneCacheSource` and the Browser mock source pass the common source
+lifecycle fixture. Both the standalone Browser file path and VS Code cache
+channel now open `DwgSceneCacheSource` through the same Viewer Core runtime
+and mount the renderer through the public snapshot-bound presentation
+contract. The source-neutral 2D camera is now canonical in Viewer Core with
 a legacy Webview re-export, as is the byte-budgeted GPU batch cache. Viewport
 interaction lifecycle is also canonical in Core; the Webview wrapper injects
 the current DWG detail-selection policy so Core does not import Scene Cache
@@ -75,7 +79,8 @@ preview rollback/promotion without rereading the immutable base, and exposes a
 source-neutral renderer adapter hook. `MockRenderDeltaSource` verifies that a
 stale replay cannot advance either source or overlay revision and that picking
 tracks the applied revision. The existing DWG WebGL vertex layouts remain
-private to the Webview adapter. `DwgRenderDeltaAdapter` now consumes a
+renderer-adapter details rather than render-protocol fields.
+`DwgRenderDeltaAdapter` now consumes a
 digest/byte-bound decoded v6 packet containing 36-byte lines, 32-byte triangle
 fills, 32-byte POINT records, bounded UTF-8 JSON native-text records, 272-byte
 direct block-occurrence transforms and 40-byte partial instance styles. It

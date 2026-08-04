@@ -1,1 +1,1 @@
-export * from "../../dwg-scene-source/src/scene-cache.mjs";
+export * from "@menaje/dwg-scene-source/scene-cache";

@@ -216,7 +216,11 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   );
   assert.match(
     template,
-    /"@dwg-viewer\/dwg-scene-source":\s*"\.\.\/dwg-scene-source\/src\/index\.mjs"/u,
+    /"@menaje\/dwg-scene-source":\s*"\.\.\/dwg-scene-source\/src\/index\.mjs"/u,
+  );
+  assert.match(
+    template,
+    /"@menaje\/viewer-webgl":\s*"\.\/src\/public-api\.mjs"/u,
   );
   assert.match(
     template,
@@ -232,8 +236,7 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   assert.match(mainModule, /new ReviewTools/u);
   assert.match(mainModule, /new DwgSceneCacheSource/u);
   assert.match(mainModule, /openViewerRuntime/u);
-  assert.match(mainModule, /createRenderLayerRangeSource/u);
-  assert.match(mainModule, /new ViewerSelectionController/u);
+  assert.match(mainModule, /mountDwgWebGlPresentation/u);
   assert.match(mainModule, /projectDwgSelection/u);
   assert.match(mainModule, /onSelectionChange/u);
   assert.match(mainModule, /new CameraViewHistory/u);

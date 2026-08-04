@@ -5,7 +5,7 @@ import {
   VIEW_COMMIT_DEBOUNCE_MS,
   ViewportInteraction as CoreViewportInteraction,
   WHEEL_ZOOM_RATE,
-} from "../../viewer-core/src/viewport-interaction.mjs";
+} from "@menaje/viewer-core/interaction";
 import { normalizeWheelGesture } from "./wheel-gesture.mjs";
 
 function createDetailStreamer(...arguments_) {

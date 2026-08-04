@@ -42,7 +42,8 @@ release를 분리한다. `dwg-viewer`는 다음 versioned package 경계를
 | --- | --- | --- |
 | `@menaje/viewer-render-protocol` | source/session/snapshot/range의 Viewer-facing 계약과 fail-closed validation | Spatial Workspace, Agent method, Host private message |
 | `@menaje/viewer-core` | source/host lifecycle, renderer, camera, interaction, picking과 generic layer 합성 | DOM bootstrap, VS Code API, DWG parser, permission 판정 |
-| `@dwg-viewer/dwg-scene-source` | Scene Cache reader, range/detail streaming과 `DwgSceneCacheSource` | Viewer UI, Spatial revision authority |
+| `@menaje/dwg-scene-source` | Scene Cache reader, range/detail streaming과 `DwgSceneCacheSource` | Viewer UI, Spatial revision authority |
+| `@menaje/viewer-webgl` | Host-neutral WebGL presentation mount와 DWG renderer/delta adapter | VS Code API, Spatial authority, 제품 전용 DOM bootstrap |
 | `@menaje/viewer-ui` | 일반 toolbar, inspector와 DOM composition | Spatial semantic panel |
 | `@dwg-viewer/vscode-bridge` | VS Code resource/range/file association adapter | public Service protocol |
 | `@dwg-viewer/browser-bridge` | Blob/HTTP/mock host adapter | VS Code API |
@@ -55,8 +56,10 @@ lifecycle은 Browser/VS Code conformance를 추가한 뒤 Core로 옮긴다.
 BIM Explorer의 source/identity/3D consumer conformance 결과 DWG 형식에
 종속되지 않은 공용 package는 `@menaje/viewer-render-protocol`,
 `@menaje/viewer-core`, `@menaje/viewer-ui` namespace로 확정했다.
-`@dwg-viewer/dwg-scene-source`와 제품 bridge는 DWG 제품 전용 이름을
-유지한다. public protocol/API ID도 `menaje-viewer-*`로 분리해 Host의
+`@menaje/dwg-scene-source`와 Viewer WebGL presentation은 공개 consumer가
+독립 설치할 수 있도록 repository owner scope를 사용하고, 제품 bridge는
+DWG 제품 전용 이름을 유지한다. public protocol/API ID도
+`menaje-viewer-*`로 분리해 Host의
 private `dwg-*` message와 혼동하지 않는다.
 
 generic 3D renderer와 BIM exploration UI는 `bim-explorer`가 소유한다.

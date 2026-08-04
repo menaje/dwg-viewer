@@ -1,4 +1,4 @@
-# `@dwg-viewer/dwg-scene-source`
+# `@menaje/dwg-scene-source`
 
 Scene Cache v1.18을 Viewer Core의 source-neutral `RenderSource` 계약에
 연결합니다.
@@ -20,7 +20,7 @@ import {
   BlobRangeSource,
   DwgSceneCacheSource,
   createSceneCacheRevisionId,
-} from "@dwg-viewer/dwg-scene-source";
+} from "@menaje/dwg-scene-source";
 
 const source = new DwgSceneCacheSource({
   rangeSource: new BlobRangeSource(file),

@@ -20,6 +20,6 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@dwg-viewer/dwg-scene-source": "workspace:^"
+    "@menaje/dwg-scene-source": "workspace:^"
   }
 }

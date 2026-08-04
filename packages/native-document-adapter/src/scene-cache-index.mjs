@@ -1,6 +1,6 @@
 import {
   SectionKind,
-} from "@dwg-viewer/dwg-scene-source/scene-cache";
+} from "@menaje/dwg-scene-source/scene-cache";
 
 import {
   AllNativeAdapterOperations,

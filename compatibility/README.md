@@ -3,6 +3,11 @@
 `viewer-core.json`은 이 저장소가 생산하는 Viewer Core, Viewer UI와 render
 protocol의 호환 기준을 기록한다.
 
+`viewer-webgl.json`은 다른 제품이 확장 프로그램이나 private
+Host–Webview message 없이 사용할 수 있는 WebGL presentation과 DWG Scene
+Cache source package의 버전, 공개 mount, exact artifact digest와 publication
+승인을 별도로 기록한다. 제품 bootstrap은 이 공개 계약에 포함되지 않는다.
+
 - `public-preview`는 package/API가 공개 배포됐지만 아직 `0.x` compatibility
   window에 있다는 뜻이다.
 - `releaseStage: prerelease`는 현재 GitHub Release가 최종 승격되지 않았다는
@@ -29,6 +34,11 @@ protocol의 호환 기준을 기록한다.
 
 실제 package version, protocol version, artifact digest 또는 conformance
 경로가 바뀌면 manifest와 package test를 같은 변경에서 갱신한다.
+
+`Viewer WebGL packages` workflow는 `packages/webview/package.json`을
+유일한 release-version 기준으로 읽고 `viewer-webgl-v<version>` 태그와
+Scene Cache package version을 검증한다. 따라서 버전 문자열을 release
+화면이나 consumer 문서에 사람이 따로 맞춰 입력하지 않는다.
 
 `pnpm run qualify:viewer-boundary`는 세 public tarball을 두 번 pack해 같은
 gzip platform metadata를 정규화한 runner 간 byte 동일성과 platform-neutral

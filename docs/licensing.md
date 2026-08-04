@@ -32,6 +32,7 @@ terms control.
 | Repository source and documentation, unless a file states otherwise | MPL-2.0 | `LICENSE` is the complete, unmodified official MPL 2.0 text; project copyright is in `NOTICE` |
 | `dwg-viewer-vscode-<version>.vsix` | MPL-2.0, plus bundled MIT and ISC components | Includes `LICENSE.txt`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, and a README link to the corresponding tagged source |
 | `@menaje/viewer-core`, `@menaje/viewer-render-protocol`, `@menaje/viewer-ui` | MPL-2.0 | Current packages include the unmodified official MPL text, project `NOTICE`, README, and source modules |
+| `@menaje/viewer-webgl`, `@menaje/dwg-scene-source` | MPL-2.0, with MIT and ISC runtime dependencies used by WebGL | Public package archives include the unmodified official MPL text, project `NOTICE`, README, and source modules; dependency packages retain their own upstream licenses and notices |
 | `@mlightcad/shx-parser` 1.4.5 | MIT | Bundled into the Webview; its copyright and full MIT permission notice are included in `THIRD_PARTY_NOTICES.md` |
 | Earcut 3.2.3 | ISC | Bundled into the Webview; its copyright and full ISC permission notice are included in `THIRD_PARTY_NOTICES.md` |
 | DWG Viewer LibreDWG adapter source | MPL-2.0 | Included as corresponding adapter source in the separate engine archive |
@@ -65,6 +66,10 @@ immutable. The superseding `viewer-core-v0.1.2` packages preserve that license
 payload and use platform-normalized archives whose actual hashes are verified
 by `pnpm run qualify:viewer-boundary`.
 
+The `viewer-webgl-v0.1.0` package train follows the same rule. Both package
+archives carry byte-identical copies of the repository's unmodified official
+MPL text and keep project-specific copyright in `NOTICE`.
+
 ## GPL adapter boundary
 
 The LibreDWG adapter executable statically links GNU LibreDWG and is conveyed
@@ -89,7 +94,7 @@ private protocol requires a new licensing review before release.
 The Webview production dependency audit is:
 
 ```bash
-pnpm --filter @dwg-viewer/webview licenses list --prod --json
+pnpm --filter @menaje/viewer-webgl licenses list --prod --json
 ```
 
 The result must contain only reviewed versions. Because esbuild places the

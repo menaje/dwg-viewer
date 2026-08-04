@@ -3,7 +3,7 @@ import {
   DEFAULT_CONCURRENCY,
   DEFAULT_VISIBLE_BYTES,
   DetailStreamingController,
-} from "../../viewer-core/src/detail-streaming-controller.mjs";
+} from "@menaje/viewer-core/detail-streaming";
 import { cameraViewportBounds } from "./camera.mjs";
 import {
   boundsIntersect2D,

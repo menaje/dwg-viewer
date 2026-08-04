@@ -1,1 +1,1 @@
-export * from "../../viewer-core/src/camera.mjs";
+export * from "@menaje/viewer-core/camera";
