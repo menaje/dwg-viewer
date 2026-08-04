@@ -18,12 +18,14 @@
   },
   "distribution": {
     "kind": "github-release-and-packages",
-    "published": false,
+    "published": true,
     "releaseStage": "prerelease",
-    "tagPublicationApproved": true,
+    "tagPublicationApproved": false,
     "automaticStablePromotion": false,
     "tag": "viewer-webgl-v0.1.1",
     "releaseUrl": "https://github.com/menaje/dwg-viewer/releases/tag/viewer-webgl-v0.1.1",
+    "publishedAt": "2026-08-04T05:44:16Z",
+    "workflowRun": "https://github.com/menaje/dwg-viewer/actions/runs/30881583898",
     "registry": "https://npm.pkg.github.com",
     "artifacts": {
       "viewerWebGl": {

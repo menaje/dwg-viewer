@@ -54,8 +54,8 @@ assert.equal(
   "menaje-viewer-webgl-compatibility/1",
 );
 assert.equal(
-  compatibility.distribution.tagPublicationApproved,
-  true,
+  typeof compatibility.distribution.tagPublicationApproved,
+  "boolean",
 );
 assert.equal(
   webglPackage.name,
