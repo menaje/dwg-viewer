@@ -31,14 +31,15 @@ protocol의 호환 기준을 기록한다.
 경로가 바뀌면 manifest와 package test를 같은 변경에서 갱신한다.
 
 `pnpm run qualify:viewer-boundary`는 세 public tarball을 두 번 pack해 같은
-runner의 byte 동일성과 platform-neutral package content SHA-256을 확인하고,
-published archive의 raw SHA-256/size pin을 보존한다. 빈 임시 consumer에는
+gzip platform metadata를 정규화한 runner 간 byte 동일성과 platform-neutral
+package content SHA-256을 확인하고, 실제 archive의 raw SHA-256/size가
+producer pin과 일치하는지 검증한다. 빈 임시 consumer에는
 artifact만 설치해
 RenderSource/Service fixture와 standalone runtime을 실행한다. Browser와
 VS Code가 같은 Webview entrypoint를 bundle하는지도 확인한다. 이 저장소가
 소유하지 않는 BIM/Spatial consumer qualification은 실행하거나 수정하지
 않으며 각 consumer manifest가 책임진다. 현재 고정 evidence는
-[`evidence/viewer-boundary-0.1.1-2026-08-04.json`](evidence/viewer-boundary-0.1.1-2026-08-04.json)에
+[`evidence/viewer-boundary-0.1.2-2026-08-04.json`](evidence/viewer-boundary-0.1.2-2026-08-04.json)에
 있다.
 
 `native-document-adapter.json`은 raw DWG query/change/write backend의

@@ -61,6 +61,9 @@ jobs:
           pnpm --dir apps/vscode-extension exec vsce package \
             --no-dependencies \
             --out "$release_directory/repeated.vsix"
+          node scripts/normalize-vsix-archive.mjs \
+            "$release_directory/$package_name" \
+            "$release_directory/repeated.vsix"
           cmp \
             "$release_directory/$package_name" \
             "$release_directory/repeated.vsix"

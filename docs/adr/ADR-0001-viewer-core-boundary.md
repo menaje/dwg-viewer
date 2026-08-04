@@ -104,12 +104,12 @@ Viewer package version도 서로 독립적이다.
 - consumer는 package/version range와 실제 conformance 결과를 별도 manifest에
   pin한다.
 
-초기 public preview package 0.1.0은 기록으로 보존하고, 현재 preview
-0.1.1은 `viewer-core-v0.1.1` GitHub Release tarball과 GitHub Packages에
-함께 배포한다. producer manifest는 artifact SHA-256과 exact render protocol
-compatibility window를 기록하고, consumer는 자신의 lockfile과 compatibility
-manifest에서 exact artifact를 pin한다. 0.x 범위를 벗어나는 호환 주장은
-cross-repository fixture 없이 하지 않는다.
+public preview package 0.1.0과 0.1.1은 기록으로 보존하고, 현재 preview
+0.1.2는 `viewer-core-v0.1.2` GitHub Release tarball과 GitHub Packages에
+함께 배포한다. producer manifest는 artifact SHA-256과 exact render
+protocol compatibility window를 기록하고, consumer는 자신의 lockfile과
+compatibility manifest에서 exact artifact를 pin한다. 0.x 범위를 벗어나는
+호환 주장은 cross-repository fixture 없이 하지 않는다.
 
 ## Extraction 순서
 
@@ -277,16 +277,17 @@ private message를 Core API로 승격하지 않고 진행한다.
 
 2026-08-04에는 Viewer 저장소 소유 경계를
 `pnpm run qualify:viewer-boundary`로 고정했다. 이 Gate는 public package를
-두 번 pack해 같은 runner의 byte 동일성과 platform-neutral content digest를
-확인하고, published archive의 raw digest/size pin을 유지한다. 빈 임시
-consumer에 tarball만 설치해 source/service conformance와 외부 제품 없는
-standalone runtime lifecycle을 실행한다. Browser HTML과 VS Code bundle도 같은
+두 번 pack하고 gzip platform metadata를 정규화해 runner 간 byte 동일성과
+platform-neutral content digest를 확인하며, 실제 archive의 raw digest/size가
+producer manifest와 일치해야 한다. 빈 임시 consumer에 tarball만 설치해
+source/service conformance와 외부 제품 없는 standalone runtime lifecycle을
+실행한다. Browser HTML과 VS Code bundle도 같은
 `packages/webview/src/main.mjs`에서 `DwgSceneCacheSource`와
 `openViewerRuntime()`을 사용해야 통과한다. 결과는
-[`viewer-boundary-0.1.1-2026-08-04.json`](../../compatibility/evidence/viewer-boundary-0.1.1-2026-08-04.json)에
+[`viewer-boundary-0.1.2-2026-08-04.json`](../../compatibility/evidence/viewer-boundary-0.1.2-2026-08-04.json)에
 고정한다.
 
-현재 `viewer-core-v0.1.1`은 prerelease로 유지한다. 새 tag publish는
+현재 `viewer-core-v0.1.2`는 prerelease로 유지한다. 새 tag publish는
 producer manifest의 `tagPublicationApproved`를 별도 변경하지 않으면
 workflow가 거부하며 stable 자동 승격은 없다. 이 qualification은
 `dwg-viewer`만 실행하고 BIM Explorer와 Coni Spatial 저장소를 수정하거나

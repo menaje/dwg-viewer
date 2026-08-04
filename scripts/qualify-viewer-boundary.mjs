@@ -13,6 +13,10 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import {
+  normalizeNpmPackageArchive,
+} from "./normalize-npm-package-archive.mjs";
+
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -26,7 +30,7 @@ const evidencePath = path.join(
   repositoryRoot,
   "compatibility",
   "evidence",
-  "viewer-boundary-0.1.1-2026-08-04.json",
+  "viewer-boundary-0.1.2-2026-08-04.json",
 );
 const emitOnly = process.argv.slice(2).includes("--emit");
 const unexpectedArguments = process.argv
@@ -240,10 +244,17 @@ async function packArtifacts(destination, manifest) {
     const expected =
       manifest.distribution.artifacts[definition.artifactKey];
     const artifactPath = path.join(destination, expected.file);
+    await normalizeNpmPackageArchive(artifactPath);
     assert.match(expected.sha256, /^[a-f0-9]{64}$/u);
     assert.match(expected.contentSha256, /^[a-f0-9]{64}$/u);
     assert.ok(Number.isSafeInteger(expected.bytes));
     assert.ok(expected.bytes > 0);
+    const archiveBytes = await readFile(artifactPath);
+    const archiveDigest = createHash("sha256")
+      .update(archiveBytes)
+      .digest("hex");
+    assert.equal(archiveDigest, expected.sha256);
+    assert.equal(archiveBytes.byteLength, expected.bytes);
 
     const entries = run("tar", ["-tzf", artifactPath])
       .split(/\r?\n/u)
@@ -272,8 +283,8 @@ async function packArtifacts(destination, manifest) {
 
     artifacts[definition.artifactKey] = Object.freeze({
       file: expected.file,
-      publishedSha256: expected.sha256,
-      publishedBytes: expected.bytes,
+      publishedSha256: archiveDigest,
+      publishedBytes: archiveBytes.byteLength,
       contentSha256: contentDigest,
       entries: entries.length,
       runnerRepackByteIdentical: true,

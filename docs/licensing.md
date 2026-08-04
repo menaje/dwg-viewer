@@ -59,10 +59,11 @@ code in executable form. The project satisfies its source-notice policy by:
 The historical `viewer-core-v0.1.0` packages use the same license identifier
 and include the official Exhibit A notice, README, and preferred source form.
 Mozilla permits that notice to be placed in a `LICENSE` file in a relevant
-directory. Those artifacts and recorded checksums remain immutable. The
-superseding `viewer-core-v0.1.1` packages include the complete official MPL
-text and separate project `NOTICE`; their new artifact hashes are verified by
-`pnpm run qualify:viewer-boundary`.
+directory. The historical `viewer-core-v0.1.1` packages add the complete
+official MPL text and separate project `NOTICE`. Both releases remain
+immutable. The superseding `viewer-core-v0.1.2` packages preserve that license
+payload and use platform-normalized archives whose actual hashes are verified
+by `pnpm run qualify:viewer-boundary`.
 
 ## GPL adapter boundary
 

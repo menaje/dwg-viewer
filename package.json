@@ -1,6 +1,6 @@
 {
   "name": "dwg-viewer",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "Open-source DWG viewer for VS Code",
   "license": "MPL-2.0",
@@ -10,14 +10,16 @@
     "playwright-core": "1.62.1"
   },
   "scripts": {
-    "check": "pnpm run check:adapter-package && pnpm run check:wasm-probe && pnpm run check:korean-corpus && pnpm run check:windows-qualification && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @menaje/viewer-render-protocol check && pnpm --filter @menaje/viewer-core check && pnpm --filter @menaje/viewer-ui check && pnpm --filter @dwg-viewer/dwg-scene-source check && pnpm --filter @dwg-viewer/native-document-adapter check && pnpm --filter @dwg-viewer/webview check && pnpm --filter dwg-viewer-vscode check && pnpm run qualify:viewer-boundary",
+    "check": "pnpm run check:adapter-package && pnpm run check:viewer-package-archive && pnpm run check:vsix-archive && pnpm run check:wasm-probe && pnpm run check:korean-corpus && pnpm run check:windows-qualification && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --filter @menaje/viewer-render-protocol check && pnpm --filter @menaje/viewer-core check && pnpm --filter @menaje/viewer-ui check && pnpm --filter @dwg-viewer/dwg-scene-source check && pnpm --filter @dwg-viewer/native-document-adapter check && pnpm --filter @dwg-viewer/webview check && pnpm --filter dwg-viewer-vscode check && pnpm run qualify:viewer-boundary",
     "check:adapter-package": "node --test adapters/libredwg/package.test.mjs",
+    "check:viewer-package-archive": "node --test scripts/normalize-npm-package-archive.test.mjs",
+    "check:vsix-archive": "node --test scripts/normalize-vsix-archive.test.mjs",
     "check:wasm-probe": "node --test adapters/libredwg/wasm/probe.test.mjs",
     "check:korean-corpus": "node --check benchmarks/korean-corpus.mjs && node --check benchmarks/korean-corpus-inventory.mjs && node --check benchmarks/public-korean-corpus.mjs && node --test benchmarks/korean-corpus.test.mjs benchmarks/korean-corpus-inventory.test.mjs benchmarks/public-korean-corpus.test.mjs",
     "check:windows-qualification": "node --check scripts/qualify-windows-native.mjs && node --check scripts/qualify-windows-vscode-ui.mjs && node --test scripts/qualify-windows-vscode-ui.test.mjs",
     "corpus:korean": "node benchmarks/korean-corpus.mjs",
     "format": "cargo fmt --all",
-    "test": "pnpm run check:adapter-package && pnpm run check:wasm-probe && pnpm run check:korean-corpus && cargo test --workspace && pnpm --filter @menaje/viewer-render-protocol test && pnpm --filter @menaje/viewer-core test && pnpm --filter @menaje/viewer-ui test && pnpm --filter @dwg-viewer/dwg-scene-source test && pnpm --filter @dwg-viewer/native-document-adapter test && pnpm --filter @dwg-viewer/webview test && pnpm --filter dwg-viewer-vscode test",
+    "test": "pnpm run check:adapter-package && pnpm run check:viewer-package-archive && pnpm run check:vsix-archive && pnpm run check:wasm-probe && pnpm run check:korean-corpus && cargo test --workspace && pnpm --filter @menaje/viewer-render-protocol test && pnpm --filter @menaje/viewer-core test && pnpm --filter @menaje/viewer-ui test && pnpm --filter @dwg-viewer/dwg-scene-source test && pnpm --filter @dwg-viewer/native-document-adapter test && pnpm --filter @dwg-viewer/webview test && pnpm --filter dwg-viewer-vscode test",
     "test:viewer-contracts": "pnpm --filter @menaje/viewer-render-protocol test && pnpm --filter @menaje/viewer-core test && pnpm --filter @menaje/viewer-ui test && pnpm --filter @dwg-viewer/dwg-scene-source test",
     "qualify:native-document-adapter": "node scripts/qualify-native-document-adapter.mjs",
     "qualify:viewer-boundary": "node scripts/qualify-viewer-boundary.mjs",

@@ -27,10 +27,11 @@ and GitHub's
 ## Reproducible build gates
 
 The `Release packages` workflow is available as a manual dry run and runs
-automatically for a `v*` tag. It:
+automatically for a `v<version>` tag. It:
 
 1. checks that the repository and extension versions match the tag;
-2. builds the VSIX twice and requires byte-identical output;
+2. builds the VSIX twice, normalizes bounded ZIP timestamp metadata, and
+   requires byte-identical output;
 3. checks the canonical VSIX license, notices, source link, and GPL exclusion;
 4. builds checksum-pinned static adapters on Linux x64, macOS arm64, and
    Windows x64;
@@ -46,6 +47,14 @@ repository. They are not Apple Developer ID signatures or notarization. The
 release pipeline uses the open-source components recorded in
 [`licensing.md`](licensing.md) and does not rely on a proprietary CAD SDK.
 
+The `Viewer packages` workflow separately normalizes the npm package gzip
+timestamp and OS header fields before comparing archives, checks the actual
+archive SHA-256 and byte length against
+[`compatibility/viewer-core.json`](../compatibility/viewer-core.json), and
+then verifies the platform-neutral extracted-content digest. This prevents a
+macOS/Linux gzip header difference from being mistaken for a matching
+published artifact.
+
 To reproduce the VSIX locally:
 
 ```bash
@@ -53,7 +62,7 @@ pnpm install --frozen-lockfile
 pnpm --dir apps/vscode-extension run build
 pnpm --dir apps/vscode-extension exec vsce package \
   --no-dependencies \
-  --out /absolute/new/path/dwg-viewer-vscode-0.1.1.vsix
+  --out /absolute/new/path/dwg-viewer-vscode-0.1.2.vsix
 ```
 
 To reproduce an adapter package, use the checksum-pinned preparation and
@@ -78,7 +87,7 @@ shasum -a 256 -c SHA256SUMS
 With GitHub CLI, verify provenance for the artifact you intend to install:
 
 ```bash
-gh attestation verify dwg-viewer-vscode-0.1.1.vsix \
+gh attestation verify dwg-viewer-vscode-0.1.2.vsix \
   --repo menaje/dwg-viewer
 gh attestation verify dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz \
   --repo menaje/dwg-viewer
@@ -92,7 +101,7 @@ Use `dwg-viewer-libredwg-0.14-win32-x64.tar.gz` on Windows.
 Install the VSIX:
 
 ```bash
-code --install-extension dwg-viewer-vscode-0.1.1.vsix
+code --install-extension dwg-viewer-vscode-0.1.2.vsix
 ```
 
 Extract the adapter archive into a directory controlled by the current user,

@@ -1,6 +1,6 @@
 {
   "name": "@menaje/viewer-render-protocol",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Source-neutral Viewer render source, snapshot, delta, identity, and range contracts",
   "license": "MPL-2.0",
   "private": false,

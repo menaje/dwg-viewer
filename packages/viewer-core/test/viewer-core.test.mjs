@@ -467,7 +467,7 @@ test("keeps package versions and producer compatibility manifest aligned", async
     viewerOwnedBoundary: "passed",
     command: "pnpm run qualify:viewer-boundary",
     evidence:
-      "compatibility/evidence/viewer-boundary-0.1.1-2026-08-04.json",
+      "compatibility/evidence/viewer-boundary-0.1.2-2026-08-04.json",
     externalConsumers: "consumer-owned",
   });
   assert.equal(

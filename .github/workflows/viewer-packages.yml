@@ -73,6 +73,12 @@ jobs:
             --pack-destination "$RUNNER_TEMP/viewer-repeat"
           pnpm --dir packages/viewer-ui pack \
             --pack-destination "$RUNNER_TEMP/viewer-repeat"
+          for artifact in \
+            "$RUNNER_TEMP/viewer-release"/*.tgz \
+            "$RUNNER_TEMP/viewer-repeat"/*.tgz
+          do
+            node scripts/normalize-npm-package-archive.mjs "$artifact"
+          done
           for artifact in "$RUNNER_TEMP/viewer-release"/*.tgz; do
             cmp \
               "$artifact" \
@@ -177,10 +183,11 @@ jobs:
         run: |
           core_version=$(node -p "require('./packages/viewer-core/package.json').version")
           release_notes="$RUNNER_TEMP/viewer-release-notes.md"
-          printf '%s\n\n%s\n\n%s\n\n%s\n' \
+          printf '%s\n\n%s\n\n%s\n\n%s\n\n%s\n' \
             "Prerelease: Viewer Core, Viewer UI, and render protocol packages for embedding the DWG viewing surface in another host." \
-            "Version 0.1.1 supersedes the 0.1.0 preview and adds complete canonical MPL-2.0 license text plus a separate NOTICE in every package." \
-            "The package release is 0.1.1; the compatible render protocol identity remains menaje-viewer-render-protocol/0.1.0." \
+            "Version $core_version supersedes earlier public previews and includes complete canonical MPL-2.0 license text plus a separate NOTICE in every package." \
+            "Package gzip metadata is platform-normalized, and the exact archive SHA-256 and byte length are verified against the producer compatibility manifest." \
+            "The package release is $core_version; the compatible render protocol identity remains menaje-viewer-render-protocol/0.1.0." \
             "Consumers must pin the release artifacts and verify SHA256SUMS and GitHub artifact attestations." \
             > "$release_notes"
           release_stage=$(node -p "require('./compatibility/viewer-core.json').distribution.releaseStage")

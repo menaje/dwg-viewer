@@ -11,12 +11,12 @@ protocol과 Core를 함께 설치합니다.
 
 ```sh
 npm install \
-  https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.1/menaje-viewer-render-protocol-0.1.1.tgz \
-  https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.1/menaje-viewer-core-0.1.1.tgz
+  https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-render-protocol-0.1.2.tgz \
+  https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-core-0.1.2.tgz
 ```
 
 GitHub Packages를 사용할 때는 `@menaje` scope를
-`https://npm.pkg.github.com`에 연결하고 두 package의 exact `0.1.1`을
+`https://npm.pkg.github.com`에 연결하고 두 package의 exact `0.1.2`를
 설치합니다.
 
 ## RenderSource

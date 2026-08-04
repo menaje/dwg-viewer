@@ -34,8 +34,8 @@ RenderSource
        -> @menaje/viewer-ui -> product DOM
 ```
 
-These packages are `0.1.1` public previews distributed as checksum-pinned
-artifacts in the `viewer-core-v0.1.1` GitHub release and through GitHub
+These packages are `0.1.2` public previews distributed as checksum-pinned
+artifacts in the `viewer-core-v0.1.2` GitHub release and through GitHub
 Packages. Their producer compatibility record, exact artifact digests, protocol
 window, and consumer manifests are recorded in
 [`compatibility/viewer-core.json`](../compatibility/viewer-core.json).
