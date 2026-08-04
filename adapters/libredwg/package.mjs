@@ -18,6 +18,8 @@ import { gzipSync } from "node:zlib";
 export const LIBREDWG_VERSION = "0.14";
 export const LIBREDWG_SOURCE_SHA256 =
   "62ebb73b984f865960f20ed26619ea5f8789d5e3fd088fa40a2598384da81275";
+export const MPL_2_0_SHA256 =
+  "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04";
 const PACKAGE_SCHEMA = "dwg-libredwg-package/1";
 const DOCTOR_SCHEMA = "dwg-engine-doctor/1";
 const ADAPTER_PROTOCOL = "dwg-engine-adapter/1";
@@ -373,6 +375,8 @@ The linked adapter executable is distributed under GPL-3.0-or-later.
 LICENSES/GPL-3.0-or-later.txt contains the license. Complete source used for
 this package is included under source/, including the checksum-pinned
 LibreDWG ${LIBREDWG_VERSION} release archive and the DWG Viewer adapter source.
+LICENSES/MPL-2.0.txt contains the unmodified MPL 2.0 text applicable to that
+adapter source, and NOTICE contains the DWG Viewer copyright notice.
 
 Rebuild from the included source
 --------------------------------
@@ -403,7 +407,8 @@ GNU LibreDWG ${LIBREDWG_VERSION}
 DWG Viewer adapter source
   Project: https://github.com/menaje/dwg-viewer
   Source: source/dwg-viewer/adapters/libredwg/
-  Source license notice: source/dwg-viewer/LICENSE
+  Source license: source/dwg-viewer/LICENSE
+  Project notice: source/dwg-viewer/NOTICE
 
 The adapter executable is statically linked with LibreDWG and is conveyed
 under GPL-3.0-or-later. The extension VSIX is a separate MPL-2.0 artifact and
@@ -485,10 +490,14 @@ export async function createLibreDwgPackage({
   const packageRoot =
     `dwg-viewer-libredwg-${LIBREDWG_VERSION}-` +
     `${report.target.platform}-${report.target.architecture}`;
-  const [rootLicense, rootPackageJson] = await Promise.all([
+  const [rootLicense, rootNotice, rootPackageJson] = await Promise.all([
     readFile(path.join(repositoryRoot, "LICENSE")),
+    readFile(path.join(repositoryRoot, "NOTICE")),
     readFile(path.join(repositoryRoot, "package.json"), "utf8"),
   ]);
+  if (sha256(rootLicense) !== MPL_2_0_SHA256) {
+    throw new Error("repository MPL-2.0 license text is not canonical");
+  }
   const packageVersion = JSON.parse(rootPackageJson).version;
   if (!safeIdentifier(packageVersion)) {
     throw new Error("repository package version is invalid");
@@ -513,6 +522,7 @@ export async function createLibreDwgPackage({
       `${packageRoot}/THIRD_PARTY_NOTICES.txt`,
       thirdPartyNotices(),
     ),
+    fileEntry(`${packageRoot}/NOTICE`, rootNotice),
     fileEntry(
       `${packageRoot}/LICENSES/GPL-3.0-or-later.txt`,
       gplLicense,
@@ -525,6 +535,10 @@ export async function createLibreDwgPackage({
     fileEntry(
       `${packageRoot}/source/dwg-viewer/LICENSE`,
       rootLicense,
+    ),
+    fileEntry(
+      `${packageRoot}/source/dwg-viewer/NOTICE`,
+      rootNotice,
     ),
     fileEntry(
       `${packageRoot}/source/dwg-viewer/package.json`,

@@ -8,13 +8,30 @@ whether two programs form one combined work under copyright law. When this
 document conflicts with an upstream license or copyright notice, the upstream
 terms control.
 
+## Governing principles
+
+1. Reproduce authoritative license texts, copyright notices, permission
+   notices, warranty disclaimers, and liability limitations without editing
+   their substance.
+2. Keep project copyright and engineering explanations in `NOTICE`,
+   `THIRD_PARTY_NOTICES.md`, or this policy instead of inserting them into an
+   upstream license text.
+3. Include notices according to what an artifact actually contains. The MPL
+   VSIX does not claim to contain the GPL adapter, and the separate GPL adapter
+   archive includes its own applicable licenses and corresponding source.
+4. Tell executable-form recipients where they can obtain the matching
+   preferred source form.
+5. Treat a published artifact and its checksum as immutable. A licensing-file
+   change requires a new versioned artifact; an old artifact or recorded hash
+   is never silently replaced.
+
 ## Component and artifact map
 
 | Component or artifact | License | Distribution policy |
 | --- | --- | --- |
-| Repository source and documentation, unless a file states otherwise | MPL-2.0 | Source is available in this repository with the MPL notice in `LICENSE` |
-| `dwg-viewer-vscode-<version>.vsix` | MPL-2.0, plus bundled MIT and ISC components | Includes `LICENSE.txt`, `THIRD_PARTY_NOTICES.md`, and a README link to the corresponding tagged source |
-| `@menaje/viewer-core`, `@menaje/viewer-render-protocol`, `@menaje/viewer-ui` | MPL-2.0 | Each published package includes its own `LICENSE`, README, and source modules |
+| Repository source and documentation, unless a file states otherwise | MPL-2.0 | `LICENSE` is the complete, unmodified official MPL 2.0 text; project copyright is in `NOTICE` |
+| `dwg-viewer-vscode-<version>.vsix` | MPL-2.0, plus bundled MIT and ISC components | Includes `LICENSE.txt`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, and a README link to the corresponding tagged source |
+| `@menaje/viewer-core`, `@menaje/viewer-render-protocol`, `@menaje/viewer-ui` | MPL-2.0 | Each published package includes its own official MPL Exhibit A notice, README, and source modules |
 | `@mlightcad/shx-parser` 1.4.5 | MIT | Bundled into the Webview; its copyright and full MIT permission notice are included in `THIRD_PARTY_NOTICES.md` |
 | Earcut 3.2.3 | ISC | Bundled into the Webview; its copyright and full ISC permission notice are included in `THIRD_PARTY_NOTICES.md` |
 | DWG Viewer LibreDWG adapter source | MPL-2.0 | Included as corresponding adapter source in the separate engine archive |
@@ -33,14 +50,19 @@ The VSIX contains compiled JavaScript and therefore distributes MPL-covered
 code in executable form. The project satisfies its source-notice policy by:
 
 1. identifying the VSIX as MPL-2.0 in its manifest and packaged README;
-2. including the MPL notice and third-party notices in the VSIX;
+2. including the unmodified official MPL 2.0 text, project `NOTICE`, and
+   third-party notices in the VSIX;
 3. linking recipients to the complete repository source;
 4. building a versioned release from a matching `v<version>` Git tag; and
 5. retaining the source and build scripts needed to reproduce that version.
 
-The public Viewer packages use the same license identifier and include their
-license notice, README, and preferred source form. Their pinned public-preview
-artifacts are verified independently by `pnpm run qualify:viewer-boundary`.
+The already-published `viewer-core-v0.1.0` packages use the same license
+identifier and include the official Exhibit A notice, README, and preferred
+source form. Mozilla permits that notice to be placed in a `LICENSE` file in a
+relevant directory. Those public-preview artifacts and recorded checksums are
+immutable and are verified independently by
+`pnpm run qualify:viewer-boundary`. A future change to their license payload
+must use a new package version and new artifact hashes.
 
 ## GPL adapter boundary
 
@@ -83,6 +105,8 @@ so their presence is not confused with bundled runtime code.
   states otherwise.
 - Preserve existing SPDX identifiers, copyright notices, license texts, and
   warranty disclaimers.
+- Keep the root and packaged VSIX `LICENSE` byte-identical to Mozilla's
+  official MPL 2.0 plain text. Keep project-specific notices outside it.
 - Review every new runtime dependency before merging it and add its exact
   required notice before bundling.
 - Do not copy GPL-covered LibreDWG code into the VSIX or public Viewer
@@ -96,6 +120,7 @@ so their presence is not confused with bundled runtime code.
 ## Primary license references
 
 - [Mozilla Public License 2.0](https://www.mozilla.org/en-US/MPL/2.0/)
+- [Mozilla MPL 2.0 official plain text](https://www.mozilla.org/media/MPL/2.0/index.txt)
 - [Mozilla MPL 2.0 FAQ](https://www.mozilla.org/en-US/MPL/2.0/FAQ/)
 - [GNU GPL FAQ](https://www.gnu.org/licenses/gpl-faq.html)
 - [GNU LibreDWG licensing statement](https://www.gnu.org/software/libredwg/)

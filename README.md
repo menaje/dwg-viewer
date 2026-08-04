@@ -168,6 +168,7 @@ VSIX 빌드와 배포 재현 방법은
 - VS Code 확장과 Viewer 소스: MPL-2.0
 - 별도 LibreDWG 변환기 패키지: GPL-3.0-or-later
 
-적용 범위와 배포 시 확인 사항은 [라이선스 안내](docs/licensing.md)를,
-번들된 구성요소의 원 저작권·허가문은
+공식 MPL 2.0 원문은 [LICENSE](LICENSE), 프로젝트 저작권 고지는
+[NOTICE](NOTICE)에 분리되어 있습니다. 적용 범위와 배포 시 확인 사항은
+[라이선스 안내](docs/licensing.md)를, 번들된 구성요소의 원 저작권·허가문은
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하세요.

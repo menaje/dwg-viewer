@@ -7,7 +7,7 @@ Windows x64.
 
 | Artifact | License | Contents | Source availability |
 | --- | --- | --- | --- |
-| `dwg-viewer-vscode-<version>.vsix` | MPL-2.0 | VS Code extension and Webview only | Matching `v<version>` Git tag in this repository |
+| `dwg-viewer-vscode-<version>.vsix` | MPL-2.0 | VS Code extension, Webview, unmodified MPL text, project notice, and bundled-component notices | Matching `v<version>` Git tag in this repository |
 | `dwg-viewer-libredwg-0.14-linux-x64.tar.gz` | GPL-3.0-or-later | Static Linux adapter, complete corresponding source, build scripts, licenses, manifest, checksums | Included in the same archive |
 | `dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz` | GPL-3.0-or-later | Static macOS adapter, complete corresponding source, build scripts, licenses, manifest, checksums | Included in the same archive |
 | `dwg-viewer-libredwg-0.14-win32-x64.tar.gz` | GPL-3.0-or-later | Static Windows adapter, complete corresponding source, build scripts, licenses, manifest, checksums | Included in the same archive |
@@ -31,7 +31,7 @@ automatically for a `v*` tag. It:
 
 1. checks that the repository and extension versions match the tag;
 2. builds the VSIX twice and requires byte-identical output;
-3. checks the VSIX license, notices, source link, and GPL exclusion;
+3. checks the canonical VSIX license, notices, source link, and GPL exclusion;
 4. builds checksum-pinned static adapters on Linux x64, macOS arm64, and
    Windows x64;
 5. creates every adapter archive twice and requires byte-identical output;
@@ -125,6 +125,8 @@ Gatekeeper globally.
 - VSIX and all three adapter artifacts have valid GitHub attestations.
 - `SHA256SUMS` verifies all release files.
 - Release notes identify the MPL VSIX and GPL adapters as separate artifacts.
+- The packaged MPL text matches the official canonical text and project
+  copyright remains in `NOTICE`.
 - The Webview production dependency audit matches the copyright and permission
   notices included in `THIRD_PARTY_NOTICES.md`.
 - The Windows native-path and VS Code display-scale qualification artifacts

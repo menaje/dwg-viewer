@@ -66,8 +66,16 @@ jobs:
             "$release_directory/repeated.vsix"
           unzip -Z1 "$release_directory/$package_name" > "$release_directory/vsix-files.txt"
           grep -Fxq "extension/LICENSE.txt" "$release_directory/vsix-files.txt"
+          grep -Fxq "extension/NOTICE" "$release_directory/vsix-files.txt"
           grep -Fxq "extension/THIRD_PARTY_NOTICES.md" "$release_directory/vsix-files.txt"
           grep -Fxq "extension/readme.md" "$release_directory/vsix-files.txt"
+          test "$(sha256sum LICENSE | cut -d ' ' -f 1)" = \
+            "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04"
+          cmp <(unzip -p "$release_directory/$package_name" extension/LICENSE.txt) LICENSE
+          cmp <(unzip -p "$release_directory/$package_name" extension/NOTICE) NOTICE
+          cmp \
+            <(unzip -p "$release_directory/$package_name" extension/THIRD_PARTY_NOTICES.md) \
+            THIRD_PARTY_NOTICES.md
           if grep -Eiq '(^|/)native/|libredwg-adapter' "$release_directory/vsix-files.txt"; then
             echo "GPL adapter content must not be present in the MPL VSIX" >&2
             exit 1

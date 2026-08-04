@@ -1,7 +1,9 @@
 # Third-party notices
 
 This file is included in the VSIX. The summaries below do not replace the
-applicable license texts or copyright notices.
+applicable license texts or copyright notices. License blocks are reproduced
+verbatim from the corresponding dependency packages; surrounding headings and
+usage notes are DWG Viewer commentary.
 
 ## Bundled Webview components
 

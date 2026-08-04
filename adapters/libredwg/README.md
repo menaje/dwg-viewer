@@ -187,12 +187,13 @@ node adapters/libredwg/package.mjs \
 
 The packager refuses to overwrite a file, rejects a dynamic LibreDWG
 dependency, local build paths, a wrong source checksum or an incompatible
-doctor report. The archive includes the executable, GPL and MPL license texts,
-checksums, a machine-readable manifest, all adapter build sources and the exact
-LibreDWG 0.14 source archive. Fixed metadata and sorted entries make repeated
-packaging from the same target binary byte-identical. The included repository
-license and package metadata also let the packaged `package.mjs` run from the
-extracted source tree instead of depending on files outside the archive.
+doctor report. The archive includes the executable, unmodified GPL and MPL
+license texts, the DWG Viewer project notice, checksums, a machine-readable
+manifest, all adapter build sources and the exact LibreDWG 0.14 source archive.
+Fixed metadata and sorted entries make repeated packaging from the same target
+binary byte-identical. The included repository license, notice and package
+metadata also let the packaged `package.mjs` run from the extracted source tree
+instead of depending on files outside the archive.
 
 GitHub's release workflow qualifies Linux x64, macOS arm64, and Windows x64
 packages, reproduces the archives, verifies their extracted contents, and

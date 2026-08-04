@@ -156,7 +156,9 @@ equally ranked files.
 
 The VSIX is licensed under MPL-2.0. Its complete source form is available in
 the [menaje/dwg-viewer repository](https://github.com/menaje/dwg-viewer),
-along with build scripts and third-party notices.
+along with build scripts and third-party notices. The packaged `LICENSE.txt`
+contains Mozilla's unmodified MPL 2.0 text, while `NOTICE` contains the project
+copyright notice.
 
 The GPL-3.0-or-later LibreDWG adapter is never included in the VSIX. It is
 published as a separate platform archive with its corresponding source,

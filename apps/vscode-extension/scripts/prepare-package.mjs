@@ -14,6 +14,10 @@ await Promise.all([
     path.join(extensionRoot, "LICENSE"),
   ),
   copyFile(
+    path.join(repositoryRoot, "NOTICE"),
+    path.join(extensionRoot, "NOTICE"),
+  ),
+  copyFile(
     path.join(repositoryRoot, "THIRD_PARTY_NOTICES.md"),
     path.join(extensionRoot, "THIRD_PARTY_NOTICES.md"),
   ),

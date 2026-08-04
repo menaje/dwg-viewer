@@ -2,6 +2,7 @@
 
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdtemp,
   readFile,
@@ -17,9 +18,24 @@ import {
   licenseExtractionArguments,
   LIBREDWG_SOURCE_SHA256,
   LIBREDWG_VERSION,
+  MPL_2_0_SHA256,
 } from "./package.mjs";
 
 const execFileAsync = promisify(execFile);
+
+test("pins the unmodified official MPL text and separate project notice", async () => {
+  const repositoryRoot = path.resolve(import.meta.dirname, "..", "..");
+  const [license, notice] = await Promise.all([
+    readFile(path.join(repositoryRoot, "LICENSE")),
+    readFile(path.join(repositoryRoot, "NOTICE"), "utf8"),
+  ]);
+
+  assert.equal(
+    createHash("sha256").update(license).digest("hex"),
+    MPL_2_0_SHA256,
+  );
+  assert.match(notice, /Copyright 2026 dwg-viewer contributors/u);
+});
 
 test("creates a deterministic archive with fixed paths and executable modes", async (context) => {
   const root = await mkdtemp(
