@@ -31,7 +31,7 @@ terms control.
 | --- | --- | --- |
 | Repository source and documentation, unless a file states otherwise | MPL-2.0 | `LICENSE` is the complete, unmodified official MPL 2.0 text; project copyright is in `NOTICE` |
 | `dwg-viewer-vscode-<version>.vsix` | MPL-2.0, plus bundled MIT and ISC components | Includes `LICENSE.txt`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, and a README link to the corresponding tagged source |
-| `@menaje/viewer-core`, `@menaje/viewer-render-protocol`, `@menaje/viewer-ui` | MPL-2.0 | Each published package includes its own official MPL Exhibit A notice, README, and source modules |
+| `@menaje/viewer-core`, `@menaje/viewer-render-protocol`, `@menaje/viewer-ui` | MPL-2.0 | Current packages include the unmodified official MPL text, project `NOTICE`, README, and source modules |
 | `@mlightcad/shx-parser` 1.4.5 | MIT | Bundled into the Webview; its copyright and full MIT permission notice are included in `THIRD_PARTY_NOTICES.md` |
 | Earcut 3.2.3 | ISC | Bundled into the Webview; its copyright and full ISC permission notice are included in `THIRD_PARTY_NOTICES.md` |
 | DWG Viewer LibreDWG adapter source | MPL-2.0 | Included as corresponding adapter source in the separate engine archive |
@@ -56,13 +56,13 @@ code in executable form. The project satisfies its source-notice policy by:
 4. building a versioned release from a matching `v<version>` Git tag; and
 5. retaining the source and build scripts needed to reproduce that version.
 
-The already-published `viewer-core-v0.1.0` packages use the same license
-identifier and include the official Exhibit A notice, README, and preferred
-source form. Mozilla permits that notice to be placed in a `LICENSE` file in a
-relevant directory. Those public-preview artifacts and recorded checksums are
-immutable and are verified independently by
-`pnpm run qualify:viewer-boundary`. A future change to their license payload
-must use a new package version and new artifact hashes.
+The historical `viewer-core-v0.1.0` packages use the same license identifier
+and include the official Exhibit A notice, README, and preferred source form.
+Mozilla permits that notice to be placed in a `LICENSE` file in a relevant
+directory. Those artifacts and recorded checksums remain immutable. The
+superseding `viewer-core-v0.1.1` packages include the complete official MPL
+text and separate project `NOTICE`; their new artifact hashes are verified by
+`pnpm run qualify:viewer-boundary`.
 
 ## GPL adapter boundary
 

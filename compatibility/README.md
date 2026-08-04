@@ -37,8 +37,8 @@ artifact만 설치해
 RenderSource/Service fixture와 standalone runtime을 실행한다. Browser와
 VS Code가 같은 Webview entrypoint를 bundle하는지도 확인한다. 이 저장소가
 소유하지 않는 BIM/Spatial consumer qualification은 실행하거나 수정하지
-않으며 각 consumer manifest가 책임진다. 고정 evidence는
-[`evidence/viewer-boundary-2026-08-04.json`](evidence/viewer-boundary-2026-08-04.json)에
+않으며 각 consumer manifest가 책임진다. 현재 고정 evidence는
+[`evidence/viewer-boundary-0.1.1-2026-08-04.json`](evidence/viewer-boundary-0.1.1-2026-08-04.json)에
 있다.
 
 `native-document-adapter.json`은 raw DWG query/change/write backend의

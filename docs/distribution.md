@@ -53,7 +53,7 @@ pnpm install --frozen-lockfile
 pnpm --dir apps/vscode-extension run build
 pnpm --dir apps/vscode-extension exec vsce package \
   --no-dependencies \
-  --out /absolute/new/path/dwg-viewer-vscode-0.1.0.vsix
+  --out /absolute/new/path/dwg-viewer-vscode-0.1.1.vsix
 ```
 
 To reproduce an adapter package, use the checksum-pinned preparation and
@@ -78,7 +78,7 @@ shasum -a 256 -c SHA256SUMS
 With GitHub CLI, verify provenance for the artifact you intend to install:
 
 ```bash
-gh attestation verify dwg-viewer-vscode-0.1.0.vsix \
+gh attestation verify dwg-viewer-vscode-0.1.1.vsix \
   --repo menaje/dwg-viewer
 gh attestation verify dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz \
   --repo menaje/dwg-viewer
@@ -92,7 +92,7 @@ Use `dwg-viewer-libredwg-0.14-win32-x64.tar.gz` on Windows.
 Install the VSIX:
 
 ```bash
-code --install-extension dwg-viewer-vscode-0.1.0.vsix
+code --install-extension dwg-viewer-vscode-0.1.1.vsix
 ```
 
 Extract the adapter archive into a directory controlled by the current user,

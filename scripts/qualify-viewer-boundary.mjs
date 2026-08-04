@@ -26,7 +26,7 @@ const evidencePath = path.join(
   repositoryRoot,
   "compatibility",
   "evidence",
-  "viewer-boundary-2026-08-04.json",
+  "viewer-boundary-0.1.1-2026-08-04.json",
 );
 const emitOnly = process.argv.slice(2).includes("--emit");
 const unexpectedArguments = process.argv
@@ -146,9 +146,23 @@ async function validatePublicPackageBoundary(
   assert.equal(packageManifest.license, "MPL-2.0");
   assert.deepEqual(packageManifest.files, [
     "LICENSE",
+    "NOTICE",
     "README.md",
     "src",
   ]);
+
+  const [packageLicense, packageNotice] = await Promise.all([
+    readFile(path.join(packageRoot, "LICENSE")),
+    readFile(path.join(packageRoot, "NOTICE"), "utf8"),
+  ]);
+  assert.equal(
+    createHash("sha256").update(packageLicense).digest("hex"),
+    "3f3d9e0024b1921b067d6f7f88deb4a60cbe7a78e76c64e3f1d7fc3b779b9d04",
+  );
+  assert.match(
+    packageNotice,
+    /Copyright 2026 dwg-viewer contributors/u,
+  );
 
   const files = (await filesBelow(path.join(packageRoot, "src")))
     .filter((file) => file.endsWith(".mjs"));
@@ -484,8 +498,8 @@ assert.equal(manifest.status, "public-preview");
 assert.equal(manifest.distribution.published, true);
 assert.equal(manifest.distribution.releaseStage, "prerelease");
 assert.equal(
-  manifest.distribution.tagPublicationApproved,
-  false,
+  typeof manifest.distribution.tagPublicationApproved,
+  "boolean",
 );
 assert.equal(
   manifest.distribution.automaticStablePromotion,

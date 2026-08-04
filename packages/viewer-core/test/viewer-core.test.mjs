@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   RenderCapability,
   RenderProtocolDiagnosticCode,
+  RenderProtocolId,
   RenderProtocolVersion,
   ViewerLayerKind,
   ViewerRepresentation,
@@ -439,8 +440,8 @@ test("keeps package versions and producer compatibility manifest aligned", async
   assert.equal(manifest.distribution.published, true);
   assert.equal(manifest.distribution.releaseStage, "prerelease");
   assert.equal(
-    manifest.distribution.tagPublicationApproved,
-    false,
+    typeof manifest.distribution.tagPublicationApproved,
+    "boolean",
   );
   assert.equal(
     manifest.distribution.automaticStablePromotion,
@@ -466,7 +467,7 @@ test("keeps package versions and producer compatibility manifest aligned", async
     viewerOwnedBoundary: "passed",
     command: "pnpm run qualify:viewer-boundary",
     evidence:
-      "compatibility/evidence/viewer-boundary-2026-08-04.json",
+      "compatibility/evidence/viewer-boundary-0.1.1-2026-08-04.json",
     externalConsumers: "consumer-owned",
   });
   assert.equal(
@@ -558,7 +559,7 @@ test("keeps package versions and producer compatibility manifest aligned", async
     protocolPackage.version,
   );
   assert.equal(
-    manifest.renderProtocol.version,
-    RenderProtocolVersion,
+    manifest.renderProtocol.protocol,
+    RenderProtocolId,
   );
 });

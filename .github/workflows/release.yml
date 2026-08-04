@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     tags:
-      - "v*"
+      - "v[0-9]*"
 
 permissions:
   contents: read
@@ -287,10 +287,12 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           release_notes="$RUNNER_TEMP/release-notes.md"
-          printf '%s\n\n%s\n\n%s\n' \
-            "The MPL-2.0 VSIX and GPL-3.0-or-later LibreDWG adapters are separate artifacts." \
+          printf '%s\n\n%s\n\n%s\n\n%s\n\n%s\n' \
+            "Prerelease: open, inspect, search, measure, and export DWG drawings directly in VS Code." \
+            "Navigation supports click-drag, two-finger trackpad panning, stronger pinch zoom, compact icon tools with hover labels, and English or Korean controls selected from the VS Code environment." \
+            "Download the VSIX and the separate LibreDWG adapter for Linux x64, macOS arm64, or Windows x64." \
+            "The VSIX is MPL-2.0; the source-complete LibreDWG adapters are GPL-3.0-or-later and remain separate artifacts." \
             "Verify SHA256SUMS and the GitHub artifact attestations before installation." \
-            "This release supports Linux x64, macOS arm64, and Windows x64." \
             > "$release_notes"
           gh release create "$GITHUB_REF_NAME" \
             "dist/dwg-viewer-vscode-${{ steps.version.outputs.version }}.vsix" \
@@ -299,5 +301,6 @@ jobs:
             "dist/dwg-viewer-libredwg-0.14-win32-x64.tar.gz" \
             "dist/SHA256SUMS" \
             --verify-tag \
+            --prerelease \
             --title "DWG Viewer $GITHUB_REF_NAME" \
             --notes-file "$release_notes"

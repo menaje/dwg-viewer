@@ -186,7 +186,7 @@ pnpm --filter dwg-viewer-vscode qualify:host -- \
   --runtime /absolute/path/to/code-runtime \
   --adapter /absolute/path/to/libredwg-adapter \
   --drawing /absolute/path/to/reference.dwg \
-  --vsix apps/vscode-extension/dwg-viewer-vscode-0.1.0.vsix \
+  --vsix apps/vscode-extension/dwg-viewer-vscode-0.1.1.vsix \
   --output benchmarks/results/vscode-product.json
 ```
 

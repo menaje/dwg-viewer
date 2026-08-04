@@ -1,4 +1,4 @@
-export const ViewerCoreVersion = "0.1.0";
+export const ViewerCoreVersion = "0.1.1";
 export const ViewerCoreApi = "menaje-viewer-core/0.1";
 
 export const ViewerHostEventType = Object.freeze({

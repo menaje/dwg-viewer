@@ -1,6 +1,6 @@
 {
   "name": "@menaje/viewer-core",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Source-neutral Viewer lifecycle, rendering, identity, and host contracts",
   "license": "MPL-2.0",
   "private": false,
@@ -26,6 +26,7 @@
   },
   "files": [
     "LICENSE",
+    "NOTICE",
     "README.md",
     "src"
   ],

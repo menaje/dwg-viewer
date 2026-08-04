@@ -4,46 +4,46 @@
   "asOf": "2026-08-04",
   "viewerCore": {
     "package": "@menaje/viewer-core",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "api": "menaje-viewer-core/0.1"
   },
   "viewerUi": {
     "package": "@menaje/viewer-ui",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "api": "menaje-viewer-ui/0.1"
   },
   "renderProtocol": {
     "package": "@menaje/viewer-render-protocol",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "protocol": "menaje-viewer-render-protocol/0.1.0"
   },
   "distribution": {
     "kind": "github-release-and-packages",
     "published": true,
     "releaseStage": "prerelease",
-    "tagPublicationApproved": false,
+    "tagPublicationApproved": true,
     "automaticStablePromotion": false,
-    "tag": "viewer-core-v0.1.0",
-    "releaseUrl": "https://github.com/menaje/dwg-viewer/releases/tag/viewer-core-v0.1.0",
+    "tag": "viewer-core-v0.1.1",
+    "releaseUrl": "https://github.com/menaje/dwg-viewer/releases/tag/viewer-core-v0.1.1",
     "registry": "https://npm.pkg.github.com",
     "artifacts": {
       "viewerCore": {
-        "file": "menaje-viewer-core-0.1.0.tgz",
-        "sha256": "2a04c367b5b2cf5870f5f18f33e2a1d8e545f099f0dd735c7e5d90f8224b698d",
-        "bytes": 44323,
-        "contentSha256": "db4edb620f5f34c355d3030a16b703fed0f76f4f602d03737303683ce8269adb"
+        "file": "menaje-viewer-core-0.1.1.tgz",
+        "sha256": "182407ac800e1432c40076e1b495694e8600a672419739ea4c8fb951a086e884",
+        "bytes": 49533,
+        "contentSha256": "c3565ca0be963663f48ae7db258cf2f980c6f2d1e3213752a8d3ec3a46a46b9b"
       },
       "renderProtocol": {
-        "file": "menaje-viewer-render-protocol-0.1.0.tgz",
-        "sha256": "60e952677c17333fbdb07193ef87cafb1a0be9923573ac5366297a19cfc8b9ed",
-        "bytes": 11158,
-        "contentSha256": "cf86c55a3d6f1afc64d42d3de6e80f5796fbe00b0b8e3eb0b15af465e0f78c09"
+        "file": "menaje-viewer-render-protocol-0.1.1.tgz",
+        "sha256": "ac1a58423c4104098cd977619e35e2355b199bafe7f090f59a829b4676c638d2",
+        "bytes": 16424,
+        "contentSha256": "8e6730b856a637a9ee403dc62ec6b48842ea13f8aa4efbbf604f858546bb6bc5"
       },
       "viewerUi": {
-        "file": "menaje-viewer-ui-0.1.0.tgz",
-        "sha256": "9f13c2aa782297929058c298728114fa31c1cc387c82319e27b90ad0f267b8db",
-        "bytes": 8560,
-        "contentSha256": "3165c60c1dbba66c160359de497144da4e750e93440657f526eb95be47619d9c"
+        "file": "menaje-viewer-ui-0.1.1.tgz",
+        "sha256": "494c599d3a736ea43b22555e912215343ec569ca4d814466db9324f25d342b2a",
+        "bytes": 13824,
+        "contentSha256": "31dae93db79060182b84ef4c01352b5d32c1e58f4d46af5b971b6b2bd8400a2c"
       }
     }
   },
@@ -109,7 +109,7 @@
   "qualification": {
     "viewerOwnedBoundary": "passed",
     "command": "pnpm run qualify:viewer-boundary",
-    "evidence": "compatibility/evidence/viewer-boundary-2026-08-04.json",
+    "evidence": "compatibility/evidence/viewer-boundary-0.1.1-2026-08-04.json",
     "externalConsumers": "consumer-owned"
   },
   "consumers": {
