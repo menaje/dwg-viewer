@@ -1,7 +1,7 @@
 # DWG Viewer
 
 VS Code 안에서 DWG 도면을 빠르게 확인하고, 찾고, 측정하고, 내보낼 수 있는
-무료·오픈소스 읽기 전용 뷰어입니다.
+오픈소스 읽기 전용 뷰어입니다.
 
 도면과 글꼴은 사용자의 컴퓨터 안에서만 처리됩니다. 대형 도면, 국내
 SHX/BigFont 한글, 외부참조(XREF), 배치(Layout)를 실무에서 편하게 확인하는
@@ -146,6 +146,7 @@ SHX/BigFont 한글, 외부참조(XREF), 배치(Layout)를 실무에서 편하게
 - [아키텍처](docs/architecture.md)
 - [엔진 선택 근거](docs/engine-decision.md)
 - [배포와 재현 가능한 패키징](docs/distribution.md)
+- [라이선스와 배포 경계](docs/licensing.md)
 - [Scene Cache 명세](specs/scene-cache.md)
 - [Viewer Core 경계 ADR](docs/adr/ADR-0001-viewer-core-boundary.md)
 - [`@menaje/viewer-core`](packages/viewer-core/README.md)
@@ -167,5 +168,6 @@ VSIX 빌드와 배포 재현 방법은
 - VS Code 확장과 Viewer 소스: MPL-2.0
 - 별도 LibreDWG 변환기 패키지: GPL-3.0-or-later
 
-자세한 제3자 고지는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를
-참고하세요.
+적용 범위와 배포 시 확인 사항은 [라이선스 안내](docs/licensing.md)를,
+번들된 구성요소의 원 저작권·허가문은
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)를 참고하세요.

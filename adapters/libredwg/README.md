@@ -196,10 +196,10 @@ extracted source tree instead of depending on files outside the archive.
 
 GitHub's release workflow qualifies Linux x64, macOS arm64, and Windows x64
 packages, reproduces the archives, verifies their extracted contents, and
-creates free build-provenance attestations. The Windows writer uses private
-delete-on-close native temporary files and non-inheritable handles. Its
-qualification also exercises cancellation plus drive, UNC, relative, Unicode,
-normalization, and case-insensitive paths on the Windows runner.
+creates keyless GitHub build-provenance attestations. The Windows writer uses
+private delete-on-close native temporary files and non-inheritable handles.
+Its qualification also exercises cancellation plus drive, UNC, relative,
+Unicode, normalization, and case-insensitive paths on the Windows runner.
 
 The MPL-only VSIX never bundles this executable. The complete reviewed
 publication and verification procedure is in

@@ -2,7 +2,7 @@
   "name": "dwg-viewer",
   "version": "0.1.0",
   "private": true,
-  "description": "Free and open-source DWG viewer for VS Code",
+  "description": "Open-source DWG viewer for VS Code",
   "license": "MPL-2.0",
   "packageManager": "pnpm@11.12.0",
   "devDependencies": {

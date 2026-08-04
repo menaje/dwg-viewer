@@ -3,9 +3,9 @@
 Open, inspect, search, measure, and export DWG drawings without leaving
 VS Code.
 
-DWG Viewer is a free, local-first, read-only viewer built for large drawings,
-Korean SHX/BigFont text, external references, and paper-space layouts. Your
-drawings and fonts stay on your computer.
+DWG Viewer is an open-source, local-first, read-only viewer built for large
+drawings, Korean SHX/BigFont text, external references, and paper-space
+layouts. Your drawings and fonts stay on your computer.
 
 > This is an early public release. Editing and DWG saving are not available,
 > and the separately distributed LibreDWG converter must be connected once
@@ -166,6 +166,8 @@ converter must be selected after installing the extension.
 Release artifacts are reproducibly built and include SHA-256 checksums and
 GitHub build-provenance attestations. Details are in the
 [distribution guide](https://github.com/menaje/dwg-viewer/blob/main/docs/distribution.md).
+The component-level license map and review rules are in the
+[licensing guide](https://github.com/menaje/dwg-viewer/blob/main/docs/licensing.md).
 
 ## For contributors and integrations
 
@@ -173,6 +175,7 @@ User documentation stays separate from implementation contracts:
 
 - [Architecture](https://github.com/menaje/dwg-viewer/blob/main/docs/architecture.md)
 - [Engine decision](https://github.com/menaje/dwg-viewer/blob/main/docs/engine-decision.md)
+- [Licensing policy](https://github.com/menaje/dwg-viewer/blob/main/docs/licensing.md)
 - [Viewer Core](https://github.com/menaje/dwg-viewer/tree/main/packages/viewer-core)
 - [Render protocol](https://github.com/menaje/dwg-viewer/tree/main/packages/render-protocol)
 - [Viewer UI](https://github.com/menaje/dwg-viewer/tree/main/packages/viewer-ui)

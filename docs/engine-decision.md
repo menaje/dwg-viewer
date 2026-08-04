@@ -2,7 +2,7 @@
 
 Status: accepted on 2026-07-31
 
-Scope: free/open-source local DWG parsing and Scene Cache conversion
+Scope: open-source local DWG parsing and Scene Cache conversion
 
 Decision: select GNU LibreDWG 0.14
 
@@ -278,7 +278,8 @@ intended/observed 일치를 통과하는 것은 실제 LibreDWG writer 승인 �
 
 ## License and distribution boundary
 
-The selected engine is free software, but it is not permissively licensed.
+The selected engine is GPL-licensed open-source software, not a permissively
+licensed component.
 [GNU LibreDWG 0.14](https://github.com/LibreDWG/libredwg/releases/tag/0.14)
 is GPL-3.0-or-later. The adapter binary links to LibreDWG, so any distribution
 of that binary must satisfy GPL-3.0-or-later, including the applicable license,
@@ -302,7 +303,7 @@ exact LibreDWG archive, adapter source, build scripts, license texts, manifest
 and checksums. Corresponding source is therefore shipped in the same archive
 rather than delegated to an unpinned external URL. The workflow reproduces all
 three adapter archives and the VSIX, rejects a GPL adapter inside the VSIX,
-emits combined checksums, and creates free GitHub build-provenance
+emits combined checksums, and creates GitHub build-provenance
 attestations. A matching `v<version>` tag is the only path that publishes a
 GitHub release.
 
@@ -334,8 +335,8 @@ engineering distribution policy, not legal advice.
 - Keep the ACadSharp inspection adapter, package lock and parser preflight test;
   do not build an ACadSharp Scene Cache converter unless a future release
   materially changes the measured memory architecture.
-- Keep the source-complete GPL package and two-platform release workflow as the
-  issue #6 release boundary; use the reviewed checksum and free provenance
+- Keep the source-complete GPL package and three-platform release workflow as the
+  issue #6 release boundary; use the reviewed checksum and build-provenance
   gates before publication.
 - Keep LibreDWG Native as the product default behind
   [`dwg-scene-engine/1`](../specs/scene-engine.md). Do not expose the rejected

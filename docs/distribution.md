@@ -41,10 +41,10 @@ automatically for a `v*` tag. It:
    `SHA256SUMS`;
 8. publishes a GitHub release only for a matching version tag.
 
-GitHub artifact attestations provide free, keyless build provenance for this
-public repository. They are not Apple Developer ID signatures or notarization.
-The project does not require a paid SDK, paid CAD engine, signing service, or
-Marketplace account.
+GitHub artifact attestations provide keyless build provenance for this public
+repository. They are not Apple Developer ID signatures or notarization. The
+release pipeline uses the open-source components recorded in
+[`licensing.md`](licensing.md) and does not rely on a proprietary CAD SDK.
 
 To reproduce the VSIX locally:
 
@@ -111,7 +111,7 @@ Windows, use the `win32-x64` archive and run
 **DWG Viewer: LibreDWG 변환기 선택** and choose the platform executable. The
 extension repeats the same self-test before saving the path.
 
-The macOS package is not notarized with a paid Apple Developer ID. If macOS
+The macOS package is not notarized with an Apple Developer ID. If macOS
 blocks a verified download, use the operating system's normal
 Privacy & Security approval flow for that specific binary. Do not disable
 Gatekeeper globally.
@@ -125,5 +125,7 @@ Gatekeeper globally.
 - VSIX and all three adapter artifacts have valid GitHub attestations.
 - `SHA256SUMS` verifies all release files.
 - Release notes identify the MPL VSIX and GPL adapters as separate artifacts.
+- The Webview production dependency audit matches the copyright and permission
+  notices included in `THIRD_PARTY_NOTICES.md`.
 - The Windows native-path and VS Code display-scale qualification artifacts
   pass on the intended commit.
