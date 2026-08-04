@@ -22,6 +22,7 @@ test("renders a nonce-protected VS Code webview without an import map", () => {
     nonce: "abcdefghijklmnopqrstuvwxyz",
     stylesUri: "vscode-webview://test/styles.css",
     scriptUri: "vscode-webview://test/main.mjs",
+    locale: "ko-KR",
   });
 
   assert.match(html, /default-src 'none'/u);
@@ -33,9 +34,23 @@ test("renders a nonce-protected VS Code webview without an import map", () => {
     /nonce="abcdefghijklmnopqrstuvwxyz" type="module"/u,
   );
   assert.match(html, /data-host="vscode"/u);
+  assert.match(html, /<html lang="ko-KR" data-locale="ko-KR">/u);
   assert.match(html, /vscode-webview:\/\/test\/styles\.css/u);
   assert.match(html, /vscode-webview:\/\/test\/main\.mjs/u);
   assert.doesNotMatch(html, /importmap/u);
+});
+
+test("falls back to English for an invalid host locale", () => {
+  const html = renderWebviewHtml(template, {
+    cspSource: "vscode-webview:",
+    nonce: "abcdefghijklmnopqrstuvwxyz",
+    stylesUri: "vscode-webview://test/styles.css",
+    scriptUri: "vscode-webview://test/main.mjs",
+    locale: 'ko" data-host="unsafe',
+  });
+
+  assert.match(html, /<html lang="en" data-locale="en">/u);
+  assert.doesNotMatch(html, /data-host="unsafe"/u);
 });
 
 test("rejects a weak webview nonce", () => {
@@ -122,6 +137,18 @@ test("repository Webview CSS keeps host-only controls hidden", async () => {
   );
   assert.match(
     repositoryStyles,
+    /\.review-toolbar button:hover \.review-tool-label,[\s\S]*?\.review-toolbar button:focus-visible \.review-tool-label/u,
+  );
+  assert.doesNotMatch(
+    repositoryStyles,
+    /\.review-toolbar:hover \.review-tool-label/u,
+  );
+  assert.match(
+    repositoryStyles,
+    /\.toolbar \.viewer-tool-button:hover \.viewer-tool-label,[\s\S]*?visibility:\s*visible;[\s\S]*?opacity:\s*1;/u,
+  );
+  assert.match(
+    repositoryStyles,
     /@media\s*\(max-width:\s*640px\)\s*\{[\s\S]*?body\[data-host="vscode"\]\s+\.review-result\s*\{[\s\S]*?width:\s*min\(20rem,\s*calc\(100%\s*-\s*11\.25rem\)\);[\s\S]*?body\[data-host="vscode"\]\s+\.view-bookmark-panel\s*\{[\s\S]*?width:\s*min\(23rem,\s*calc\(100%\s*-\s*11\.25rem\)\);/u,
   );
   assert.doesNotMatch(
@@ -175,7 +202,9 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   assert.match(template, /id="export-plot-style"/u);
   assert.match(template, /data-review-tool="distance"/u);
   assert.match(template, /data-review-action="settings"/u);
-  assert.match(template, />측정 설정</u);
+  assert.match(template, /data-i18n="review\.settings"/u);
+  assert.match(template, /class="viewer-tool-icon"/u);
+  assert.match(template, /class="viewer-tool-label"/u);
   assert.match(template, /id="review-result"/u);
   assert.match(
     template,
@@ -191,7 +220,7 @@ test("repository host UI and manifest expose adapter selection and diagnosis", a
   );
   assert.match(
     template,
-    /id="host-rebuild"[^>]*hidden[^>]*>\s*다시 그리기/u,
+    /id="host-rebuild"[\s\S]*?data-i18n="toolbar\.rebuild"/u,
   );
   assert.doesNotMatch(template, /캐시 다시 만들기/u);
   assert.match(mainModule, /setViewerToolsOpen/u);

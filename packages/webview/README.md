@@ -91,6 +91,22 @@ by VS Code, the same renderer switches to an immersive shell that fills the
 editor with the drawing, hides metrics and reveals its edge tool shelf and
 layout tabs on hover, focus or an explicit click.
 
+## Localization
+
+The Webview shell resolves its locale before binding controls. VS Code passes
+`vscode.env.language` through the generated `<html data-locale>` attribute;
+the standalone browser uses `navigator.languages`. Exact locales fall back to
+their base language (`ko-KR` → `ko`), and unsupported or invalid values fall
+back to English.
+
+English and Korean catalogs live in `src/locales/en.mjs` and
+`src/locales/ko.mjs`. To add a language, create a catalog with the same keys
+and register it in `src/locales/index.mjs`. Static text and accessibility
+attributes use `data-i18n`, `data-i18n-title`,
+`data-i18n-aria-label`, and `data-i18n-placeholder`; runtime labels use the
+same catalog through `createI18n().t()`. The catalog-alignment tests fail when
+built-in languages, template keys, or runtime shell keys diverge.
+
 ## Implemented
 
 - Reads the cache header and section directory without loading the full file.

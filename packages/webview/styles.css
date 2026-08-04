@@ -130,6 +130,42 @@ h1 {
   font-weight: 700;
 }
 
+.viewer-tool-button {
+  display: inline-grid;
+  min-width: 0;
+  grid-template-columns: 2rem minmax(0, auto);
+  align-items: center;
+  gap: 0.25rem;
+  text-align: left;
+}
+
+.viewer-tool-icon {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.viewer-tool-icon-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.86rem;
+  font-weight: 800;
+}
+
+.viewer-tool-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-button.viewer-tool-button,
+.host-action.viewer-tool-button {
+  padding: 0.2rem 0.65rem 0.2rem 0.25rem;
+}
+
 .view-controls button:hover:not(:disabled) {
   background: #263449;
 }
@@ -1470,15 +1506,52 @@ body[data-host="vscode"] header.tools-open .toolbar {
 }
 
 body[data-host="vscode"] .view-controls {
-  flex: 1 1 28rem;
+  flex: 1 1 auto;
   justify-content: flex-end;
   flex-wrap: wrap;
   border-color: rgb(116 136 164 / 26%);
   background: rgb(6 10 15 / 58%);
 }
 
-body[data-host="vscode"] .host-action {
-  padding: 0.48rem 0.7rem;
+body[data-host="vscode"] .toolbar .viewer-tool-button {
+  width: auto;
+  min-width: 2.2rem;
+  max-width: 2.2rem;
+  height: 2.2rem;
+  grid-template-columns: 2rem minmax(0, auto);
+  gap: 0.25rem;
+  overflow: hidden;
+  padding: 0.1rem;
+  transition:
+    max-width 150ms ease,
+    padding-inline-end 150ms ease,
+    background-color 120ms ease;
+}
+
+body[data-host="vscode"] .toolbar .viewer-tool-button .viewer-tool-label {
+  visibility: hidden;
+  opacity: 0;
+  transform: translateX(-0.2rem);
+  transition:
+    opacity 90ms ease,
+    transform 120ms ease,
+    visibility 0s linear 120ms;
+}
+
+body[data-host="vscode"] .toolbar .viewer-tool-button:hover,
+body[data-host="vscode"] .toolbar .viewer-tool-button:focus-visible,
+body[data-host="vscode"] .toolbar label.viewer-tool-button:focus-within {
+  max-width: 14rem;
+  padding-inline-end: 0.65rem;
+}
+
+body[data-host="vscode"] .toolbar .viewer-tool-button:hover .viewer-tool-label,
+body[data-host="vscode"] .toolbar .viewer-tool-button:focus-visible .viewer-tool-label,
+body[data-host="vscode"] .toolbar label.viewer-tool-button:focus-within .viewer-tool-label {
+  visibility: visible;
+  opacity: 1;
+  transform: translateX(0);
+  transition-delay: 35ms;
 }
 
 body[data-host="vscode"] .viewport,
@@ -1536,8 +1609,8 @@ body[data-host="vscode"] .review-toolbar:has(button:focus-visible) {
   opacity: 1;
 }
 
-body[data-host="vscode"] .review-toolbar:hover .review-tool-label,
-body[data-host="vscode"] .review-toolbar:has(button:focus-visible) .review-tool-label {
+body[data-host="vscode"] .review-toolbar button:hover .review-tool-label,
+body[data-host="vscode"] .review-toolbar button:focus-visible .review-tool-label {
   visibility: visible;
   opacity: 1;
   transform: translateX(0);
@@ -1654,8 +1727,11 @@ body[data-host="vscode"] .export-panel {
 @media (prefers-reduced-motion: reduce) {
   body[data-host="vscode"] header,
   body[data-host="vscode"] .toolbar,
+  body[data-host="vscode"] .toolbar .viewer-tool-button,
+  body[data-host="vscode"] .toolbar .viewer-tool-label,
   body[data-host="vscode"] .layout-tabs,
-  body[data-host="vscode"] .review-toolbar {
+  body[data-host="vscode"] .review-toolbar,
+  body[data-host="vscode"] .review-tool-label {
     transition: none;
   }
 }

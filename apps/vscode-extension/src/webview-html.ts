@@ -3,11 +3,34 @@ export interface WebviewHtmlOptions {
   nonce: string;
   stylesUri: string;
   scriptUri: string;
+  locale?: string;
+}
+
+function normalizeWebviewLocale(value: string | undefined): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > 64 ||
+    !/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/.test(value)
+  ) {
+    return "en";
+  }
+  try {
+    return Intl.getCanonicalLocales(value)[0] ?? "en";
+  } catch {
+    return "en";
+  }
 }
 
 export function renderWebviewHtml(
   template: string,
-  { cspSource, nonce, stylesUri, scriptUri }: WebviewHtmlOptions,
+  {
+    cspSource,
+    nonce,
+    stylesUri,
+    scriptUri,
+    locale,
+  }: WebviewHtmlOptions,
 ): string {
   if (!/^[A-Za-z0-9_-]{16,}$/.test(nonce)) {
     throw new TypeError("webview nonce is invalid");
@@ -29,7 +52,15 @@ export function renderWebviewHtml(
     /(<meta\s+charset=["']utf-8["']\s*\/?>)/iu,
     `$1\n    <meta http-equiv="Content-Security-Policy" content="${csp}" />`,
   );
-  const withHost = withCsp.replace("<body>", '<body data-host="vscode">');
+  const resolvedLocale = normalizeWebviewLocale(locale);
+  const withLocale = withCsp.replace(
+    /<html\b[^>]*>/iu,
+    `<html lang="${resolvedLocale}" data-locale="${resolvedLocale}">`,
+  );
+  const withHost = withLocale.replace(
+    "<body>",
+    '<body data-host="vscode">',
+  );
   const withStyles = withHost.replace(
     /<link\s+rel=["']stylesheet["']\s+href=["'][^"']+["']\s*\/?>/iu,
     `<link rel="stylesheet" href="${stylesUri}" />`,

@@ -433,6 +433,7 @@ class DwgEditorProvider
             vscode.Uri.joinPath(mediaRoot, "src", "main.mjs"),
           )
           .toString(),
+        locale: vscode.env.language,
       });
     };
 

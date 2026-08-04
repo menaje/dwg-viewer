@@ -1,107 +1,224 @@
 <!doctype html>
-<html lang="ko">
+<html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>DWG Scene Cache Viewer</title>
-    <link rel="stylesheet" href="./styles.css?v=1.18.14" />
+    <title data-i18n="page.title">DWG Scene Cache Viewer</title>
+    <link rel="stylesheet" href="./styles.css?v=1.18.15" />
   </head>
   <body>
     <main>
       <header>
         <div>
-          <p class="eyebrow">DWG Viewer · Scene Cache v1.18</p>
-          <h1>대형 도면 첫 화면 검증기</h1>
+          <p class="eyebrow" data-i18n="page.eyebrow">DWG Viewer · Scene Cache v1.18</p>
+          <h1 data-i18n="page.heading">Large drawing first-frame verifier</h1>
         </div>
         <button
           id="viewer-tools-trigger"
           class="viewer-tools-trigger"
           type="button"
-          aria-label="도면 도구 펼치기"
+          aria-label="Open drawing tools"
+          data-i18n-aria-label="toolbar.more.open"
           aria-expanded="false"
           aria-controls="viewer-toolbar"
-          title="도면 도구"
+          title="Drawing tools"
+          data-i18n-title="toolbar.more.title"
           hidden
         >
-          <span aria-hidden="true">•••</span>
+          <span aria-hidden="true">⋯</span>
         </button>
         <div id="viewer-toolbar" class="toolbar">
-          <nav class="view-controls" aria-label="도면 화면 조절">
-            <button type="button" data-view-action="zoom-out" disabled aria-label="축소">−</button>
-            <button type="button" data-view-action="fit" disabled>전체 보기</button>
+          <nav
+            class="view-controls"
+            aria-label="Drawing view controls"
+            data-i18n-aria-label="toolbar.controls"
+          >
+            <button
+              class="viewer-tool-button"
+              type="button"
+              data-view-action="zoom-out"
+              disabled
+              aria-label="Zoom out"
+              data-i18n-aria-label="toolbar.zoomOut"
+              title="Zoom out"
+              data-i18n-title="toolbar.zoomOut"
+            >
+              <span class="viewer-tool-icon" aria-hidden="true">−</span>
+              <span class="viewer-tool-label" data-i18n="toolbar.zoomOut">Zoom out</span>
+            </button>
+            <button
+              class="viewer-tool-button"
+              type="button"
+              data-view-action="fit"
+              disabled
+              aria-label="Fit drawing"
+              data-i18n-aria-label="toolbar.fit"
+              title="Fit drawing"
+              data-i18n-title="toolbar.fit"
+            >
+              <span class="viewer-tool-icon" aria-hidden="true">⛶</span>
+              <span class="viewer-tool-label" data-i18n="toolbar.fit">Fit drawing</span>
+            </button>
             <button
               id="layers-toggle"
+              class="viewer-tool-button"
               type="button"
               disabled
               aria-expanded="false"
               aria-controls="layer-panel"
+              aria-label="Layers"
+              data-i18n-aria-label="toolbar.layers"
+              title="Layers"
+              data-i18n-title="toolbar.layers"
             >
-              레이어
+              <span class="viewer-tool-icon" aria-hidden="true">▤</span>
+              <span class="viewer-tool-label" data-i18n="toolbar.layers">Layers</span>
             </button>
             <button
               id="fonts-toggle"
+              class="viewer-tool-button"
               type="button"
               disabled
               aria-expanded="false"
               aria-controls="font-panel"
+              aria-label="Fonts"
+              data-i18n-aria-label="toolbar.fonts"
+              title="Fonts"
+              data-i18n-title="toolbar.fonts"
             >
-              글꼴
+              <span class="viewer-tool-icon viewer-tool-icon-text" aria-hidden="true">A</span>
+              <span class="viewer-tool-label" data-i18n="toolbar.fonts">Fonts</span>
             </button>
             <button
               id="xrefs-toggle"
+              class="viewer-tool-button"
               type="button"
               disabled
               aria-expanded="false"
               aria-controls="xref-panel"
+              aria-label="External references"
+              data-i18n-aria-label="toolbar.xrefs"
+              title="External references"
+              data-i18n-title="toolbar.xrefs"
             >
-              외부 참조
+              <span class="viewer-tool-icon" aria-hidden="true">⌁</span>
+              <span class="viewer-tool-label" data-i18n="toolbar.xrefs">External references</span>
             </button>
             <button
               id="wipeout-toggle"
+              class="viewer-tool-button"
               type="button"
               disabled
               aria-pressed="false"
-              title="WIPEOUT 가림 객체 표시 전환"
+              aria-label="Masks off"
+              data-i18n-aria-label="toolbar.wipeoutOff"
+              title="Show drawing mask objects"
+              data-i18n-title="toolbar.wipeout.show"
             >
-              가림 끔
+              <span class="viewer-tool-icon" aria-hidden="true">◩</span>
+              <span class="viewer-tool-label" data-i18n="toolbar.wipeoutOff">Masks off</span>
             </button>
             <button
               id="plot-style-toggle"
+              class="viewer-tool-button"
               type="button"
               disabled
               aria-pressed="false"
-              title="배치에 지정된 CTB 출력 스타일 표시 전환"
+              aria-label="Plot style"
+              data-i18n-aria-label="toolbar.plotStyle"
+              title="Toggle the CTB plot style assigned to the layout"
+              data-i18n-title="toolbar.plotStyle.title"
             >
-              출력 스타일
+              <span class="viewer-tool-icon" aria-hidden="true">◐</span>
+              <span class="viewer-tool-label" data-i18n="toolbar.plotStyle">Plot style</span>
             </button>
             <button
               id="export-toggle"
+              class="viewer-tool-button"
               type="button"
               disabled
               aria-expanded="false"
               aria-controls="export-panel"
-              title="현재 화면 또는 배치를 PNG/PDF로 저장"
+              aria-label="PNG/PDF"
+              data-i18n-aria-label="toolbar.export"
+              title="Save the current view or layouts as PNG/PDF"
+              data-i18n-title="toolbar.export.title"
             >
-              PNG/PDF
+              <span class="viewer-tool-icon" aria-hidden="true">⇩</span>
+              <span class="viewer-tool-label" data-i18n="toolbar.export">PNG/PDF</span>
             </button>
-            <button type="button" data-view-action="zoom-in" disabled aria-label="확대">+</button>
+            <button
+              class="viewer-tool-button"
+              type="button"
+              data-view-action="zoom-in"
+              disabled
+              aria-label="Zoom in"
+              data-i18n-aria-label="toolbar.zoomIn"
+              title="Zoom in"
+              data-i18n-title="toolbar.zoomIn"
+            >
+              <span class="viewer-tool-icon" aria-hidden="true">+</span>
+              <span class="viewer-tool-label" data-i18n="toolbar.zoomIn">Zoom in</span>
+            </button>
           </nav>
-          <label id="font-file-button" class="file-button secondary">
-            SHX 파일
+          <label
+            id="font-file-button"
+            class="file-button secondary viewer-tool-button"
+            title="SHX file"
+            data-i18n-title="toolbar.shxFile"
+          >
+            <span class="viewer-tool-icon viewer-tool-icon-text" aria-hidden="true">S</span>
+            <span class="viewer-tool-label" data-i18n="toolbar.shxFile">SHX file</span>
             <input id="font-files" type="file" accept=".shx" multiple />
           </label>
-          <label id="cache-picker" class="file-button">
-            캐시 선택
+          <label
+            id="cache-picker"
+            class="file-button viewer-tool-button"
+            title="Choose cache"
+            data-i18n-title="toolbar.cacheFile"
+          >
+            <span class="viewer-tool-icon" aria-hidden="true">⌑</span>
+            <span class="viewer-tool-label" data-i18n="toolbar.cacheFile">Choose cache</span>
             <input id="cache-file" type="file" accept=".cache,.dwg.cache" />
           </label>
-          <button id="host-retry" class="host-action" type="button" hidden>
-            재시도
+          <button
+            id="host-retry"
+            class="host-action viewer-tool-button"
+            type="button"
+            aria-label="Retry"
+            data-i18n-aria-label="toolbar.retry"
+            title="Retry"
+            data-i18n-title="toolbar.retry"
+            hidden
+          >
+            <span class="viewer-tool-icon" aria-hidden="true">↻</span>
+            <span class="viewer-tool-label" data-i18n="toolbar.retry">Retry</span>
           </button>
-          <button id="host-rebuild" class="host-action" type="button" hidden>
-            다시 그리기
+          <button
+            id="host-rebuild"
+            class="host-action viewer-tool-button"
+            type="button"
+            aria-label="Redraw"
+            data-i18n-aria-label="toolbar.rebuild"
+            title="Redraw"
+            data-i18n-title="toolbar.rebuild"
+            hidden
+          >
+            <span class="viewer-tool-icon" aria-hidden="true">⟳</span>
+            <span class="viewer-tool-label" data-i18n="toolbar.rebuild">Redraw</span>
           </button>
-          <button id="host-adapter-setup" class="host-action" type="button" hidden>
-            변환기 선택·진단
+          <button
+            id="host-adapter-setup"
+            class="host-action viewer-tool-button"
+            type="button"
+            aria-label="Select and diagnose adapter"
+            data-i18n-aria-label="toolbar.adapter"
+            title="Select and diagnose adapter"
+            data-i18n-title="toolbar.adapter"
+            hidden
+          >
+            <span class="viewer-tool-icon" aria-hidden="true">⚙</span>
+            <span class="viewer-tool-label" data-i18n="toolbar.adapter">Select and diagnose adapter</span>
           </button>
         </div>
       </header>
@@ -119,74 +236,80 @@
         <nav
           id="review-toolbar"
           class="review-toolbar"
-          aria-label="도면 검토 도구"
+          aria-label="Drawing review tools"
+          data-i18n-aria-label="review.toolbar"
           hidden
         >
-          <button id="window-zoom" type="button" data-view-action="window" aria-pressed="false" title="사각 영역을 지정하여 확대">
+          <button id="window-zoom" type="button" data-view-action="window" aria-pressed="false" title="Drag a rectangle to zoom" data-i18n-title="review.windowZoom.title">
             <span class="review-tool-icon" aria-hidden="true">⌗</span>
-            <span class="review-tool-label">영역 확대</span>
+            <span class="review-tool-label" data-i18n="review.windowZoom">Zoom window</span>
           </button>
-          <button id="view-history-back" type="button" data-view-action="previous" title="이전 화면으로 이동" disabled>
+          <button id="view-history-back" type="button" data-view-action="previous" title="Go to the previous view" data-i18n-title="review.previous.title" disabled>
             <span class="review-tool-icon" aria-hidden="true">↶</span>
-            <span class="review-tool-label">이전 화면</span>
+            <span class="review-tool-label" data-i18n="review.previous">Previous view</span>
           </button>
-          <button id="view-history-forward" type="button" data-view-action="next" title="다음 화면으로 이동" disabled>
+          <button id="view-history-forward" type="button" data-view-action="next" title="Go to the next view" data-i18n-title="review.next.title" disabled>
             <span class="review-tool-icon" aria-hidden="true">↷</span>
-            <span class="review-tool-label">다음 화면</span>
+            <span class="review-tool-label" data-i18n="review.next">Next view</span>
           </button>
-          <button id="view-bookmarks-toggle" type="button" data-view-action="bookmarks" aria-expanded="false" aria-controls="view-bookmark-panel" title="화면 북마크 저장 및 관리">
+          <button id="view-bookmarks-toggle" type="button" data-view-action="bookmarks" aria-expanded="false" aria-controls="view-bookmark-panel" title="Save and manage view bookmarks" data-i18n-title="review.bookmarks.title">
             <span class="review-tool-icon" aria-hidden="true">☆</span>
-            <span class="review-tool-label">화면 북마크</span>
+            <span class="review-tool-label" data-i18n="review.bookmarks">View bookmarks</span>
           </button>
-          <button class="review-section-start" type="button" data-review-tool="select" aria-pressed="false" title="객체 선택 및 기본 속성">
+          <button class="review-section-start" type="button" data-review-tool="select" aria-pressed="false" title="Select an object and inspect basic properties" data-i18n-title="review.select.title">
             <span class="review-tool-icon" aria-hidden="true">⌁</span>
-            <span class="review-tool-label">객체 선택</span>
+            <span class="review-tool-label" data-i18n="review.select">Select object</span>
           </button>
-          <button type="button" data-review-tool="distance" aria-pressed="false" title="두 점 사이 거리">
+          <button type="button" data-review-tool="distance" aria-pressed="false" title="Distance between two points" data-i18n-title="review.distance.title">
             <span class="review-tool-icon" aria-hidden="true">↔</span>
-            <span class="review-tool-label">거리 측정</span>
+            <span class="review-tool-label" data-i18n="review.distance">Distance</span>
           </button>
-          <button type="button" data-review-tool="path" aria-pressed="false" title="여러 구간의 누적 거리">
+          <button type="button" data-review-tool="path" aria-pressed="false" title="Cumulative distance across multiple segments" data-i18n-title="review.path.title">
             <span class="review-tool-icon" aria-hidden="true">∑</span>
-            <span class="review-tool-label">누적 거리</span>
+            <span class="review-tool-label" data-i18n="review.path">Path length</span>
           </button>
-          <button type="button" data-review-tool="area" aria-pressed="false" title="여러 점으로 면적과 둘레 측정">
+          <button type="button" data-review-tool="area" aria-pressed="false" title="Measure area and perimeter from multiple points" data-i18n-title="review.area.title">
             <span class="review-tool-icon" aria-hidden="true">▱</span>
-            <span class="review-tool-label">면적·둘레</span>
+            <span class="review-tool-label" data-i18n="review.area">Area &amp; perimeter</span>
           </button>
-          <button type="button" data-review-tool="angle" aria-pressed="false" title="세 점으로 각도 측정">
+          <button type="button" data-review-tool="angle" aria-pressed="false" title="Measure an angle with three points" data-i18n-title="review.angle.title">
             <span class="review-tool-icon" aria-hidden="true">∠</span>
-            <span class="review-tool-label">각도 측정</span>
+            <span class="review-tool-label" data-i18n="review.angle">Angle</span>
           </button>
-          <button type="button" data-review-tool="radius" aria-pressed="false" title="호·원·타원의 반지름과 지름">
+          <button type="button" data-review-tool="radius" aria-pressed="false" title="Radius and diameter of an arc, circle, or ellipse" data-i18n-title="review.radius.title">
             <span class="review-tool-icon" aria-hidden="true">⌀</span>
-            <span class="review-tool-label">반지름·지름</span>
+            <span class="review-tool-label" data-i18n="review.radius">Radius &amp; diameter</span>
           </button>
-          <button type="button" data-review-tool="coordinate" aria-pressed="false" title="선택한 점의 좌표">
+          <button type="button" data-review-tool="coordinate" aria-pressed="false" title="Coordinates of the selected point" data-i18n-title="review.coordinate.title">
             <span class="review-tool-icon" aria-hidden="true">＋</span>
-            <span class="review-tool-label">점 좌표</span>
+            <span class="review-tool-label" data-i18n="review.coordinate">Point coordinates</span>
           </button>
-          <button type="button" data-review-action="finish" title="현재 다점 측정 완료 (Enter)" hidden>
+          <button type="button" data-review-action="finish" title="Finish the current multi-point measurement (Enter)" data-i18n-title="review.finish.title" hidden>
             <span class="review-tool-icon" aria-hidden="true">✓</span>
-            <span class="review-tool-label">측정 완료</span>
+            <span class="review-tool-label" data-i18n="review.finish">Finish measurement</span>
           </button>
-          <button type="button" data-review-action="settings" title="측정 단위와 표시 정밀도 설정">
+          <button type="button" data-review-action="settings" title="Set measurement units and display precision" data-i18n-title="review.settings.title">
             <span class="review-tool-icon" aria-hidden="true">⚙</span>
-            <span class="review-tool-label">측정 설정</span>
+            <span class="review-tool-label" data-i18n="review.settings">Measurement settings</span>
           </button>
-          <button type="button" data-review-action="fit" title="도면 전체 보기">
+          <button type="button" data-review-action="fit" title="Fit the whole drawing" data-i18n-title="review.fit.title">
             <span class="review-tool-icon" aria-hidden="true">□</span>
-            <span class="review-tool-label">전체 보기</span>
+            <span class="review-tool-label" data-i18n="review.fit">Fit drawing</span>
           </button>
-          <button type="button" data-review-action="clear" title="선택과 측정 결과 지우기">
+          <button type="button" data-review-action="clear" title="Clear selections and measurement results" data-i18n-title="review.clear.title">
             <span class="review-tool-icon" aria-hidden="true">×</span>
-            <span class="review-tool-label">결과 지우기</span>
+            <span class="review-tool-label" data-i18n="review.clear">Clear results</span>
           </button>
         </nav>
         <aside id="review-result" class="review-result" aria-live="polite" hidden>
           <div class="review-result-heading">
-            <strong data-review-title>검토 결과</strong>
-            <button type="button" data-review-action="close" aria-label="검토 결과 닫기">×</button>
+            <strong data-review-title data-i18n="review.result">Review result</strong>
+            <button
+              type="button"
+              data-review-action="close"
+              aria-label="Close review result"
+              data-i18n-aria-label="review.result.close"
+            >×</button>
           </div>
           <div class="review-result-content" data-review-content></div>
           <div
@@ -194,29 +317,39 @@
             data-review-result-actions
             hidden
           >
-            <button type="button" data-review-action="isolate-layer">
-              이 레이어만 보기
+            <button
+              type="button"
+              data-review-action="isolate-layer"
+              data-i18n="review.result.isolateLayer"
+            >
+              Show only this layer
             </button>
-            <button type="button" data-review-action="restore-layers">
-              레이어 복원
+            <button
+              type="button"
+              data-review-action="restore-layers"
+              data-i18n="review.result.restoreLayers"
+            >
+              Restore layers
             </button>
           </div>
         </aside>
         <aside
           id="view-bookmark-panel"
           class="view-bookmark-panel"
-          aria-label="화면 북마크"
+          aria-label="View bookmarks"
+          data-i18n-aria-label="bookmarks.panel"
           hidden
         >
           <div class="view-bookmark-heading">
             <div>
-              <strong>화면 북마크</strong>
+              <strong data-i18n="bookmarks.panel">View bookmarks</strong>
               <span id="view-bookmark-summary"></span>
             </div>
             <button
               id="view-bookmark-close"
               type="button"
-              aria-label="화면 북마크 닫기"
+              aria-label="Close view bookmarks"
+              data-i18n-aria-label="bookmarks.close"
             >
               ×
             </button>
@@ -226,92 +359,128 @@
               id="view-bookmark-name"
               type="text"
               maxlength="64"
-              placeholder="이름을 비우면 자동으로 지정"
+              placeholder="Leave blank to name automatically"
+              data-i18n-placeholder="bookmarks.placeholder"
               autocomplete="off"
             />
-            <button type="submit">현재 화면 저장</button>
+            <button type="submit" data-i18n="bookmarks.save">Save current view</button>
           </form>
-          <p id="view-bookmark-empty" class="view-bookmark-empty">
-            현재 모델 또는 배치에 저장된 화면이 없습니다.
+          <p
+            id="view-bookmark-empty"
+            class="view-bookmark-empty"
+            data-i18n="bookmarks.empty"
+          >
+            No saved views for the current model or layout.
           </p>
           <ul id="view-bookmark-list" class="view-bookmark-list"></ul>
         </aside>
         <nav
           id="layout-tabs"
           class="layout-tabs"
-          aria-label="모델 및 도면 배치"
+          aria-label="Model and drawing layouts"
+          data-i18n-aria-label="layouts.navigation"
           hidden
         ></nav>
-        <aside id="layer-panel" class="layer-panel" aria-label="레이어 표시 설정" hidden>
+        <aside
+          id="layer-panel"
+          class="layer-panel"
+          aria-label="Layer visibility settings"
+          data-i18n-aria-label="layers.panel"
+          hidden
+        >
           <div class="layer-panel-heading">
-            <strong>레이어</strong>
+            <strong data-i18n="layers.heading">Layers</strong>
             <span id="layer-summary"></span>
           </div>
           <input
             id="layer-search"
             type="search"
-            placeholder="레이어 또는 외부참조 검색"
+            placeholder="Search layers or external references"
+            data-i18n-placeholder="layers.search"
             autocomplete="off"
           />
           <div class="layer-actions">
-            <button id="layers-show-all" type="button">전체 켜기</button>
-            <button id="layers-hide-all" type="button">전체 끄기</button>
-            <button id="layers-invert" type="button">반전</button>
-            <button id="layers-restore" type="button" disabled>이전 상태</button>
+            <button id="layers-show-all" type="button" data-i18n="layers.showAll">Show all</button>
+            <button id="layers-hide-all" type="button" data-i18n="layers.hideAll">Hide all</button>
+            <button id="layers-invert" type="button" data-i18n="layers.invert">Invert</button>
+            <button id="layers-restore" type="button" data-i18n="layers.restore" disabled>Previous state</button>
           </div>
           <ul id="layer-list"></ul>
         </aside>
-        <aside id="font-panel" class="font-panel" aria-label="도면 글꼴 상태" hidden>
+        <aside
+          id="font-panel"
+          class="font-panel"
+          aria-label="Drawing font status"
+          data-i18n-aria-label="fonts.panel"
+          hidden
+        >
           <div class="font-panel-heading">
-            <strong>도면 글꼴</strong>
+            <strong data-i18n="fonts.heading">Drawing fonts</strong>
             <span id="font-summary"></span>
           </div>
-          <p id="font-panel-help">
-            도면이 요구하는 글꼴을 확인합니다.
+          <p id="font-panel-help" data-i18n="fonts.help">
+            Review the fonts requested by the drawing.
           </p>
-          <button id="host-font-folder" type="button" hidden>
-            글꼴 폴더 추가
+          <button id="host-font-folder" type="button" data-i18n="fonts.addFolder" hidden>
+            Add font folder
           </button>
           <ul id="font-status-list"></ul>
         </aside>
-        <aside id="xref-panel" class="xref-panel" aria-label="외부 도면과 이미지 참조 상태" hidden>
+        <aside
+          id="xref-panel"
+          class="xref-panel"
+          aria-label="External drawing and image reference status"
+          data-i18n-aria-label="xrefs.panel"
+          hidden
+        >
           <div class="xref-panel-heading">
-            <strong>외부 참조</strong>
+            <strong data-i18n="xrefs.heading">External references</strong>
             <span id="xref-summary"></span>
           </div>
-          <p id="xref-panel-help">
-            도면과 이미지의 저장 경로를 먼저 확인하고, 없으면 파일명과 상위 폴더가 많이 일치하는 파일을 찾습니다.
+          <p id="xref-panel-help" data-i18n="xrefs.help">
+            Stored drawing and image paths are checked first, then bounded filename and parent-folder matching is used.
           </p>
           <ul id="xref-status-list"></ul>
         </aside>
-        <aside id="export-panel" class="export-panel" aria-label="도면 PNG/PDF 출력" hidden>
+        <aside
+          id="export-panel"
+          class="export-panel"
+          aria-label="Drawing PNG/PDF export"
+          data-i18n-aria-label="export.panel"
+          hidden
+        >
           <div class="export-panel-heading">
             <div>
-              <strong>도면 출력</strong>
+              <strong data-i18n="export.heading">Drawing export</strong>
               <span id="export-summary"></span>
             </div>
-            <button id="export-close" type="button" aria-label="도면 출력 닫기">×</button>
+            <button
+              id="export-close"
+              type="button"
+              aria-label="Close drawing export"
+              data-i18n-aria-label="export.close"
+            >×</button>
           </div>
           <form id="export-form" class="export-form">
             <label>
-              <span>범위</span>
+              <span data-i18n="export.range">Range</span>
               <select id="export-target">
-                <option value="screen">현재 화면</option>
-                <option value="view" selected>현재 탭 전체</option>
-                <option value="layouts">전체 배치</option>
+                <option value="screen" data-i18n="export.range.screen">Current screen</option>
+                <option value="view" data-i18n="export.range.view" selected>Entire current tab</option>
+                <option value="layouts" data-i18n="export.range.layouts">All layouts</option>
               </select>
             </label>
             <label>
-              <span>형식</span>
+              <span data-i18n="export.format">Format</span>
               <select id="export-format">
                 <option value="png">PNG</option>
                 <option value="pdf" selected>PDF</option>
               </select>
             </label>
             <label>
-              <span>용지</span>
+              <span data-i18n="export.paper">Paper</span>
               <select id="export-paper">
-                <option value="drawing" selected>도면 설정 우선</option>
+                <option value="drawing" data-i18n="export.paper.drawing" selected>Prefer drawing settings</option>
                 <option value="a4">A4</option>
                 <option value="a3">A3</option>
                 <option value="a2">A2</option>
@@ -322,15 +491,15 @@
               </select>
             </label>
             <label>
-              <span>방향</span>
+              <span data-i18n="export.orientation">Orientation</span>
               <select id="export-orientation">
-                <option value="drawing" selected>도면 설정</option>
-                <option value="portrait">세로</option>
-                <option value="landscape">가로</option>
+                <option value="drawing" data-i18n="export.orientation.drawing" selected>Drawing settings</option>
+                <option value="portrait" data-i18n="export.orientation.portrait">Portrait</option>
+                <option value="landscape" data-i18n="export.orientation.landscape">Landscape</option>
               </select>
             </label>
             <label>
-              <span>해상도</span>
+              <span data-i18n="export.resolution">Resolution</span>
               <select id="export-dpi">
                 <option value="96">96 DPI</option>
                 <option value="150" selected>150 DPI</option>
@@ -338,10 +507,10 @@
               </select>
             </label>
             <label>
-              <span>축척</span>
+              <span data-i18n="export.scale">Scale</span>
               <select id="export-scale">
-                <option value="drawing" selected>저장 화면 / 배치 전체</option>
-                <option value="fit">용지에 맞춤</option>
+                <option value="drawing" data-i18n="export.scale.drawing" selected>Saved view / entire layout</option>
+                <option value="fit" data-i18n="export.scale.fit">Fit to paper</option>
                 <option value="1">1:1</option>
                 <option value="2">1:2</option>
                 <option value="5">1:5</option>
@@ -353,10 +522,10 @@
             </label>
             <label class="export-checkbox">
               <input id="export-plot-style" type="checkbox" checked />
-              <span>배치 CTB 출력 스타일 적용</span>
+              <span data-i18n="export.plotStyle">Apply layout CTB plot style</span>
             </label>
-            <p id="export-help">
-              배치에 저장된 용지 크기와 CTB를 먼저 사용합니다. 값이 없을 때만 선택한 용지로 대체합니다.
+            <p id="export-help" data-i18n="export.help">
+              Saved layout paper sizes and CTB settings are used first. The selected paper is only a fallback.
             </p>
             <div id="export-progress" class="export-progress" hidden>
               <progress id="export-progress-bar" max="1" value="0"></progress>
@@ -364,17 +533,17 @@
             </div>
             <div class="export-actions">
               <button id="export-start" class="export-primary" type="submit">
-                파일 저장
+                <span data-i18n="export.save">Save file</span>
               </button>
-              <button id="export-cancel" type="button" hidden>취소</button>
+              <button id="export-cancel" type="button" data-i18n="export.cancel" hidden>Cancel</button>
             </div>
           </form>
         </aside>
         <div class="empty-state">
-          <strong>생성된 DWG 캐시를 여기에 놓으세요.</strong>
-          <span>원본 DWG는 전송하지 않으며 브라우저가 필요한 범위만 읽습니다.</span>
+          <strong data-i18n="empty.title">Drop a generated DWG cache here.</strong>
+          <span data-i18n="empty.help">The original DWG is not uploaded; the browser reads only the ranges it needs.</span>
         </div>
-        <div id="status" class="status">캐시를 기다리는 중</div>
+        <div id="status" class="status" data-i18n="status.waiting">Waiting for a cache</div>
       </section>
       <aside id="metrics" aria-live="polite"></aside>
     </main>
@@ -389,6 +558,6 @@
         }
       }
     </script>
-    <script type="module" src="./src/main.mjs?v=1.18.15"></script>
+    <script type="module" src="./src/main.mjs?v=1.18.16"></script>
   </body>
 </html>

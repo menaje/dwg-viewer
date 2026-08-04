@@ -89,6 +89,28 @@ import {
   removeViewBookmark,
   renameViewBookmark,
 } from "./view-navigation.mjs?v=1.18.12";
+import {
+  createI18n,
+  environmentLocales,
+} from "./i18n.mjs?v=1.0.0";
+
+const i18n = createI18n({
+  requestedLocales: environmentLocales(document, navigator),
+});
+const t = i18n.t;
+i18n.localize(document);
+
+function setViewerToolMessage(element, key, values) {
+  const message = t(key, values);
+  const label = element?.querySelector(".viewer-tool-label");
+  if (label) {
+    label.textContent = message;
+  } else if (element) {
+    element.textContent = message;
+  }
+  element?.setAttribute("aria-label", message);
+  return message;
+}
 
 const fileInput = document.querySelector("#cache-file");
 const cachePicker = document.querySelector("#cache-picker");
@@ -712,29 +734,33 @@ function resetPlotStyleSession() {
   }
   plotStyleWaiters.clear();
   plotStyleToggle.disabled = true;
-  plotStyleToggle.textContent = "출력 스타일";
+  setViewerToolMessage(plotStyleToggle, "toolbar.plotStyle");
   plotStyleToggle.setAttribute("aria-pressed", "false");
-  plotStyleToggle.title = "배치에 지정된 CTB 출력 스타일 표시 전환";
+  plotStyleToggle.title = t("toolbar.plotStyle.title");
 }
 
 function setPlotStyleUnavailable(name, state) {
-  const label =
+  const messageKey =
     {
-      ambiguous: "동일한 CTB가 여러 곳에 있어 자동 선택하지 않았습니다.",
-      invalid: "CTB 파일을 읽을 수 없습니다.",
-      missing: "같은 이름의 CTB 파일을 찾지 못했습니다.",
-      unavailable: "VS Code에서 DWG를 열면 CTB를 자동으로 찾습니다.",
-    }[state] ?? "CTB 출력 스타일을 사용할 수 없습니다.";
+      ambiguous: "toolbar.plotStyle.unavailable.ambiguous",
+      invalid: "toolbar.plotStyle.unavailable.invalid",
+      missing: "toolbar.plotStyle.unavailable.missing",
+      unavailable: "toolbar.plotStyle.unavailable.unavailable",
+    }[state] ?? "toolbar.plotStyle.unavailable.fallback";
+  const label = t(messageKey);
   const canSelect =
     Boolean(vscodeApi) &&
     Boolean(activeHostCacheId) &&
     Boolean(activePlotStyleName) &&
     ["ambiguous", "missing"].includes(state);
   plotStyleToggle.disabled = !canSelect;
-  plotStyleToggle.textContent = canSelect ? "출력 선택" : "출력 없음";
+  setViewerToolMessage(
+    plotStyleToggle,
+    canSelect ? "toolbar.plotStyle.select" : "toolbar.plotStyle.none",
+  );
   plotStyleToggle.setAttribute("aria-pressed", "false");
   plotStyleToggle.title = `${name} · ${label}${
-    canSelect ? " 클릭하여 CTB 파일을 직접 선택할 수 있습니다." : ""
+    canSelect ? t("toolbar.plotStyle.selectHint") : ""
   }`;
 }
 
@@ -762,14 +788,17 @@ function applyPlotStyleEntry(scene, key, entry, enabled) {
     activePlotStyleEnabled = enabled;
     plotStylePreferences.set(key, enabled);
     plotStyleToggle.disabled = false;
-    plotStyleToggle.textContent = enabled ? "출력 켬" : "출력 끔";
+    setViewerToolMessage(
+      plotStyleToggle,
+      enabled ? "toolbar.plotStyle.on" : "toolbar.plotStyle.off",
+    );
     plotStyleToggle.setAttribute("aria-pressed", String(enabled));
     const details = plotStyleDiagnostics(entry.table);
-    plotStyleToggle.title =
-      `${entry.resolvedName || entry.requestedName || key} · ` +
-      `색 ${details.colorOverrides.toLocaleString()} · ` +
-      `선굵기 ${details.lineWeightOverrides.toLocaleString()} · ` +
-      "클릭하여 원본 화면 색과 전환";
+    plotStyleToggle.title = t("toolbar.plotStyle.details", {
+      name: entry.resolvedName || entry.requestedName || key,
+      colors: i18n.formatNumber(details.colorOverrides),
+      weights: i18n.formatNumber(details.lineWeightOverrides),
+    });
     activeInteraction?.refresh();
   } catch (error) {
     console.error(error);
@@ -784,8 +813,8 @@ function configurePlotStyleForView(scene, view, revision) {
   plotStyleToggle.setAttribute("aria-pressed", "false");
   if (view?.kind !== "layout") {
     plotStyleToggle.disabled = true;
-    plotStyleToggle.textContent = "출력 스타일";
-    plotStyleToggle.title = "모델 탭은 화면 색으로 표시합니다.";
+    setViewerToolMessage(plotStyleToggle, "toolbar.plotStyle");
+    plotStyleToggle.title = t("toolbar.plotStyle.modelTitle");
     return;
   }
   const requestedName = view.layout?.styleSheet ?? "";
@@ -821,8 +850,10 @@ function configurePlotStyleForView(scene, view, revision) {
       request.cacheId === activeHostCacheId && request.key === key,
   );
   plotStyleToggle.disabled = true;
-  plotStyleToggle.textContent = "출력 찾는 중";
-  plotStyleToggle.title = `${requestedName} 자동 검색 중`;
+  setViewerToolMessage(plotStyleToggle, "toolbar.plotStyle.searching");
+  plotStyleToggle.title = t("toolbar.plotStyle.searchingTitle", {
+    name: requestedName,
+  });
   if (alreadyPending) {
     return;
   }
@@ -1625,8 +1656,11 @@ function renderFontDiagnostics() {
     entries.length === 0
       ? "요구 글꼴 없음"
       : `${ready.toLocaleString()} / ${entries.length.toLocaleString()} 연결`;
-  fontsToggle.textContent =
-    failures > 0 ? `글꼴 ${failures.toLocaleString()}` : "글꼴";
+  setViewerToolMessage(
+    fontsToggle,
+    failures > 0 ? "toolbar.fontsWithIssues" : "toolbar.fonts",
+    { count: i18n.formatNumber(failures) },
+  );
   fontStatusList.replaceChildren();
 
   if (entries.length === 0) {
@@ -1741,10 +1775,11 @@ function renderXrefDiagnostics() {
     entries.length === 0
       ? "참조 없음"
       : `${ready.toLocaleString()} / ${entries.length.toLocaleString()} 연결`;
-  xrefsToggle.textContent =
-    unresolved > 0
-      ? `외부 참조 ${unresolved.toLocaleString()}`
-      : "외부 참조";
+  setViewerToolMessage(
+    xrefsToggle,
+    unresolved > 0 ? "toolbar.xrefsWithIssues" : "toolbar.xrefs",
+    { count: i18n.formatNumber(unresolved) },
+  );
   xrefsToggle.disabled = entries.length === 0;
   xrefStatusList.replaceChildren();
   if (entries.length === 0) {
@@ -1833,7 +1868,7 @@ function resetExternalReferences() {
   activeImageAssetStore = undefined;
   pendingImageRequests.clear();
   xrefsToggle.disabled = true;
-  xrefsToggle.textContent = "외부 참조";
+  setViewerToolMessage(xrefsToggle, "toolbar.xrefs");
   xrefsToggle.setAttribute("aria-expanded", "false");
   xrefPanel.hidden = true;
   renderXrefDiagnostics();
@@ -2340,15 +2375,21 @@ function setControlsEnabled(enabled) {
 }
 
 function updateWipeoutToggle() {
-  wipeoutToggle.textContent =
-    activeWipeoutMasksVisible ? "가림 켬" : "가림 끔";
+  setViewerToolMessage(
+    wipeoutToggle,
+    activeWipeoutMasksVisible
+      ? "toolbar.wipeoutOn"
+      : "toolbar.wipeoutOff",
+  );
   wipeoutToggle.setAttribute(
     "aria-pressed",
     String(activeWipeoutMasksVisible),
   );
-  wipeoutToggle.title = activeWipeoutMasksVisible
-    ? "가림 객체를 숨겨 가려진 도면 확인"
-    : "도면의 가림 객체 다시 표시";
+  wipeoutToggle.title = t(
+    activeWipeoutMasksVisible
+      ? "toolbar.wipeout.hide"
+      : "toolbar.wipeout.show",
+  );
 }
 
 function updateLayerSummary() {
@@ -5118,7 +5159,7 @@ async function openCache(source, workerSource, cacheSha256) {
   pendingHostFontRequests.clear();
   attemptedHostFontKeys.clear();
   fontsToggle.disabled = true;
-  fontsToggle.textContent = "글꼴";
+  setViewerToolMessage(fontsToggle, "toolbar.fonts");
   fontsToggle.setAttribute("aria-expanded", "false");
   fontPanel.hidden = true;
   renderFontDiagnostics();
@@ -5392,7 +5433,7 @@ function setViewerToolsOpen(open) {
   viewerToolsTrigger.setAttribute("aria-expanded", String(open));
   viewerToolsTrigger.setAttribute(
     "aria-label",
-    open ? "도면 도구 접기" : "도면 도구 펼치기",
+    t(open ? "toolbar.more.close" : "toolbar.more.open"),
   );
 }
 
@@ -5403,19 +5444,19 @@ function setHostedState(state, detail = "", code = "") {
   switch (state) {
     case "preparing":
       setViewerToolsOpen(false);
-      status.textContent = "로컬 DWG 변환을 준비하는 중";
+      status.textContent = t("status.host.preparing");
       hostRetry.hidden = true;
       hostRebuild.hidden = true;
       hostAdapterSetup.hidden = true;
       break;
     case "converting":
-      status.textContent = "로컬에서 DWG를 변환하는 중";
+      status.textContent = t("status.host.converting");
       hostRetry.hidden = true;
       hostRebuild.hidden = true;
       hostAdapterSetup.hidden = true;
       break;
     case "validating":
-      status.textContent = "변환 결과를 검사하는 중";
+      status.textContent = t("status.host.validating");
       hostRetry.hidden = true;
       hostRebuild.hidden = true;
       hostAdapterSetup.hidden = true;
@@ -5423,8 +5464,10 @@ function setHostedState(state, detail = "", code = "") {
     case "error":
       setViewerToolsOpen(true);
       status.textContent = detail
-        ? `도면을 열 수 없습니다: ${detail.slice(0, 300)}`
-        : "도면을 열 수 없습니다";
+        ? t("status.host.errorWithDetail", {
+            detail: detail.slice(0, 300),
+          })
+        : t("status.host.error");
       hostRetry.hidden = false;
       hostRebuild.hidden = false;
       hostAdapterSetup.hidden =
@@ -5443,13 +5486,14 @@ if (vscodeApi) {
   fontFileButton.hidden = true;
   viewerToolsTrigger.hidden = false;
   hostFontFolder.hidden = false;
-  fontPanelHelp.textContent =
-    "도면 폴더와 등록한 폴더에서 필요한 글꼴만 찾아 첫 화면 뒤에 연결합니다.";
-  document.querySelector("h1").textContent = "DWG 도면 뷰어";
-  document.querySelector(".empty-state strong").textContent =
-    "로컬 DWG 도면을 준비하고 있습니다.";
-  document.querySelector(".empty-state span").textContent =
-    "도면은 외부로 전송되지 않습니다.";
+  fontPanelHelp.textContent = t("fonts.hostHelp");
+  document.querySelector("h1").textContent = t("page.hostHeading");
+  document.querySelector(".empty-state strong").textContent = t(
+    "empty.hostTitle",
+  );
+  document.querySelector(".empty-state span").textContent = t(
+    "empty.hostHelp",
+  );
   setHostedState("preparing");
   window.addEventListener("message", (event) => {
     const message = event.data;
@@ -5474,7 +5518,7 @@ if (vscodeApi) {
           new Error(
             typeof message.message === "string"
               ? message.message
-              : "출력 파일을 저장하지 못했습니다.",
+              : t("status.exportSaveError"),
           ),
         );
       }
@@ -5888,8 +5932,8 @@ wipeoutToggle.addEventListener("click", () => {
     renderMetrics(activeScene, activeRangeMetricsSource, viewport);
   }
   status.textContent = activeWipeoutMasksVisible
-    ? "도면의 가림 객체를 다시 표시했습니다"
-    : "가림 객체를 숨겼습니다 · 가려졌던 원본 선을 확인할 수 있습니다";
+    ? t("status.wipeout.on")
+    : t("status.wipeout.off");
 });
 
 plotStyleToggle.addEventListener("click", () => {
@@ -5904,7 +5948,10 @@ plotStyleToggle.addEventListener("click", () => {
       ["missing", "ambiguous"].includes(entry?.status)
     ) {
       plotStyleToggle.disabled = true;
-      plotStyleToggle.textContent = "출력 선택 중";
+      setViewerToolMessage(
+        plotStyleToggle,
+        "toolbar.plotStyle.selecting",
+      );
       vscodeApi.postMessage({
         type: "dwg-plot-style-file-select/1",
         cacheId: activeHostCacheId,
