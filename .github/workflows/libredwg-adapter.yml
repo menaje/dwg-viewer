@@ -214,10 +214,14 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $extensionVersion = node -p "require('./apps/vscode-extension/package.json').version"
+          $vsixPath = Join-Path `
+            $env:GITHUB_WORKSPACE `
+            "apps\vscode-extension\dwg-viewer-vscode-$extensionVersion.vsix"
           node scripts/qualify-windows-vscode-ui.mjs `
             --adapter "$env:RUNNER_TEMP\libredwg-adapter.exe" `
             --drawing "$env:DWG_VIEWER_UI_DRAWING" `
-            --vsix "$env:GITHUB_WORKSPACE\apps\vscode-extension\dwg-viewer-vscode-0.1.0.vsix" `
+            --vsix $vsixPath `
             --output-dir "$env:RUNNER_TEMP\windows-vscode-ui-qualification"
 
       - uses: actions/upload-artifact@v7

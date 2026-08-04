@@ -270,6 +270,22 @@ test("uses the packaged extension manifest identity", async () => {
   );
 });
 
+test("derives the Windows qualification VSIX from the package version", async () => {
+  const workflow = await readFile(
+    path.resolve(".github/workflows/libredwg-adapter.yml"),
+    "utf8",
+  );
+  assert.match(workflow, /\$extensionVersion = node -p/u);
+  assert.match(
+    workflow,
+    /dwg-viewer-vscode-\$extensionVersion\.vsix/u,
+  );
+  assert.doesNotMatch(
+    workflow,
+    /dwg-viewer-vscode-\d+\.\d+\.\d+\.vsix/u,
+  );
+});
+
 test("bounds Windows profile lock cleanup retries", () => {
   assert.deepEqual(WINDOWS_UI_CLEANUP_OPTIONS, {
     recursive: true,
