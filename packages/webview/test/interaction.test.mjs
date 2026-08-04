@@ -16,10 +16,14 @@ test("streams bounded detail while zooming out and retains legible text", () => 
   assert.equal(DEFAULT_MINIMUM_PIXEL_HEIGHT, 0.5);
 });
 
-test("injects the DWG detail streamer into the Core interaction lifecycle", () => {
+test("injects DWG detail streaming and intercepts platform wheel gestures", () => {
   const OriginalResizeObserver = globalThis.ResizeObserver;
+  const originalAnimationFrame = globalThis.requestAnimationFrame;
+  const originalCancelAnimationFrame = globalThis.cancelAnimationFrame;
   let observed = false;
   let disconnected = false;
+  let nextFrame = 1;
+  const listeners = new Map();
   globalThis.ResizeObserver = class {
     observe() {
       observed = true;
@@ -29,10 +33,16 @@ test("injects the DWG detail streamer into the Core interaction lifecycle", () =
       disconnected = true;
     }
   };
+  globalThis.requestAnimationFrame = () => nextFrame++;
+  globalThis.cancelAnimationFrame = () => {};
   const canvas = {
     clientWidth: 800,
     clientHeight: 600,
-    addEventListener() {},
+    addEventListener(name, listener) {
+      const entries = listeners.get(name) ?? [];
+      entries.push(listener);
+      listeners.set(name, entries);
+    },
     classList: {
       add() {},
       remove() {},
@@ -76,9 +86,52 @@ test("injects the DWG detail streamer into the Core interaction lifecycle", () =
     );
     assert.equal(observed, true);
     assert.equal(interaction.snapshot().zoom, 1);
+    assert.equal(listeners.get("wheel").length, 2);
+
+    let prevented = false;
+    let stopped = false;
+    listeners.get("wheel")[0]({
+      ctrlKey: false,
+      deltaMode: 0,
+      deltaX: 12,
+      deltaY: 24,
+      offsetX: 400,
+      offsetY: 300,
+      timeStamp: 10,
+      preventDefault() {
+        prevented = true;
+      },
+      stopImmediatePropagation() {
+        stopped = true;
+      },
+    });
+    assert.equal(prevented, true);
+    assert.equal(stopped, true);
+    assert.equal(interaction.snapshot().zoom, 1);
+    assert.ok(
+      Math.abs(interaction.snapshot().camera.origin[0] - 2) < 1e-9,
+    );
+    assert.ok(
+      Math.abs(interaction.snapshot().camera.origin[1] + 4) < 1e-9,
+    );
+
+    listeners.get("wheel")[0]({
+      ctrlKey: true,
+      deltaMode: 0,
+      deltaX: 0,
+      deltaY: -10,
+      offsetX: 400,
+      offsetY: 300,
+      timeStamp: 300,
+      preventDefault() {},
+      stopImmediatePropagation() {},
+    });
+    assert.ok(interaction.snapshot().zoom > 1.08);
     interaction.dispose();
     assert.equal(disconnected, true);
   } finally {
     globalThis.ResizeObserver = OriginalResizeObserver;
+    globalThis.requestAnimationFrame = originalAnimationFrame;
+    globalThis.cancelAnimationFrame = originalCancelAnimationFrame;
   }
 });
