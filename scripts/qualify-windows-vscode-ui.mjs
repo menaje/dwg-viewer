@@ -270,6 +270,32 @@ export function canvasPointIsUnobstructed(
   );
 }
 
+export function adjustedHostViewportSize(
+  hostViewport,
+  currentEditorWidth,
+  targetEditorWidth,
+) {
+  if (
+    !Number.isFinite(hostViewport?.width) ||
+    !Number.isFinite(hostViewport?.height) ||
+    !Number.isFinite(currentEditorWidth) ||
+    !Number.isFinite(targetEditorWidth)
+  ) {
+    throw new TypeError("viewport widths must be finite");
+  }
+  return Object.freeze({
+    width: Math.max(
+      560,
+      Math.round(
+        hostViewport.width +
+          targetEditorWidth -
+          currentEditorWidth,
+      ),
+    ),
+    height: Math.max(820, Math.round(hostViewport.height)),
+  });
+}
+
 function exactRows(rows, requiredLabels, label) {
   if (!Array.isArray(rows)) {
     throw new Error(`${label} rows are missing`);
@@ -394,26 +420,30 @@ async function surfaceSnapshot(frame) {
 async function setEditorWidth(page, frame, editorWidth) {
   const session = await page.context().newCDPSession(page);
   try {
-    const { windowId } = await session.send("Browser.getWindowForTarget");
+    const deviceScaleFactor = await frame.evaluate(
+      () => devicePixelRatio,
+    );
     for (let attempt = 0; attempt < 6; attempt += 1) {
       const current = await frame.evaluate(() => innerWidth);
       if (Math.abs(current - editorWidth) <= 16) {
         break;
       }
-      const { bounds } = await session.send("Browser.getWindowBounds", {
-        windowId,
-      });
-      const width = Math.max(
-        560,
-        Math.round((bounds.width ?? 1_400) + editorWidth - current),
+      const hostViewport = await page.evaluate(() => ({
+        width: innerWidth,
+        height: innerHeight,
+      }));
+      const target = adjustedHostViewportSize(
+        hostViewport,
+        current,
+        editorWidth,
       );
-      await session.send("Browser.setWindowBounds", {
-        windowId,
-        bounds: {
-          state: "normal",
-          width,
-          height: Math.max(820, bounds.height ?? 900),
-        },
+      await session.send("Emulation.setDeviceMetricsOverride", {
+        width: target.width,
+        height: target.height,
+        deviceScaleFactor,
+        mobile: false,
+        screenWidth: target.width,
+        screenHeight: target.height,
       });
       await delay(350);
     }

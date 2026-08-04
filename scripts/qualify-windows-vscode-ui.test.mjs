@@ -6,6 +6,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
+  adjustedHostViewportSize,
   candidatePositions,
   canvasPointIsUnobstructed,
   parseWindowsUiArguments,
@@ -138,6 +139,34 @@ test("keeps candidate points outside the expanded VS Code review toolbar", () =>
         y < 606,
     ),
     true,
+  );
+});
+
+test("adjusts the host CSS viewport by the observed editor-width delta", () => {
+  assert.deepEqual(
+    adjustedHostViewportSize(
+      { width: 1_400, height: 900 },
+      720,
+      1_050,
+    ),
+    { width: 1_730, height: 900 },
+  );
+  assert.deepEqual(
+    adjustedHostViewportSize(
+      { width: 1_730, height: 700 },
+      1_050,
+      520,
+    ),
+    { width: 1_200, height: 820 },
+  );
+  assert.throws(
+    () =>
+      adjustedHostViewportSize(
+        { width: Number.NaN, height: 900 },
+        720,
+        520,
+      ),
+    /finite/u,
   );
 });
 
