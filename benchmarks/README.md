@@ -70,10 +70,11 @@ Johab boundary/sample codes, automatic glyph probing and per-BigFont overrides
 are deterministic regression cases.
 
 The repository also pins three official Data Portal archives made available
-by the Cultural Heritage Administration under KOGL Type 1. Fetching verifies
-the exact byte count and SHA-256 before a bounded ZIP reader extracts only DWG
-magic entries to deterministic ASCII names. It never trusts or publishes the
-archive's legacy-encoded entry names:
+by the Cultural Heritage Administration under KOGL Type 1. Before every
+download, the fetcher verifies that the current official catalog page still
+declares KOGL Type 1. It then verifies the exact byte count and SHA-256 before
+a bounded ZIP reader extracts only DWG magic entries to deterministic ASCII
+names. It never trusts or publishes the archive's legacy-encoded entry names:
 
 ```bash
 corpus_root=/absolute/new/public-korean-corpus
@@ -91,11 +92,14 @@ node benchmarks/korean-corpus-inventory.mjs \
 ```
 
 `PUBLIC-CORPUS-PROVENANCE.json` retains the publisher, catalog, KOGL terms,
-archive checksums and the fact that DWG bytes were not modified. The public
-asset pool currently supplies 63 architectural drawings spanning AC1018,
-AC1021 and AC1032; the balanced inventory selects 30 actual drawings for the
-runner. It does not claim the still-missing AC1015/AC1024/AC1027,
-civil/MEP, strict EUC-KR/Johab, Extended BigFont or image-baseline cells.
+live catalog verification, archive checksums and the fact that DWG bytes were
+not modified. The public asset pool currently supplies 63 architectural
+drawings spanning AC1018, AC1021 and AC1032; the balanced inventory selects 30
+actual drawings for the runner. The current GitHub Actions evidence records
+30 pass, 0 target miss and 0 failure. It does not claim the still-missing
+AC1015/AC1024/AC1027, civil/MEP, strict EUC-KR/Johab, Extended BigFont or
+image-baseline cells. The path-free fixed report is
+[`compatibility/evidence/public-korean-corpus-2026-08-04.json`](../compatibility/evidence/public-korean-corpus-2026-08-04.json).
 
 The corpus runner turns a private manifest into one path-free automatic result
 table. It executes cases sequentially so converter memory never overlaps:

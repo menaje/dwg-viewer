@@ -94,9 +94,15 @@
     "sourceCompletePackage": true,
     "qualifiedTargets": [
       "linux-x64",
-      "darwin-arm64"
+      "darwin-arm64",
+      "win32-x64"
     ],
-    "windows": "blocked"
+    "windows": "qualified",
+    "windowsQualification": {
+      "workflowRun": "https://github.com/menaje/dwg-viewer/actions/runs/30866825947",
+      "commit": "3b0663577a032a605c6244e7299a95f978548b89",
+      "evidence": "compatibility/evidence/windows-qualification-2026-08-04.json"
+    }
   },
   "tracking": [
     "https://github.com/menaje/dwg-viewer/issues/28"

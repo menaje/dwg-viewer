@@ -1,0 +1,243 @@
+{
+  "schema": "dwg-windows-qualification-evidence/1",
+  "status": "pass-with-explicit-nonclaims",
+  "observedAt": "2026-08-04T00:56:28Z",
+  "scope": {
+    "repository": "menaje/dwg-viewer",
+    "target": "win32-x64",
+    "deploymentPerformed": false
+  },
+  "execution": {
+    "workflowRun": "https://github.com/menaje/dwg-viewer/actions/runs/30866825947",
+    "commit": "3b0663577a032a605c6244e7299a95f978548b89",
+    "runner": {
+      "image": "windows-2025-vs2026",
+      "operatingSystem": "Microsoft Windows Server 2025",
+      "operatingSystemBuild": "10.0.26100",
+      "architecture": "x64"
+    },
+    "vscode": {
+      "channel": "stable",
+      "version": "1.131.0",
+      "packagedVsixInstalled": true
+    }
+  },
+  "publicFixture": {
+    "source": "GNU LibreDWG 0.14 test/test-data/example_2018.dwg",
+    "displayName": "A2-013-공개-대체-검증.dwg",
+    "bytes": 149218,
+    "sha256": "7bc7721224003062b237845842b7a976e46771c37eba6833b9ed3712e7a5a65a",
+    "actualPrivateA2013Used": false
+  },
+  "sourceCompletePackage": {
+    "artifact": {
+      "id": 8876522907,
+      "name": "dwg-viewer-libredwg-win32-x64.tar.gz",
+      "sizeBytes": 13663973,
+      "sha256": "964ba9abc24795468249b2e877cc5001a91fb285ef9ad10fbf9d29fefb4c78ca"
+    },
+    "packageSchema": "dwg-libredwg-package/1",
+    "packageVersion": "0.1.0",
+    "engine": {
+      "id": "libredwg",
+      "version": "0.14",
+      "license": "GPL-3.0-or-later",
+      "linkage": "static"
+    },
+    "sceneCacheSchema": "dwg-scene-cache/1.18",
+    "executable": {
+      "file": "bin/libredwg-adapter.exe",
+      "sizeBytes": 7470080,
+      "sha256": "191a486f73e8a781b0c1d94b46bf8a1d9a6acf86875bab8d4aec91cefc51a421"
+    },
+    "libredwgSourceArchiveSha256": "62ebb73b984f865960f20ed26619ea5f8789d5e3fd088fa40a2598384da81275",
+    "correspondingSourceIncluded": true,
+    "repeatedPackagingByteIdentical": true,
+    "internalChecksumsVerified": true,
+    "doctorPassedBeforePackaging": true,
+    "doctorPassedAfterExtraction": true
+  },
+  "nativePathQualification": {
+    "artifact": {
+      "id": 8876521990,
+      "name": "windows-native-qualification.json",
+      "sizeBytes": 1576,
+      "sha256": "cc6f99ce5dcc54a7bafabd4ce0cdad46e943a81beffa2ba9ef9c9139896c335c"
+    },
+    "schema": "dwg-windows-native-qualification/1",
+    "status": "pass",
+    "deterministicAcrossPaths": true,
+    "cache": {
+      "bytes": 4536,
+      "sha256": "c928c63f20dd376ac8a04b8e326613c6d939861aad4d93662c5490ca990bd04a"
+    },
+    "cases": [
+      {
+        "label": "drive-unicode-nfc-nfd",
+        "status": "pass"
+      },
+      {
+        "label": "relative-unicode",
+        "status": "pass"
+      },
+      {
+        "label": "case-insensitive-drive",
+        "status": "pass"
+      },
+      {
+        "label": "unc-unicode-nfc-nfd",
+        "status": "pass"
+      },
+      {
+        "label": "cancel-cleanup",
+        "status": "pass",
+        "temporaryArtifacts": 0
+      }
+    ],
+    "pathsIncluded": false
+  },
+  "vscodeUiQualification": {
+    "artifact": {
+      "id": 8876522247,
+      "name": "dwg-viewer-windows-vscode-ui-qualification",
+      "sizeBytes": 817769,
+      "sha256": "0b8e95b38827c3ade0147e6decaa6b72810a7fb138d152d0ef0a3d25a3bd4c04"
+    },
+    "reportSchema": "dwg-windows-vscode-ui-qualification/1",
+    "reportBytes": 9921,
+    "status": "pass",
+    "vsix": {
+      "bytes": 538782,
+      "sha256": "21c7fa482b77a02946da37c10dac77332ea4c5ee02677c5061b982848c3884ba"
+    },
+    "displayScalesPercent": [
+      100,
+      125,
+      150,
+      200
+    ],
+    "actualDevicePixelRatios": [
+      1,
+      1.25,
+      1.5,
+      2
+    ],
+    "interactionEditorCssWidths": [
+      1050,
+      1050,
+      1049,
+      1050
+    ],
+    "layoutEditorCssWidths": {
+      "normal": [
+        1050,
+        1050,
+        1049,
+        1050
+      ],
+      "narrow": [
+        520,
+        520,
+        521,
+        520
+      ]
+    },
+    "interaction": {
+      "passedAtAllScales": true,
+      "selection": true,
+      "coordinate": true,
+      "distance": true,
+      "fit": true,
+      "fitZoom": {
+        "before": 1.43,
+        "after": 1
+      },
+      "clear": true,
+      "modelAndPaperViews": 3,
+      "pendingReviewStateCleared": true,
+      "measurementUnit": "mm",
+      "observedSnapLabels": [
+        "끝점",
+        "삽입점"
+      ],
+      "coordinateValues": [
+        {
+          "x": "6,204.31 mm",
+          "y": "3,482.21 mm",
+          "z": "0 mm",
+          "snap": "끝점"
+        },
+        {
+          "x": "6,909.32 mm",
+          "y": "4,954.12 mm",
+          "z": "0 mm",
+          "snap": "삽입점"
+        }
+      ],
+      "distanceValues": {
+        "distance": "1,632.04 mm",
+        "deltaX": "705.01 mm",
+        "deltaY": "1,471.9 mm",
+        "deltaZ": "0 mm",
+        "angle": "64.4065°"
+      },
+      "valuesIdenticalAcrossScales": true
+    },
+    "screenshots": [
+      {
+        "file": "windows-vscode-100-normal.png",
+        "bytes": 73223,
+        "sha256": "35915b6a7df07655d8465b8c419c4e36d0e99eab4b960087e417e5020daaa430"
+      },
+      {
+        "file": "windows-vscode-100-narrow.png",
+        "bytes": 58158,
+        "sha256": "056d8d96d53f203f367dac3f8a9fdace63dc04e5c4b1b033ec921543bbd35dc3"
+      },
+      {
+        "file": "windows-vscode-125-normal.png",
+        "bytes": 93656,
+        "sha256": "629b418b2eb868ad2b9acc99570aa50c4b925d01d2067ef115ac77e687c9e540"
+      },
+      {
+        "file": "windows-vscode-125-narrow.png",
+        "bytes": 74401,
+        "sha256": "ac1eb9d6d417efaa0cf6f670de4c747f8a5186b442de0527a056511fcb035814"
+      },
+      {
+        "file": "windows-vscode-150-normal.png",
+        "bytes": 125031,
+        "sha256": "f175b037735eccf08654cbe138dbb0e8abddb315912f79bb2da96be08f3ec089"
+      },
+      {
+        "file": "windows-vscode-150-narrow.png",
+        "bytes": 98396,
+        "sha256": "9a48e187f059c510de5b700f31477db2b21316df727b0433c0be37d75615b75f"
+      },
+      {
+        "file": "windows-vscode-200-normal.png",
+        "bytes": 179902,
+        "sha256": "b9f8e5d7eb5539bf07f63bfb300d59daabc83aa1ed34d7d0480ceaf63745cd8f"
+      },
+      {
+        "file": "windows-vscode-200-narrow.png",
+        "bytes": 143109,
+        "sha256": "14b372bb8a4ecf6439d97e54e4f9615ff2a452625be6f0e8968815aa5e8ae049"
+      }
+    ],
+    "visualInspection": {
+      "screenshotsInspected": 8,
+      "criticalToolsCutOff": false,
+      "wrappedToolbarReachable": true,
+      "modelAndLayoutTabsReachable": true
+    },
+    "pathsIncluded": false
+  },
+  "explicitNonclaims": {
+    "physicalWindows11Executed": false,
+    "privateA2013Used": false,
+    "privateComplexXrefXclipFixtureUiTested": false,
+    "advancedSnapAndXrefCoverage": "platform-neutral-unit-and-conformance-proof-only",
+    "releasePublished": false
+  }
+}

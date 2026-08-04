@@ -107,6 +107,36 @@ export function validateNativeAdapterCompatibility(value) {
   ) {
     throw new Error("GPL/MPL distribution boundary is invalid");
   }
+  const qualifiedTargets = [
+    "linux-x64",
+    "darwin-arm64",
+    "win32-x64",
+  ];
+  if (
+    JSON.stringify(boundaries.qualifiedTargets) !==
+      JSON.stringify(qualifiedTargets) ||
+    boundaries.windows !== "qualified"
+  ) {
+    throw new Error(
+      "Windows distribution qualification is invalid",
+    );
+  }
+  const windowsQualification = record(
+    boundaries.windowsQualification,
+    "Windows qualification",
+  );
+  if (
+    !/^https:\/\/github\.com\/menaje\/dwg-viewer\/actions\/runs\/\d+$/u.test(
+      windowsQualification.workflowRun,
+    ) ||
+    !/^[0-9a-f]{40}$/u.test(windowsQualification.commit) ||
+    windowsQualification.evidence !==
+      "compatibility/evidence/windows-qualification-2026-08-04.json"
+  ) {
+    throw new Error(
+      "Windows qualification evidence is invalid",
+    );
+  }
   return Object.freeze({
     status: manifest.status,
     nativeBackend: native.backendId,

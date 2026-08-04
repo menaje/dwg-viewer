@@ -295,6 +295,52 @@ test("compatibility manifest keeps product writers and WASM fail-closed", async 
     nativeQueryOperations: 3,
   });
 
+  const windowsEvidence = JSON.parse(
+    await readFile(
+      new URL(
+        "../../../compatibility/evidence/windows-qualification-2026-08-04.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  assert.equal(
+    windowsEvidence.execution.workflowRun,
+    manifest.distributionBoundary.windowsQualification.workflowRun,
+  );
+  assert.equal(
+    windowsEvidence.execution.commit,
+    manifest.distributionBoundary.windowsQualification.commit,
+  );
+  assert.equal(windowsEvidence.scope.target, "win32-x64");
+  assert.equal(windowsEvidence.scope.deploymentPerformed, false);
+  assert.equal(
+    windowsEvidence.vscodeUiQualification.screenshots.length,
+    8,
+  );
+  assert.equal(
+    windowsEvidence.explicitNonclaims.physicalWindows11Executed,
+    false,
+  );
+
+  const missingWindowsTarget = structuredClone(manifest);
+  missingWindowsTarget.distributionBoundary.qualifiedTargets =
+    missingWindowsTarget.distributionBoundary.qualifiedTargets.filter(
+      (target) => target !== "win32-x64",
+    );
+  assert.throws(
+    () =>
+      validateNativeAdapterCompatibility(missingWindowsTarget),
+    /Windows distribution qualification/u,
+  );
+
+  const blockedWindows = structuredClone(manifest);
+  blockedWindows.distributionBoundary.windows = "blocked";
+  assert.throws(
+    () => validateNativeAdapterCompatibility(blockedWindows),
+    /Windows distribution qualification/u,
+  );
+
   manifest.writerQualification.productAdmitted = true;
   assert.throws(
     () => validateNativeAdapterCompatibility(manifest),
