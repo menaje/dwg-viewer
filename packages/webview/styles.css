@@ -1511,7 +1511,7 @@ body[data-host="vscode"] .empty-state {
 }
 
 body[data-host="vscode"] .review-toolbar {
-  z-index: 14;
+  z-index: 15;
   left: max(0.65rem, env(safe-area-inset-left));
   width: 2.75rem;
   opacity: 0.72;
@@ -1640,6 +1640,14 @@ body[data-host="vscode"] .export-panel {
 
   body[data-host="vscode"] .view-controls {
     flex-basis: 100%;
+  }
+
+  body[data-host="vscode"] .review-result {
+    width: min(20rem, calc(100% - 11.25rem));
+  }
+
+  body[data-host="vscode"] .view-bookmark-panel {
+    width: min(23rem, calc(100% - 11.25rem));
   }
 }
 

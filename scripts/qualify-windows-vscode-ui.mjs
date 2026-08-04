@@ -868,6 +868,18 @@ async function runScale({
     browser = await chromium.connectOverCDP(endpoint);
     const { frame, page } = await findViewerFrame(browser, child);
     await page.bringToFront();
+    const interactionEditorCssSize = await setEditorWidth(
+      page,
+      frame,
+      WIDTHS[0].editorWidth,
+    );
+    assert.ok(
+      Math.abs(
+        interactionEditorCssSize.width -
+          WIDTHS[0].editorWidth,
+      ) <= 16,
+      `expected interaction editor width ${WIDTHS[0].editorWidth}, got ${interactionEditorCssSize.width}`,
+    );
     const interaction = await qualifyReviewInteractions(frame);
     const layout = await qualifyLayoutReset(frame);
     const widths = [];
@@ -886,6 +898,7 @@ async function runScale({
       scalePercent,
       requestedDeviceScaleFactor: scaleFactor,
       status: "pass",
+      interactionEditorCssSize,
       interaction,
       layout,
       widths,
