@@ -4,12 +4,12 @@
   "asOf": "2026-08-04",
   "viewerWebGl": {
     "package": "@menaje/viewer-webgl",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "api": "menaje-viewer-webgl/0.1"
   },
   "dwgSceneSource": {
     "package": "@menaje/dwg-scene-source",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "dependencies": {
     "viewerCore": "0.1.2",
@@ -22,19 +22,19 @@
     "releaseStage": "prerelease",
     "tagPublicationApproved": true,
     "automaticStablePromotion": false,
-    "tag": "viewer-webgl-v0.1.0",
-    "releaseUrl": "https://github.com/menaje/dwg-viewer/releases/tag/viewer-webgl-v0.1.0",
+    "tag": "viewer-webgl-v0.1.1",
+    "releaseUrl": "https://github.com/menaje/dwg-viewer/releases/tag/viewer-webgl-v0.1.1",
     "registry": "https://npm.pkg.github.com",
     "artifacts": {
       "viewerWebGl": {
-        "file": "menaje-viewer-webgl-0.1.0.tgz",
-        "sha256": "30095a989b04c8b9cc288e55dea73cf20c5a475270dc1d0a4815c06daef71c76",
-        "bytes": 263118
+        "file": "menaje-viewer-webgl-0.1.1.tgz",
+        "sha256": "c19dc1b75e6a061b324549adcad73dd8141dfce2a9956b8aeb3db5accd84548b",
+        "bytes": 263113
       },
       "dwgSceneSource": {
-        "file": "menaje-dwg-scene-source-0.1.0.tgz",
-        "sha256": "23048d5d8b89f89d2e3bb3913aa0e8fc24088f3a5f5cbb8beb497711532c96a7",
-        "bytes": 34019
+        "file": "menaje-dwg-scene-source-0.1.1.tgz",
+        "sha256": "447bd0df2184c6d605fee5d1cc05dc662c30f8a0c8b03cdf16740458793564b9",
+        "bytes": 34018
       }
     }
   },

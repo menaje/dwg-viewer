@@ -66,7 +66,7 @@ immutable. The superseding `viewer-core-v0.1.2` packages preserve that license
 payload and use platform-normalized archives whose actual hashes are verified
 by `pnpm run qualify:viewer-boundary`.
 
-The `viewer-webgl-v0.1.0` package train follows the same rule. Both package
+The `viewer-webgl-v0.1.1` package train follows the same rule. Both package
 archives carry byte-identical copies of the repository's unmodified official
 MPL text and keep project-specific copyright in `NOTICE`.
 

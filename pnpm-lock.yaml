@@ -36,11 +36,11 @@ importers:
   packages/dwg-scene-source:
     dependencies:
       '@menaje/viewer-render-protocol':
-        specifier: workspace:^
+        specifier: 0.1.2
         version: link:../render-protocol
     devDependencies:
       '@menaje/viewer-core':
-        specifier: workspace:^
+        specifier: 0.1.2
         version: link:../viewer-core
 
   packages/native-document-adapter:
@@ -62,16 +62,16 @@ importers:
   packages/webview:
     dependencies:
       '@menaje/dwg-scene-source':
-        specifier: workspace:^
+        specifier: 0.1.1
         version: link:../dwg-scene-source
       '@menaje/viewer-core':
-        specifier: workspace:^
+        specifier: 0.1.2
         version: link:../viewer-core
       '@menaje/viewer-render-protocol':
-        specifier: workspace:^
+        specifier: 0.1.2
         version: link:../render-protocol
       '@menaje/viewer-ui':
-        specifier: workspace:^
+        specifier: 0.1.2
         version: link:../viewer-ui
       '@mlightcad/shx-parser':
         specifier: 1.4.5

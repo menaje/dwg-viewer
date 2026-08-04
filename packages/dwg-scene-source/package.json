@@ -1,6 +1,6 @@
 {
   "name": "@menaje/dwg-scene-source",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Scene Cache reader and RenderSource adapter for DWG Viewer Core",
   "license": "MPL-2.0",
   "private": false,
@@ -33,9 +33,9 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@menaje/viewer-render-protocol": "workspace:^"
+    "@menaje/viewer-render-protocol": "0.1.2"
   },
   "devDependencies": {
-    "@menaje/viewer-core": "workspace:^"
+    "@menaje/viewer-core": "0.1.2"
   }
 }

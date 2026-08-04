@@ -26,7 +26,7 @@ function canvas() {
 
 test("publishes a stable Viewer WebGL package identity", () => {
   assert.equal(ViewerWebGlApi, "menaje-viewer-webgl/0.1");
-  assert.equal(ViewerWebGlVersion, "0.1.0");
+  assert.equal(ViewerWebGlVersion, "0.1.1");
 });
 
 test("mounts and idempotently disposes an injected WebGL presentation", async () => {

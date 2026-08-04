@@ -1,5 +1,5 @@
 export const ViewerWebGlApi = "menaje-viewer-webgl/0.1";
-export const ViewerWebGlVersion = "0.1.0";
+export const ViewerWebGlVersion = "0.1.1";
 
 export {
   WebGlLineRenderer,

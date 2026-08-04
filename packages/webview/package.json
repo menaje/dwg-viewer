@@ -1,6 +1,6 @@
 {
   "name": "@menaje/viewer-webgl",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Embeddable WebGL2 presentation for Viewer Core with DWG Scene Cache support",
   "license": "MPL-2.0",
   "private": false,
@@ -34,10 +34,10 @@
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": {
-    "@menaje/dwg-scene-source": "workspace:^",
-    "@menaje/viewer-render-protocol": "workspace:^",
-    "@menaje/viewer-core": "workspace:^",
-    "@menaje/viewer-ui": "workspace:^",
+    "@menaje/dwg-scene-source": "0.1.1",
+    "@menaje/viewer-render-protocol": "0.1.2",
+    "@menaje/viewer-core": "0.1.2",
+    "@menaje/viewer-ui": "0.1.2",
     "@mlightcad/shx-parser": "1.4.5",
     "earcut": "3.2.3"
   }
