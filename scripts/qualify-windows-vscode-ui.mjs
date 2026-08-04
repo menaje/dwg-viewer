@@ -689,6 +689,10 @@ async function captureWidth({
     frame,
     width.editorWidth,
   );
+  assert.ok(
+    Math.abs(editor.width - width.editorWidth) <= 16,
+    `expected ${width.label} editor width ${width.editorWidth}, got ${editor.width}`,
+  );
   await openViewerTools(frame);
   const surfaces = await surfaceSnapshot(frame);
   assert.ok(
@@ -706,7 +710,10 @@ async function captureWidth({
     assert.equal(
       rectIsContained(surfaces[name], surfaces.viewport),
       true,
-      `${name} must fit in the editor viewport`,
+      `${name} must fit in the editor viewport: ${JSON.stringify({
+        rect: surfaces[name],
+        viewport: surfaces.viewport,
+      })}`,
     );
   }
   const reviewCoverage =

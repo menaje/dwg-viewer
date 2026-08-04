@@ -1380,10 +1380,10 @@ body[data-host="vscode"] header {
   position: absolute;
   z-index: 30;
   top: max(0.75rem, env(safe-area-inset-top));
-  right: 2rem;
+  right: max(0.75rem, env(safe-area-inset-right));
   display: flex;
   width: 2.95rem;
-  max-width: calc(100vw - 1.7rem);
+  max-width: calc(100vw - 2rem);
   height: 2.95rem;
   max-height: calc(100dvh - 1.5rem);
   flex-direction: row-reverse;
@@ -1410,7 +1410,7 @@ body[data-host="vscode"] header > div:first-child {
 body[data-host="vscode"] header:hover,
 body[data-host="vscode"] header:focus-within,
 body[data-host="vscode"] header.tools-open {
-  width: min(52rem, calc(100vw - 1.7rem));
+  width: min(52rem, calc(100vw - 2rem));
   height: auto;
   overflow: visible;
   background: rgb(12 17 24 / 94%);
