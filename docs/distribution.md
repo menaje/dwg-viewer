@@ -1,8 +1,13 @@
 ---
-{"schemaVersion":"1.1.0","documentId":"CONI-VIEWER-DISTRIBUTION","title":"2D CAD Viewer Distribution and Installation","type":"release-policy","version":"1.0.0","status":"accepted","normativity":"normative","authority":["viewer-distribution-policy"],"visibility":"public","supersedes":[],"lastReviewed":"2026-08-30","effectiveAt":"2026-08-30","extensions":{"repository":"viewer","documentRole":"release-policy"}}
+{"schemaVersion":"1.1.0","documentId":"CONI-VIEWER-DISTRIBUTION","title":"2D CAD Viewer Distribution and Installation","type":"release-policy","version":"1.0.1","status":"accepted","normativity":"normative","authority":["viewer-distribution-policy"],"visibility":"public","supersedes":[],"lastReviewed":"2026-09-12","effectiveAt":"2026-08-30","extensions":{"repository":"viewer","documentRole":"release-policy"}}
 ---
 
 # Distribution and installation
+
+The [proposed delivery continuity section](#proposed-delivery-continuity) is
+informative planning for #53. Existing release routes below remain observed
+implementation, with unresolved stage/approval decisions; this document update
+does not activate a new route, visibility setting or publication permission.
 
 Status: qualified release procedure for Linux x64, macOS arm64, macOS Intel
 x64, and Windows x64.
@@ -260,3 +265,62 @@ SHA-256, byte length, and content digest, and
 workflow additionally requires `tagPublicationApproved: true`, publishes the
 same exact versions to GitHub Packages, attaches the three tarballs and
 `SHA256SUMS` to the GitHub prerelease, and produces artifact attestations.
+
+## Proposed delivery continuity
+
+Status: plan prepared on 2026-09-12, migration not executed. Source is currently
+public and the repository environment remains `hosted-public`. The goal is private
+subsequent first-party development with a useful free delivered application.
+Future source location and validation profile are undecided; public artifact
+access does not determine either. Current package versions and release history
+remain observations, not approved candidate identities.
+
+The product maintainer owns free tasks/channels; the release maintainer owns
+delivery and release-unit/stage decisions; the licensing maintainer owns
+[rights and notices](licensing.md#proposed-free-application-and-interoperability-rights);
+API maintainers own package READMEs and [architecture](architecture.md). These are
+roles, not a claim that individual release approvers have been designated.
+#55's completed owner navigation is reused. Update licensing/distribution prose
+at plan review; update package usage, source links, adoption/profile and release
+implementation only for an approved concrete transition. No upper-level policy
+copy, new manual registration or SDK completion prerequisite is added.
+
+| Existing path | Preserve and verify before any actual change | Responsibility |
+| --- | --- | --- |
+| `menaje.dwg-viewer-vscode`, manual VSIX and existing release URLs | Existing installations can still obtain their exact release; test old-installed and clean install, update failure, downgrade and last-known-good use without altering user drawings. A replacement link alone does not update an old VSIX. | Product/release maintainer |
+| Old VSIX native converter and source archive | `managed-engine.ts` fixes `menaje/2d-cad-viewer` and constructs `/releases/download/<releaseTag>/<asset>` from the embedded catalog. Preserve every supported version/platform converter and corresponding source URL, byte length and digest, including clients without repository authentication. | Native distribution maintainer |
+| Core/UI/protocol and WebGL/DWG Scene Source | Preserve exact tag/asset URL, package version, archive/content digest and integrity in existing consumer manifests. Verify the registry separately; release asset availability is not registry availability. | Package maintainer; each consumer owns admission |
+| MPL source and GPL source-complete archives | Existing installed README/source links, matching tag source, notices, source offers and platform-specific source archives remain accessible to recipients. Verify the offered source actually matches the distributed payload. | Licensing/release maintainer |
+| Future authenticated package access, if selected | Consumer-owned credentials and approved acquisition endpoint; verify install, token denial/expiry, update and rollback against exact bytes. Keep credentials out of archives, logs and other checkouts; preserve a verified prior artifact when new acquisition fails. | Producer availability owner and consumer installation owner |
+| Public web entry, if selected | Inventory the actual supported URL/offline assets and demonstrate equivalent free tasks and rollback before replacing it. No hosted web deployment is established by the current source tree alone. | Product delivery maintainer |
+
+Two options remain under comparison:
+
+- Preserve the existing public delivery/history and develop subsequent
+  implementation privately. This preserves baked-in URLs most directly, but
+  still requires an approved development location and exact release/source
+  delivery. It is not approval to create or name a repository.
+- Change the existing repository's visibility. Old unauthenticated downloads and
+  source links can stop working. Keep this option HOLD until those exact clients
+  and URLs, source access, authentication and rollback pass the affected checks.
+
+Neither option may replace historical assets, republish used versions, infer
+registry access or restrict already granted OSS rights. Do not migrate a current
+consumer merely because a producer starts private development.
+
+Release decisions remain in [#53](https://github.com/menaje/2d-cad-viewer/issues/53):
+the three independent trains, durable unit IDs, version/stage authority, numeric
+Marketplace projection versus candidate identity, and byte-preserving stable
+transition need an explicit release-owner decision. The WebGL workflow's hardcoded
+prerelease behavior and mixed historical/development dependencies are preserved
+observations. Core 0.1.1 raw-digest discrepancy and registry verification remain
+HOLD for their publication/acceptance paths. Native writer/WASM stay under #54.
+
+The execution sequence is plan review, scoped development preparation, approved
+delivery/profile implementation with affected validation, then any separately
+authorized release. Existing CI/release workflows are unchanged. Record
+old-installed/clean-install and failure/rollback results when that transition is
+implemented; this plan and read-only URL checks are not those results. The plan
+may proceed independently of unrelated product defects or whole-product Effective
+status. Revert this documentation by an ordinary reviewed inverse change; no
+historical artifact rollback or replacement is needed.
