@@ -2,8 +2,8 @@
   "schemaVersion": "1.1.0",
   "projection": "public",
   "ownerRepository": "viewer",
-  "sourceRevision": "925a045ca79670ebf45dc796fff7b6a5026b706f",
-  "catalogDigest": "sha256:e498abe6681c12305e08b5eeb90af3e40b2e26fd79aba33917aaaa9990746de1",
+  "sourceRevision": "197fb30549c4492e3a4959720484e046694b7d29",
+  "catalogDigest": "sha256:74174ebb9cabb0f975e13f489fa2e77284ce6caab83cd7108d243734fc8853b8",
   "documents": [
     {
       "schemaVersion": "1.1.0",
@@ -49,7 +49,7 @@
       "documentId": "CONI-VIEWER-DISTRIBUTION",
       "title": "2D CAD Viewer Distribution and Installation",
       "type": "release-policy",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "status": "accepted",
       "normativity": "normative",
       "authority": [
@@ -57,11 +57,11 @@
       ],
       "visibility": "public",
       "supersedes": [],
-      "lastReviewed": "2026-08-30",
+      "lastReviewed": "2026-09-12",
       "effectiveAt": "2026-08-30",
       "ownerRepository": "viewer",
       "sourcePath": "docs/distribution.md",
-      "digest": "sha256:1046a9269f98799ed373c4a3bec3e21f4535255e6927d87f340157418eeb0e5f"
+      "digest": "sha256:a0709193b06f1ec579bf333a08ad9dc8c9e43f7d3cf61e285893b0fcc57a6a51"
     },
     {
       "schemaVersion": "1.1.0",
