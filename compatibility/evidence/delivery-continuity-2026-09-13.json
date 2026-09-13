@@ -769,8 +769,8 @@
   ],
   "migrationReadiness": "HOLD",
   "limitations": [
-    "Selected tags only; no VS Code UI or installation/update/rollback qualification",
-    "No registry access, consumer admission or artifact attestation verification",
+    "Selected tags only; vscodeCliObservation and installedConverterObservation cover current-route installation/update/rollback on macOS arm64 only. No drawing UI, other-platform execution or proposed-route qualification is claimed.",
+    "Registry access and existing-host consumer admission remain unverified. Attestation results are limited to the exact artifacts in attestationObservations.",
     "Source payload checks do not establish reproducible builds or new licensing rights"
   ],
   "sourceTree": "d4750224e503388adb0d5ca5a576fc00ecabf338",
@@ -971,5 +971,11 @@
       "exitCode": 0,
       "result": "PASS"
     }
-  ]
+  ],
+  "scopeClarification": {
+    "correctsEvidenceAtCommit": "9709c1c7407708b720a7c833e7905cd6e2525ac9",
+    "kind": "editorial limitation clarification only",
+    "observationsRerun": false,
+    "note": "Original observation times, checker/source digests, asset identities, validation results and HOLDs are preserved."
+  }
 }

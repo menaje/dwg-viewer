@@ -360,10 +360,13 @@ download nor waives the original mismatch.
 `receipt.json` binds the source commit, checker bytes, observation time, public
 URLs and downloaded identities. It does not contain local paths, credentials or
 consumer identities. These checks are separate from product aggregates and
-release workflows. The historical #56 `check:governance` environment allowlist
-still returns HOLD for #53 product-document/checker changes; it is not broadened
-to grant integration or retained-package qualification. Review the exact #53 diff
-and focused results before ordinary integration.
+release workflows. The [adoption contract](../governance/adoption.md#unpublished-documentation-payload-evidence)
+names the exact #53 post-receipt maintenance paths shared by the governance and
+retained-package guards. Historical package source, receipt and archive identity
+checks remain unchanged. The earlier scope HOLD in the dated observation is
+preserved as historical validation; current integration requires exact-head
+focused and affected hosted results. This allowance grants no release or
+visibility transition authority.
 
 This proves only the selected public acquisition and inspected payloads at the
 observation time. It does not prove registry access, a consumer's admitted pin,

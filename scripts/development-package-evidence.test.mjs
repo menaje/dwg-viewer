@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { validateArtifactRecords, validateChangePaths, validateMaintenancePaths, validateCompatibilityPreservation, validateRootMetadata, validatePackageFiles, compareMeasuredArtifacts, validateSourceBinding, validateQualificationReport, validateQualifierChange, validateManifestTestChange } from './development-package-evidence.mjs';
+import { continuityMaintenancePaths, validateArtifactRecords, validateChangePaths, validateMaintenancePaths, validateCompatibilityPreservation, validateRootMetadata, validatePackageFiles, compareMeasuredArtifacts, validateSourceBinding, validateQualificationReport, validateQualifierChange, validateManifestTestChange } from './development-package-evidence.mjs';
 
 const manifest = JSON.parse(readFileSync(new URL('../compatibility/viewer-core.json', import.meta.url)));
 const artifacts = structuredClone(manifest.distribution.artifacts);
@@ -42,6 +42,26 @@ test('post-receipt maintenance admits only the named governance paths and keeps 
     assert.throws(() => validateChangePaths([path], { evidenceOnly: true }), /exceeds/);
   }
   for (const path of ['packages/viewer-core/README.md', 'packages/viewer-core/src/constants.mjs', 'packages/viewer-core/package.json', 'packages/viewer-core/test/viewer-core.test.mjs', 'apps/vscode-extension/src/extension.ts', 'scripts/qualify-viewer-boundary.mjs', 'scripts/example.mjs', 'package.json', 'pnpm-lock.yaml', '.github/workflows/ci.yml', 'governance/unreviewed.json']) {
+    assert.throws(() => validateMaintenancePaths([path]), /exceeds/);
+  }
+});
+test('#53 permits exact post-receipt maintenance files without reopening historical evidence', () => {
+  const expected = [
+    'README.md', 'docs/licensing.md', 'docs/distribution.md',
+    'scripts/check-delivery-continuity.py', 'scripts/test_delivery_continuity.py',
+    'scripts/check-public-surface.mjs', 'scripts/check-public-surface.test.mjs',
+    'scripts/check-governance.mjs', 'scripts/check-governance.test.mjs',
+    'compatibility/evidence/delivery-continuity-2026-09-13.json',
+  ];
+  assert.deepEqual(continuityMaintenancePaths, expected);
+  for (const path of expected) {
+    assert.doesNotThrow(() => validateMaintenancePaths([path]));
+    assert.throws(() => validateChangePaths([path], { evidenceOnly: true }), /exceeds/);
+  }
+  for (const path of ['docs/unreviewed.md', 'scripts/check-delivery-continuity-extra.py',
+    'compatibility/evidence/delivery-continuity-2099-01-01.json',
+    'compatibility/evidence/viewer-boundary-0.1.1-2026-08-04.json',
+    'apps/vscode-extension/scripts/package-boundary.test.mjs']) {
     assert.throws(() => validateMaintenancePaths([path]), /exceeds/);
   }
 });

@@ -51,10 +51,20 @@ export function validateChangePaths(paths, { evidenceOnly = false } = {}) {
 }
 // Maintenance starts after the immutable measured receipt. This narrow list
 // does not permit a new package payload, qualifier, manifest or release change.
+// #53 preparatory maintenance only. Shared with the focused governance guard;
+// no directory/prefix allowance and no extension of either historical interval.
+export const continuityMaintenancePaths = Object.freeze([
+  'README.md', 'docs/licensing.md', 'docs/distribution.md',
+  'scripts/check-delivery-continuity.py', 'scripts/test_delivery_continuity.py',
+  'scripts/check-public-surface.mjs', 'scripts/check-public-surface.test.mjs',
+  'scripts/check-governance.mjs', 'scripts/check-governance.test.mjs',
+  'compatibility/evidence/delivery-continuity-2026-09-13.json',
+]);
 const maintenancePaths = new Set([...evidenceOnlyPaths,
   'AGENTS.md', 'governance/adoption.md',
   'scripts/development-package-evidence.mjs',
   'scripts/development-package-evidence.test.mjs',
+  ...continuityMaintenancePaths,
 ]);
 export function validateMaintenancePaths(paths) {
   for (const path of paths) assert.ok(maintenancePaths.has(path), 'change exceeds post-receipt governance maintenance scope');

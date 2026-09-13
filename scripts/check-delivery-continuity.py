@@ -290,8 +290,8 @@ def main():
               "scriptSha256": sha256(Path(__file__).read_bytes()), "authentication": "anonymous",
               "python": platform.python_version(),
               "releases": [], "migrationReadiness": "HOLD",
-              "limitations": ["Selected tags only; no VS Code UI or installation/update/rollback qualification",
-                              "No registry access, consumer admission or artifact attestation verification",
+              "limitations": ["Selected tags only; this observer does not run VS Code UI or installation/update/rollback checks; separately attached observations retain their own scope",
+                              "This observer does not verify registry access, consumer admission or attestations; separately attached results are artifact-specific",
                               "Source payload checks do not establish reproducible builds or new licensing rights"]}
     for tag in args.tags:
         try:
