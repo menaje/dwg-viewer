@@ -62,3 +62,15 @@ test('rejects product source, historical evidence, workflow and dependency edits
     assert.throws(() => validateChangedPaths([path]), /outside the authorized/);
   }
 });
+test('#53 governance admits only the named continuity maintenance and rejects adjacent files', () => {
+  assert.doesNotThrow(() => validateChangedPaths([
+    'README.md', 'docs/licensing.md', 'docs/distribution.md',
+    'scripts/check-delivery-continuity.py', 'scripts/test_delivery_continuity.py',
+    'compatibility/evidence/delivery-continuity-2026-09-13.json',
+  ]));
+  for (const path of ['docs/unreviewed.md', 'scripts/check-delivery-continuity-extra.py',
+    'compatibility/evidence/delivery-continuity-2099-01-01.json',
+    'apps/vscode-extension/scripts/package-boundary.test.mjs']) {
+    assert.throws(() => validateChangedPaths([path]), /outside the authorized/);
+  }
+});

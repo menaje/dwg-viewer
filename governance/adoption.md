@@ -1,5 +1,5 @@
 ---
-{"schemaVersion":"1.1.0","documentId":"VIEWER-GOVERNANCE-ADOPTION","title":"Viewer Repository-local Architecture Adoption Environment","type":"contract","version":"1.0.0","status":"draft","normativity":"normative","authority":["viewer-governance-work-environment"],"visibility":"public","supersedes":[],"lastReviewed":"2026-09-08","effectiveAt":"2026-09-08","extensions":{"repository":"viewer","documentRole":"working-environment-contract"}}
+{"schemaVersion":"1.1.0","documentId":"VIEWER-GOVERNANCE-ADOPTION","title":"Viewer Repository-local Architecture Adoption Environment","type":"contract","version":"1.0.1","status":"draft","normativity":"normative","authority":["viewer-governance-work-environment"],"visibility":"public","supersedes":[],"lastReviewed":"2026-09-13","effectiveAt":"2026-09-08","extensions":{"repository":"viewer","documentRole":"working-environment-contract"}}
 ---
 
 # Repository-local architecture adoption environment
@@ -179,12 +179,25 @@ still uses the strict evidence-only classification. After the receipt, current
 maintenance additionally permits exactly `AGENTS.md`, `governance/adoption.md`,
 `scripts/development-package-evidence.mjs` and its `.test.mjs` file. Current
 tracked and non-ignored untracked changes are checked against this narrow list
-plus the existing evidence/catalog paths. The original development record must
+plus the existing evidence/catalog paths. For #53 preparatory maintenance, also
+allow exactly `README.md`, `docs/licensing.md`, `docs/distribution.md`,
+`scripts/check-delivery-continuity.py`, `scripts/test_delivery_continuity.py`,
+`scripts/check-public-surface.mjs`, `scripts/check-public-surface.test.mjs`,
+`scripts/check-governance.mjs`, `scripts/check-governance.test.mjs`, and
+`compatibility/evidence/delivery-continuity-2026-09-13.json`. The exported
+`continuityMaintenancePaths` in the retained evidence validator supplies this
+same finite set to the focused governance guard. No directory/prefix allowance
+is added, and neither historical source/evidence interval is reopened.
+The original development record must
 match the receipt, and package source bytes must still match the qualified source.
 Package README/source/test/manifests, qualifier behavior, dependencies and
 workflows receive no new allowance. Validator changes require the existing
 `test:development-artifacts` command and `check:governance` retained source/report
-checks. The separate `check:development-artifacts` command creates two temporary
+checks. For #53's pre-merge correction, the affected existing hosted CI checks
+and their focused package-boundary/Core tests may run against the exact PR head.
+This checks unchanged package payloads and existing conformance; it does not
+admit a new distribution, stage or visibility transition.
+The separate `check:development-artifacts` command creates two temporary
 packs per package and removes them afterward; it remains restricted to separately
 scoped artifact verification. All other changes fail
 closed. Two actual packs, normalized archive and content digests/sizes, source

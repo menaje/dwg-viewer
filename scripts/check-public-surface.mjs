@@ -9,6 +9,9 @@ export const root = resolve(import.meta.dirname, '..');
 const publicRepositories = new Set([
   'ChristopherVR/emf-converter', 'DomCR/ACadSharp', 'LibreDWG/libredwg',
   'dotnet/core', 'mapbox/earcut', 'menaje/2d-cad-viewer',
+  // Anonymous API/asset GETs on 2026-09-13 resolve this shipped public locator
+  // to the same public repository (id 1316816060); retain old-client receipts.
+  'menaje/dwg-viewer',
   'menaje/bim-explorer', 'mlightcad/shx-parser', 'pkgconf/pkgconf',
 ].map((value) => value.toLowerCase()));
 const publicActors = new Set([

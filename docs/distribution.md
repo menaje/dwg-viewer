@@ -1,8 +1,13 @@
 ---
-{"schemaVersion":"1.1.0","documentId":"CONI-VIEWER-DISTRIBUTION","title":"2D CAD Viewer Distribution and Installation","type":"release-policy","version":"1.0.0","status":"accepted","normativity":"normative","authority":["viewer-distribution-policy"],"visibility":"public","supersedes":[],"lastReviewed":"2026-08-30","effectiveAt":"2026-08-30","extensions":{"repository":"viewer","documentRole":"release-policy"}}
+{"schemaVersion":"1.1.0","documentId":"CONI-VIEWER-DISTRIBUTION","title":"2D CAD Viewer Distribution and Installation","type":"release-policy","version":"1.0.1","status":"accepted","normativity":"normative","authority":["viewer-distribution-policy"],"visibility":"public","supersedes":[],"lastReviewed":"2026-09-13","effectiveAt":"2026-08-30","extensions":{"repository":"viewer","documentRole":"release-policy"}}
 ---
 
 # Distribution and installation
+
+The [proposed delivery continuity section](#proposed-delivery-continuity) is
+informative planning for #53. Existing release routes below remain observed
+implementation, with unresolved stage/approval decisions; this document update
+does not activate a new route, visibility setting or publication permission.
 
 Status: qualified release procedure for Linux x64, macOS arm64, macOS Intel
 x64, and Windows x64.
@@ -66,8 +71,9 @@ healthy version-managed converter.
 
 ## Release branches and channels
 
-The product release path is `dev` → `prerelease` → `main`. Direct pushes to
-`prerelease` and `main` are blocked; the required `release-route` check accepts
+The existing workflows implement `dev` → `prerelease` → `main`. This is an
+implementation observation, not the approved future stage authority. The
+`release-route` workflow accepts
 only a same-repository `dev` → `prerelease` pull request or a `prerelease` →
 `main` pull request. Closing a pull request without merging it, creating a
 branch, pushing a tag, or manually running a dry run cannot publish a release.
@@ -115,10 +121,14 @@ For a publishing merge, the workflow:
    catalog;
 7. produces build-provenance attestations and `SHA256SUMS` for the complete
    release set;
-8. creates the immutable `v<version>` GitHub release, which makes the converter
+8. creates the versioned `v<version>` GitHub release, which makes the converter
    URLs usable; and
 9. only after the GitHub release succeeds, publishes the single MPL viewer to
    Marketplace with `--pre-release` for the prerelease channel.
+
+Preserving published bytes is required even when the GitHub API reports
+`immutable: false`. Workflow routing alone does not establish server branch
+protection or authorize a release; #53 retains the unresolved owner decisions.
 
 This order prevents Marketplace from offering a viewer before its exact engine
 assets are available. A release retry may add a missing asset, but it must never
@@ -260,3 +270,109 @@ SHA-256, byte length, and content digest, and
 workflow additionally requires `tagPublicationApproved: true`, publishes the
 same exact versions to GitHub Packages, attaches the three tarballs and
 `SHA256SUMS` to the GitHub prerelease, and produces artifact attestations.
+
+## Proposed delivery continuity
+
+Status: plan prepared on 2026-09-12, migration not executed. Source is currently
+public and the repository environment remains `hosted-public`. The goal is private
+subsequent first-party development with a useful free delivered application.
+Future source location and validation profile are undecided; public artifact
+access does not determine either. Current package versions and release history
+remain observations, not approved candidate identities.
+
+The product maintainer owns free tasks/channels; the release maintainer owns
+delivery and release-unit/stage decisions; the licensing maintainer owns
+[rights and notices](licensing.md#proposed-free-application-and-interoperability-rights);
+API maintainers own package READMEs and [architecture](architecture.md). These are
+roles, not a claim that individual release approvers have been designated.
+#55's completed owner navigation is reused. Update licensing/distribution prose
+at plan review; update package usage, source links, adoption/profile and release
+implementation only for an approved concrete transition. No upper-level policy
+copy, new manual registration or SDK completion prerequisite is added.
+
+| Existing path | Preserve and verify before any actual change | Responsibility |
+| --- | --- | --- |
+| `menaje.dwg-viewer-vscode`, manual VSIX and existing release URLs | Existing installations can still obtain their exact release; test old-installed and clean install, update failure, downgrade and last-known-good use without altering user drawings. A replacement link alone does not update an old VSIX. | Product/release maintainer |
+| Old VSIX native converter and source archive | `managed-engine.ts` fixes `menaje/2d-cad-viewer` and constructs `/releases/download/<releaseTag>/<asset>` from the embedded catalog. Preserve every supported version/platform converter and corresponding source URL, byte length and digest, including clients without repository authentication. | Native distribution maintainer |
+| Core/UI/protocol and WebGL/DWG Scene Source | Preserve exact tag/asset URL, package version, archive/content digest and integrity in existing consumer manifests. Verify the registry separately; release asset availability is not registry availability. | Package maintainer; each consumer owns admission |
+| MPL source and GPL source-complete archives | Existing installed README/source links, matching tag source, notices, source offers and platform-specific source archives remain accessible to recipients. Verify the offered source actually matches the distributed payload. | Licensing/release maintainer |
+| Future authenticated package access, if selected | Consumer-owned credentials and approved acquisition endpoint; verify install, token denial/expiry, update and rollback against exact bytes. Keep credentials out of archives, logs and other checkouts; preserve a verified prior artifact when new acquisition fails. | Producer availability owner and consumer installation owner |
+| Public web entry, if selected | Inventory the actual supported URL/offline assets and demonstrate equivalent free tasks and rollback before replacing it. No hosted web deployment is established by the current source tree alone. | Product delivery maintainer |
+
+Two options remain under comparison:
+
+- Preserve the existing public delivery/history and develop subsequent
+  implementation privately. This preserves baked-in URLs most directly, but
+  still requires an approved development location and exact release/source
+  delivery. It is not approval to create or name a repository.
+- Change the existing repository's visibility. Old unauthenticated downloads and
+  source links can stop working. Keep this option HOLD until those exact clients
+  and URLs, source access, authentication and rollback pass the affected checks.
+
+Neither option may replace historical assets, republish used versions, infer
+registry access or restrict already granted OSS rights. Do not migrate a current
+consumer merely because a producer starts private development.
+
+Release decisions remain in [#53](https://github.com/menaje/2d-cad-viewer/issues/53):
+the three independent trains, durable unit IDs, version/stage authority, numeric
+Marketplace projection versus candidate identity, and byte-preserving stable
+transition need an explicit release-owner decision. The WebGL workflow's hardcoded
+prerelease behavior and mixed historical/development dependencies are preserved
+observations. Core 0.1.1 raw-digest discrepancy and registry verification remain
+HOLD for their publication/acceptance paths. Native writer/WASM stay under #54.
+
+The execution sequence is plan review, scoped development preparation, approved
+delivery/profile implementation with affected validation, then any separately
+authorized release. Existing CI/release workflows are unchanged. Record
+old-installed/clean-install and failure/rollback results for the proposed route
+when that transition is implemented; current-route checks do not qualify a future route. The plan
+may proceed independently of unrelated product defects or whole-product Effective
+status. Revert this documentation by an ordinary reviewed inverse change; no
+historical artifact rollback or replacement is needed.
+
+
+### Read-only continuity verification
+
+Run the bounded observer from the repository with Python 3.9+ and a **new** output
+directory outside the checkout:
+
+```sh
+python3 -B -m unittest discover -s scripts -p test_delivery_continuity.py
+python3 -B scripts/check-delivery-continuity.py --output /absolute/new/observation
+```
+
+The default selection is product v0.1.7/v0.1.8, Core 0.1.0–0.1.3 and WebGL
+0.1.1. Use `--tags` followed by exact existing tags for other affected releases.
+The script reads public Git tag refs and uses anonymous HTTPS GETs, verifies release API size/SHA-256 and
+SHA256SUMS, reads the original VSIX catalog, and checks all four converter/source
+identities. It follows the repository locator actually embedded in each VSIX,
+including the historical public `menaje/dwg-viewer` redirect used by v0.1.7, and
+checks the exact historical package URLs. It inspects GPL archive manifest/checksum coverage, exact included
+binary, upstream source/license pins and adapter build inputs. It also downloads
+the matching MPL tag source and computes package archive/content/SHA-512 integrity
+without normalizing or repacking historical bytes. Reports preserve expected and
+observed package identities; a mismatch returns HOLD and a nonzero exit. When a
+historical manifest lacks size/content pins, those fields are measured only and
+`contentMatches` is null, never invented as an earlier accepted digest. A copied
+gzip OS-header comparison may explain a raw difference; it neither changes the
+download nor waives the original mismatch.
+
+`receipt.json` binds the source commit, checker bytes, observation time, public
+URLs and downloaded identities. It does not contain local paths, credentials or
+consumer identities. These checks are separate from product aggregates and
+release workflows. The [adoption contract](../governance/adoption.md#unpublished-documentation-payload-evidence)
+names the exact #53 post-receipt maintenance paths shared by the governance and
+retained-package guards. Historical package source, receipt and archive identity
+checks remain unchanged. The earlier scope HOLD in the dated observation is
+preserved as historical validation; current integration requires exact-head
+focused and affected hosted results. This allowance grants no release or
+visibility transition authority.
+
+This proves only the selected public acquisition and inspected payloads at the
+observation time. It does not prove registry access, a consumer's admitted pin,
+source-to-binary reproducibility, VS Code UI behavior, future accessibility or
+migration acceptance. Before visibility/delivery changes, the release owner must
+cover every affected installed version/platform and source link, and attach the
+old-install/clean-install, update, denial/expiry, offline reuse and rollback
+results for the concrete proposed route. Each consumer confirms its own exact
+pin and admission without exposing private implementation provenance.

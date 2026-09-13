@@ -2,6 +2,10 @@
 
 Status: project licensing review updated on 2026-08-10.
 
+The [#53](https://github.com/menaje/2d-cad-viewer/issues/53) proposal below
+separates future development access from free application delivery. The existing
+component license map and published recipients' rights remain in force.
+
 This document records the repository's engineering policy. It is not legal
 advice, does not replace the applicable license texts, and does not determine
 whether two programs form one combined work under copyright law. When this
@@ -25,6 +29,72 @@ terms control.
 5. Treat a published artifact and its checksum as immutable. A licensing-file
    change requires a new versioned artifact; an old artifact or recorded hash
    is never silently replaced.
+
+## Proposed free application and interoperability rights
+
+Status: reviewable product plan, 2026-09-12; implementation access and artifact
+terms have not changed. Subsequent first-party implementation is intended for
+private development while a useful free standalone, read-only CAD Viewer remains
+available. VS Code, web or desktop channel selection belongs to the product
+owner. No account, separate authoring purchase or server-only execution is added
+by this plan. Business use and commercial integration plugins are encouraged.
+
+| Surface | Existing rights and proposed boundary | Owner |
+| --- | --- | --- |
+| Free application use | Preserve practical independent open/view/navigation tasks, including business use. Price and installation do not grant drawing modification or host acceptance authority. | Product maintainer |
+| Supported render/source/host APIs | Preserve versioned host-neutral integration and commercially usable plugins on objective, consistently applied access conditions. A future restricted contract needs explicit access and use terms. | Public contract maintainer |
+| SDK redistribution | Existing MPL package/source grants continue under their license. Any future SDK must identify its redistributable files and terms separately; no complete SDK or plugin market is promised by this plan. | Package and rights maintainer |
+| Engine embedding | Existing MPL/GPL and third-party terms govern the actual included components. Free app use is not a new unrestricted grant for a future engine. | Artifact release/rights owner |
+| Source redistribution | Existing OSS snapshots retain their grants. Restrictions on future code require confirmed ownership and applicable contribution/dependency review. | Copyright holders and release owner |
+
+The minimum integration target is exact-version RenderSource → Core → ViewerHost
+composition, optional Viewer UI, and the DWG Scene Source/WebGL adapter contracts
+already documented in [architecture](architecture.md) and package READMEs. Preserve
+source-neutral ownership, protocol/cache identities and fail-closed conformance.
+The standalone extension's internal messages are not a supported integration API.
+Do not forbid independent interoperable implementations merely because they
+compete with this product.
+
+Here, **supported** identifies a documented producer-owned contract, not whether
+its implementation repository is publicly readable. Current access is the public
+versioned package/release surface, with MPL use/modification/redistribution rights
+for covered package files and the separately applicable third-party notices.
+RenderSource/Core/ViewerHost and optional UI integrations consume the package
+exports and compatibility manifests; DWG integrations additionally consume the
+versioned Scene Cache and source adapter boundary. Each consumer pins the exact
+archive and content identity and owns conformance/admission to its host. Public
+availability alone does not establish that admission or support for every version.
+
+If restricted access is later selected, the producer must state who may obtain
+the contract/package, the authenticated endpoint and availability owner, permitted
+API use and redistributable files, compatibility window and deprecation notice.
+Conditions must apply consistently to independent and commercial plugin authors.
+Consumers own their credentials, installation and rollback; they acquire exact
+artifacts without access to an implementation checkout. No restricted SDK grant,
+new support SLA or access restriction is activated by this plan.
+
+Before changing a supported contract or its acquisition, identify the affected
+versions and users, compatibility window, migration example and rollback in #53
+and the owning API/compatibility document. Announce deprecation before removal;
+do not use a source-access change to invalidate an admitted exact artifact.
+Reductions in free entry, independent use or existing integration require an
+impact explanation, alternatives and product/contract owner review before
+execution. No new manual register, mandatory telemetry or recurring report is
+required. SDK/market completion remains maturity-dependent backlog.
+
+The release owner must check ownership of subsequent code, external contributions,
+MPL-covered files and the bundled dependency inventory before selecting new terms.
+Keep MPL source availability, the GPL converter's complete corresponding source
+and all notices accessible to their recipients. A process boundary does not
+by itself exempt a linked LibreDWG executable from GPL obligations. This plan
+does not assert that an entire subsequent artifact can be closed-source.
+Private source hosting also cannot prevent inspection of delivered JS, VSIX or
+WASM; no anti-clone guarantee is made.
+
+The [distribution continuity plan](distribution.md#proposed-delivery-continuity)
+owns URL, installation and rollback conditions. Existing authoritative
+[MPL terms](https://www.mozilla.org/en-US/MPL/2.0/), bundled GPL text and notices
+continue to govern their covered code; this proposal does not replace them.
 
 ## Component and artifact map
 
@@ -65,8 +135,10 @@ The historical `viewer-core-v0.1.0` packages use the same license identifier
 and include the official Exhibit A notice, README, and preferred source form.
 Mozilla permits that notice to be placed in a `LICENSE` file in a relevant
 directory. The historical `viewer-core-v0.1.1` packages add the complete
-official MPL text and separate project `NOTICE`. Both releases remain
-immutable. The superseding `viewer-core-v0.1.2` and `viewer-core-v0.1.3`
+official MPL text and separate project `NOTICE`. Both releases must be preserved
+without replacement; this is a retention requirement, not a claim of GitHub-enforced
+immutability. The 0.1.1 raw-digest discrepancy remains tracked in #53 with both
+observations intact. The superseding `viewer-core-v0.1.2` and `viewer-core-v0.1.3`
 packages preserve that license payload and use platform-normalized archives
 whose actual hashes are verified by `pnpm run qualify:viewer-boundary`.
 
@@ -95,7 +167,7 @@ conveyed in the pinned LibreDWG 0.14 source.
 The MPL VSIX carries a generated catalog containing the exact converter and
 source-archive names, byte lengths, and SHA-256 digests for all supported
 targets. At startup, it downloads only its version-matched converter from the
-same immutable release, verifies that catalog entry, installs it in VS Code's
+same versioned release, verifies that catalog entry, installs it in VS Code's
 private global storage, and runs `doctor`. A viewer update therefore cannot
 silently select an independently versioned writer. The catalog metadata does
 not copy or incorporate GPL program code into the VSIX.
@@ -146,7 +218,7 @@ so their presence is not confused with bundled runtime code.
   package created by `adapters/libredwg/package.mjs`; never stage a raw
   converter from an unverified binary alone.
 - Publish every platform converter and its source-complete archive in the
-  immutable GitHub Release before publishing the MPL Marketplace extension
+  versioned GitHub Release before publishing the MPL Marketplace extension
   whose catalog selects them.
 - Re-run the Webview production-license audit and inspect the packaged VSIX.
 - Require `pnpm run check` and the release gates in

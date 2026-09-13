@@ -1,0 +1,981 @@
+{
+  "schema": "viewer-delivery-observation/1",
+  "repository": "menaje/2d-cad-viewer",
+  "observedAt": "2026-09-13T06:42:35.573969+00:00",
+  "sourceCommit": "23878d9ce1e6df9f332513f101d2c3f276d49388",
+  "scriptSha256": "6884df71454644776a8ab0ba5790e062ad8279c433ed8d4cb813c448e2bec9a1",
+  "authentication": "anonymous",
+  "python": "3.9.6",
+  "releases": [
+    {
+      "tag": "v0.1.7",
+      "releaseId": 368955477,
+      "immutableObserved": false,
+      "tagReferences": {
+        "refs/tags/v0.1.7": "bc51b88f0b4ff9b807cd38df5b9ffad746bd765c",
+        "refs/tags/v0.1.7^{}": "ea23b63c6b67d096d4dc59700043a123ee4b27e5"
+      },
+      "anonymousAssets": [
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.7/dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz",
+          "bytes": 13183922,
+          "sha256": "1a21207b7001d525ddde41795f96c7f8c73e84d8829df34b113216c5d065be31"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.7/dwg-viewer-libredwg-0.14-darwin-x64.tar.gz",
+          "bytes": 13570696,
+          "sha256": "f5fef4b255024b43e1a19b24480ad5d08b2af99c6e1f7ea674c11f5829de28a3"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.7/dwg-viewer-libredwg-0.14-linux-x64.tar.gz",
+          "bytes": 13880569,
+          "sha256": "a5ed9a331c02a7438532d947424a89b5888f1aed26166a7ede33a0b39cf8f2fd"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.7/dwg-viewer-libredwg-0.14-win32-x64.tar.gz",
+          "bytes": 13766387,
+          "sha256": "45f09300883e091c0190e71b8a581e4a351eca52ecde18a8721aa3ac7bd36f05"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.7/dwg-viewer-native-converter-0.1.7-darwin-arm64",
+          "bytes": 6686000,
+          "sha256": "beb380f018d34aff875a247c96d7a95329444377fbed995d78514ea1c760a535"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.7/dwg-viewer-native-converter-0.1.7-darwin-x64",
+          "bytes": 6900464,
+          "sha256": "4b6283e8c7701b41db028c128da0e37ec2a936cfd85fbdd702c1a3a29b112d7a"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.7/dwg-viewer-native-converter-0.1.7-linux-x64",
+          "bytes": 7859480,
+          "sha256": "9a256c1ce2f9009b3d4cdcd78c9a52562599e3262fc4c09f5d626484fda6dd1a"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.7/dwg-viewer-native-converter-0.1.7-win32-x64.exe",
+          "bytes": 7577600,
+          "sha256": "d6ef6a0768c20d35be018ba45881cfa827263fc5ca80e706cfb525a6b77aa4dd"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.7/dwg-viewer-vscode-0.1.7.vsix",
+          "bytes": 845297,
+          "sha256": "a754b8699fc3ee54b220ff6cdc1850a9887676706a66ea81b2aa514788b8b2ff"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.7/SHA256SUMS",
+          "bytes": 979,
+          "sha256": "32e5d0d6a2dd0719d59acc7c8544d5ce89f1d889225417b8888192ecdc0d8170"
+        }
+      ],
+      "result": "PASS",
+      "embeddedRepository": "menaje/dwg-viewer",
+      "embeddedCacheSchema": "dwg-scene-cache/1.21",
+      "installedClientUrls": [
+        {
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/dwg-viewer-native-converter-0.1.7-linux-x64",
+          "bytes": 7859480,
+          "sha256": "9a256c1ce2f9009b3d4cdcd78c9a52562599e3262fc4c09f5d626484fda6dd1a"
+        },
+        {
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/dwg-viewer-libredwg-0.14-linux-x64.tar.gz",
+          "bytes": 13880569,
+          "sha256": "a5ed9a331c02a7438532d947424a89b5888f1aed26166a7ede33a0b39cf8f2fd"
+        },
+        {
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/dwg-viewer-native-converter-0.1.7-darwin-arm64",
+          "bytes": 6686000,
+          "sha256": "beb380f018d34aff875a247c96d7a95329444377fbed995d78514ea1c760a535"
+        },
+        {
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz",
+          "bytes": 13183922,
+          "sha256": "1a21207b7001d525ddde41795f96c7f8c73e84d8829df34b113216c5d065be31"
+        },
+        {
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/dwg-viewer-native-converter-0.1.7-darwin-x64",
+          "bytes": 6900464,
+          "sha256": "4b6283e8c7701b41db028c128da0e37ec2a936cfd85fbdd702c1a3a29b112d7a"
+        },
+        {
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/dwg-viewer-libredwg-0.14-darwin-x64.tar.gz",
+          "bytes": 13570696,
+          "sha256": "f5fef4b255024b43e1a19b24480ad5d08b2af99c6e1f7ea674c11f5829de28a3"
+        },
+        {
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/dwg-viewer-native-converter-0.1.7-win32-x64.exe",
+          "bytes": 7577600,
+          "sha256": "d6ef6a0768c20d35be018ba45881cfa827263fc5ca80e706cfb525a6b77aa4dd"
+        },
+        {
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/dwg-viewer-libredwg-0.14-win32-x64.tar.gz",
+          "bytes": 13766387,
+          "sha256": "45f09300883e091c0190e71b8a581e4a351eca52ecde18a8721aa3ac7bd36f05"
+        }
+      ],
+      "platformSources": {
+        "linux-x64": {
+          "result": "PASS",
+          "checkedFiles": 21,
+          "binaryMatches": true
+        },
+        "darwin-arm64": {
+          "result": "PASS",
+          "checkedFiles": 21,
+          "binaryMatches": true
+        },
+        "darwin-x64": {
+          "result": "PASS",
+          "checkedFiles": 21,
+          "binaryMatches": true
+        },
+        "win32-x64": {
+          "result": "PASS",
+          "checkedFiles": 21,
+          "binaryMatches": true
+        }
+      },
+      "mplTagSource": {
+        "url": "https://github.com/menaje/dwg-viewer/archive/refs/tags/v0.1.7.tar.gz",
+        "bytes": 1187180,
+        "sha256": "c01d40d708fd53ce82ec50e36442ac07aada625db2604d9153a8b90ac293749b",
+        "preferredSourceFilesPresent": true
+      }
+    },
+    {
+      "tag": "v0.1.8",
+      "releaseId": 370979606,
+      "immutableObserved": false,
+      "tagReferences": {
+        "refs/tags/v0.1.8": "4d8caddeb43ad4e2e517ce06b09f3a08eeb5184f",
+        "refs/tags/v0.1.8^{}": "83afacb517133cacb5f3764fe2086a98612c0821"
+      },
+      "anonymousAssets": [
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz",
+          "bytes": 13238074,
+          "sha256": "526d2e4e4d6abf659ea8a570f3a7c58d96e3ab16fcbe8ee90274b85db924c174"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-libredwg-0.14-darwin-x64.tar.gz",
+          "bytes": 13597296,
+          "sha256": "c52eaa00d10d00f137b6a1b47147015b8a4cbe12603ab2d9d72966afd1b8703a"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-libredwg-0.14-linux-x64.tar.gz",
+          "bytes": 13908492,
+          "sha256": "452fdd2c889e01f475a91187a539916cd7c55d24a8a65c56923b5e493b0ca82a"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-libredwg-0.14-win32-x64.tar.gz",
+          "bytes": 13795699,
+          "sha256": "ac8ad0c60c3649e157dabca6aa7dffe505c15194e8837232aea786cd9f2aea12"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-native-converter-0.1.8-darwin-arm64",
+          "bytes": 6734976,
+          "sha256": "d2aa9ca835519b06af9bd15cadd5a676879f7bfcf04197a2e26d7a7af47ec837"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-native-converter-0.1.8-darwin-x64",
+          "bytes": 6916176,
+          "sha256": "6f15852c4d9489b60a7b6e7124c7445fb0d2a116642fe2ba2685f85452775b8d"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-native-converter-0.1.8-linux-x64",
+          "bytes": 7884056,
+          "sha256": "ffe92b45710bc6f684edbbc4ca6f1e85636b2a4cea61c6246e3077695c72cc26"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-native-converter-0.1.8-win32-x64.exe",
+          "bytes": 7604224,
+          "sha256": "e9c96abd9cd10dc2986929860697d613dfecd929c10408fc62fe01d4e9b7778f"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-vscode-0.1.8.vsix",
+          "bytes": 902865,
+          "sha256": "a8aab499b12b2a13c0f77341427895a44f50553bf2f1f26d122f22d29d93b288"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/SHA256SUMS",
+          "bytes": 979,
+          "sha256": "dad7968cac9a22c1a0c7c84bfa502124b7c2fafadbb5e529a7100284f94d7257"
+        }
+      ],
+      "result": "PASS",
+      "embeddedRepository": "menaje/2d-cad-viewer",
+      "embeddedCacheSchema": "dwg-scene-cache/1.26",
+      "installedClientUrls": [
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-native-converter-0.1.8-linux-x64",
+          "bytes": 7884056,
+          "sha256": "ffe92b45710bc6f684edbbc4ca6f1e85636b2a4cea61c6246e3077695c72cc26"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-libredwg-0.14-linux-x64.tar.gz",
+          "bytes": 13908492,
+          "sha256": "452fdd2c889e01f475a91187a539916cd7c55d24a8a65c56923b5e493b0ca82a"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-native-converter-0.1.8-darwin-arm64",
+          "bytes": 6734976,
+          "sha256": "d2aa9ca835519b06af9bd15cadd5a676879f7bfcf04197a2e26d7a7af47ec837"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz",
+          "bytes": 13238074,
+          "sha256": "526d2e4e4d6abf659ea8a570f3a7c58d96e3ab16fcbe8ee90274b85db924c174"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-native-converter-0.1.8-darwin-x64",
+          "bytes": 6916176,
+          "sha256": "6f15852c4d9489b60a7b6e7124c7445fb0d2a116642fe2ba2685f85452775b8d"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-libredwg-0.14-darwin-x64.tar.gz",
+          "bytes": 13597296,
+          "sha256": "c52eaa00d10d00f137b6a1b47147015b8a4cbe12603ab2d9d72966afd1b8703a"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-native-converter-0.1.8-win32-x64.exe",
+          "bytes": 7604224,
+          "sha256": "e9c96abd9cd10dc2986929860697d613dfecd929c10408fc62fe01d4e9b7778f"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-libredwg-0.14-win32-x64.tar.gz",
+          "bytes": 13795699,
+          "sha256": "ac8ad0c60c3649e157dabca6aa7dffe505c15194e8837232aea786cd9f2aea12"
+        }
+      ],
+      "platformSources": {
+        "linux-x64": {
+          "result": "PASS",
+          "checkedFiles": 26,
+          "binaryMatches": true
+        },
+        "darwin-arm64": {
+          "result": "PASS",
+          "checkedFiles": 26,
+          "binaryMatches": true
+        },
+        "darwin-x64": {
+          "result": "PASS",
+          "checkedFiles": 26,
+          "binaryMatches": true
+        },
+        "win32-x64": {
+          "result": "PASS",
+          "checkedFiles": 26,
+          "binaryMatches": true
+        }
+      },
+      "mplTagSource": {
+        "url": "https://github.com/menaje/2d-cad-viewer/archive/refs/tags/v0.1.8.tar.gz",
+        "bytes": 1392709,
+        "sha256": "0c42e77a9ee5418027a386e07d819e66c04ab522fb495938c166a03fff88bd44",
+        "preferredSourceFilesPresent": true
+      }
+    },
+    {
+      "tag": "viewer-core-v0.1.0",
+      "releaseId": 364507089,
+      "immutableObserved": false,
+      "tagReferences": {
+        "refs/tags/viewer-core-v0.1.0": "c2893597494f049de4f38f8f127a67ed926be4c6",
+        "refs/tags/viewer-core-v0.1.0^{}": "fb25718468f1f0b1a9bac666035a0c8277f51a19"
+      },
+      "anonymousAssets": [
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.0/menaje-viewer-core-0.1.0.tgz",
+          "bytes": 44323,
+          "sha256": "2a04c367b5b2cf5870f5f18f33e2a1d8e545f099f0dd735c7e5d90f8224b698d"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.0/menaje-viewer-render-protocol-0.1.0.tgz",
+          "bytes": 11158,
+          "sha256": "60e952677c17333fbdb07193ef87cafb1a0be9923573ac5366297a19cfc8b9ed"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.0/menaje-viewer-ui-0.1.0.tgz",
+          "bytes": 8560,
+          "sha256": "9f13c2aa782297929058c298728114fa31c1cc387c82319e27b90ad0f267b8db"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.0/SHA256SUMS",
+          "bytes": 294,
+          "sha256": "7015413330a9ae51e6e87e1411182e80532aa3f273beaff2bc9dbf930aafc616"
+        }
+      ],
+      "result": "PASS",
+      "tagManifest": {
+        "url": "https://raw.githubusercontent.com/menaje/2d-cad-viewer/viewer-core-v0.1.0/compatibility/viewer-core.json",
+        "bytes": 5373,
+        "sha256": "a4073e5f25a4f917a0e1f2a3b471e6ec64e61014fb900521e942e54a6cb995c1"
+      },
+      "packages": [
+        {
+          "file": "menaje-viewer-core-0.1.0.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.0/menaje-viewer-core-0.1.0.tgz",
+          "package": "@menaje/viewer-core",
+          "version": "0.1.0",
+          "expected": {
+            "file": "menaje-viewer-core-0.1.0.tgz",
+            "sha256": "2a04c367b5b2cf5870f5f18f33e2a1d8e545f099f0dd735c7e5d90f8224b698d"
+          },
+          "observed": {
+            "bytes": 44323,
+            "sha256": "2a04c367b5b2cf5870f5f18f33e2a1d8e545f099f0dd735c7e5d90f8224b698d",
+            "contentSha256": "db4edb620f5f34c355d3030a16b703fed0f76f4f602d03737303683ce8269adb",
+            "integrity": "sha512-GPHRWsXuE5feI/+gTeBuBFIrEmG0pNSYr83qRFkFCDYQHQ5wuH7U/g5RktH1H9inpjr83AZRTtiKtW9R5K9oBA=="
+          },
+          "rawMatches": true,
+          "contentMatches": null,
+          "gzipHeaderComparison": null
+        },
+        {
+          "file": "menaje-viewer-render-protocol-0.1.0.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.0/menaje-viewer-render-protocol-0.1.0.tgz",
+          "package": "@menaje/viewer-render-protocol",
+          "version": "0.1.0",
+          "expected": {
+            "file": "menaje-viewer-render-protocol-0.1.0.tgz",
+            "sha256": "60e952677c17333fbdb07193ef87cafb1a0be9923573ac5366297a19cfc8b9ed"
+          },
+          "observed": {
+            "bytes": 11158,
+            "sha256": "60e952677c17333fbdb07193ef87cafb1a0be9923573ac5366297a19cfc8b9ed",
+            "contentSha256": "cf86c55a3d6f1afc64d42d3de6e80f5796fbe00b0b8e3eb0b15af465e0f78c09",
+            "integrity": "sha512-oVO2anfxt7TUv4JTdeZ/Lca+Y9khLuSkjztlQXxzYkjR8JAg8WLiiZXd4I8avQGuiGbqKrUACwl5yLAo9PptMQ=="
+          },
+          "rawMatches": true,
+          "contentMatches": null,
+          "gzipHeaderComparison": null
+        },
+        {
+          "file": "menaje-viewer-ui-0.1.0.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.0/menaje-viewer-ui-0.1.0.tgz",
+          "package": "@menaje/viewer-ui",
+          "version": "0.1.0",
+          "expected": {
+            "file": "menaje-viewer-ui-0.1.0.tgz",
+            "sha256": "9f13c2aa782297929058c298728114fa31c1cc387c82319e27b90ad0f267b8db"
+          },
+          "observed": {
+            "bytes": 8560,
+            "sha256": "9f13c2aa782297929058c298728114fa31c1cc387c82319e27b90ad0f267b8db",
+            "contentSha256": "3165c60c1dbba66c160359de497144da4e750e93440657f526eb95be47619d9c",
+            "integrity": "sha512-DlP9r4h0jtbAmWbQ6oouqbVdgrXB1E8kHrkhdUBp/7cfpS9nm86lFxo5Ke7IeyMf/YFhBwd+N8yC9vBPhBilvQ=="
+          },
+          "rawMatches": true,
+          "contentMatches": null,
+          "gzipHeaderComparison": null
+        }
+      ]
+    },
+    {
+      "tag": "viewer-core-v0.1.1",
+      "releaseId": 364616800,
+      "immutableObserved": false,
+      "tagReferences": {
+        "refs/tags/viewer-core-v0.1.1": "5860200e86f48a5c811fdcd2b89a9a6f1d42635a",
+        "refs/tags/viewer-core-v0.1.1^{}": "61a5c309626949b32aaa77ed3d2c894c6b2b0837"
+      },
+      "anonymousAssets": [
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.1/menaje-viewer-core-0.1.1.tgz",
+          "bytes": 49533,
+          "sha256": "99c4768a18265b13e75d934f0dc2ff53c0c08805a60cd58d040a78d95f2aef60"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.1/menaje-viewer-render-protocol-0.1.1.tgz",
+          "bytes": 16424,
+          "sha256": "d0c785fa210907cc15d2139d5e429c15ce93bf60b2c7b1ddac9680fb105ee269"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.1/menaje-viewer-ui-0.1.1.tgz",
+          "bytes": 13824,
+          "sha256": "5f3ffa7e8d7c186df0a09aecdef01dc9a58517053de486dcbc74203161389b18"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.1/SHA256SUMS",
+          "bytes": 294,
+          "sha256": "b3226aa22be887f1b2026c4db654dbafcad5e0dc507c6c59283a9dd33e30dec9"
+        }
+      ],
+      "result": "HOLD",
+      "tagManifest": {
+        "url": "https://raw.githubusercontent.com/menaje/2d-cad-viewer/viewer-core-v0.1.1/compatibility/viewer-core.json",
+        "bytes": 6069,
+        "sha256": "daf1c33c9c91bd8a57413830e599c833b83d14693f76edbd9b7d4e3d83ce8e11"
+      },
+      "packages": [
+        {
+          "file": "menaje-viewer-core-0.1.1.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.1/menaje-viewer-core-0.1.1.tgz",
+          "package": "@menaje/viewer-core",
+          "version": "0.1.1",
+          "expected": {
+            "file": "menaje-viewer-core-0.1.1.tgz",
+            "sha256": "182407ac800e1432c40076e1b495694e8600a672419739ea4c8fb951a086e884",
+            "bytes": 49533,
+            "contentSha256": "c3565ca0be963663f48ae7db258cf2f980c6f2d1e3213752a8d3ec3a46a46b9b"
+          },
+          "observed": {
+            "bytes": 49533,
+            "sha256": "99c4768a18265b13e75d934f0dc2ff53c0c08805a60cd58d040a78d95f2aef60",
+            "contentSha256": "c3565ca0be963663f48ae7db258cf2f980c6f2d1e3213752a8d3ec3a46a46b9b",
+            "integrity": "sha512-ps8MA4ygEkGZqgmMCbzgr4HTwOz6FYUGky27pwEAI0t7Zl9m+EmmCBxLPlvlNoFHx4K8wM2eD79oUiOV6FqpDA=="
+          },
+          "rawMatches": false,
+          "contentMatches": true,
+          "gzipHeaderComparison": {
+            "offset": 9,
+            "observedByte": 3,
+            "expectedHashRecreatedWithByte": 19,
+            "rawMismatchRemains": true
+          }
+        },
+        {
+          "file": "menaje-viewer-render-protocol-0.1.1.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.1/menaje-viewer-render-protocol-0.1.1.tgz",
+          "package": "@menaje/viewer-render-protocol",
+          "version": "0.1.1",
+          "expected": {
+            "file": "menaje-viewer-render-protocol-0.1.1.tgz",
+            "sha256": "ac1a58423c4104098cd977619e35e2355b199bafe7f090f59a829b4676c638d2",
+            "bytes": 16424,
+            "contentSha256": "8e6730b856a637a9ee403dc62ec6b48842ea13f8aa4efbbf604f858546bb6bc5"
+          },
+          "observed": {
+            "bytes": 16424,
+            "sha256": "d0c785fa210907cc15d2139d5e429c15ce93bf60b2c7b1ddac9680fb105ee269",
+            "contentSha256": "8e6730b856a637a9ee403dc62ec6b48842ea13f8aa4efbbf604f858546bb6bc5",
+            "integrity": "sha512-kpjQxyQpVjF0d/nOdwIfMURj5rO26oer7VlZXgXjOCvlCBU3CXkpwKyDuPLRFVh/2aUYYNvIRc5P2j6WnEQ8Gw=="
+          },
+          "rawMatches": false,
+          "contentMatches": true,
+          "gzipHeaderComparison": {
+            "offset": 9,
+            "observedByte": 3,
+            "expectedHashRecreatedWithByte": 19,
+            "rawMismatchRemains": true
+          }
+        },
+        {
+          "file": "menaje-viewer-ui-0.1.1.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.1/menaje-viewer-ui-0.1.1.tgz",
+          "package": "@menaje/viewer-ui",
+          "version": "0.1.1",
+          "expected": {
+            "file": "menaje-viewer-ui-0.1.1.tgz",
+            "sha256": "494c599d3a736ea43b22555e912215343ec569ca4d814466db9324f25d342b2a",
+            "bytes": 13824,
+            "contentSha256": "31dae93db79060182b84ef4c01352b5d32c1e58f4d46af5b971b6b2bd8400a2c"
+          },
+          "observed": {
+            "bytes": 13824,
+            "sha256": "5f3ffa7e8d7c186df0a09aecdef01dc9a58517053de486dcbc74203161389b18",
+            "contentSha256": "31dae93db79060182b84ef4c01352b5d32c1e58f4d46af5b971b6b2bd8400a2c",
+            "integrity": "sha512-of4J2Y7xMY52u/cd8M1yRPU78DNqXwmWNx2CzNCTZh8/xpGcvbbfZUBVkOWXktSTGG503195KjdNbcpBZSxMlQ=="
+          },
+          "rawMatches": false,
+          "contentMatches": true,
+          "gzipHeaderComparison": {
+            "offset": 9,
+            "observedByte": 3,
+            "expectedHashRecreatedWithByte": 19,
+            "rawMismatchRemains": true
+          }
+        }
+      ]
+    },
+    {
+      "tag": "viewer-core-v0.1.2",
+      "releaseId": 364622081,
+      "immutableObserved": false,
+      "tagReferences": {
+        "refs/tags/viewer-core-v0.1.2": "40f967223bd25d02640c44794fff677a3c7a3b31",
+        "refs/tags/viewer-core-v0.1.2^{}": "e225c2c8531e1f5e9677238d85adf6f686203026"
+      },
+      "anonymousAssets": [
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-core-0.1.2.tgz",
+          "bytes": 49537,
+          "sha256": "69bedf751ef718eb8e37bb06718d5a956f33f567225bf64468d25e42c5a82c4c"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-render-protocol-0.1.2.tgz",
+          "bytes": 16424,
+          "sha256": "6534ec7d021e06d3ea616ae15fb995ece57a7c3292fc37e892a28db8e2a91d42"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-ui-0.1.2.tgz",
+          "bytes": 13825,
+          "sha256": "faf22084601e68c5375bd283a4a97090791a071bbab5ef2394c8eaa57086e69a"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.2/SHA256SUMS",
+          "bytes": 294,
+          "sha256": "42bbbc30a3f678465e229cf61f9f15d7b973bca88c8e7a1a8ed2536b29fe9d77"
+        }
+      ],
+      "result": "PASS",
+      "tagManifest": {
+        "url": "https://raw.githubusercontent.com/menaje/2d-cad-viewer/viewer-core-v0.1.2/compatibility/viewer-core.json",
+        "bytes": 6069,
+        "sha256": "16ea2833be30c019f94645817f3130506fd74855d090d63d0853cb8695686763"
+      },
+      "packages": [
+        {
+          "file": "menaje-viewer-core-0.1.2.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-core-0.1.2.tgz",
+          "package": "@menaje/viewer-core",
+          "version": "0.1.2",
+          "expected": {
+            "file": "menaje-viewer-core-0.1.2.tgz",
+            "sha256": "69bedf751ef718eb8e37bb06718d5a956f33f567225bf64468d25e42c5a82c4c",
+            "bytes": 49537,
+            "contentSha256": "fd46b69f95a831c518be2ccff5f08d2d0170b5a79f18cfcdfc6c198f78b8af19"
+          },
+          "observed": {
+            "bytes": 49537,
+            "sha256": "69bedf751ef718eb8e37bb06718d5a956f33f567225bf64468d25e42c5a82c4c",
+            "contentSha256": "fd46b69f95a831c518be2ccff5f08d2d0170b5a79f18cfcdfc6c198f78b8af19",
+            "integrity": "sha512-REN+i3+b894/pzhjOhT7Al0TXCrzgteBCqrHlmYdrcSI4E6HFA3dGg8xXX21Vj//VNgjr3xUDdMqd3USX9Vl7A=="
+          },
+          "rawMatches": true,
+          "contentMatches": true,
+          "gzipHeaderComparison": null
+        },
+        {
+          "file": "menaje-viewer-render-protocol-0.1.2.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-render-protocol-0.1.2.tgz",
+          "package": "@menaje/viewer-render-protocol",
+          "version": "0.1.2",
+          "expected": {
+            "file": "menaje-viewer-render-protocol-0.1.2.tgz",
+            "sha256": "6534ec7d021e06d3ea616ae15fb995ece57a7c3292fc37e892a28db8e2a91d42",
+            "bytes": 16424,
+            "contentSha256": "6b02978d161a61f4ed8b3453b941c13a2c6a7f2f58bb8477e980a0ab34e0d1d2"
+          },
+          "observed": {
+            "bytes": 16424,
+            "sha256": "6534ec7d021e06d3ea616ae15fb995ece57a7c3292fc37e892a28db8e2a91d42",
+            "contentSha256": "6b02978d161a61f4ed8b3453b941c13a2c6a7f2f58bb8477e980a0ab34e0d1d2",
+            "integrity": "sha512-Vf73Tyd+q0vmlHvsEtXizF3C6Y0nKyxR8jT32yUO2/hUaeUmDYGxObwj3D9ETt8eobKoL8t19zaIH8fIUtx0jA=="
+          },
+          "rawMatches": true,
+          "contentMatches": true,
+          "gzipHeaderComparison": null
+        },
+        {
+          "file": "menaje-viewer-ui-0.1.2.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-ui-0.1.2.tgz",
+          "package": "@menaje/viewer-ui",
+          "version": "0.1.2",
+          "expected": {
+            "file": "menaje-viewer-ui-0.1.2.tgz",
+            "sha256": "faf22084601e68c5375bd283a4a97090791a071bbab5ef2394c8eaa57086e69a",
+            "bytes": 13825,
+            "contentSha256": "3fd12009d442c14251f712651f9decb37e10db1f9f249711b0c6c4f7ea8d10a5"
+          },
+          "observed": {
+            "bytes": 13825,
+            "sha256": "faf22084601e68c5375bd283a4a97090791a071bbab5ef2394c8eaa57086e69a",
+            "contentSha256": "3fd12009d442c14251f712651f9decb37e10db1f9f249711b0c6c4f7ea8d10a5",
+            "integrity": "sha512-jmBLY5S6RIWRLev18xox8BdIYi0GjkjYpRVksZtmd8Hipr7h+S8g0PQhXzSrTZuJdq9aiu4KrW19h0tpe1h9cw=="
+          },
+          "rawMatches": true,
+          "contentMatches": true,
+          "gzipHeaderComparison": null
+        }
+      ]
+    },
+    {
+      "tag": "viewer-core-v0.1.3",
+      "releaseId": 370986793,
+      "immutableObserved": false,
+      "tagReferences": {
+        "refs/tags/viewer-core-v0.1.3": "8dffab94dd1aa954382302e19631afd6e71fceb6",
+        "refs/tags/viewer-core-v0.1.3^{}": "2cbfb4d86184b16f38d7a2ee4b99862e56fc7597"
+      },
+      "anonymousAssets": [
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.3/menaje-viewer-core-0.1.3.tgz",
+          "bytes": 55678,
+          "sha256": "f69cf8d08648a33906649442f0ac083456f97a6962bca0afe62b180a6e95c15f"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.3/menaje-viewer-render-protocol-0.1.3.tgz",
+          "bytes": 16642,
+          "sha256": "b6d2b07644dc5936d76ac2280b859c306f65c7976c08e5e4955fd790fb4f93ad"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.3/menaje-viewer-ui-0.1.3.tgz",
+          "bytes": 13834,
+          "sha256": "86452348c0dd435193b10c3bc9d3944faa6b58a3b97bdf2b6992a70357d2870b"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.3/SHA256SUMS",
+          "bytes": 294,
+          "sha256": "d5386b8f26e489e9c4ba11560b8aacb1a9572bf551ed422cf6cbf83ac73dd59f"
+        }
+      ],
+      "result": "PASS",
+      "tagManifest": {
+        "url": "https://raw.githubusercontent.com/menaje/2d-cad-viewer/viewer-core-v0.1.3/compatibility/viewer-core.json",
+        "bytes": 6193,
+        "sha256": "0fe1ad26abc76d85ec62ea7f69e9333dc7052c5d7dcf318f000204d8bfc45426"
+      },
+      "packages": [
+        {
+          "file": "menaje-viewer-core-0.1.3.tgz",
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.3/menaje-viewer-core-0.1.3.tgz",
+          "package": "@menaje/viewer-core",
+          "version": "0.1.3",
+          "expected": {
+            "file": "menaje-viewer-core-0.1.3.tgz",
+            "sha256": "f69cf8d08648a33906649442f0ac083456f97a6962bca0afe62b180a6e95c15f",
+            "bytes": 55678,
+            "contentSha256": "f4106b57f684de45f527b351ac54830d83b9f743adb5de20eae3f110c227d6b3"
+          },
+          "observed": {
+            "bytes": 55678,
+            "sha256": "f69cf8d08648a33906649442f0ac083456f97a6962bca0afe62b180a6e95c15f",
+            "contentSha256": "f4106b57f684de45f527b351ac54830d83b9f743adb5de20eae3f110c227d6b3",
+            "integrity": "sha512-WaG5fJmFE97Li58DATl9owiB8HXzZ96gFP6bpZ7RlcIAltbmimcxwSgh86cD47Txu7RZsqGgCePGHurKMHz0fQ=="
+          },
+          "rawMatches": true,
+          "contentMatches": true,
+          "gzipHeaderComparison": null
+        },
+        {
+          "file": "menaje-viewer-render-protocol-0.1.3.tgz",
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.3/menaje-viewer-render-protocol-0.1.3.tgz",
+          "package": "@menaje/viewer-render-protocol",
+          "version": "0.1.3",
+          "expected": {
+            "file": "menaje-viewer-render-protocol-0.1.3.tgz",
+            "sha256": "b6d2b07644dc5936d76ac2280b859c306f65c7976c08e5e4955fd790fb4f93ad",
+            "bytes": 16642,
+            "contentSha256": "572a5745190d005dd85bd5b65243c0bfe78fed358fad56e79b0bdb4313ff2456"
+          },
+          "observed": {
+            "bytes": 16642,
+            "sha256": "b6d2b07644dc5936d76ac2280b859c306f65c7976c08e5e4955fd790fb4f93ad",
+            "contentSha256": "572a5745190d005dd85bd5b65243c0bfe78fed358fad56e79b0bdb4313ff2456",
+            "integrity": "sha512-3MXCRNMaukNwCNJTZBtNTY+C8AXcQ+6/qfVnJ1xhKk/ERxVcnZmxnHDa6G6X9tRKBcCrssGcTwU5M/bh5mcq1g=="
+          },
+          "rawMatches": true,
+          "contentMatches": true,
+          "gzipHeaderComparison": null
+        },
+        {
+          "file": "menaje-viewer-ui-0.1.3.tgz",
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.3/menaje-viewer-ui-0.1.3.tgz",
+          "package": "@menaje/viewer-ui",
+          "version": "0.1.3",
+          "expected": {
+            "file": "menaje-viewer-ui-0.1.3.tgz",
+            "sha256": "86452348c0dd435193b10c3bc9d3944faa6b58a3b97bdf2b6992a70357d2870b",
+            "bytes": 13834,
+            "contentSha256": "b4633688134285a0a90606ee180cd8d14c7e49963c44c35a6f5e88fb8d2520e3"
+          },
+          "observed": {
+            "bytes": 13834,
+            "sha256": "86452348c0dd435193b10c3bc9d3944faa6b58a3b97bdf2b6992a70357d2870b",
+            "contentSha256": "b4633688134285a0a90606ee180cd8d14c7e49963c44c35a6f5e88fb8d2520e3",
+            "integrity": "sha512-6XrDIEVj0dhuDRQiT6cAmYPmKBSyRYQHCuoh0K7pcCNIgDYaZQ9MaYLC6kel1NUEt0pVRWo4nF6TBRbB9kjdVQ=="
+          },
+          "rawMatches": true,
+          "contentMatches": true,
+          "gzipHeaderComparison": null
+        }
+      ]
+    },
+    {
+      "tag": "viewer-webgl-v0.1.1",
+      "releaseId": 364642080,
+      "immutableObserved": false,
+      "tagReferences": {
+        "refs/tags/viewer-webgl-v0.1.1": "f8eef84e896a53d5836658f22758423d0ca1fdde",
+        "refs/tags/viewer-webgl-v0.1.1^{}": "162bfe3fedc01fb4e2bb60945fa46557c10f59d0"
+      },
+      "anonymousAssets": [
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-webgl-v0.1.1/menaje-dwg-scene-source-0.1.1.tgz",
+          "bytes": 34018,
+          "sha256": "447bd0df2184c6d605fee5d1cc05dc662c30f8a0c8b03cdf16740458793564b9"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-webgl-v0.1.1/menaje-viewer-webgl-0.1.1.tgz",
+          "bytes": 263113,
+          "sha256": "c19dc1b75e6a061b324549adcad73dd8141dfce2a9956b8aeb3db5accd84548b"
+        },
+        {
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-webgl-v0.1.1/SHA256SUMS",
+          "bytes": 196,
+          "sha256": "9de589e33aecdf525c817b1fa5a9f3b779c68967cef5e8c57c81c78918f7878b"
+        }
+      ],
+      "result": "PASS",
+      "tagManifest": {
+        "url": "https://raw.githubusercontent.com/menaje/2d-cad-viewer/viewer-webgl-v0.1.1/compatibility/viewer-webgl.json",
+        "bytes": 2016,
+        "sha256": "2567a7689f6ca80837ba7ece4d0a0f9cfae3c0ac4ca09517377220cb197f7a78"
+      },
+      "packages": [
+        {
+          "file": "menaje-viewer-webgl-0.1.1.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-webgl-v0.1.1/menaje-viewer-webgl-0.1.1.tgz",
+          "package": "@menaje/viewer-webgl",
+          "version": "0.1.1",
+          "expected": {
+            "file": "menaje-viewer-webgl-0.1.1.tgz",
+            "sha256": "c19dc1b75e6a061b324549adcad73dd8141dfce2a9956b8aeb3db5accd84548b",
+            "bytes": 263113
+          },
+          "observed": {
+            "bytes": 263113,
+            "sha256": "c19dc1b75e6a061b324549adcad73dd8141dfce2a9956b8aeb3db5accd84548b",
+            "contentSha256": "99748da16478f0dc7f97461dd3fc786c9e36ca2268e7ab98de7940179ae6f098",
+            "integrity": "sha512-c5Mm4aCUQBkqtkbV9C1dIVJULb4Vb0PjVAvydrxv1y9LICpJhad/2ZKcIVIuGOrOoFuwIfKUvpRtQ/sar/HGHw=="
+          },
+          "rawMatches": true,
+          "contentMatches": null,
+          "gzipHeaderComparison": null
+        },
+        {
+          "file": "menaje-dwg-scene-source-0.1.1.tgz",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-webgl-v0.1.1/menaje-dwg-scene-source-0.1.1.tgz",
+          "package": "@menaje/dwg-scene-source",
+          "version": "0.1.1",
+          "expected": {
+            "file": "menaje-dwg-scene-source-0.1.1.tgz",
+            "sha256": "447bd0df2184c6d605fee5d1cc05dc662c30f8a0c8b03cdf16740458793564b9",
+            "bytes": 34018
+          },
+          "observed": {
+            "bytes": 34018,
+            "sha256": "447bd0df2184c6d605fee5d1cc05dc662c30f8a0c8b03cdf16740458793564b9",
+            "contentSha256": "590f122fbd8baad49d99883b16c6fd7e73b7c3dbc73d69b1a30b7dce06339762",
+            "integrity": "sha512-ys7NVw9ogIXm/2+1WhuaoV/a6cufzU6M9WxjA2WX2sHoIxMSHe+fDkvMgVRNN1dFaxGbhpkrw+R84HhBWMw2WQ=="
+          },
+          "rawMatches": true,
+          "contentMatches": null,
+          "gzipHeaderComparison": null
+        }
+      ]
+    }
+  ],
+  "migrationReadiness": "HOLD",
+  "limitations": [
+    "Selected tags only; vscodeCliObservation and installedConverterObservation cover current-route installation/update/rollback on macOS arm64 only. No drawing UI, other-platform execution or proposed-route qualification is claimed.",
+    "Registry access and existing-host consumer admission remain unverified. Attestation results are limited to the exact artifacts in attestationObservations.",
+    "Source payload checks do not establish reproducible builds or new licensing rights"
+  ],
+  "sourceTree": "d4750224e503388adb0d5ca5a576fc00ecabf338",
+  "scope": "Current public delivery observation for issue #53; no migration or release acceptance",
+  "publicAliasObservation": {
+    "url": "https://api.github.com/repos/menaje/dwg-viewer",
+    "resolvedRepository": "menaje/2d-cad-viewer",
+    "repositoryId": 1316816060,
+    "private": false,
+    "observedOn": "2026-09-13"
+  },
+  "installedConverterObservation": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "scope": "published converter manager; no VS Code UI qualification",
+    "records": [
+      {
+        "version": "0.1.7",
+        "download": "PASS",
+        "doctor": "PASS",
+        "repeat": "PASS",
+        "freshManagerOfflineReuse": "PASS",
+        "assetUrl": "https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/dwg-viewer-native-converter-0.1.7-darwin-arm64",
+        "sourceUrl": "https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz",
+        "sha256": "beb380f018d34aff875a247c96d7a95329444377fbed995d78514ea1c760a535",
+        "publishedManagerSha256": "19333ee9a39ac6b57cacb6cf8aba6954992af6cdc7b1ce2451172224ee781fc7"
+      },
+      {
+        "version": "0.1.8",
+        "download": "PASS",
+        "doctor": "PASS",
+        "repeat": "PASS",
+        "freshManagerOfflineReuse": "PASS",
+        "assetUrl": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-native-converter-0.1.8-darwin-arm64",
+        "sourceUrl": "https://github.com/menaje/2d-cad-viewer/releases/download/v0.1.8/dwg-viewer-libredwg-0.14-darwin-arm64.tar.gz",
+        "sha256": "d2aa9ca835519b06af9bd15cadd5a676879f7bfcf04197a2e26d7a7af47ec837",
+        "publishedManagerSha256": "f8bb112376a312a33cadbd4ffe1e12adaf7eb1972db416a72f9767003110517b"
+      }
+    ],
+    "versionIsolation": "PASS",
+    "offlineRollback": "PASS",
+    "method": "Unchanged ManagedEngineManager from each downloaded VSIX, real network fetch and native doctor, isolated storage; new manager with throwing fetcher for offline reuse and rollback"
+  },
+  "vscodeCliObservation": {
+    "platform": "darwin-arm64",
+    "version": "1.136.2",
+    "commit": "88e44fa0e00b08f7758b4f6d05632e4fd5e4df6f",
+    "isolatedUserDataAndExtensions": true,
+    "steps": [
+      {
+        "operation": "install public VSIX 0.1.7",
+        "result": "PASS"
+      },
+      {
+        "operation": "update via public VSIX 0.1.8",
+        "result": "PASS"
+      },
+      {
+        "operation": "downgrade via public VSIX 0.1.7; list confirmed 0.1.7",
+        "result": "PASS"
+      },
+      {
+        "operation": "Marketplace install menaje.dwg-viewer-vscode@0.1.8 --pre-release; list confirmed 0.1.8",
+        "result": "PASS"
+      }
+    ],
+    "marketplaceAndReleaseCatalogSha256": "1e30043df1263acfab5b485a89e81fe95060b8f92b12ef4a0d7cebbe28859d6e",
+    "uiDrawingTask": "not-executed"
+  },
+  "artifactOnlyInstalls": [
+    {
+      "version": "0.1.2",
+      "result": "PASS",
+      "installScripts": false,
+      "packages": [
+        {
+          "package": "@menaje/viewer-core",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-core-0.1.2.tgz",
+          "integrity": "sha512-REN+i3+b894/pzhjOhT7Al0TXCrzgteBCqrHlmYdrcSI4E6HFA3dGg8xXX21Vj//VNgjr3xUDdMqd3USX9Vl7A=="
+        },
+        {
+          "package": "@menaje/viewer-render-protocol",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-render-protocol-0.1.2.tgz",
+          "integrity": "sha512-Vf73Tyd+q0vmlHvsEtXizF3C6Y0nKyxR8jT32yUO2/hUaeUmDYGxObwj3D9ETt8eobKoL8t19zaIH8fIUtx0jA=="
+        },
+        {
+          "package": "@menaje/viewer-ui",
+          "url": "https://github.com/menaje/dwg-viewer/releases/download/viewer-core-v0.1.2/menaje-viewer-ui-0.1.2.tgz",
+          "integrity": "sha512-jmBLY5S6RIWRLev18xox8BdIYi0GjkjYpRVksZtmd8Hipr7h+S8g0PQhXzSrTZuJdq9aiu4KrW19h0tpe1h9cw=="
+        }
+      ],
+      "conformance": [
+        "runRenderSourceConformance",
+        "runServiceRenderSourceConformance",
+        "runServiceEventConformance"
+      ],
+      "scope": "isolated synthetic host; does not admit any existing host baseline"
+    },
+    {
+      "version": "0.1.3",
+      "result": "PASS",
+      "installScripts": false,
+      "packages": [
+        {
+          "package": "@menaje/viewer-core",
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.3/menaje-viewer-core-0.1.3.tgz",
+          "integrity": "sha512-WaG5fJmFE97Li58DATl9owiB8HXzZ96gFP6bpZ7RlcIAltbmimcxwSgh86cD47Txu7RZsqGgCePGHurKMHz0fQ=="
+        },
+        {
+          "package": "@menaje/viewer-render-protocol",
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.3/menaje-viewer-render-protocol-0.1.3.tgz",
+          "integrity": "sha512-3MXCRNMaukNwCNJTZBtNTY+C8AXcQ+6/qfVnJ1xhKk/ERxVcnZmxnHDa6G6X9tRKBcCrssGcTwU5M/bh5mcq1g=="
+        },
+        {
+          "package": "@menaje/viewer-ui",
+          "url": "https://github.com/menaje/2d-cad-viewer/releases/download/viewer-core-v0.1.3/menaje-viewer-ui-0.1.3.tgz",
+          "integrity": "sha512-6XrDIEVj0dhuDRQiT6cAmYPmKBSyRYQHCuoh0K7pcCNIgDYaZQ9MaYLC6kel1NUEt0pVRWo4nF6TBRbB9kjdVQ=="
+        }
+      ],
+      "conformance": [
+        "runRenderSourceConformance",
+        "runServiceRenderSourceConformance",
+        "runServiceEventConformance"
+      ],
+      "scope": "isolated synthetic host; does not admit any existing host baseline"
+    }
+  ],
+  "registryObservation": {
+    "endpoint": "https://api.github.com/users/menaje/packages?package_type=npm",
+    "httpStatus": 403,
+    "result": "HOLD",
+    "reason": "Resource not accessible by personal access token"
+  },
+  "historicalIdentityDisposition": {
+    "result": "HOLD",
+    "originalWorkflowRun": "https://github.com/menaje/2d-cad-viewer/actions/runs/30877166011",
+    "finding": "All three Core 0.1.1 content digests match; changing only copied gzip byte 9 from 3 to 19 recreates each retained raw SHA-256. Downloaded bytes remain untouched.",
+    "limitation": "Container-byte difference is explained; original artifact/attestation acceptance and owner decision remain unresolved. This is not proof of asset replacement."
+  },
+  "validation": {
+    "sourceCommit": "46c8904407937e955f77c1534a2c1dc607299c6e",
+    "executor": "local",
+    "node": "v24.11.1",
+    "commands": {
+      "python3 -B -m unittest discover -s scripts -p test_delivery_continuity.py": "PASS 8/8",
+      "pnpm run test:governance": "PASS 45/45",
+      "pnpm run check:release-channel": "PASS 16/16",
+      "pnpm run check:adapter-package": "PASS 29/29",
+      "pnpm --dir apps/vscode-extension run compile": "PASS",
+      "node --test apps/vscode-extension/dist/test/managed-engine.test.js": "PASS 4/4",
+      "pnpm run check:documents": "PASS 7 records",
+      "pnpm run check:public-surface": "PASS 73 files including this public receipt; committed head checked separately",
+      "pnpm run check:governance": "HOLD: change outside the authorized environment surface"
+    },
+    "documentSourceCommit": "23878d9ce1e6df9f332513f101d2c3f276d49388",
+    "productGateCredit": false,
+    "commandSetSha256": "f33eec8409d5d3089f50cb062476b2869281265727bfca60a4ece821968c13ae",
+    "inputSha256": {
+      "README.md": "b724f882311dc0fe2a84cb33f5453beaf59c6e1dc2b8cdd9f5613eafdb9fd2db",
+      "docs/licensing.md": "37ede871291c1c818a74242b5e65bc5bdd8940794095b08a4260ff29f69d88b3",
+      "docs/distribution.md": "432aa1d82354771d747a2897ff688cada7e4a6cce993be324c269416f6b2a3c5",
+      "scripts/check-delivery-continuity.py": "6884df71454644776a8ab0ba5790e062ad8279c433ed8d4cb813c448e2bec9a1",
+      "scripts/test_delivery_continuity.py": "a85b6a3d84081e8a88f8662c350e3af456b4a9491a62e6029a63d5d67ba17351",
+      "scripts/check-public-surface.mjs": "0d967202cab6816751e9859fea5d16de5074d9ba05424f893a2ad222f69bd083",
+      "scripts/check-public-surface.test.mjs": "e2002cec76ecad0c13cb1ecec4f75111e69ec4011b7f0862952eb819570bed14",
+      "adapters/libredwg/package.mjs": "1844a782d03f00030708aba92d9f818d6abe2cdecd7e8db639b0631e3e11e70a"
+    },
+    "documentGenerationRepeatedWithZeroDrift": true
+  },
+  "remainingTransitionGates": [
+    "Owner approval of concrete implementation/delivery location and affected scope; source/contribution/third-party rights review before new terms",
+    "Repository policy adoption and exact review/receipt, including scoped ordinary-integration disposition for #53 changes outside the historical #56 environment allowlist",
+    "Every affected old-installed version/platform and exact source/package locator on the proposed route; UI tasks, clean install, update failure, denial/expiry if access is restricted, offline reuse and rollback; consumer-owned exact pin/admission",
+    "Release-only paths retain designated approver, train unit/member/version/stage decisions, candidate/Marketplace mapping, Core 0.1.1 historical identity acceptance and authorized registry verification"
+  ],
+  "preservation": {
+    "baselineCommit": "3e98cdfb8cfee80adf243f78cc42319cc2d676db",
+    "originalCheckoutCommit": "d2aacd31e36f4bcbc1175c0add59a7209f277ba0",
+    "originalCheckoutAndIndexPreserved": true,
+    "priorPlanCommitsPreserved": [
+      "197fb30549c4492e3a4959720484e046694b7d29",
+      "0217d424a2dd73c9e2b073537325c26cc1eca7ea"
+    ],
+    "migrationExecuted": false,
+    "historicalArtifactsChanged": false
+  },
+  "attestationObservations": [
+    {
+      "tag": "viewer-core-v0.1.1",
+      "file": "menaje-viewer-core-0.1.1.tgz",
+      "exitCode": 1,
+      "result": "HOLD",
+      "reason": "Verification with sigstore.dev issuer did not succeed"
+    },
+    {
+      "tag": "viewer-core-v0.1.3",
+      "file": "menaje-viewer-core-0.1.3.tgz",
+      "exitCode": 0,
+      "result": "PASS"
+    }
+  ],
+  "scopeClarification": {
+    "correctsEvidenceAtCommit": "9709c1c7407708b720a7c833e7905cd6e2525ac9",
+    "kind": "editorial limitation clarification only",
+    "observationsRerun": false,
+    "note": "Original observation times, checker/source digests, asset identities, validation results and HOLDs are preserved."
+  }
+}

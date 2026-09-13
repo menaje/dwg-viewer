@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { validateSourceBinding, validateQualificationReport } from './development-package-evidence.mjs';
+import { continuityMaintenancePaths, validateSourceBinding, validateQualificationReport } from './development-package-evidence.mjs';
 import { checkPublicSurface, repositoryPath, root } from './check-public-surface.mjs';
 
 export const commands = Object.freeze({
@@ -148,6 +148,7 @@ const allowedPaths = new Set([
   'scripts/development-package-evidence.mjs', 'scripts/development-package-evidence.test.mjs',
   'scripts/qualify-viewer-boundary.mjs', 'packages/viewer-core/test/viewer-core.test.mjs',
   'compatibility/evidence/viewer-boundary-development-environment.json', ...boundaryPaths,
+  ...continuityMaintenancePaths,
 ]);
 export function validateChangedPaths(paths) {
   assert(paths.every((path) => allowedPaths.has(path)), 'change outside the authorized environment surface');
