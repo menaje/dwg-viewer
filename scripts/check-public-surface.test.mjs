@@ -33,6 +33,10 @@ test('preserves public identities, package privacy and geometric terms', () => {
   assert.deepEqual(inspectSurface('docs/example.md', 'CONI-VIEWER-ARCHITECTURE @menaje/viewer-core RenderProtocolVersion SPATIAL_FILTER INSERT/XREF spatial clips. Viewer Core owns lifecycle. https://github.com/menaje/2d-cad-viewer'), []);
   assert.deepEqual(inspectSurface('package.json', '{"private":true,"version":"0.1.8"}'), []);
 });
+test('preserves the verified historical public delivery alias only', () => {
+  assert.deepEqual(inspectSurface('docs/example.md', 'https://github.com/menaje/dwg-viewer/releases/download/v0.1.7/asset'), []);
+  assert.ok(inspectSurface('docs/example.md', 'https://github.com/example/unverified-alias/releases/tag/v0.1.7').length > 0);
+});
 test('scans untracked generated metadata and rejects symlink escape', () => {
   const base = mkdtempSync(join(tmpdir(), 'viewer-surface-test-'));
   try {
