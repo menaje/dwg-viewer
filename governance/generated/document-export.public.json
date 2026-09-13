@@ -2,8 +2,8 @@
   "schemaVersion": "1.1.0",
   "projection": "public",
   "ownerRepository": "viewer",
-  "sourceRevision": "23878d9ce1e6df9f332513f101d2c3f276d49388",
-  "catalogDigest": "sha256:c736f93cbc2e1f93124a71cac0aa72aba694c77dda2f633f61109373fcef11e2",
+  "sourceRevision": "315aa176cca1726f04b33d00af59f7bef36e6d98",
+  "catalogDigest": "sha256:3244689c37f47d5470fbb55e1648e76c9ef67fd7f0bfd631ffdbdc44af50cd77",
   "documents": [
     {
       "schemaVersion": "1.1.0",
@@ -61,7 +61,7 @@
       "effectiveAt": "2026-08-30",
       "ownerRepository": "viewer",
       "sourcePath": "docs/distribution.md",
-      "digest": "sha256:432aa1d82354771d747a2897ff688cada7e4a6cce993be324c269416f6b2a3c5"
+      "digest": "sha256:ee2a7453bcebae3ee2b836eedf396d2d78373c8cb0abce362c0caeb4dc4cb322"
     },
     {
       "schemaVersion": "1.1.0",
@@ -125,7 +125,7 @@
       "documentId": "VIEWER-GOVERNANCE-ADOPTION",
       "title": "Viewer Repository-local Architecture Adoption Environment",
       "type": "contract",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "status": "draft",
       "normativity": "normative",
       "authority": [
@@ -133,11 +133,11 @@
       ],
       "visibility": "public",
       "supersedes": [],
-      "lastReviewed": "2026-09-08",
+      "lastReviewed": "2026-09-13",
       "effectiveAt": "2026-09-08",
       "ownerRepository": "viewer",
       "sourcePath": "governance/adoption.md",
-      "digest": "sha256:c7168cdacdea386700a4551d3a5db262c38e5945dc2cdfaebdd6b69d62dc3b99"
+      "digest": "sha256:79a82fb399462dfbab8116ae129e0c9b01ff3a2d0b99c69f0694d2b69600fda1"
     }
   ],
   "externalDocuments": [],
