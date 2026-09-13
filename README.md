@@ -1,7 +1,7 @@
 # 2D CAD Viewer for VS Code
 
 VS Code 안에서 DWG 파일 형식의 도면을 빠르게 확인하고, 찾고, 측정하고,
-내보낼 수 있는 오픈소스·로컬 우선 읽기 전용 2D CAD 뷰어입니다.
+내보낼 수 있는 무료·오픈소스·로컬 우선 읽기 전용 2D CAD 뷰어입니다.
 
 도면과 글꼴은 사용자의 컴퓨터 안에서만 처리됩니다. 대형 도면, 국내
 SHX/BigFont 한글, 외부참조(XREF), 배치(Layout)를 실무에서 편하게 확인하는
@@ -199,6 +199,13 @@ VSIX 빌드와 배포 재현 방법은
 [배포 및 설치 안내](docs/distribution.md)에 정리되어 있습니다.
 
 ## 라이선스
+
+현재 공개 앱과 소스에는 아래 MPL/GPL 조건이 적용되며 업무·상업적 이용도
+가능합니다. 후속 자체 구현의 private 개발은 검토 중인 방향입니다. 독립적으로
+유용한 무료 앱을 유지하는 것이 목표이며, 앱 사용권과 API 연동·SDK 재배포·
+엔진 내장·소스 재배포 권리는 [권리표](docs/licensing.md#proposed-free-application-and-interoperability-rights)에서
+구분합니다. 기존 설치·다운로드·대응 소스와 이미 부여된 OSS 권리는 유지합니다.
+실제 저장소나 배포 경로 전환은 아직 실행하지 않았습니다.
 
 - VS Code 확장과 Viewer 소스: MPL-2.0
 - 별도 LibreDWG 네이티브 변환기와 대응 소스 패키지: GPL-3.0-or-later

@@ -1,5 +1,5 @@
 ---
-{"schemaVersion":"1.1.0","documentId":"CONI-VIEWER-DISTRIBUTION","title":"2D CAD Viewer Distribution and Installation","type":"release-policy","version":"1.0.1","status":"accepted","normativity":"normative","authority":["viewer-distribution-policy"],"visibility":"public","supersedes":[],"lastReviewed":"2026-09-12","effectiveAt":"2026-08-30","extensions":{"repository":"viewer","documentRole":"release-policy"}}
+{"schemaVersion":"1.1.0","documentId":"CONI-VIEWER-DISTRIBUTION","title":"2D CAD Viewer Distribution and Installation","type":"release-policy","version":"1.0.1","status":"accepted","normativity":"normative","authority":["viewer-distribution-policy"],"visibility":"public","supersedes":[],"lastReviewed":"2026-09-13","effectiveAt":"2026-08-30","extensions":{"repository":"viewer","documentRole":"release-policy"}}
 ---
 
 # Distribution and installation
@@ -71,8 +71,9 @@ healthy version-managed converter.
 
 ## Release branches and channels
 
-The product release path is `dev` → `prerelease` → `main`. Direct pushes to
-`prerelease` and `main` are blocked; the required `release-route` check accepts
+The existing workflows implement `dev` → `prerelease` → `main`. This is an
+implementation observation, not the approved future stage authority. The
+`release-route` workflow accepts
 only a same-repository `dev` → `prerelease` pull request or a `prerelease` →
 `main` pull request. Closing a pull request without merging it, creating a
 branch, pushing a tag, or manually running a dry run cannot publish a release.
@@ -120,10 +121,14 @@ For a publishing merge, the workflow:
    catalog;
 7. produces build-provenance attestations and `SHA256SUMS` for the complete
    release set;
-8. creates the immutable `v<version>` GitHub release, which makes the converter
+8. creates the versioned `v<version>` GitHub release, which makes the converter
    URLs usable; and
 9. only after the GitHub release succeeds, publishes the single MPL viewer to
    Marketplace with `--pre-release` for the prerelease channel.
+
+Preserving published bytes is required even when the GitHub API reports
+`immutable: false`. Workflow routing alone does not establish server branch
+protection or authorize a release; #53 retains the unresolved owner decisions.
 
 This order prevents Marketplace from offering a viewer before its exact engine
 assets are available. A release retry may add a missing asset, but it must never
@@ -319,8 +324,52 @@ HOLD for their publication/acceptance paths. Native writer/WASM stay under #54.
 The execution sequence is plan review, scoped development preparation, approved
 delivery/profile implementation with affected validation, then any separately
 authorized release. Existing CI/release workflows are unchanged. Record
-old-installed/clean-install and failure/rollback results when that transition is
-implemented; this plan and read-only URL checks are not those results. The plan
+old-installed/clean-install and failure/rollback results for the proposed route
+when that transition is implemented; current-route checks do not qualify a future route. The plan
 may proceed independently of unrelated product defects or whole-product Effective
 status. Revert this documentation by an ordinary reviewed inverse change; no
 historical artifact rollback or replacement is needed.
+
+
+### Read-only continuity verification
+
+Run the bounded observer from the repository with Python 3.9+ and a **new** output
+directory outside the checkout:
+
+```sh
+python3 -B -m unittest discover -s scripts -p test_delivery_continuity.py
+python3 -B scripts/check-delivery-continuity.py --output /absolute/new/observation
+```
+
+The default selection is product v0.1.7/v0.1.8, Core 0.1.0–0.1.3 and WebGL
+0.1.1. Use `--tags` followed by exact existing tags for other affected releases.
+The script reads public Git tag refs and uses anonymous HTTPS GETs, verifies release API size/SHA-256 and
+SHA256SUMS, reads the original VSIX catalog, and checks all four converter/source
+identities. It follows the repository locator actually embedded in each VSIX,
+including the historical public `menaje/dwg-viewer` redirect used by v0.1.7, and
+checks the exact historical package URLs. It inspects GPL archive manifest/checksum coverage, exact included
+binary, upstream source/license pins and adapter build inputs. It also downloads
+the matching MPL tag source and computes package archive/content/SHA-512 integrity
+without normalizing or repacking historical bytes. Reports preserve expected and
+observed package identities; a mismatch returns HOLD and a nonzero exit. When a
+historical manifest lacks size/content pins, those fields are measured only and
+`contentMatches` is null, never invented as an earlier accepted digest. A copied
+gzip OS-header comparison may explain a raw difference; it neither changes the
+download nor waives the original mismatch.
+
+`receipt.json` binds the source commit, checker bytes, observation time, public
+URLs and downloaded identities. It does not contain local paths, credentials or
+consumer identities. These checks are separate from product aggregates and
+release workflows. The historical #56 `check:governance` environment allowlist
+still returns HOLD for #53 product-document/checker changes; it is not broadened
+to grant integration or retained-package qualification. Review the exact #53 diff
+and focused results before ordinary integration.
+
+This proves only the selected public acquisition and inspected payloads at the
+observation time. It does not prove registry access, a consumer's admitted pin,
+source-to-binary reproducibility, VS Code UI behavior, future accessibility or
+migration acceptance. Before visibility/delivery changes, the release owner must
+cover every affected installed version/platform and source link, and attach the
+old-install/clean-install, update, denial/expiry, offline reuse and rollback
+results for the concrete proposed route. Each consumer confirms its own exact
+pin and admission without exposing private implementation provenance.
