@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1.1.0",
   "ownerRepository": "viewer",
-  "sourceRevision": "197fb30549c4492e3a4959720484e046694b7d29",
+  "sourceRevision": "23878d9ce1e6df9f332513f101d2c3f276d49388",
   "documents": [
     {
       "schemaVersion": "1.1.0",
@@ -57,11 +57,11 @@
       ],
       "visibility": "public",
       "supersedes": [],
-      "lastReviewed": "2026-09-12",
+      "lastReviewed": "2026-09-13",
       "effectiveAt": "2026-08-30",
       "ownerRepository": "viewer",
       "sourcePath": "docs/distribution.md",
-      "digest": "sha256:a0709193b06f1ec579bf333a08ad9dc8c9e43f7d3cf61e285893b0fcc57a6a51",
+      "digest": "sha256:432aa1d82354771d747a2897ff688cada7e4a6cce993be324c269416f6b2a3c5",
       "supersededBy": []
     },
     {

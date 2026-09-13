@@ -2,8 +2,8 @@
   "schemaVersion": "1.1.0",
   "projection": "public",
   "ownerRepository": "viewer",
-  "sourceRevision": "197fb30549c4492e3a4959720484e046694b7d29",
-  "catalogDigest": "sha256:74174ebb9cabb0f975e13f489fa2e77284ce6caab83cd7108d243734fc8853b8",
+  "sourceRevision": "23878d9ce1e6df9f332513f101d2c3f276d49388",
+  "catalogDigest": "sha256:c736f93cbc2e1f93124a71cac0aa72aba694c77dda2f633f61109373fcef11e2",
   "documents": [
     {
       "schemaVersion": "1.1.0",
@@ -57,11 +57,11 @@
       ],
       "visibility": "public",
       "supersedes": [],
-      "lastReviewed": "2026-09-12",
+      "lastReviewed": "2026-09-13",
       "effectiveAt": "2026-08-30",
       "ownerRepository": "viewer",
       "sourcePath": "docs/distribution.md",
-      "digest": "sha256:a0709193b06f1ec579bf333a08ad9dc8c9e43f7d3cf61e285893b0fcc57a6a51"
+      "digest": "sha256:432aa1d82354771d747a2897ff688cada7e4a6cce993be324c269416f6b2a3c5"
     },
     {
       "schemaVersion": "1.1.0",
